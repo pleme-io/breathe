@@ -1,0 +1,23 @@
+apiVersion: v2
+name: pleme-breathe
+description: |
+  The breathe resource-homeostasis controller (memory dimension) + the
+  MemoryBand CRD. Watches MemoryBand CRs and holds each enrolled workload at a
+  typed utilization band (default 80/20) by carving its memory limit via true
+  SSA, every change observable in the CR status. Private during akeyless
+  ephemeral-environment integration; self-contained (no pleme-lib dep yet).
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+keywords:
+  - breathe
+  - homeostasis
+  - memory
+  - autoscaling
+  - breathable
+home: https://github.com/pleme-io/breathe
+sources:
+  - https://github.com/pleme-io/breathe
+maintainers:
+  - name: drzzln
+    email: drzzln@protonmail.com
