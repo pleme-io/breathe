@@ -26,6 +26,7 @@ fn pod_or_cluster(target: &Target) -> LimitLayout {
 
 /// **Memory** — bidirectional; carve `limits.memory`; the owner rolls. `used` is
 /// the live max container working-set across the owner's pods (metrics-server).
+#[derive(Default)]
 pub struct MemoryDescriptor;
 impl DimensionDescriptor for MemoryDescriptor {
     fn id(&self) -> DimensionId { DimensionId::Memory }
@@ -42,6 +43,7 @@ impl DimensionDescriptor for MemoryDescriptor {
 
 /// **CPU** — bidirectional; carve `limits.cpu` (millicores); in-place or roll.
 /// `used` is the live max container cpu across the owner's pods (metrics-server).
+#[derive(Default)]
 pub struct CpuDescriptor;
 impl DimensionDescriptor for CpuDescriptor {
     fn id(&self) -> DimensionId { DimensionId::Cpu }
@@ -59,6 +61,7 @@ impl DimensionDescriptor for CpuDescriptor {
 /// **Storage** — grow-only (data persists); grow PVC `requests.storage` (CSI
 /// online-resize). `used` is volume stats via PromQL (no metrics-server analog).
 /// The shrink path is mechanically disabled by the core's directionality clamp.
+#[derive(Default)]
 pub struct StorageDescriptor;
 impl DimensionDescriptor for StorageDescriptor {
     fn id(&self) -> DimensionId { DimensionId::Storage }

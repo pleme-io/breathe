@@ -21,14 +21,24 @@ metadata:
     app.kubernetes.io/name: pleme-breathe
 rules:
   - apiGroups: ["breathe.pleme.io"]
-    resources: ["memorybands", "memorybands/status"]
+    resources:
+      - "memorybands"
+      - "memorybands/status"
+      - "cpubands"
+      - "cpubands/status"
+      - "storagebands"
+      - "storagebands/status"
     verbs: ["get", "list", "watch", "patch", "update"]
-  # The target owners breathe patches limits.memory on (true SSA).
+  # The target owners breathe patches limits.{memory,cpu} on (true SSA).
   - apiGroups: ["apps"]
     resources: ["deployments", "statefulsets"]
     verbs: ["get", "list", "watch", "patch"]
   - apiGroups: ["postgresql.cnpg.io"]
     resources: ["clusters"]
+    verbs: ["get", "list", "watch", "patch"]
+  # The storage dimension grows PVC requests.storage (CSI online-resize).
+  - apiGroups: [""]
+    resources: ["persistentvolumeclaims"]
     verbs: ["get", "list", "watch", "patch"]
   # Read pods for owner→pod resolution (metric label scoping); no mutation.
   - apiGroups: [""]
