@@ -13,6 +13,7 @@ members = [
   "breathe-crd",       # the MemoryBand CRD (typed enrollment contract)
   "breathe-controller", # the controller binary (watch MemoryBand → reconcile_one)
   "breathe-dimensions", # the concrete DimensionDescriptors (memory/storage/cpu)
+  "breathe-host",      # the HostCluster Cluster impl — the host I/O boundary (ARC/cgroup)
 ]
 
 [workspace.package]

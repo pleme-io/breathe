@@ -194,6 +194,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "breathe-host"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "breathe-control",
+ "breathe-provider",
+ "tokio",
+]
+
+[[package]]
 name = "breathe-kube"
 version = "0.1.0"
 dependencies = [

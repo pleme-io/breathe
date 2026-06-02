@@ -96,6 +96,8 @@ impl KubeCluster {
                 };
                 c.pointer(&format!("/resources/limits/{resource}")).and_then(Value::as_str).map(String::from)
             }
+            // No k8s object holds a host lever — handled (rejected) in read_limit.
+            LimitLayout::Host(_) => None,
         }
     }
 
@@ -178,6 +180,11 @@ impl Cluster for KubeCluster {
             MetricSource::PodMetricsMax { resource, pod_prefix } => {
                 self.pod_metrics_max(resource, pod_prefix).await
             }
+            // A host metric can never reach the k8s boundary — the controller
+            // routes host dimensions to `HostCluster`. Typed, never silent.
+            MetricSource::Host(_) => Err(ProviderError::ApiPermanent(
+                "host metric source on KubeCluster (route host dimensions to HostCluster)".into(),
+            )),
         }
     }
 
@@ -216,6 +223,11 @@ impl Cluster for KubeCluster {
                     None => return Ok(Vec::new()),
                 }
             }
+            LimitLayout::Host(_) => {
+                return Err(ProviderError::ApiPermanent(
+                    "host layout on KubeCluster (route host dimensions to HostCluster)".into(),
+                ))
+            }
         };
         Ok(field_owners(&mf, &segments, logical_field))
     }
@@ -242,6 +254,11 @@ impl Cluster for KubeCluster {
                 json!({ "template": { "spec": { "containers": [
                     { "name": cname, "resources": { "limits": { res: qty } } }
                 ] } } })
+            }
+            LimitLayout::Host(_) => {
+                return Err(ProviderError::ApiPermanent(
+                    "host layout on KubeCluster (route host dimensions to HostCluster)".into(),
+                ))
             }
         };
         let body = json!({
