@@ -1,0 +1,19 @@
+[package]
+name = "breathe-runtime"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Shared controller-runtime glue for breathe's two reconcile binaries (the brain controller + the host agent): the TickReceipt -> BandStatus mapping and the status patch. Solved once so the two processes can never drift in how a decision is reported."
+
+[dependencies]
+breathe-control = { path = "../breathe-control", version = "0.1.0" }
+breathe-core = { path = "../breathe-core", version = "0.1.0" }
+breathe-crd = { path = "../breathe-crd", version = "0.1.0" }
+kube = { version = "0.96", features = ["client", "runtime", "derive"], default-features = false }
+serde_json = "1.0"
+
+[lints]
+workspace = true

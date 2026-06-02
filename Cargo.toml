@@ -14,6 +14,8 @@ members = [
   "breathe-controller", # the controller binary (watch MemoryBand → reconcile_one)
   "breathe-dimensions", # the concrete DimensionDescriptors (memory/storage/cpu)
   "breathe-host",      # the HostCluster Cluster impl — the host I/O boundary (ARC/cgroup)
+  "breathe-runtime",   # shared reconcile glue (status mapping + patch) — brain ⟂ hands no-drift
+  "breathe-host-agent", # the HANDS binary — DaemonSet host reconcile loop (ArcBand/CgroupBand)
 ]
 
 [workspace.package]

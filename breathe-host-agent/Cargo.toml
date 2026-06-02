@@ -1,15 +1,15 @@
 [package]
-name = "breathe-controller"
+name = "breathe-host-agent"
 version = "0.1.0"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
-description = "The breathe controller binary — watches MemoryBand CRs and runs the composed reconcile loop (observe → plan → assign) per target via the real KubeCluster (theory/BREATHE.md M1)."
+description = "The breathe host agent — the HANDS. A privileged DaemonSet pod that runs the full host reconcile loop locally on its node: watches ArcBand/CgroupBand, reads its BreatheNodePool for the L2 ceilings + master write switch, and applies host-dimension decisions via HostCluster (systemd/sysfs) strictly within the nodeBudget envelopes. Shadow-first by construction."
 
 [[bin]]
-name = "breathe-controller"
+name = "breathe-host-agent"
 path = "src/main.rs"
 
 [dependencies]
@@ -17,8 +17,7 @@ breathe-control = { path = "../breathe-control", version = "0.1.0" }
 breathe-provider = { path = "../breathe-provider", version = "0.1.0" }
 breathe-core = { path = "../breathe-core", version = "0.1.0" }
 breathe-crd = { path = "../breathe-crd", version = "0.1.0" }
-breathe-kube = { path = "../breathe-kube", version = "0.1.0" }
-breathe-dimensions = { path = "../breathe-dimensions", version = "0.1.0" }
+breathe-host = { path = "../breathe-host", version = "0.1.0" }
 breathe-runtime = { path = "../breathe-runtime", version = "0.1.0" }
 kube = { version = "0.96", features = ["client", "runtime", "derive", "rustls-tls"], default-features = false }
 k8s-openapi = { version = "0.23", features = ["latest"] }

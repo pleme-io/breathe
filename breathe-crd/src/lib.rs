@@ -1,11 +1,23 @@
 //! The breathe band CRDs (breathe.pleme.io/v1) — the typed per-target enrollment
 //! contracts. **Per-dimension kinds sharing one spec shape**, stamped from one
-//! `band_kind!` macro: `MemoryBand` / `StorageBand` / `CpuBand`. The controller
-//! reconciles only declared bands; `kubectl get memoryband,cpuband,storageband -A`
-//! is the complete, auditable answer to "what is being managed, in which dimension".
+//! `band_kind!` macro: the k8s dimensions `MemoryBand` / `StorageBand` / `CpuBand`
+//! AND the HOST dimensions `ArcBand` / `CgroupBand` — the host bands fall out of
+//! the *same* macro (the descriptor encodes the host addressing; the CRD shape is
+//! identical), so "solve once" holds: a host dimension is not a new CRD shape.
+//! The controller/agent reconciles only declared bands; `kubectl get
+//! memoryband,cpuband,storageband,arcband,cgroupband -A` is the complete,
+//! auditable answer to "what is being managed, in which dimension".
+//!
+//! [`BreatheNodePool`] is the cluster-scoped enrollment charter: it names the
+//! node breathe manages and carries the static L2 ceilings (mirrored from
+//! `pleme.nixos.nodeBudget`) that the host agent enforces as its second safety
+//! wall, plus the node-level master `writeEnabled` switch (false = whole node in
+//! shadow).
 //!
 //! The [`Band`] trait is the dimension-agnostic accessor the generic controller
-//! dispatches on — one reconcile body for all three kinds.
+//! dispatches on — one reconcile body for every kind, host or k8s.
+
+use std::collections::BTreeMap;
 
 use breathe_control::{BandConfig, Unit};
 use kube::CustomResource;
@@ -167,6 +179,64 @@ macro_rules! band_kind {
 band_kind!(MemoryBandSpec, MemoryBand, "MemoryBand", "mband", Unit::Bytes, "d_floor_bytes", "d_ceiling_bytes");
 band_kind!(CpuBandSpec, CpuBand, "CpuBand", "cband", Unit::Millicores, "d_floor_milli", "d_ceiling_milli");
 band_kind!(StorageBandSpec, StorageBand, "StorageBand", "sband", Unit::Bytes, "d_floor_bytes", "d_ceiling_bytes");
+// HOST bands — the descriptor (breathe-host) encodes the host addressing; the
+// CRD shape is identical to the byte-valued k8s bands, so the same macro stamps
+// them. targetRef.name carries the systemd unit (CgroupBand) or the node
+// (ArcBand); the agent applies via HostCluster within the BreatheNodePool L2 ceiling.
+band_kind!(ArcBandSpec, ArcBand, "ArcBand", "aband", Unit::Bytes, "d_floor_bytes", "d_ceiling_bytes");
+band_kind!(CgroupBandSpec, CgroupBand, "CgroupBand", "gband", Unit::Bytes, "d_floor_bytes", "d_ceiling_bytes");
+
+// ─────────────────── BreatheNodePool — host enrollment ──────────────────
+
+/// The per-node L2 ceilings, mirrored from `pleme.nixos.nodeBudget` — the host
+/// agent refuses any write above these (the second safety wall). Cluster-scoped:
+/// one BreatheNodePool enrolls one node.
+#[derive(CustomResource, Serialize, Deserialize, Clone, Debug, JsonSchema)]
+#[kube(
+    group = "breathe.pleme.io",
+    version = "v1",
+    kind = "BreatheNodePool",
+    shortname = "bnp",
+    category = "breathe",
+    status = "NodePoolStatus",
+    printcolumn = r#"{"name":"Node","type":"string","jsonPath":".spec.nodeName"}"#,
+    printcolumn = r#"{"name":"Writes","type":"boolean","jsonPath":".spec.writeEnabled"}"#,
+    printcolumn = r#"{"name":"ArcMaxGiB","type":"integer","jsonPath":".spec.arcMaxGiB"}"#,
+    printcolumn = r#"{"name":"Phase","type":"string","jsonPath":".status.phase"}"#
+)]
+#[serde(rename_all = "camelCase")]
+pub struct BreatheNodePoolSpec {
+    /// The node this pool enrolls (matches `kubernetes.io/hostname`). The agent
+    /// reconciles only the pool whose `nodeName` equals its own `NODE_NAME`.
+    pub node_name: String,
+    /// L2 ARC ceiling — `nodeBudget.arcMaxGiB` (the boot modprobe cap), in GiB.
+    pub arc_max_gi_b: u64,
+    /// L2 cgroup ceiling per systemd unit — the unit's `nodeBudget` `memoryMaxGiB`,
+    /// in GiB. A `CgroupBand` whose unit is absent here is refused (never written
+    /// blind).
+    #[serde(default)]
+    pub cgroup_max_gi_b: BTreeMap<String, u64>,
+    /// Node-level MASTER write switch. `false` = the whole node is in SHADOW —
+    /// every host band decides + reports but never mutates the host, regardless of
+    /// per-band `dryRun`. The safe default; flip to `true` only after the shadow
+    /// window holds.
+    #[serde(default)]
+    pub write_enabled: bool,
+}
+
+/// BreatheNodePool status — the enrollment receipt.
+#[derive(Serialize, Deserialize, Clone, Debug, JsonSchema, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct NodePoolStatus {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub phase: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub observed_node: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub managed_units: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_seen_epoch: Option<i64>,
+}
 
 fn d_floor_bytes() -> String { "256Mi".into() }
 fn d_ceiling_bytes() -> String { "16Gi".into() }
@@ -220,5 +290,54 @@ mod tests {
             &d_floor_milli(), &d_ceiling_milli(), Unit::Millicores).unwrap();
         assert_eq!(cfg.floor_bytes, 250);
         assert_eq!(cfg.ceiling_bytes, 2000);
+    }
+
+    #[test]
+    fn host_bands_share_the_band_shape_and_parse_bytes() {
+        // ArcBand: the target is the node; floor/ceiling are byte quantities.
+        let tr = TargetRef { kind: "Node".into(), name: "rio".into(), api_version: None, container: None };
+        let arc = ArcBand::new("rio-arc", ArcBandSpec {
+            target_ref: tr, setpoint: 0.80, grow_above: 0.85, shrink_below: 0.70,
+            grow_factor: 1.25, shrink_factor: 0.90, floor: "1Gi".into(), ceiling: "6Gi".into(),
+            cooldown_seconds: 600, max_staleness_seconds: 120, dry_run: true,
+        });
+        let cfg = Band::band_config(&arc).unwrap();
+        assert_eq!(cfg.floor_bytes, 1 << 30);
+        assert_eq!(cfg.ceiling_bytes, 6 * (1 << 30));
+        assert!(arc.dry_run());
+
+        // CgroupBand: the target NAME is the systemd unit the agent addresses.
+        let g = CgroupBand::new("nix-daemon", CgroupBandSpec {
+            target_ref: TargetRef { kind: "HostUnit".into(), name: "nix-daemon.service".into(), api_version: None, container: None },
+            setpoint: 0.80, grow_above: 0.85, shrink_below: 0.70, grow_factor: 1.25, shrink_factor: 0.90,
+            floor: "1Gi".into(), ceiling: "12Gi".into(), cooldown_seconds: 600, max_staleness_seconds: 120, dry_run: true,
+        });
+        assert_eq!(g.target_ref().name, "nix-daemon.service");
+    }
+
+    #[test]
+    fn nodepool_carries_the_l2_ceilings_and_master_switch() {
+        let mut cgroup = BTreeMap::new();
+        cgroup.insert("nix-daemon.service".to_string(), 12u64);
+        let pool = BreatheNodePool::new("rio", BreatheNodePoolSpec {
+            node_name: "rio".into(),
+            arc_max_gi_b: 6,
+            cgroup_max_gi_b: cgroup,
+            write_enabled: false, // safe default — whole node in shadow
+        });
+        assert_eq!(pool.spec.node_name, "rio");
+        assert_eq!(pool.spec.arc_max_gi_b, 6);
+        assert_eq!(pool.spec.cgroup_max_gi_b.get("nix-daemon.service"), Some(&12));
+        assert!(!pool.spec.write_enabled, "writeEnabled must default off (shadow-first)");
+    }
+
+    #[test]
+    fn nodepool_is_cluster_scoped() {
+        use kube::Resource;
+        // a cluster-scoped CRD has no namespace in its dynamic type scope; assert
+        // via the generated CRD's scope field.
+        let crd = <BreatheNodePool as kube::CustomResourceExt>::crd();
+        assert_eq!(crd.spec.scope, "Cluster", "BreatheNodePool must be cluster-scoped");
+        let _ = BreatheNodePool::kind(&());
     }
 }

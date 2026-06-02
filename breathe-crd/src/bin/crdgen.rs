@@ -1,11 +1,20 @@
 //! Emit the band CRD YAML from the typed Rust definitions — generation, not
 //! hand-authoring. `cargo run -p breathe-crd --bin crdgen > crds/bands.yaml`.
 
-use breathe_crd::{CpuBand, MemoryBand, StorageBand};
+use breathe_crd::{ArcBand, BreatheNodePool, CgroupBand, CpuBand, MemoryBand, StorageBand};
 use kube::CustomResourceExt;
 
 fn main() {
-    for crd in [MemoryBand::crd(), CpuBand::crd(), StorageBand::crd()] {
+    let crds = [
+        MemoryBand::crd(),
+        CpuBand::crd(),
+        StorageBand::crd(),
+        // host dimensions + the node enrollment charter
+        ArcBand::crd(),
+        CgroupBand::crd(),
+        BreatheNodePool::crd(),
+    ];
+    for crd in crds {
         print!("---\n{}", serde_yaml::to_string(&crd).expect("serialize CRD"));
     }
 }
