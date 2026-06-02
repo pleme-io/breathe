@@ -131,7 +131,7 @@ async fn reconcile_host<B: Band, D: DimensionDescriptor + Default>(
     let effective_dry_run = obj.dry_run() || !write_enabled;
 
     let provider = BandProvider::new(
-        HostCluster::new(SystemdSysfsEnv, envelopes, write_enabled),
+        HostCluster::new(SystemdSysfsEnv::from_env(), envelopes, write_enabled),
         D::default(),
     );
     let input = ReconcileInput {
