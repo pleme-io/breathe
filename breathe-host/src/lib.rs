@@ -111,10 +111,32 @@ pub trait HostEnvironment: Send + Sync {
 }
 
 /// The real implementation over std `fs` + `systemctl` (argv, never a shell).
-#[derive(Debug, Default, Clone, Copy)]
-pub struct SystemdSysfsEnv;
+///
+/// `root` prefixes every sysfs/procfs path so the agent, running in a pod, reads
+/// the HOST's `/sys` + `/proc` mounted at `HOST_ROOT` (e.g. `/host`) rather than
+/// the container's own. Empty `root` (the default) addresses the real `/` — the
+/// shape unit tests and a bare-metal binary use.
+#[derive(Debug, Default, Clone)]
+pub struct SystemdSysfsEnv {
+    root: String,
+}
 
 impl SystemdSysfsEnv {
+    /// Read `HOST_ROOT` from the environment (the DaemonSet sets it to `/host`).
+    #[must_use]
+    pub fn from_env() -> Self {
+        Self { root: std::env::var("HOST_ROOT").unwrap_or_default() }
+    }
+    /// Construct with an explicit host-root prefix.
+    #[must_use]
+    pub fn with_root(root: impl Into<String>) -> Self {
+        Self { root: root.into() }
+    }
+    /// Prefix an absolute host path with the configured root.
+    fn at(&self, abs: &str) -> String {
+        format!("{}{}", self.root, abs)
+    }
+
     /// Run `systemctl <args…>` and return trimmed stdout. NO shell, NO `format!`
     /// of a command line — argv is built with `Command::arg` (the typed surface).
     fn systemctl(args: &[&str]) -> Result<String, HostError> {
@@ -135,7 +157,7 @@ impl SystemdSysfsEnv {
 
 impl HostEnvironment for SystemdSysfsEnv {
     fn read_arcstats_size(&self) -> Result<u64, HostError> {
-        let text = std::fs::read_to_string(ZFS_ARCSTATS_PATH).map_err(|e| HostError::Io(e.to_string()))?;
+        let text = std::fs::read_to_string(self.at(ZFS_ARCSTATS_PATH)).map_err(|e| HostError::Io(e.to_string()))?;
         // arcstats rows are `name  type  data`; we want the `size` row's data.
         for line in text.lines() {
             let mut it = line.split_whitespace();
@@ -148,12 +170,12 @@ impl HostEnvironment for SystemdSysfsEnv {
     }
 
     fn read_sysfs_u64(&self, path: &str) -> Result<u64, HostError> {
-        let raw = std::fs::read_to_string(path).map_err(|e| HostError::Io(e.to_string()))?;
+        let raw = std::fs::read_to_string(self.at(path)).map_err(|e| HostError::Io(e.to_string()))?;
         raw.trim().parse::<u64>().map_err(|e| HostError::Parse(e.to_string()))
     }
 
     fn write_sysfs_u64(&self, path: &str, value: u64) -> Result<(), HostError> {
-        std::fs::write(path, value.to_string()).map_err(|e| HostError::Io(e.to_string()))
+        std::fs::write(self.at(path), value.to_string()).map_err(|e| HostError::Io(e.to_string()))
     }
 
     fn read_cgroup_memory_current(&self, unit: &str) -> Result<u64, HostError> {
