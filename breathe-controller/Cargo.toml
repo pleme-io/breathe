@@ -18,7 +18,7 @@ breathe-provider = { path = "../breathe-provider", version = "0.1.0" }
 breathe-core = { path = "../breathe-core", version = "0.1.0" }
 breathe-crd = { path = "../breathe-crd", version = "0.1.0" }
 breathe-kube = { path = "../breathe-kube", version = "0.1.0" }
-dimension-memory = { path = "../dimension-memory", version = "0.1.0" }
+breathe-dimensions = { path = "../breathe-dimensions", version = "0.1.0" }
 kube = { version = "0.96", features = ["client", "runtime", "derive", "rustls-tls"], default-features = false }
 k8s-openapi = { version = "0.23", features = ["latest"] }
 tokio = { version = "1.40", features = ["macros", "rt-multi-thread"] }

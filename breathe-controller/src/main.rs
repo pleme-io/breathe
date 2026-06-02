@@ -13,9 +13,9 @@ use std::{sync::Arc, time::Duration, time::{SystemTime, UNIX_EPOCH}};
 
 use breathe_core::{reconcile_one, ReconcileInput, TickReceipt};
 use breathe_crd::{MemoryBand, MemoryBandStatus};
+use breathe_dimensions::MemoryDescriptor;
 use breathe_kube::KubeCluster;
-use breathe_provider::Target;
-use dimension_memory::MemoryProvider;
+use breathe_provider::{BandProvider, Target};
 use futures::StreamExt;
 use kube::{
     api::{Api, Patch, PatchParams},
@@ -33,7 +33,7 @@ enum Error {
 
 struct Ctx {
     client: Client,
-    provider: MemoryProvider<KubeCluster>,
+    provider: BandProvider<KubeCluster, MemoryDescriptor>,
     requeue: Duration,
 }
 
@@ -164,7 +164,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     let client = Client::try_default().await?;
-    let provider = MemoryProvider::new(KubeCluster::new(client.clone(), prometheus_url));
+    let provider = BandProvider::new(KubeCluster::new(client.clone(), prometheus_url), MemoryDescriptor);
     let ctx = Arc::new(Ctx { client: client.clone(), provider, requeue });
 
     let bands: Api<MemoryBand> = Api::all(client);

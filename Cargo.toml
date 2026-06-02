@@ -12,7 +12,7 @@ members = [
   "breathe-kube",      # the Kubernetes Cluster impl + managedFields ownership parser
   "breathe-crd",       # the MemoryBand CRD (typed enrollment contract)
   "breathe-controller", # the controller binary (watch MemoryBand → reconcile_one)
-  "dimension-memory",  # the memory ResourceProvider (first dimension)
+  "breathe-dimensions", # the concrete DimensionDescriptors (memory/storage/cpu)
 ]
 
 [workspace.package]

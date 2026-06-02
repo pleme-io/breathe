@@ -84,6 +84,17 @@ pub fn replicas_segments() -> Vec<String> {
     vec!["f:spec".into(), "f:replicas".into()]
 }
 
+/// fieldsV1 segments for a PVC's `spec.resources.requests.storage` (grow-only).
+#[must_use]
+pub fn pvc_request_segments() -> Vec<String> {
+    vec![
+        "f:spec".into(),
+        "f:resources".into(),
+        "f:requests".into(),
+        "f:storage".into(),
+    ]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

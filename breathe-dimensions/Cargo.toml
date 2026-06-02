@@ -1,0 +1,15 @@
+[package]
+name = "breathe-dimensions"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "The concrete breathe DimensionDescriptors (memory/storage/cpu) — the small, genuinely dimension-specific data driving the one generic BandProvider. Adding a dimension is a descriptor here + a catalog row; zero orchestration."
+
+[dependencies]
+breathe-provider = { path = "../breathe-provider", version = "0.1.0" }
+
+[lints]
+workspace = true

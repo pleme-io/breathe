@@ -1,24 +1,19 @@
-//! `breathe-provider` — the `ResourceProvider` trait (the spine) + the `Cluster`
-//! Environment trait.
+//! `breathe-provider` — the provider/plugin spine: the `Cluster` Environment
+//! trait, the `DimensionDescriptor` trait, and the **one generic
+//! [`BandProvider`]** that implements [`ResourceProvider`] for every dimension.
 //!
-//! No dependency on the controller, so each `dimension-*` crate is an external
-//! impl — mirroring `galho-types::IaCSystem`. The algebra is **non-overloadable**:
-//! a provider exposes ONLY category-atomic I/O and never sees
-//! [`breathe_control::decide`]/`BandConfig`. It receives a computed `to_value`
-//! and translates it into one platform mutation; it cannot re-decide, widen the
-//! band, or subvert the safety clamp ([`theory/BREATHE.md`] §3).
-//!
-//! `Observation` / `FieldOwner` / `Directionality` are re-exported from
-//! `breathe-control` — every category projects into the same `(used, capacity)`
-//! scalars the proven band law consumes.
+//! The compounding shape (theory/BREATHE.md §3): the observe/assign/release
+//! *orchestration* is solved exactly once, in `BandProvider`; a new dimension
+//! supplies only its genuinely-specific data via a `DimensionDescriptor`
+//! (metric query, owned field, directionality, owner layout). A provider never
+//! sees `decide`/`BandConfig` — `BandProvider` calls the proven band law's
+//! inputs but the deciding lives entirely in `breathe-core`/`breathe-control`.
 
 use async_trait::async_trait;
 
 pub use breathe_control::{Directionality, FieldOwner, Observation};
 
-/// Typed category atom — keys the registry and equals the catalog `:name`.
-/// Adding a variant is a deliberate substrate edit; an unknown dimension fails
-/// to *compile*, never at startup.
+/// Typed category atom — keys the registry, equals the catalog `:name`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum DimensionId {
     Memory,
@@ -45,60 +40,46 @@ impl std::fmt::Display for DimensionId {
     }
 }
 
-/// A reconcile target — the workload owner whose field a provider manages. For
-/// CNPG the kind is `Cluster` and the patched field lives on the `Cluster` CR
-/// (which the CNPG operator propagates to its pods) — see BREATHE.md §15.5.
+/// A reconcile target — the owner object whose limit a band controls.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Target {
     pub namespace: String,
     pub name: String,
-    /// `Deployment` | `StatefulSet` | `Cluster` (CNPG) | …
+    /// `Deployment` | `StatefulSet` | `Cluster` (CNPG) | `PersistentVolumeClaim`.
     pub kind: String,
     pub api_version: String,
-    /// Container within the pod template; `None` = the first container.
     pub container: Option<String>,
 }
 
-/// The SSA field a provider owns: a field-manager name + the dotted path. The
-/// single-writer guard checks ownership of THIS exact path, so disjoint paths
-/// across dimensions (memory `resources.limits.memory` vs replica `spec.replicas`)
-/// never fight.
-#[derive(Debug, Clone)]
-pub struct OwnedField {
-    pub manager: String,
-    pub path: String,
+/// Where a managed quantity lives on a target object — interpreted by the
+/// `Cluster` impl when reading/patching. The *dimension* + the *owner kind*
+/// together pick the layout (memory on a Deployment is `PodTemplate`; memory on
+/// a CNPG `Cluster` is `ClusterTopLevel`; storage is always `PvcRequest`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LimitLayout {
+    /// CNPG `Cluster`: `spec.resources.limits.<res>`.
+    ClusterTopLevel,
+    /// Deployment/StatefulSet: `spec.template.spec.containers[name].resources.limits.<res>`.
+    PodTemplate { container: Option<String> },
+    /// PVC: `spec.resources.requests.storage` (grow-only).
+    PvcRequest,
 }
 
-/// How a category's `assign` lands — lets the loop interpret disruption and
-/// attest honestly (mirrors GALHO `ApplySemantics`).
+/// How a category's `assign` lands (GALHO `ApplySemantics`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ApplySemantics {
-    /// One API write; the owner performs a bounded, reversible rolling update.
     Transactional,
-    /// The write is requested; an external reconciler (CSI) converges async.
     ContinuousReconciliation,
-    /// In-place change that may complete partially (in-place pod resize).
     PartialProgress,
 }
 
-/// Which scalar a metric read projects into.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum MetricKind {
-    Used,
-    Capacity,
-}
-
-/// A metric reading plus the age of the underlying sample. The loop gates every
-/// mutation on `age_secs` (BREATHE.md §15.4) — the never-OOM proof holds only on
-/// a fresh sample, so a stale read must never drive a carve.
+/// A metric reading + the age of the underlying sample (freshness gate input).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Sample {
     pub value: u64,
     pub age_secs: u64,
 }
 
-/// Receipt of one atomic `assign`; `source_hash` (BLAKE3-128) anchors the
-/// OutcomeChain entry.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AssignReceipt {
     pub from: u64,
@@ -106,28 +87,21 @@ pub struct AssignReceipt {
     pub source_hash: [u8; 16],
 }
 
-/// Receipt of a `release` (de-enrollment); `baseline` is the restored
-/// pre-enrollment value when one was recorded.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReleaseReceipt {
     pub baseline: Option<u64>,
     pub source_hash: [u8; 16],
 }
 
-/// Receipt of a single SSA apply against the cluster.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AppliedReceipt {
     pub source_hash: [u8; 16],
 }
 
-/// Typed errors a provider surfaces. Never a silent hang or a panic — the loop
-/// maps each to a deterministic outcome (transient → fast requeue, permanent →
-/// escalate + AnomalyChain).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ProviderError {
     TargetNotFound,
     MetricsMissing,
-    /// No denominator (no limit set) — the band law returns `NoLimit`.
     NoCapacityField,
     ApiTransient(String),
     ApiPermanent(String),
@@ -147,110 +121,174 @@ impl std::fmt::Display for ProviderError {
 
 impl std::error::Error for ProviderError {}
 
-/// A typed Server-Side-Apply patch. **True SSA only** (`Patch::Apply` with the
-/// provider's field manager + `force`) — never strategic `Merge`. This is the
-/// load-bearing single-writer contract (BREATHE.md §15.2): only a real SSA field
-/// manager produces the `managedFields` ownership the guard reads.
+/// The SSA field a provider owns (the guard input + status surface).
+#[derive(Debug, Clone)]
+pub struct OwnedField {
+    pub manager: String,
+    pub path: String,
+}
+
+/// A typed Server-Side-Apply patch. **True SSA only** — carries the `layout` so
+/// the `Cluster` impl builds the right nested patch, and the `resource`
+/// (`memory`/`cpu`/`storage`) for the leaf key.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SsaPatch {
     pub target: Target,
     pub field_manager: String,
-    /// Dotted field path being set (e.g. `resources.limits.memory`).
-    pub path: String,
-    /// Base-unit value (bytes / millicores).
+    pub layout: LimitLayout,
+    pub resource: String,
     pub value: u64,
 }
 
-/// The side-effecting boundary every provider's I/O goes through. The real impl
-/// is `KubeCluster`; tests pass `MockCluster`. This Environment trait is the
-/// testability contract — the interpreter half of the typed-spec triplet is
-/// mockable, so a provider's observe/assign is unit-tested with no real cluster.
+/// The side-effecting boundary. Real impl is `KubeCluster`; tests pass
+/// `MockCluster`. Dimension-agnostic: `query` runs raw PromQL, `read_limit`
+/// reads a quantity at a layout, `field_owners` extracts ownership of a
+/// fieldsV1 path, `apply` performs true SSA.
 #[async_trait]
 pub trait Cluster: Send + Sync {
-    async fn metric(&self, target: &Target, kind: MetricKind) -> Result<Sample, ProviderError>;
-    async fn current_allocation(
+    async fn query(&self, promql: &str) -> Result<Sample, ProviderError>;
+    async fn read_limit(
         &self,
         target: &Target,
-        dim: DimensionId,
+        layout: &LimitLayout,
+        resource: &str,
     ) -> Result<u64, ProviderError>;
-    /// Field-managers currently owning `field` on the target (from
-    /// `metadata.managedFields`), for the field-granular single-writer guard.
     async fn field_owners(
         &self,
         target: &Target,
-        field: &str,
+        layout: &LimitLayout,
+        resource: &str,
+        logical_field: &str,
     ) -> Result<Vec<FieldOwner>, ProviderError>;
-    /// Apply a typed SSA patch. Implementations MUST use `Patch::Apply` (never
-    /// `Merge`) so the field manager becomes a real ownership record.
     async fn apply(&self, patch: &SsaPatch) -> Result<AppliedReceipt, ProviderError>;
 }
 
-/// The spine. A provider does only category-atomic I/O for one resident problem
-/// category; it never carries band logic (the loop owns `decide` + the
-/// directionality clamp). Object-safe via `async_trait` so the registry can hold
-/// `Box<dyn ResourceProvider>`.
+/// The per-dimension data + small layout logic — everything that is genuinely
+/// dimension-specific. The observe/assign/release orchestration lives once in
+/// [`BandProvider`], so a new dimension is *only* an impl of this trait + a
+/// catalog row. It can carry no band logic (no `decide`/`BandConfig`).
+pub trait DimensionDescriptor: Send + Sync + 'static {
+    fn id(&self) -> DimensionId;
+    fn directionality(&self) -> Directionality;
+    /// SSA field manager (disjoint across dimensions → memory ⟂ cpu, breathe ⟂ KEDA).
+    fn field_manager(&self) -> &'static str;
+    /// Stable logical field label (layout-independent) — both the guard's
+    /// `owned_field().path` and the stamped `FieldOwner.field` use this.
+    fn logical_field(&self) -> &'static str;
+    /// The leaf resource key in `limits`/`requests` (`memory`/`cpu`/`storage`).
+    fn resource(&self) -> &'static str;
+    fn semantics(&self) -> ApplySemantics;
+    /// Where this dimension's limit lives on the given target.
+    fn layout(&self, target: &Target) -> LimitLayout;
+    /// The PromQL whose scalar is the dimension's `used`.
+    fn used_promql(&self, target: &Target) -> String;
+}
+
+/// The spine — the dyn interface `breathe-core` reconciles through.
 #[async_trait]
 pub trait ResourceProvider: Send + Sync + 'static {
-    /// Stable category atom — keys the registry, equals the catalog `:name`.
     fn id(&self) -> DimensionId;
-
-    /// What this category may do; the loop enforces it via
-    /// [`breathe_control::clamp_to_directionality`]. Providers carry no band logic.
     fn directionality(&self) -> Directionality;
-
-    /// The SSA field manager + dotted path this provider owns (the guard input).
     fn owned_field(&self) -> OwnedField;
-
-    /// Apply-semantics this category exposes, so the loop interprets disruption.
     fn semantics(&self) -> ApplySemantics;
-
-    /// OBSERVE — read-only. Project the target into `(used, capacity)` in this
-    /// category's base unit + the field owners + sample age. Never mutates.
     async fn observe(&self, target: &Target) -> Result<Observation, ProviderError>;
-
-    /// ASSIGN — the ONE mutation. Carve/return `to_value` (base units), atomically
-    /// for this category, via true SSA. Idempotent: `assign(to == current)` is a no-op.
     async fn assign(&self, target: &Target, to_value: u64)
         -> Result<AssignReceipt, ProviderError>;
-
-    /// RELEASE — de-enrollment/finalizer. Return the category to its baseline
-    /// (drop the SSA claim; restore the recorded original where one exists).
-    /// Atomic; idempotent. `GrowOnly` providers never shrink — release is bookkeeping.
     async fn release(&self, target: &Target) -> Result<ReleaseReceipt, ProviderError>;
 }
 
-/// A programmable in-memory [`Cluster`] for tests — the test double that makes
-/// every provider (the interpreter half of the typed-spec triplet) mockable with
-/// no real cluster. Records every SSA patch so a test can assert exactly what was
-/// carved, on which field, by which manager.
+/// **The one generic provider.** Implements [`ResourceProvider`] for every
+/// dimension; the dimension's specifics come from its `DimensionDescriptor`.
+/// Adding a dimension never touches this code — that is the whole compounding
+/// claim, made by one type.
+pub struct BandProvider<C: Cluster + 'static, D: DimensionDescriptor> {
+    cluster: C,
+    descriptor: D,
+}
+
+impl<C: Cluster + 'static, D: DimensionDescriptor> BandProvider<C, D> {
+    pub fn new(cluster: C, descriptor: D) -> Self {
+        Self { cluster, descriptor }
+    }
+    /// Borrow the cluster (tests assert applied patches).
+    pub fn cluster(&self) -> &C {
+        &self.cluster
+    }
+}
+
+#[async_trait]
+impl<C: Cluster + 'static, D: DimensionDescriptor> ResourceProvider for BandProvider<C, D> {
+    fn id(&self) -> DimensionId {
+        self.descriptor.id()
+    }
+    fn directionality(&self) -> Directionality {
+        self.descriptor.directionality()
+    }
+    fn owned_field(&self) -> OwnedField {
+        OwnedField {
+            manager: self.descriptor.field_manager().to_string(),
+            path: self.descriptor.logical_field().to_string(),
+        }
+    }
+    fn semantics(&self) -> ApplySemantics {
+        self.descriptor.semantics()
+    }
+
+    async fn observe(&self, target: &Target) -> Result<Observation, ProviderError> {
+        let used = self.cluster.query(&self.descriptor.used_promql(target)).await?;
+        let layout = self.descriptor.layout(target);
+        let capacity = self.cluster.read_limit(target, &layout, self.descriptor.resource()).await?;
+        let owners = self
+            .cluster
+            .field_owners(target, &layout, self.descriptor.resource(), self.descriptor.logical_field())
+            .await?;
+        Ok(Observation { used: used.value, capacity, owners, staleness_secs: used.age_secs })
+    }
+
+    async fn assign(&self, target: &Target, to_value: u64) -> Result<AssignReceipt, ProviderError> {
+        let layout = self.descriptor.layout(target);
+        let from = self.cluster.read_limit(target, &layout, self.descriptor.resource()).await?;
+        if to_value == from {
+            return Ok(AssignReceipt { from, to: to_value, source_hash: [0u8; 16] });
+        }
+        let patch = SsaPatch {
+            target: target.clone(),
+            field_manager: self.descriptor.field_manager().to_string(),
+            layout,
+            resource: self.descriptor.resource().to_string(),
+            value: to_value,
+        };
+        let applied = self.cluster.apply(&patch).await?;
+        Ok(AssignReceipt { from, to: to_value, source_hash: applied.source_hash })
+    }
+
+    async fn release(&self, _target: &Target) -> Result<ReleaseReceipt, ProviderError> {
+        Ok(ReleaseReceipt { baseline: None, source_hash: [0u8; 16] })
+    }
+}
+
+/// A programmable in-memory [`Cluster`] for tests — the typed-spec-triplet
+/// testability seam. Records every SSA patch; programmable used/limit/owners.
 #[cfg(feature = "mock")]
 pub mod mock {
     use super::{
-        AppliedReceipt, Cluster, DimensionId, FieldOwner, MetricKind, ProviderError, Sample,
-        SsaPatch, Target,
+        AppliedReceipt, Cluster, FieldOwner, LimitLayout, ProviderError, Sample, SsaPatch, Target,
     };
     use async_trait::async_trait;
     use std::sync::Mutex;
 
     pub struct MockCluster {
         pub used: Sample,
-        pub capacity: u64,
+        pub limit: u64,
         pub owners: Vec<FieldOwner>,
         applied: Mutex<Vec<SsaPatch>>,
     }
 
     impl MockCluster {
         #[must_use]
-        pub fn new(used: u64, age_secs: u64, capacity: u64, owners: Vec<FieldOwner>) -> Self {
-            Self {
-                used: Sample { value: used, age_secs },
-                capacity,
-                owners,
-                applied: Mutex::new(Vec::new()),
-            }
+        pub fn new(used: u64, age_secs: u64, limit: u64, owners: Vec<FieldOwner>) -> Self {
+            Self { used: Sample { value: used, age_secs }, limit, owners, applied: Mutex::new(Vec::new()) }
         }
-
-        /// Every SSA patch this cluster has applied, in order.
         #[must_use]
         pub fn applied(&self) -> Vec<SsaPatch> {
             self.applied.lock().unwrap().clone()
@@ -259,23 +297,23 @@ pub mod mock {
 
     #[async_trait]
     impl Cluster for MockCluster {
-        async fn metric(&self, _t: &Target, kind: MetricKind) -> Result<Sample, ProviderError> {
-            Ok(match kind {
-                MetricKind::Used => self.used,
-                MetricKind::Capacity => Sample { value: self.capacity, age_secs: 0 },
-            })
+        async fn query(&self, _promql: &str) -> Result<Sample, ProviderError> {
+            Ok(self.used)
         }
-        async fn current_allocation(
+        async fn read_limit(
             &self,
             _t: &Target,
-            _dim: DimensionId,
+            _layout: &LimitLayout,
+            _resource: &str,
         ) -> Result<u64, ProviderError> {
-            Ok(self.capacity)
+            Ok(self.limit)
         }
         async fn field_owners(
             &self,
             _t: &Target,
-            _field: &str,
+            _layout: &LimitLayout,
+            _resource: &str,
+            _logical: &str,
         ) -> Result<Vec<FieldOwner>, ProviderError> {
             Ok(self.owners.clone())
         }

@@ -93,8 +93,14 @@ pub async fn reconcile_one(
 mod tests {
     use super::*;
     use breathe_control::FieldOwner;
-    use breathe_provider::{mock::MockCluster, Target};
-    use dimension_memory::{MemoryProvider, MEMORY_FIELD, MEMORY_MANAGER};
+    use breathe_provider::{mock::MockCluster, BandProvider, Target};
+    use breathe_dimensions::MemoryDescriptor;
+
+    const MEMORY_FIELD: &str = "resources.limits.memory";
+    const MEMORY_MANAGER: &str = "breathe/memory";
+    fn provider(cluster: MockCluster) -> BandProvider<MockCluster, MemoryDescriptor> {
+        BandProvider::new(cluster, MemoryDescriptor)
+    }
 
     const MI: u64 = 1 << 20;
     const GI: u64 = 1 << 30;
@@ -119,7 +125,7 @@ mod tests {
     async fn reconcile_grows_and_carves_one_ssa_patch() {
         // util ~0.93 @ 1Gi, fresh sample, we own the field → Act(Grow).
         let cluster = MockCluster::new(950 * MI, 0, GI, we_own());
-        let prov = MemoryProvider::new(cluster);
+        let prov = provider(cluster);
         let cfg = BandConfig::default();
         let t = target();
         let input = ReconcileInput { target: &t, cfg: &cfg, max_staleness_secs: 60, in_cooldown: false, dry_run: false };
@@ -134,14 +140,15 @@ mod tests {
         let patches = prov.cluster().applied();
         assert_eq!(patches.len(), 1, "exactly one atomic carve");
         assert_eq!(patches[0].field_manager, MEMORY_MANAGER);
-        assert_eq!(patches[0].path, MEMORY_FIELD);
+        assert_eq!(patches[0].resource, "memory");
+        let _ = MEMORY_FIELD; // owned_field().path label (asserted via the guard tests)
     }
 
     #[tokio::test]
     async fn reconcile_yields_to_a_competing_owner_without_carving() {
         // VPA owns the memory field → Conflict, and NOTHING is applied.
         let owners = vec![FieldOwner { manager: "vpa".into(), field: MEMORY_FIELD.into() }];
-        let prov = MemoryProvider::new(MockCluster::new(950 * MI, 0, GI, owners));
+        let prov = provider(MockCluster::new(950 * MI, 0, GI, owners));
         let cfg = BandConfig::default();
         let t = target();
         let input = ReconcileInput { target: &t, cfg: &cfg, max_staleness_secs: 60, in_cooldown: false, dry_run: false };
@@ -154,13 +161,13 @@ mod tests {
         let cfg = BandConfig::default();
         let t = target();
         // stale sample (120s > 60s bound) → Stale, no carve.
-        let stale = MemoryProvider::new(MockCluster::new(950 * MI, 120, GI, we_own()));
+        let stale = provider(MockCluster::new(950 * MI, 120, GI, we_own()));
         let in_stale = ReconcileInput { target: &t, cfg: &cfg, max_staleness_secs: 60, in_cooldown: false, dry_run: false };
         assert_eq!(reconcile_one(&in_stale, &stale).await, TickReceipt::Stale { staleness_secs: 120 });
         assert!(stale.cluster().applied().is_empty());
 
         // dry-run with a real grow signal → DryRunWouldApply, no carve.
-        let dry = MemoryProvider::new(MockCluster::new(950 * MI, 0, GI, we_own()));
+        let dry = provider(MockCluster::new(950 * MI, 0, GI, we_own()));
         let in_dry = ReconcileInput { target: &t, cfg: &cfg, max_staleness_secs: 60, in_cooldown: false, dry_run: true };
         match reconcile_one(&in_dry, &dry).await {
             TickReceipt::DryRunWouldApply { .. } => {}
