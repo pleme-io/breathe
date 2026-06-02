@@ -77,58 +77,122 @@ pub enum Decision {
     NoLimit,
 }
 
-/// The bidirectional band law. Pure: `(working_set, current_limit, cfg) → Decision`.
+/// A control law's RAW proposal for one tick — the target limit it wants,
+/// BEFORE the shared safety gate makes it safe. `Hold` = utilization is in-band.
+/// `Target(t)` = move toward `t` (grow if above the current limit, shrink if
+/// below); the gate clamps `t` to `[safe_min/floor, ceiling]`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Proposal {
+    Hold,
+    Target(u64),
+}
+
+/// A pluggable control law: the swap-in decision core of a breathe dimension.
+/// The law decides DIRECTION + MAGNITUDE only; every law runs through the SAME
+/// [`safety_clamp`] (floor/ceiling/safe-min), so the never-OOM + never-overshoot
+/// safety is proven ONCE, not re-implemented per law. [`BandLaw`] is the default
+/// and the conformance ORACLE — a new law (PID, AIMD, predictive) is property-
+/// tested to never violate the invariants the gate enforces (see the tests).
 ///
-/// Shrink can never push a workload toward OOM by construction: the target is
-/// clamped to at least `working_set / setpoint`, so after a shrink the live
-/// working set is ≤ `setpoint` of the new limit — i.e. the shrink only reclaims
-/// *allocation headroom*, never live pages, and never lands above the
-/// grow threshold (no shrink→grow flapping).
+/// `propose` is only ever called on an IN-RANGE limit (`floor ≤ limit ≤ ceiling`)
+/// — [`decide_with`] handles the universal floor-seed / ceiling-snap first, which
+/// also guards the law against a divide-by-zero on an unset (`0`) limit.
+pub trait ControlLaw {
+    fn propose(&self, working_set: u64, current_limit: u64, cfg: &BandConfig) -> Proposal;
+}
+
+/// The SHARED safety gate: turn any law's raw proposal into a SAFE typed
+/// [`Decision`]. A grow is clamped to the ceiling (→ `AtCeiling` if no room); a
+/// shrink is clamped UP to `max(working_set/setpoint, floor)` — so live pages
+/// can never be pushed over the band (the never-OOM proof) and a shrink never
+/// overshoots into grow territory (→ `NoSafeShrink` if no safe room). Every
+/// control law funnels through here; the proof holds for all of them.
 #[must_use]
-#[allow(
-    clippy::cast_precision_loss,
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss
-)]
-pub fn decide(working_set: u64, current_limit: u64, cfg: &BandConfig) -> Decision {
+#[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+pub fn safety_clamp(
+    proposal: Proposal,
+    working_set: u64,
+    current_limit: u64,
+    cfg: &BandConfig,
+) -> Decision {
+    match proposal {
+        Proposal::Hold => Decision::Hold,
+        Proposal::Target(raw) if raw > current_limit => {
+            let to = raw.min(cfg.ceiling_bytes);
+            if to <= current_limit {
+                Decision::AtCeiling { current: current_limit }
+            } else {
+                Decision::Grow { from: current_limit, to }
+            }
+        }
+        Proposal::Target(raw) if raw < current_limit => {
+            let safe_min = (working_set as f64 / cfg.setpoint).ceil() as u64;
+            let to = raw.max(safe_min).max(cfg.floor_bytes);
+            if to >= current_limit {
+                Decision::NoSafeShrink { current: current_limit }
+            } else {
+                Decision::Shrink { from: current_limit, to }
+            }
+        }
+        Proposal::Target(_) => Decision::Hold, // raw == current_limit
+    }
+}
+
+/// Run a control law through the universal safety scaffolding: floor-seed /
+/// ceiling-snap (independent of the law; also the unset-limit guard) → the law's
+/// proposal → [`safety_clamp`]. This is the one place a law's output becomes a
+/// safe [`Decision`].
+#[must_use]
+pub fn decide_with<L: ControlLaw>(
+    law: &L,
+    working_set: u64,
+    current_limit: u64,
+    cfg: &BandConfig,
+) -> Decision {
     // Hard-floor SEED/SNAP: an unset (0) or below-floor limit is grown straight
-    // to the floor — independent of utilization. This is what lets breathe take
-    // over a freshly-ceded field (the CNPG/Flux co-writer relinquishes
-    // limits.memory → unset → breathe seeds it to the floor) and enforces the
-    // floor as a hard minimum, not just a shrink clamp.
+    // to the floor — independent of utilization, and the guard that keeps the
+    // law from dividing by a zero limit. Lets breathe take over a freshly-ceded
+    // field (CNPG/Flux relinquishes limits.memory → unset → seed to floor).
     if current_limit < cfg.floor_bytes {
         return Decision::Grow { from: current_limit, to: cfg.floor_bytes };
     }
-    // Hard-ceiling SNAP: a limit above the ceiling is brought down to it (a
-    // shrink — the directionality clamp turns this into NoSafeShrink for
-    // grow-only dimensions, so storage never snaps down).
+    // Hard-ceiling SNAP: a limit above the ceiling is brought down to it (the
+    // directionality clamp turns this into NoSafeShrink for grow-only dims).
     if current_limit > cfg.ceiling_bytes {
         return Decision::Shrink { from: current_limit, to: cfg.ceiling_bytes };
     }
-    let util = working_set as f64 / current_limit as f64;
+    safety_clamp(law.propose(working_set, current_limit, cfg), working_set, current_limit, cfg)
+}
 
-    if util > cfg.grow_above {
-        let target =
-            ((current_limit as f64 * cfg.grow_factor).ceil() as u64).min(cfg.ceiling_bytes);
-        if target <= current_limit {
-            return Decision::AtCeiling { current: current_limit };
+/// The default control law + the conformance oracle: a deadband with gentle
+/// multiplicative steps. Utilization above `grow_above` proposes a `grow_factor`
+/// step; below `shrink_below` a `shrink_factor` step (the gate clamps it to the
+/// safe minimum); in-band holds.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct BandLaw;
+
+impl ControlLaw for BandLaw {
+    #[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    fn propose(&self, working_set: u64, current_limit: u64, cfg: &BandConfig) -> Proposal {
+        let util = working_set as f64 / current_limit as f64;
+        if util > cfg.grow_above {
+            Proposal::Target((current_limit as f64 * cfg.grow_factor).ceil() as u64)
+        } else if util < cfg.shrink_below {
+            // gentle step; safety_clamp lifts it to the safe minimum if needed
+            Proposal::Target((current_limit as f64 * cfg.shrink_factor).floor() as u64)
+        } else {
+            Proposal::Hold
         }
-        Decision::Grow { from: current_limit, to: target }
-    } else if util < cfg.shrink_below {
-        // Gentle step down, but never below the safe minimum (working_set /
-        // setpoint, which lands util exactly at the setpoint) and never below
-        // the floor. max() takes the *least aggressive* of the two lower
-        // bounds vs the gentle step.
-        let gentle = (current_limit as f64 * cfg.shrink_factor).floor() as u64;
-        let safe_min = (working_set as f64 / cfg.setpoint).ceil() as u64;
-        let target = gentle.max(safe_min).max(cfg.floor_bytes);
-        if target >= current_limit {
-            return Decision::NoSafeShrink { current: current_limit };
-        }
-        Decision::Shrink { from: current_limit, to: target }
-    } else {
-        Decision::Hold
     }
+}
+
+/// The bidirectional band law as a free function — `decide_with(&BandLaw, …)`.
+/// Behaviour-preserving wrapper kept for the existing call sites: the proven
+/// default. Shrink can never push a workload toward OOM by construction (the
+/// gate clamps to `working_set / setpoint`).
+#[must_use]
+pub fn decide(working_set: u64, current_limit: u64, cfg: &BandConfig) -> Decision {
+    decide_with(&BandLaw, working_set, current_limit, cfg)
 }
 
 /// The memory dimension's owned field path (the first consumer's constant).
@@ -760,5 +824,100 @@ mod tests {
         let cpu = Quantity { value: 250, unit: Unit::Millicores };
         assert_eq!(cpu.to_string(), "250m");
         assert_eq!(Unit::Millicores.parse(&cpu.to_string()), Some(250));
+    }
+
+    // ── ControlLaw trait + shared safety gate (the conformance oracle) ───────
+
+    #[test]
+    fn decide_is_exactly_bandlaw_through_the_gate() {
+        // The free `decide` == `decide_with(&BandLaw, …)`, so every band-edge
+        // test above is also a behaviour-preservation test for the trait lift.
+        let c = cfg();
+        for (ws, lim) in [(800 * MI, GI), (950 * MI, GI), (200 * MI, GI), (0, 0), (16 * GI, 16 * GI)] {
+            assert_eq!(decide(ws, lim, &c), decide_with(&BandLaw, ws, lim, &c));
+        }
+    }
+
+    #[test]
+    fn safety_clamp_caps_grow_at_ceiling() {
+        let c = BandConfig { ceiling_bytes: 4 * GI, ..cfg() };
+        // a law proposing 100Gi is capped to the ceiling
+        assert_eq!(safety_clamp(Proposal::Target(100 * GI), GI, 2 * GI, &c), Decision::Grow { from: 2 * GI, to: 4 * GI });
+        // growth with no room → AtCeiling, not an over-ceiling write
+        assert_eq!(safety_clamp(Proposal::Target(100 * GI), GI, 4 * GI, &c), Decision::AtCeiling { current: 4 * GI });
+    }
+
+    #[test]
+    fn safety_clamp_lifts_shrink_to_safe_min() {
+        let c = cfg();
+        let ws = 800 * MI;
+        let safe_min = (ws as f64 / c.setpoint).ceil() as u64;
+        match safety_clamp(Proposal::Target(1), ws, 2 * GI, &c) {
+            Decision::Shrink { to, .. } => assert_eq!(to, safe_min.max(c.floor_bytes), "shrink lifted to the safe minimum"),
+            d => panic!("expected clamped Shrink, got {d:?}"),
+        }
+    }
+
+    /// THE CONFORMANCE ORACLE: the shared safety gate must contain ANY control
+    /// law — including adversarial ones that propose extreme targets — within
+    /// the floor / ceiling / safe-min invariants. Every future law (PID, AIMD,
+    /// predictive, learned) is gated against exactly this.
+    #[test]
+    fn safety_gate_contains_any_law() {
+        struct GrowToMax;
+        impl ControlLaw for GrowToMax {
+            fn propose(&self, _w: u64, _l: u64, _c: &BandConfig) -> Proposal { Proposal::Target(u64::MAX) }
+        }
+        struct ShrinkToZero;
+        impl ControlLaw for ShrinkToZero {
+            fn propose(&self, _w: u64, _l: u64, _c: &BandConfig) -> Proposal { Proposal::Target(0) }
+        }
+        let c = cfg();
+        for &ws in &[0u64, 100 * MI, 800 * MI, 4 * GI, 16 * GI, 32 * GI] {
+            for &limit in &[256 * MI, GI, 4 * GI, 16 * GI, 20 * GI /* > ceiling: snap */] {
+                let safe_min = (ws as f64 / c.setpoint).ceil() as u64;
+                for d in [
+                    decide_with(&GrowToMax, ws, limit, &c),
+                    decide_with(&ShrinkToZero, ws, limit, &c),
+                    decide_with(&BandLaw, ws, limit, &c),
+                ] {
+                    match d {
+                        Decision::Grow { from, to } => {
+                            assert!(to <= c.ceiling_bytes, "ws={ws} limit={limit}: grew above ceiling to {to}");
+                            assert!(to > from, "a Grow must raise the limit");
+                        }
+                        Decision::Shrink { from, to } => {
+                            assert!(to >= c.floor_bytes || from > c.ceiling_bytes, "shrank below floor");
+                            // never shrink below safe_min (would push live pages over the band) —
+                            // the sole exception is the hard ceiling-snap (from > ceiling).
+                            assert!(to >= safe_min || from > c.ceiling_bytes, "ws={ws} limit={limit}: shrank below safe_min to {to}");
+                            assert!(to < from, "a Shrink must lower the limit");
+                        }
+                        _ => {} // Hold / AtCeiling / NoSafeShrink / NoLimit never mutate
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_custom_law_plugs_in_without_touching_safety() {
+        // A trivial alternative law (always grow one floor-step) proves a new law
+        // is just a `propose` impl — the gate keeps it safe with zero new safety
+        // code. This is the whole compounding point of the trait lift.
+        struct StepUp;
+        impl ControlLaw for StepUp {
+            fn propose(&self, _w: u64, limit: u64, cfg: &BandConfig) -> Proposal {
+                Proposal::Target(limit + cfg.floor_bytes)
+            }
+        }
+        let c = cfg();
+        // in-range: grows by a floor-step, capped at ceiling
+        match decide_with(&StepUp, 800 * MI, GI, &c) {
+            Decision::Grow { from, to } => { assert_eq!(from, GI); assert_eq!(to, GI + c.floor_bytes); }
+            d => panic!("expected Grow, got {d:?}"),
+        }
+        // and it STILL can't breach the ceiling — the shared gate owns that
+        assert_eq!(decide_with(&StepUp, GI, c.ceiling_bytes, &c), Decision::AtCeiling { current: c.ceiling_bytes });
     }
 }
