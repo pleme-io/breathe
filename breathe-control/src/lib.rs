@@ -195,6 +195,66 @@ pub fn decide(working_set: u64, current_limit: u64, cfg: &BandConfig) -> Decisio
     decide_with(&BandLaw, working_set, current_limit, cfg)
 }
 
+/// A PROPORTIONAL control law: the step size is proportional to the % deviance
+/// from the setpoint (vs `BandLaw`'s fixed multiplicative factor). It aims at the
+/// limit that would land utilization exactly at the setpoint (`working_set /
+/// setpoint`) and moves `gain ∈ (0,1]` of the way there — `gain = 1.0` corrects
+/// in one tick, `< 1.0` damps the move to reduce overshoot/oscillation (the
+/// control-theoretic P-controller with a damping term). Outside the deadband
+/// only; the shared safety gate still clamps every result. This is the
+/// deviance-keyed graded response the band law approximates with a step.
+#[derive(Debug, Clone, Copy)]
+pub struct ProportionalLaw {
+    /// Fraction of the gap to the setpoint-landing limit to traverse per tick.
+    pub gain: f64,
+}
+
+impl Default for ProportionalLaw {
+    fn default() -> Self {
+        Self { gain: 0.7 }
+    }
+}
+
+impl ControlLaw for ProportionalLaw {
+    #[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    fn propose(&self, working_set: u64, current_limit: u64, cfg: &BandConfig) -> Proposal {
+        let util = working_set as f64 / current_limit as f64;
+        if util > cfg.grow_above || util < cfg.shrink_below {
+            let ideal = working_set as f64 / cfg.setpoint; // lands util at the setpoint
+            let target = (current_limit as f64) + (ideal - current_limit as f64) * self.gain;
+            Proposal::Target(target.round().max(0.0) as u64)
+        } else {
+            Proposal::Hold
+        }
+    }
+}
+
+/// A decorator that wraps ANY control law to cap the per-tick change to
+/// `max_step_frac` of the current limit — a slew-rate limit that bounds jitter
+/// and prevents an aggressive inner law from making a huge single jump
+/// (control-theory anti-oscillation / the universal jitter damper). Composes:
+/// `SlewLimited { inner: ProportionalLaw { gain: 1.0 }, max_step_frac: 0.25 }`.
+#[derive(Debug, Clone, Copy)]
+pub struct SlewLimited<L> {
+    pub inner: L,
+    pub max_step_frac: f64,
+}
+
+impl<L: ControlLaw> ControlLaw for SlewLimited<L> {
+    #[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    fn propose(&self, working_set: u64, current_limit: u64, cfg: &BandConfig) -> Proposal {
+        match self.inner.propose(working_set, current_limit, cfg) {
+            Proposal::Hold => Proposal::Hold,
+            Proposal::Target(t) => {
+                let max_delta = ((current_limit as f64) * self.max_step_frac).max(1.0);
+                let lo = ((current_limit as f64) - max_delta).max(0.0) as u64;
+                let hi = ((current_limit as f64) + max_delta) as u64;
+                Proposal::Target(t.clamp(lo, hi))
+            }
+        }
+    }
+}
+
 /// The memory dimension's owned field path (the first consumer's constant).
 /// Every provider declares the dotted `managedFields` path it owns; the guard
 /// compares against *this exact path*, never a per-object flag.
@@ -880,6 +940,10 @@ mod tests {
                     decide_with(&GrowToMax, ws, limit, &c),
                     decide_with(&ShrinkToZero, ws, limit, &c),
                     decide_with(&BandLaw, ws, limit, &c),
+                    decide_with(&ProportionalLaw { gain: 1.0 }, ws, limit, &c),
+                    decide_with(&ProportionalLaw { gain: 0.5 }, ws, limit, &c),
+                    decide_with(&SlewLimited { inner: GrowToMax, max_step_frac: 0.25 }, ws, limit, &c),
+                    decide_with(&SlewLimited { inner: ShrinkToZero, max_step_frac: 0.25 }, ws, limit, &c),
                 ] {
                     match d {
                         Decision::Grow { from, to } => {
@@ -919,5 +983,51 @@ mod tests {
         }
         // and it STILL can't breach the ceiling — the shared gate owns that
         assert_eq!(decide_with(&StepUp, GI, c.ceiling_bytes, &c), Decision::AtCeiling { current: c.ceiling_bytes });
+    }
+
+    #[test]
+    fn proportional_law_lands_util_at_setpoint_in_one_tick_at_full_gain() {
+        let c = cfg();
+        let ws = 950 * MI; // util 0.927 at 1Gi → grow
+        // gain 1.0 → target the limit that lands util exactly at the setpoint
+        match decide_with(&ProportionalLaw { gain: 1.0 }, ws, GI, &c) {
+            Decision::Grow { to, .. } => {
+                let new_util = ws as f64 / to as f64;
+                assert!((new_util - c.setpoint).abs() < 0.02, "util {new_util} should land at setpoint");
+            }
+            d => panic!("expected Grow, got {d:?}"),
+        }
+    }
+
+    #[test]
+    fn proportional_law_step_scales_with_deviance() {
+        let c = cfg();
+        // further from the setpoint ⇒ bigger step (the deviance-proportional response)
+        let near = match decide_with(&ProportionalLaw { gain: 1.0 }, 870 * MI, GI, &c) {
+            Decision::Grow { from, to } => to - from,
+            _ => 0,
+        };
+        let far = match decide_with(&ProportionalLaw { gain: 1.0 }, 980 * MI, GI, &c) {
+            Decision::Grow { from, to } => to - from,
+            _ => 0,
+        };
+        assert!(far > near, "a larger deviance must produce a larger corrective step ({far} vs {near})");
+    }
+
+    #[test]
+    fn slew_limited_caps_an_aggressive_jump() {
+        let c = cfg();
+        // GrowToMax wants u64::MAX; the 25% slew cap limits the per-tick rise.
+        struct GrowToMax;
+        impl ControlLaw for GrowToMax {
+            fn propose(&self, _w: u64, _l: u64, _c: &BandConfig) -> Proposal { Proposal::Target(u64::MAX) }
+        }
+        match decide_with(&SlewLimited { inner: GrowToMax, max_step_frac: 0.25 }, 950 * MI, GI, &c) {
+            Decision::Grow { from, to } => {
+                let rise = (to - from) as f64 / from as f64;
+                assert!(rise <= 0.26, "slew cap holds the per-tick rise near 25% (got {rise})");
+            }
+            d => panic!("expected a capped Grow, got {d:?}"),
+        }
     }
 }
