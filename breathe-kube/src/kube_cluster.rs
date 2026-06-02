@@ -207,8 +207,11 @@ impl Cluster for KubeCluster {
         resource: &str,
     ) -> Result<u64, ProviderError> {
         let obj = self.get_owner(target).await?;
-        let qty = Self::read_qty(&obj.data, layout, resource).ok_or(ProviderError::NoCapacityField)?;
-        parse_qty(&qty).ok_or(ProviderError::NoCapacityField)
+        match Self::read_qty(&obj.data, layout, resource) {
+            // Unset limit → 0; decide() seeds it to the floor (the ceded-field path).
+            None => Ok(0),
+            Some(qty) => parse_qty(&qty).ok_or(ProviderError::NoCapacityField),
+        }
     }
 
     async fn field_owners(

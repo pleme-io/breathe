@@ -1,0 +1,402 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: memorybands.breathe.pleme.io
+spec:
+  group: breathe.pleme.io
+  names:
+    categories:
+    - breathe
+    kind: MemoryBand
+    plural: memorybands
+    shortNames:
+    - mband
+    singular: memoryband
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.targetRef.kind
+      name: Target
+      type: string
+    - jsonPath: .spec.targetRef.name
+      name: Name
+      type: string
+    - jsonPath: .status.lastUtil
+      name: Util
+      type: string
+    - jsonPath: .status.currentLimit
+      name: Limit
+      type: string
+    - jsonPath: .status.lastDecision
+      name: Last
+      type: string
+    - jsonPath: .status.phase
+      name: Phase
+      type: string
+    name: v1
+    schema:
+      openAPIV3Schema:
+        description: Auto-generated derived type for MemoryBandSpec via `CustomResource`
+        properties:
+          spec:
+            properties:
+              ceiling:
+                default: 16Gi
+                type: string
+              cooldownSeconds:
+                default: 600
+                format: uint64
+                minimum: 0.0
+                type: integer
+              dryRun:
+                default: false
+                type: boolean
+              floor:
+                default: 256Mi
+                type: string
+              growAbove:
+                default: 0.85
+                format: double
+                type: number
+              growFactor:
+                default: 1.25
+                format: double
+                type: number
+              maxStalenessSeconds:
+                default: 120
+                format: uint64
+                minimum: 0.0
+                type: integer
+              setpoint:
+                default: 0.8
+                format: double
+                type: number
+              shrinkBelow:
+                default: 0.7
+                format: double
+                type: number
+              shrinkFactor:
+                default: 0.9
+                format: double
+                type: number
+              targetRef:
+                description: The workload owner whose limit a band controls. For CNPG the kind is `Cluster` (the patched field lives on the `Cluster` CR); for storage the kind is `PersistentVolumeClaim`.
+                properties:
+                  apiVersion:
+                    nullable: true
+                    type: string
+                  container:
+                    nullable: true
+                    type: string
+                  kind:
+                    type: string
+                  name:
+                    type: string
+                required:
+                - kind
+                - name
+                type: object
+            required:
+            - targetRef
+            type: object
+          status:
+            description: The per-cycle typed status receipt — shared across all band kinds.
+            nullable: true
+            properties:
+              conflictManager:
+                nullable: true
+                type: string
+              currentLimit:
+                nullable: true
+                type: string
+              lastChangeEpoch:
+                format: int64
+                nullable: true
+                type: integer
+              lastDecision:
+                nullable: true
+                type: string
+              lastUtil:
+                nullable: true
+                type: string
+              phase:
+                nullable: true
+                type: string
+            type: object
+        required:
+        - spec
+        title: MemoryBand
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: cpubands.breathe.pleme.io
+spec:
+  group: breathe.pleme.io
+  names:
+    categories:
+    - breathe
+    kind: CpuBand
+    plural: cpubands
+    shortNames:
+    - cband
+    singular: cpuband
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.targetRef.kind
+      name: Target
+      type: string
+    - jsonPath: .spec.targetRef.name
+      name: Name
+      type: string
+    - jsonPath: .status.lastUtil
+      name: Util
+      type: string
+    - jsonPath: .status.currentLimit
+      name: Limit
+      type: string
+    - jsonPath: .status.lastDecision
+      name: Last
+      type: string
+    - jsonPath: .status.phase
+      name: Phase
+      type: string
+    name: v1
+    schema:
+      openAPIV3Schema:
+        description: Auto-generated derived type for CpuBandSpec via `CustomResource`
+        properties:
+          spec:
+            properties:
+              ceiling:
+                default: 16Gi
+                type: string
+              cooldownSeconds:
+                default: 600
+                format: uint64
+                minimum: 0.0
+                type: integer
+              dryRun:
+                default: false
+                type: boolean
+              floor:
+                default: 256Mi
+                type: string
+              growAbove:
+                default: 0.85
+                format: double
+                type: number
+              growFactor:
+                default: 1.25
+                format: double
+                type: number
+              maxStalenessSeconds:
+                default: 120
+                format: uint64
+                minimum: 0.0
+                type: integer
+              setpoint:
+                default: 0.8
+                format: double
+                type: number
+              shrinkBelow:
+                default: 0.7
+                format: double
+                type: number
+              shrinkFactor:
+                default: 0.9
+                format: double
+                type: number
+              targetRef:
+                description: The workload owner whose limit a band controls. For CNPG the kind is `Cluster` (the patched field lives on the `Cluster` CR); for storage the kind is `PersistentVolumeClaim`.
+                properties:
+                  apiVersion:
+                    nullable: true
+                    type: string
+                  container:
+                    nullable: true
+                    type: string
+                  kind:
+                    type: string
+                  name:
+                    type: string
+                required:
+                - kind
+                - name
+                type: object
+            required:
+            - targetRef
+            type: object
+          status:
+            description: The per-cycle typed status receipt — shared across all band kinds.
+            nullable: true
+            properties:
+              conflictManager:
+                nullable: true
+                type: string
+              currentLimit:
+                nullable: true
+                type: string
+              lastChangeEpoch:
+                format: int64
+                nullable: true
+                type: integer
+              lastDecision:
+                nullable: true
+                type: string
+              lastUtil:
+                nullable: true
+                type: string
+              phase:
+                nullable: true
+                type: string
+            type: object
+        required:
+        - spec
+        title: CpuBand
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: storagebands.breathe.pleme.io
+spec:
+  group: breathe.pleme.io
+  names:
+    categories:
+    - breathe
+    kind: StorageBand
+    plural: storagebands
+    shortNames:
+    - sband
+    singular: storageband
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.targetRef.kind
+      name: Target
+      type: string
+    - jsonPath: .spec.targetRef.name
+      name: Name
+      type: string
+    - jsonPath: .status.lastUtil
+      name: Util
+      type: string
+    - jsonPath: .status.currentLimit
+      name: Limit
+      type: string
+    - jsonPath: .status.lastDecision
+      name: Last
+      type: string
+    - jsonPath: .status.phase
+      name: Phase
+      type: string
+    name: v1
+    schema:
+      openAPIV3Schema:
+        description: Auto-generated derived type for StorageBandSpec via `CustomResource`
+        properties:
+          spec:
+            properties:
+              ceiling:
+                default: 16Gi
+                type: string
+              cooldownSeconds:
+                default: 600
+                format: uint64
+                minimum: 0.0
+                type: integer
+              dryRun:
+                default: false
+                type: boolean
+              floor:
+                default: 256Mi
+                type: string
+              growAbove:
+                default: 0.85
+                format: double
+                type: number
+              growFactor:
+                default: 1.25
+                format: double
+                type: number
+              maxStalenessSeconds:
+                default: 120
+                format: uint64
+                minimum: 0.0
+                type: integer
+              setpoint:
+                default: 0.8
+                format: double
+                type: number
+              shrinkBelow:
+                default: 0.7
+                format: double
+                type: number
+              shrinkFactor:
+                default: 0.9
+                format: double
+                type: number
+              targetRef:
+                description: The workload owner whose limit a band controls. For CNPG the kind is `Cluster` (the patched field lives on the `Cluster` CR); for storage the kind is `PersistentVolumeClaim`.
+                properties:
+                  apiVersion:
+                    nullable: true
+                    type: string
+                  container:
+                    nullable: true
+                    type: string
+                  kind:
+                    type: string
+                  name:
+                    type: string
+                required:
+                - kind
+                - name
+                type: object
+            required:
+            - targetRef
+            type: object
+          status:
+            description: The per-cycle typed status receipt — shared across all band kinds.
+            nullable: true
+            properties:
+              conflictManager:
+                nullable: true
+                type: string
+              currentLimit:
+                nullable: true
+                type: string
+              lastChangeEpoch:
+                format: int64
+                nullable: true
+                type: integer
+              lastDecision:
+                nullable: true
+                type: string
+              lastUtil:
+                nullable: true
+                type: string
+              phase:
+                nullable: true
+                type: string
+            type: object
+        required:
+        - spec
+        title: StorageBand
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

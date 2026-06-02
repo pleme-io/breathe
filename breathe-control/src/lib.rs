@@ -91,8 +91,19 @@ pub enum Decision {
     clippy::cast_sign_loss
 )]
 pub fn decide(working_set: u64, current_limit: u64, cfg: &BandConfig) -> Decision {
-    if current_limit == 0 {
-        return Decision::NoLimit;
+    // Hard-floor SEED/SNAP: an unset (0) or below-floor limit is grown straight
+    // to the floor — independent of utilization. This is what lets breathe take
+    // over a freshly-ceded field (the CNPG/Flux co-writer relinquishes
+    // limits.memory → unset → breathe seeds it to the floor) and enforces the
+    // floor as a hard minimum, not just a shrink clamp.
+    if current_limit < cfg.floor_bytes {
+        return Decision::Grow { from: current_limit, to: cfg.floor_bytes };
+    }
+    // Hard-ceiling SNAP: a limit above the ceiling is brought down to it (a
+    // shrink — the directionality clamp turns this into NoSafeShrink for
+    // grow-only dimensions, so storage never snaps down).
+    if current_limit > cfg.ceiling_bytes {
+        return Decision::Shrink { from: current_limit, to: cfg.ceiling_bytes };
     }
     let util = working_set as f64 / current_limit as f64;
 
@@ -367,8 +378,32 @@ mod tests {
     }
 
     #[test]
-    fn no_limit_is_skipped() {
-        assert_eq!(decide(500 * MI, 0, &cfg()), Decision::NoLimit);
+    fn unset_limit_seeds_to_floor() {
+        // a freshly-ceded (unset = 0) limit is grown straight to the floor,
+        // so breathe can take over the field. Independent of working-set.
+        let c = cfg(); // floor 256Mi
+        assert_eq!(decide(500 * MI, 0, &c), Decision::Grow { from: 0, to: c.floor_bytes });
+    }
+
+    #[test]
+    fn below_floor_grows_to_floor() {
+        let c = cfg();
+        // current 1Gi but floor is set to 2Gi → snap up to 2Gi regardless of util
+        let c2 = BandConfig { floor_bytes: 2 * GI, ..cfg() };
+        assert_eq!(decide(80 * MI, GI, &c2), Decision::Grow { from: GI, to: 2 * GI });
+        let _ = c;
+    }
+
+    #[test]
+    fn above_ceiling_snaps_down() {
+        let c = BandConfig { ceiling_bytes: 4 * GI, ..cfg() };
+        // current 8Gi > ceiling 4Gi → snap down (a Shrink to the ceiling)
+        assert_eq!(decide(GI, 8 * GI, &c), Decision::Shrink { from: 8 * GI, to: 4 * GI });
+        // …but on a GrowOnly dim the directionality clamp forbids the snap-down
+        assert_eq!(
+            clamp_to_directionality(decide(GI, 8 * GI, &c), Directionality::GrowOnly),
+            Decision::NoSafeShrink { current: 8 * GI }
+        );
     }
 
     // ── convergence: repeated ticks settle into the band and stop ───────────
