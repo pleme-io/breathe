@@ -1,0 +1,85 @@
+# breathe — resource-homeostasis substrate
+
+> skip-auto-release: internal-only — breathe is **PRIVATE** during the
+> akeyless ephemeral-environment integration. Its crates must NOT publish to
+> public crates.io (that would leak private code) and its controller image is
+> a **private** ghcr package. There is intentionally no `auto-release.yml`.
+> When breathe goes public, drop this waiver, add the 3-line auto-release shim,
+> and publish the `pleme-breathe` chart to public helmworks.
+
+> skip-format-ban: young repo, not yet wired to the substrate `with-format-ban`
+> clippy.toml. New code still obeys ★★ TYPED EMISSION by hand: limit values
+> render through `Quantity`'s `Display` impl (the typed surface); JSON-pointer
+> and PromQL `format!`s are the documented exception (pointer/query strings,
+> not platform-emitted syntax) and migrate to a typed builder when one lands.
+
+One running controller, one **proven dimension-agnostic band law**
+(`breathe-control`), a catalog of pluggable resident-problem-category
+descriptors — every enrolled workload held in a typed utilization band
+(default 80% used / 20% headroom) by gentle convergent steps, single-writer by
+construction, never-OOM by construction. Architecture of record:
+`docs/BREATHE.md`. Born from the live rio pangea-database OOMKill need.
+
+## Crate map
+
+| Crate | Owns |
+|---|---|
+| `breathe-control` | the band law (`decide`/`plan_tick`), single-writer guard, directionality clamp, **`Unit`/`Quantity` codec**. **Dependency-free, pure, fully unit-tested.** |
+| `breathe-provider` | `Cluster` + `DimensionDescriptor` traits, the one generic `BandProvider`, `MockCluster` |
+| `breathe-core` | the composed `reconcile_one` seven-beat loop |
+| `breathe-dimensions` | the concrete descriptors (memory/cpu → metrics-server; storage → PromQL) |
+| `breathe-crd` | the `MemoryBand`/`CpuBand`/`StorageBand` CRDs (one `band_kind!` macro) + `crdgen` |
+| `breathe-kube` | `KubeCluster` (true SSA), `managed_fields` parser |
+| `breathe-catalog` | `(defdimension)` catalog + CATALOG REFLECTION tests |
+| `breathe-controller` | the multi-dimension watch binary (one generic `reconcile<Band, Descriptor>`) |
+
+## The one invariant that makes a dimension correct: units
+
+The band law is **unit-agnostic** — its `(used, capacity, floor, ceiling)` are
+opaque `u64`s. A dimension stops being unit-agnostic at exactly two edges:
+**parse** (k8s quantity string → scalar) and **render** (scalar → k8s
+quantity). Both go through `breathe_control::Unit` / `Quantity`:
+
+- memory / storage → `Unit::Bytes` (`2Gi` → 2147483648; renders as a bare int).
+- cpu → `Unit::Millicores` (`250m` → 250, `2` cores → 2000; **renders with the
+  `m` suffix** — a bare `"250"` would be read by k8s as 250 *cores*).
+
+`Unit::for_resource(resource)` is the single dispatch; it is used by
+`band_config_of` (floor/ceiling parse), `KubeCluster::read_limit` /
+`pod_metrics_max` (parse), and `KubeCluster::apply` (render). **Adding a new
+unit is one match arm in `breathe-control` and nowhere else.** Never write a
+limit through `value.to_string()` — go through `Quantity`.
+
+## Adding a dimension
+
+One `DimensionDescriptor` impl (`breathe-dimensions`) + one catalog row
+(`breathe-catalog`; the reflection test fails if either is missing) + a
+`band_kind!` line (`breathe-crd`, passing the dimension's `Unit` + default
+floor/ceiling). The controller code never grows. **Never touch `decide`.**
+
+## rio go-live status (2026-06-02)
+
+- **memory — LIVE on pangea-database.** breathe owns `Cluster.spec.resources.limits.memory`
+  (floor 2Gi / ceiling 4Gi), seeded via the Helm-`null` cede, holding `AtFloor`,
+  auto-grows on pressure. **OOMKill class closed.**
+- **cpu — LIVE on pangea-database** (floor 500m / ceiling 2). Same CNPG Cluster,
+  `limits.cpu`, `breathe/cpu` field manager (disjoint from `breathe/memory`).
+- **storage — code-complete, deferred on rio.** Two *environmental* blockers
+  (no breathe gap): `local-path` storageClass has `allowVolumeExpansion: false`
+  (PVCs are immutable) **and** there's no always-on volume-stats metric
+  (vmsingle is scaled to zero). **Named trigger to go live:** enroll a
+  `StorageBand` on a workload backed by an expansion-capable CSI storageClass
+  with Prometheus available.
+
+## Build + ship
+
+- Toolchain: nix-store rustc (`nix develop` / the flake's devShell).
+- Image: `.github/workflows/image.yml` builds the Nix→OCI controller and pushes
+  a **private** `:latest` via `skopeo copy --dest-creds` + a v2 registries.conf
+  (nixpkgs skopeo rejects the runner's v1 conf — do NOT `skopeo login`).
+- Deployed to rio via the **vendored** chart at `k8s/clusters/rio/infrastructure/breathe/chart/`
+  (pulled by the flux-system GitRepository — no OCI/private-auth). `:latest` +
+  `Always`, so a new build needs a `kubectl rollout restart deploy/breathe-controller`
+  to pick up.
+- Escape hatch: HelmRelease `suspend: true`, or any band's `dryRun: true`
+  (observe + attest, never carve) — one line each.
