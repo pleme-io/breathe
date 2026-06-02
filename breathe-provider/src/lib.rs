@@ -20,6 +20,10 @@ pub enum DimensionId {
     Storage,
     Cpu,
     Replica,
+    /// HOST: ZFS ARC max (`/sys/module/zfs/parameters/zfs_arc_max`).
+    Arc,
+    /// HOST: a systemd unit's transient cgroup memory high-water (`MemoryHigh`).
+    Cgroup,
 }
 
 impl DimensionId {
@@ -30,7 +34,16 @@ impl DimensionId {
             Self::Storage => "storage",
             Self::Cpu => "cpu",
             Self::Replica => "replica",
+            Self::Arc => "arc",
+            Self::Cgroup => "cgroup",
         }
+    }
+
+    /// True for dimensions whose I/O boundary is the HOST (systemd/sysfs via
+    /// `HostCluster`) rather than the Kubernetes API (`KubeCluster`).
+    #[must_use]
+    pub fn is_host(self) -> bool {
+        matches!(self, Self::Arc | Self::Cgroup)
     }
 }
 
@@ -51,10 +64,37 @@ pub struct Target {
     pub container: Option<String>,
 }
 
+/// A writable HOST lever — the address `HostCluster` writes a breathe decision
+/// to. Disjoint by construction from what `nodeBudget` (the static L2 partition)
+/// owns: breathe writes the *runtime* `zfs_arc_max` parameter and *transient*
+/// (`--runtime`) cgroup properties; nodeBudget owns the boot modprobe ceiling,
+/// the static unit `MemoryMax`, and the cpuset pin. They never write the same
+/// field, so the two layers compose without contention (the L1-within-L2 contract).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HostKnob {
+    /// `/sys/module/zfs/parameters/zfs_arc_max` — the live ARC ceiling, in bytes.
+    ZfsArcMax,
+    /// A systemd unit's transient cgroup property, e.g.
+    /// (`nix-daemon.service`, `MemoryHigh`) applied via `systemctl set-property
+    /// --runtime`. Never the unit file (that is nodeBudget's static `MemoryMax`).
+    CgroupProperty { unit: String, property: String },
+}
+
+/// Where a HOST dimension reads its `used` scalar from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HostMetric {
+    /// ZFS ARC current size from `/proc/spl/kstat/zfs/arcstats` (`size` row), bytes.
+    ArcSize,
+    /// cgroup v2 `memory.current` for a systemd unit's slice, bytes.
+    CgroupMemoryCurrent { unit: String },
+}
+
 /// Where a managed quantity lives on a target object — interpreted by the
 /// `Cluster` impl when reading/patching. The *dimension* + the *owner kind*
 /// together pick the layout (memory on a Deployment is `PodTemplate`; memory on
-/// a CNPG `Cluster` is `ClusterTopLevel`; storage is always `PvcRequest`).
+/// a CNPG `Cluster` is `ClusterTopLevel`; storage is always `PvcRequest`). The
+/// `Host` arm carries the host lever for the `HostCluster` impl — `KubeCluster`
+/// rejects it with a typed error (it can never legitimately receive one).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LimitLayout {
     /// CNPG `Cluster`: `spec.resources.limits.<res>`.
@@ -63,6 +103,8 @@ pub enum LimitLayout {
     PodTemplate { container: Option<String> },
     /// PVC: `spec.resources.requests.storage` (grow-only).
     PvcRequest,
+    /// HOST: a systemd/sysfs lever — written by `HostCluster`, not the k8s API.
+    Host(HostKnob),
 }
 
 /// How a category's `assign` lands (GALHO `ApplySemantics`).
@@ -93,6 +135,9 @@ pub enum MetricSource {
     /// Max container `resource` (memory bytes / cpu millicores) across the
     /// owner's pods, read live from metrics-server.
     PodMetricsMax { resource: String, pod_prefix: String },
+    /// HOST: read directly from procfs/sysfs/cgroup via `HostCluster`.
+    /// `KubeCluster` rejects this with a typed error.
+    Host(HostMetric),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -83,14 +83,37 @@ pub const CATALOG: &[DimensionSpec] = &[
         upstream_mirror: Some("KEDA ScaledObject"),
         depends_on: &[],
     },
+    // ── HOST dimensions (the HostCluster boundary; ride within nodeBudget L2) ──
+    DimensionSpec {
+        id: DimensionId::Arc,
+        name: "arc",
+        authoring_keyword: "defdimension-arc",
+        maturity: Maturity::Working,
+        directionality: Directionality::Bidirectional,
+        purpose: "hold the ZFS ARC at the band by carving zfs_arc_max within nodeBudget.arcMaxGiB",
+        upstream_mirror: Some("/sys/module/zfs/parameters/zfs_arc_max"),
+        depends_on: &[],
+    },
+    DimensionSpec {
+        id: DimensionId::Cgroup,
+        name: "cgroup",
+        authoring_keyword: "defdimension-cgroup",
+        maturity: Maturity::Working,
+        directionality: Directionality::Bidirectional,
+        purpose: "hold a unit's working set at the band by carving transient MemoryHigh within its nodeBudget envelope",
+        upstream_mirror: Some("systemctl set-property --runtime <unit> MemoryHigh"),
+        depends_on: &[],
+    },
 ];
 
 /// All dimension ids the substrate knows (the partition the catalog must cover).
-pub const ALL_DIMENSIONS: [DimensionId; 4] = [
+pub const ALL_DIMENSIONS: [DimensionId; 6] = [
     DimensionId::Memory,
     DimensionId::Storage,
     DimensionId::Cpu,
     DimensionId::Replica,
+    DimensionId::Arc,
+    DimensionId::Cgroup,
 ];
 
 /// Look up a dimension's row.
@@ -192,5 +215,21 @@ mod tests {
         assert_eq!(lookup(DimensionId::Storage).unwrap().directionality, Directionality::GrowOnly);
         assert_eq!(lookup(DimensionId::Cpu).unwrap().directionality, Directionality::Bidirectional);
         assert_eq!(lookup(DimensionId::Replica).unwrap().directionality, Directionality::ObserveOnly);
+        assert_eq!(lookup(DimensionId::Arc).unwrap().directionality, Directionality::Bidirectional);
+        assert_eq!(lookup(DimensionId::Cgroup).unwrap().directionality, Directionality::Bidirectional);
+    }
+
+    /// The host dimensions route to the HostCluster boundary, not the k8s API.
+    #[test]
+    fn host_dimensions_are_flagged_host() {
+        assert!(DimensionId::Arc.is_host());
+        assert!(DimensionId::Cgroup.is_host());
+        assert!(!DimensionId::Memory.is_host());
+        assert!(!DimensionId::Cpu.is_host());
+        for d in CATALOG {
+            if d.id.is_host() {
+                assert!(d.upstream_mirror.is_some(), "{} must name its host upstream", d.name);
+            }
+        }
     }
 }
