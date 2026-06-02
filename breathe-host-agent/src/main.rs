@@ -23,7 +23,7 @@ use std::{sync::Arc, time::Duration};
 
 use breathe_core::{reconcile_one, ReconcileInput};
 use breathe_crd::{
-    ArcBand, Band, BreatheNodePool, CgroupBand, NodePoolStatus,
+    ArcBand, Band, BreatheNodePool, CgroupBand, GiB, NodePoolStatus,
 };
 use breathe_host::{ArcDescriptor, CgroupMemoryDescriptor, HostCluster, NodeEnvelopes, SystemdSysfsEnv};
 use breathe_provider::{BandProvider, DimensionDescriptor, ResourceProvider, Target};
@@ -58,17 +58,20 @@ async fn node_pool(ctx: &Ctx) -> Result<Option<BreatheNodePool>, Error> {
     Ok(list.into_iter().find(|p| p.spec.node_name == ctx.node_name))
 }
 
-/// The L2 ceilings (GiB in the CR → bytes for the provider).
-fn envelopes_from(pool: &BreatheNodePool) -> NodeEnvelopes {
-    NodeEnvelopes {
-        arc_max_bytes: pool.spec.arc_max_gi_b * GIB,
-        cgroup_max_bytes: pool
-            .spec
-            .cgroup_max_gi_b
-            .iter()
-            .map(|(unit, gib)| (unit.clone(), gib * GIB))
-            .collect(),
+/// The L2 ceilings (GiB in the CR → bytes for the provider). Total by
+/// construction: `checked_mul` is the truly-unrepresentable backstop to the CRD's
+/// parse-time `GiB` bound, so an overflowing ceiling can never silently wrap into
+/// SAFETY WALL 2 — it is refused (and the node held), never written blind.
+fn envelopes_from(pool: &BreatheNodePool) -> Result<NodeEnvelopes, String> {
+    let to_bytes = |g: GiB, what: &str| -> Result<u64, String> {
+        g.0.checked_mul(GIB).ok_or_else(|| format!("{what} = {} GiB overflows u64 bytes", g.0))
+    };
+    let arc_max_bytes = to_bytes(pool.spec.arc_max_gi_b, "arcMaxGiB")?;
+    let mut cgroup_max_bytes = std::collections::BTreeMap::new();
+    for (unit, gib) in &pool.spec.cgroup_max_gi_b {
+        cgroup_max_bytes.insert(unit.clone(), to_bytes(*gib, unit)?);
     }
+    Ok(NodeEnvelopes { arc_max_bytes, cgroup_max_bytes })
 }
 
 /// The one host reconcile body for every host dimension. `B` is the band kind,
@@ -89,7 +92,17 @@ async fn reconcile_host<B: Band, D: DimensionDescriptor + Default>(
         warn!(node = %ctx.node_name, band = %name, "unenrolled node — holding");
         return Ok(Action::requeue(ctx.requeue));
     };
-    let envelopes = envelopes_from(&pool);
+    // A ceiling that can't convert to bytes (overflow) ⇒ refuse the node, never
+    // manage with a corrupt SAFETY WALL 2.
+    let envelopes = match envelopes_from(&pool) {
+        Ok(e) => e,
+        Err(reason) => {
+            let s = error_status(format!("invalid BreatheNodePool envelopes: {reason}"));
+            patch_status::<B>(&ctx.client, &ns, &name, &s).await?;
+            warn!(node = %ctx.node_name, band = %name, %reason, "bad envelopes — holding");
+            return Ok(Action::requeue(ctx.requeue));
+        }
+    };
     let write_enabled = pool.spec.write_enabled;
 
     let tr = obj.target_ref();
@@ -207,4 +220,46 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     tokio::join!(arc, cgroup, pool);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use breathe_crd::BreatheNodePoolSpec;
+    use std::collections::BTreeMap;
+
+    fn pool(arc_gib: u64, units: &[(&str, u64)]) -> BreatheNodePool {
+        let mut m = BTreeMap::new();
+        for (u, g) in units {
+            m.insert((*u).to_string(), GiB(*g));
+        }
+        BreatheNodePool::new(
+            "rio",
+            BreatheNodePoolSpec {
+                node_name: "rio".into(),
+                arc_max_gi_b: GiB(arc_gib),
+                cgroup_max_gi_b: m,
+                write_enabled: false,
+            },
+        )
+    }
+
+    #[test]
+    fn envelopes_convert_gib_to_bytes() {
+        let e = envelopes_from(&pool(6, &[("nix-daemon.service", 12)])).unwrap();
+        assert_eq!(e.arc_max_bytes, 6 * GIB);
+        assert_eq!(e.cgroup_max_bytes.get("nix-daemon.service"), Some(&(12 * GIB)));
+    }
+
+    #[test]
+    fn an_overflowing_ceiling_is_refused_never_wrapped() {
+        // the safety-review PoC: a ceiling whose *2^30 wraps u64 must REFUSE
+        // (so SAFETY WALL 2 is never corrupted), never silently wrap to a small
+        // value that would let a live write exceed the L2 partition.
+        assert!(envelopes_from(&pool(u64::MAX, &[])).is_err(), "overflowing arc ceiling must refuse");
+        assert!(
+            envelopes_from(&pool(6, &[("x.service", u64::MAX)])).is_err(),
+            "overflowing cgroup ceiling must refuse"
+        );
+    }
 }
