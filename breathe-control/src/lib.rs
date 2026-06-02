@@ -1,0 +1,568 @@
+//! `breathe-control` — the dimension-agnostic resource-balancing core.
+//!
+//! The proven heart of the `breathe` homeostasis substrate
+//! ([`theory/BREATHE.md`](https://github.com/pleme-io/theory/blob/main/BREATHE.md) §2):
+//! every "resident problem category" (memory, storage, cpu, …) projects into the
+//! two scalars `(used, capacity)`, and the *same* band law holds it inside a
+//! typed utilization band (default 80% used / 20% headroom) by gentle, bounded
+//! steps that converge over many single-shot ticks. No I/O lives here — every
+//! function is a pure mapping from observed state to a [`Decision`] / [`TickPlan`],
+//! so the whole balancing algebra is unit-testable without a cluster. A provider
+//! never sees `decide`/`BandConfig`; it receives a computed target value and
+//! cannot re-decide, widen the band, or subvert the safety clamp.
+//!
+//! Responsibilities (all pure, all tested):
+//!   1. [`decide`] — the bidirectional band law, with a shrink-safety clamp that
+//!      makes a shrink provably unable to push live usage over the band.
+//!   2. [`competing_field_manager`] — the field-granular single-writer invariant:
+//!      yield to any *other* manager owning the same field path (breathe ⟂ KEDA,
+//!      memory ⟂ cpu provable), never fight.
+//!   3. [`clamp_to_directionality`] — `GrowOnly` / `ObserveOnly` policy, so a new
+//!      directionality needs zero new band code.
+//!   4. [`plan_tick`] — the pure reconcile heart: guard → decide → directionality
+//!      → freshness → cooldown → a [`TickPlan`] the async loop executes.
+
+/// Tunable band/step policy. Every knob is config-driven (a `MemoryBand` CR's
+/// spec → the watcher's args). Defaults encode the 80/20 setpoint with a
+/// ~15-point deadband (70–85%).
+#[derive(Debug, Clone)]
+pub struct BandConfig {
+    /// Utilization strictly above this triggers a grow. Default `0.85`.
+    pub grow_above: f64,
+    /// Utilization strictly below this triggers a shrink. Default `0.70`.
+    pub shrink_below: f64,
+    /// Target utilization the shrink-safety clamp lands on. Default `0.80`.
+    pub setpoint: f64,
+    /// Multiplier applied to the limit on grow. Default `1.25`.
+    pub grow_factor: f64,
+    /// Multiplier applied to the limit on shrink (gentle). Default `0.90`.
+    pub shrink_factor: f64,
+    /// Never shrink the limit below this many bytes. Default 256Mi.
+    pub floor_bytes: u64,
+    /// Never grow the limit above this many bytes. Default 16Gi.
+    pub ceiling_bytes: u64,
+}
+
+impl Default for BandConfig {
+    fn default() -> Self {
+        Self {
+            grow_above: 0.85,
+            shrink_below: 0.70,
+            setpoint: 0.80,
+            grow_factor: 1.25,
+            shrink_factor: 0.90,
+            floor_bytes: 256 * (1 << 20),
+            ceiling_bytes: 16 * (1 << 30),
+        }
+    }
+}
+
+/// The outcome of one band evaluation for one target. Every non-`Hold` variant
+/// is observable (the watcher emits a typed event) so a tick's behaviour is
+/// fully legible in the logs.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Decision {
+    /// Inside the deadband — do nothing.
+    Hold,
+    /// Grow the limit (low headroom).
+    Grow { from: u64, to: u64 },
+    /// Shrink the limit (excess headroom), gently + safely.
+    Shrink { from: u64, to: u64 },
+    /// Would grow but already at/over the ceiling.
+    AtCeiling { current: u64 },
+    /// Would shrink but cannot do so safely (floor / safe-min binds).
+    NoSafeShrink { current: u64 },
+    /// Container declares no memory limit — the controller refuses to reason
+    /// about utilization without a denominator. Skip + surface.
+    NoLimit,
+}
+
+/// The bidirectional band law. Pure: `(working_set, current_limit, cfg) → Decision`.
+///
+/// Shrink can never push a workload toward OOM by construction: the target is
+/// clamped to at least `working_set / setpoint`, so after a shrink the live
+/// working set is ≤ `setpoint` of the new limit — i.e. the shrink only reclaims
+/// *allocation headroom*, never live pages, and never lands above the
+/// grow threshold (no shrink→grow flapping).
+#[must_use]
+#[allow(
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss
+)]
+pub fn decide(working_set: u64, current_limit: u64, cfg: &BandConfig) -> Decision {
+    if current_limit == 0 {
+        return Decision::NoLimit;
+    }
+    let util = working_set as f64 / current_limit as f64;
+
+    if util > cfg.grow_above {
+        let target =
+            ((current_limit as f64 * cfg.grow_factor).ceil() as u64).min(cfg.ceiling_bytes);
+        if target <= current_limit {
+            return Decision::AtCeiling { current: current_limit };
+        }
+        Decision::Grow { from: current_limit, to: target }
+    } else if util < cfg.shrink_below {
+        // Gentle step down, but never below the safe minimum (working_set /
+        // setpoint, which lands util exactly at the setpoint) and never below
+        // the floor. max() takes the *least aggressive* of the two lower
+        // bounds vs the gentle step.
+        let gentle = (current_limit as f64 * cfg.shrink_factor).floor() as u64;
+        let safe_min = (working_set as f64 / cfg.setpoint).ceil() as u64;
+        let target = gentle.max(safe_min).max(cfg.floor_bytes);
+        if target >= current_limit {
+            return Decision::NoSafeShrink { current: current_limit };
+        }
+        Decision::Shrink { from: current_limit, to: target }
+    } else {
+        Decision::Hold
+    }
+}
+
+/// The memory dimension's owned field path (the first consumer's constant).
+/// Every provider declares the dotted `managedFields` path it owns; the guard
+/// compares against *this exact path*, never a per-object flag.
+pub const MEMORY_LIMIT_FIELD: &str = "resources.limits.memory";
+
+/// One field-manager's claim on a *specific object field*, distilled from
+/// `metadata.managedFields`. Field-granular by construction (review finding):
+/// a flat per-object bool cannot tell a memory writer (`resources.limits.memory`)
+/// apart from a replica writer (`spec.replicas`), so it cannot back the
+/// disjoint-field composition contract. The dotted `field` path makes the
+/// distinction provable by string equality.
+#[derive(Debug, Clone)]
+pub struct FieldOwner {
+    pub manager: String,
+    pub field: String,
+}
+
+/// The single-writer invariant, field-granular. Returns a *competing* manager
+/// that owns the SAME `field` we intend to write, so the caller yields instead
+/// of fighting. A manager owning a *different* field (KEDA on `spec.replicas`,
+/// say) is not a competitor — this is the entire disjoint-field composition
+/// contract (breathe ⟂ KEDA, memory ⟂ cpu), enforced by equality on the path.
+/// Deterministic, fail-loud, never two writers oscillating one field.
+#[must_use]
+pub fn competing_field_manager(
+    owners: &[FieldOwner],
+    our_manager: &str,
+    field: &str,
+) -> Option<String> {
+    owners
+        .iter()
+        .find(|o| o.field == field && o.manager != our_manager)
+        .map(|o| o.manager.clone())
+}
+
+/// Memory-specialized alias retained for the existing memory call sites.
+#[must_use]
+pub fn competing_memory_manager(owners: &[FieldOwner], our_manager: &str) -> Option<String> {
+    competing_field_manager(owners, our_manager, MEMORY_LIMIT_FIELD)
+}
+
+/// What a resident problem category may do. `GrowOnly` (storage) never shrinks
+/// (data persists; online-resize is irreversible); `Bidirectional` (memory, cpu)
+/// breathes both ways; `ObserveOnly` (KEDA-owned replicas) never mutates the
+/// field at all. The loop enforces this — providers never carry band logic.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Directionality {
+    Bidirectional,
+    GrowOnly,
+    ObserveOnly,
+}
+
+/// The dimension-agnostic projection a provider's `observe` yields: every
+/// resident problem category reduces to `(used, capacity)` in its base unit
+/// (bytes / bytes / milli-cores) plus the field-managers currently owning the
+/// field and the age of the driving sample. Once a category projects to this
+/// struct, the proven [`decide`] runs unchanged — the whole "dimension-agnostic
+/// core" claim is made here. `staleness_secs` is load-bearing for safety: the
+/// never-OOM proof holds only on a *fresh* sample (review finding), so a stale
+/// read must never drive a mutation.
+#[derive(Debug, Clone)]
+pub struct Observation {
+    pub used: u64,
+    pub capacity: u64,
+    pub owners: Vec<FieldOwner>,
+    /// Age of the metric sample driving `used`, in seconds. A scrape gap that
+    /// returns a stale/zero `used` is indistinguishable from a real reading
+    /// without this — so the loop refuses to mutate when it exceeds the bound.
+    pub staleness_secs: u64,
+}
+
+/// Refuse an out-of-policy direction *before* it reaches the provider.
+/// `GrowOnly` turns any `Shrink` into `NoSafeShrink` (storage = the band with
+/// shrink disabled, zero storage-specific code); `ObserveOnly` turns any
+/// mutation into `Hold` (the field is owned elsewhere, e.g. KEDA on replicas).
+#[must_use]
+pub fn clamp_to_directionality(d: Decision, dir: Directionality) -> Decision {
+    match (dir, &d) {
+        (Directionality::GrowOnly, Decision::Shrink { from, .. }) => {
+            Decision::NoSafeShrink { current: *from }
+        }
+        (Directionality::ObserveOnly, Decision::Grow { from, .. })
+        | (Directionality::ObserveOnly, Decision::Shrink { from, .. }) => {
+            Decision::AtCeiling { current: *from } // observe-only: never write the field
+        }
+        _ => d,
+    }
+}
+
+/// What a single tick resolves to *before any I/O* — the testable heart of the
+/// reconcile loop. The async loop is a thin shell: `provider.observe` →
+/// [`plan_tick`] → (maybe) `provider.assign`.
+#[derive(Debug, PartialEq, Eq)]
+pub enum TickPlan {
+    /// Another field-manager owns the field — yield (single-writer invariant).
+    Conflict { manager: String },
+    /// A mutation is warranted but the driving sample is too old to trust —
+    /// hold + surface (the never-OOM proof requires a fresh metric).
+    Stale { staleness_secs: u64, decision: Decision },
+    /// A mutation is warranted but the target is within its cooldown — skip.
+    Cooldown { decision: Decision },
+    /// A mutation to apply atomically via the provider.
+    Act { decision: Decision },
+    /// An observable, non-mutating outcome (Hold / AtCeiling / NoSafeShrink / NoLimit).
+    Observe { decision: Decision },
+}
+
+/// The pure per-tick planner, embodying the Viggy beats in order: Observe (the
+/// passed `obs`) → Diff/guard (field-granular single-writer, fail-loud) →
+/// Classify/Decide (the proven band law) → directionality gate → **freshness
+/// gate** → cooldown gate. No I/O, no clock, no cluster — fully unit-testable.
+/// The single-writer guard runs FIRST so the controller never computes a
+/// decision for a field it doesn't own; the freshness gate runs before any
+/// mutation so a stale sample can never carve in the wrong direction.
+#[must_use]
+pub fn plan_tick(
+    obs: &Observation,
+    cfg: &BandConfig,
+    dir: Directionality,
+    in_cooldown: bool,
+    our_manager: &str,
+    our_field: &str,
+    max_staleness_secs: u64,
+) -> TickPlan {
+    if let Some(manager) = competing_field_manager(&obs.owners, our_manager, our_field) {
+        return TickPlan::Conflict { manager };
+    }
+    let decision = clamp_to_directionality(decide(obs.used, obs.capacity, cfg), dir);
+    let is_mutation = matches!(decision, Decision::Grow { .. } | Decision::Shrink { .. });
+    if !is_mutation {
+        return TickPlan::Observe { decision };
+    }
+    if obs.staleness_secs > max_staleness_secs {
+        return TickPlan::Stale { staleness_secs: obs.staleness_secs, decision };
+    }
+    if in_cooldown {
+        return TickPlan::Cooldown { decision };
+    }
+    TickPlan::Act { decision }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const MI: u64 = 1 << 20;
+    const GI: u64 = 1 << 30;
+
+    fn cfg() -> BandConfig {
+        BandConfig::default()
+    }
+
+    // ── band edges ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn holds_inside_the_deadband() {
+        let c = cfg();
+        // util = 0.80 (setpoint) → hold
+        assert_eq!(decide(800 * MI, 1000 * MI, &c), Decision::Hold);
+        // exact lower edge 0.70 → hold (shrink is strict `<`)
+        assert_eq!(decide(700 * MI, 1000 * MI, &c), Decision::Hold);
+        // exact upper edge 0.85 → hold (grow is strict `>`)
+        assert_eq!(decide(850 * MI, 1000 * MI, &c), Decision::Hold);
+    }
+
+    #[test]
+    fn grows_above_upper_edge() {
+        let c = cfg();
+        // util = 0.95 at 1Gi → grow to ceil(1.25Gi)
+        let from = GI;
+        match decide(950 * MI, from, &c) {
+            Decision::Grow { from: f, to } => {
+                assert_eq!(f, from);
+                assert_eq!(to, (from as f64 * 1.25).ceil() as u64);
+                assert!(to > from);
+            }
+            d => panic!("expected Grow, got {d:?}"),
+        }
+    }
+
+    #[test]
+    fn shrinks_below_lower_edge_gently() {
+        let c = cfg();
+        // util = 0.20 at 2Gi → gentle 0.9× step (gentle wins over safe_min here)
+        let from = 2 * GI;
+        match decide(400 * MI, from, &c) {
+            Decision::Shrink { from: f, to } => {
+                assert_eq!(f, from);
+                assert_eq!(to, (from as f64 * 0.90).floor() as u64);
+                assert!(to < from);
+                // post-shrink util is still well under the grow edge — no flap
+                let new_util = (400 * MI) as f64 / to as f64;
+                assert!(new_util < c.grow_above);
+            }
+            d => panic!("expected Shrink, got {d:?}"),
+        }
+    }
+
+    // ── shrink safety: never OOM, never overshoot into grow territory ───────
+
+    #[test]
+    fn shrink_clamps_to_safe_min_when_step_too_aggressive() {
+        // Contrived aggressive policy: shrink as soon as util < 0.85, by 50%.
+        // safe_min must bind so the shrink can't push live pages over the band.
+        let c = BandConfig {
+            grow_above: 0.90,
+            shrink_below: 0.85,
+            setpoint: 0.80,
+            shrink_factor: 0.50,
+            ..BandConfig::default()
+        };
+        let from = GI;
+        let ws = 800 * MI; // util 0.78 < 0.85 → shrink
+        match decide(ws, from, &c) {
+            Decision::Shrink { to, .. } => {
+                let safe_min = (ws as f64 / 0.80).ceil() as u64;
+                assert_eq!(to, safe_min, "must clamp to safe_min, not the 50% step");
+                // after the clamped shrink, util == setpoint (≤ grow edge)
+                let new_util = ws as f64 / to as f64;
+                assert!(new_util <= 0.80 + 1e-9);
+            }
+            d => panic!("expected clamped Shrink, got {d:?}"),
+        }
+    }
+
+    // ── ceiling / floor circuit breakers ────────────────────────────────────
+
+    #[test]
+    fn at_ceiling_does_not_grow() {
+        let c = cfg(); // ceiling 16Gi
+        assert_eq!(
+            decide(16 * GI, 16 * GI, &c),
+            Decision::AtCeiling { current: 16 * GI }
+        );
+    }
+
+    #[test]
+    fn at_floor_does_not_shrink() {
+        let c = cfg(); // floor 256Mi
+        // tiny working set at the floor → cannot shrink below floor
+        assert_eq!(
+            decide(10 * MI, 256 * MI, &c),
+            Decision::NoSafeShrink { current: 256 * MI }
+        );
+    }
+
+    #[test]
+    fn no_limit_is_skipped() {
+        assert_eq!(decide(500 * MI, 0, &cfg()), Decision::NoLimit);
+    }
+
+    // ── convergence: repeated ticks settle into the band and stop ───────────
+
+    #[test]
+    fn repeated_shrink_ticks_converge_into_band_and_hold() {
+        let c = cfg();
+        let ws = 600 * MI;
+        let mut limit = 4 * GI; // util 0.146 — way over-allotted
+        for _ in 0..50 {
+            match decide(ws, limit, &c) {
+                Decision::Shrink { to, .. } => limit = to,
+                Decision::Hold | Decision::NoSafeShrink { .. } => break,
+                d => panic!("unexpected during converge: {d:?}"),
+            }
+        }
+        let util = ws as f64 / limit as f64;
+        assert!(
+            util >= c.shrink_below && util <= c.grow_above,
+            "converged util {util} must land inside the deadband"
+        );
+        // and it is stable: one more tick holds
+        assert_eq!(decide(ws, limit, &c), Decision::Hold);
+    }
+
+    #[test]
+    fn repeated_grow_ticks_converge_into_band() {
+        let c = cfg();
+        let ws = 950 * MI;
+        let mut limit = GI; // util 0.927 — under-allotted
+        for _ in 0..50 {
+            match decide(ws, limit, &c) {
+                Decision::Grow { to, .. } => limit = to,
+                Decision::Hold | Decision::AtCeiling { .. } => break,
+                d => panic!("unexpected during converge: {d:?}"),
+            }
+        }
+        let util = ws as f64 / limit as f64;
+        assert!(util <= c.grow_above, "converged util {util} must drop to/under the grow edge");
+    }
+
+    // ── single-writer invariant ─────────────────────────────────────────────
+
+    fn owns(mgr: &str, field: &str) -> FieldOwner {
+        FieldOwner { manager: mgr.into(), field: field.into() }
+    }
+
+    #[test]
+    fn detects_competing_memory_manager() {
+        let owners = vec![
+            owns("helm", "metadata.labels"),
+            owns("vpa-updater", MEMORY_LIMIT_FIELD),
+        ];
+        assert_eq!(
+            competing_memory_manager(&owners, "pleme-memory-elastic"),
+            Some("vpa-updater".into())
+        );
+    }
+
+    #[test]
+    fn no_conflict_when_only_we_own_the_limit() {
+        let owners = vec![
+            owns("pleme-memory-elastic", MEMORY_LIMIT_FIELD),
+            owns("flux", "spec.template.spec.containers"),
+        ];
+        assert_eq!(competing_memory_manager(&owners, "pleme-memory-elastic"), None);
+    }
+
+    #[test]
+    fn no_conflict_when_nobody_owns_the_limit() {
+        let owners = vec![owns("flux", "metadata.annotations")];
+        assert_eq!(competing_memory_manager(&owners, "pleme-memory-elastic"), None);
+    }
+
+    #[test]
+    fn keda_on_replicas_is_not_a_memory_competitor() {
+        // The disjoint-field composition contract: KEDA owns spec.replicas, a
+        // memory band owns resources.limits.memory — different paths ⇒ no fight.
+        let owners = vec![owns("keda-operator", "spec.replicas")];
+        assert_eq!(
+            competing_field_manager(&owners, "breathe-memory", MEMORY_LIMIT_FIELD),
+            None
+        );
+        // …but a genuine same-field competitor (VPA) is still caught.
+        let owners2 = vec![owns("keda-operator", "spec.replicas"), owns("vpa", MEMORY_LIMIT_FIELD)];
+        assert_eq!(
+            competing_field_manager(&owners2, "breathe-memory", MEMORY_LIMIT_FIELD),
+            Some("vpa".into())
+        );
+    }
+
+    // ── directionality gate: storage = band with shrink disabled, no special code ─
+
+    #[test]
+    fn growonly_converts_shrink_to_nosafeshrink() {
+        assert_eq!(
+            clamp_to_directionality(
+                Decision::Shrink { from: 2 * GI, to: 1800 * MI },
+                Directionality::GrowOnly
+            ),
+            Decision::NoSafeShrink { current: 2 * GI }
+        );
+    }
+
+    #[test]
+    fn growonly_passes_grow_through() {
+        assert_eq!(
+            clamp_to_directionality(Decision::Grow { from: GI, to: 2 * GI }, Directionality::GrowOnly),
+            Decision::Grow { from: GI, to: 2 * GI }
+        );
+    }
+
+    #[test]
+    fn bidirectional_passes_shrink_through() {
+        assert_eq!(
+            clamp_to_directionality(
+                Decision::Shrink { from: 2 * GI, to: 1800 * MI },
+                Directionality::Bidirectional
+            ),
+            Decision::Shrink { from: 2 * GI, to: 1800 * MI }
+        );
+    }
+
+    // ── plan_tick: the pure reconcile heart (single-writer FIRST) ────────────
+
+    fn obs(used: u64, cap: u64, owners: Vec<FieldOwner>) -> Observation {
+        Observation { used, capacity: cap, owners, staleness_secs: 0 }
+    }
+    fn ours() -> Vec<FieldOwner> {
+        vec![owns("breathe-memory", MEMORY_LIMIT_FIELD)]
+    }
+    const FRESH: u64 = 60; // max acceptable sample age in these tests
+
+    #[test]
+    fn plan_yields_on_conflict_before_deciding() {
+        // util 0.95 would Act, but a competing same-field owner must yield FIRST.
+        let owners = vec![owns("vpa", MEMORY_LIMIT_FIELD)];
+        assert_eq!(
+            plan_tick(&obs(950 * MI, GI, owners), &cfg(), Directionality::Bidirectional, false, "breathe-memory", MEMORY_LIMIT_FIELD, FRESH),
+            TickPlan::Conflict { manager: "vpa".into() }
+        );
+    }
+
+    #[test]
+    fn plan_acts_when_mutation_and_not_in_cooldown() {
+        match plan_tick(&obs(950 * MI, GI, ours()), &cfg(), Directionality::Bidirectional, false, "breathe-memory", MEMORY_LIMIT_FIELD, FRESH) {
+            TickPlan::Act { decision: Decision::Grow { .. } } => {}
+            p => panic!("expected Act(Grow), got {p:?}"),
+        }
+    }
+
+    #[test]
+    fn plan_defers_mutation_in_cooldown() {
+        match plan_tick(&obs(950 * MI, GI, ours()), &cfg(), Directionality::Bidirectional, true, "breathe-memory", MEMORY_LIMIT_FIELD, FRESH) {
+            TickPlan::Cooldown { decision: Decision::Grow { .. } } => {}
+            p => panic!("expected Cooldown(Grow), got {p:?}"),
+        }
+    }
+
+    #[test]
+    fn plan_observes_hold_without_mutation() {
+        assert_eq!(
+            plan_tick(&obs(800 * MI, GI, ours()), &cfg(), Directionality::Bidirectional, false, "breathe-memory", MEMORY_LIMIT_FIELD, FRESH),
+            TickPlan::Observe { decision: Decision::Hold }
+        );
+    }
+
+    #[test]
+    fn plan_observes_growonly_shrink_as_nosafeshrink() {
+        // storage-like: util 0.20 would Shrink, but GrowOnly turns it into an
+        // observable NoSafeShrink — one band law, no storage-specific path.
+        match plan_tick(&obs(200 * MI, GI, ours()), &cfg(), Directionality::GrowOnly, false, "breathe-memory", MEMORY_LIMIT_FIELD, FRESH) {
+            TickPlan::Observe { decision: Decision::NoSafeShrink { .. } } => {}
+            p => panic!("expected Observe(NoSafeShrink), got {p:?}"),
+        }
+    }
+
+    #[test]
+    fn plan_refuses_to_mutate_on_stale_metric() {
+        // util 0.95 would Act(Grow), but a sample older than the bound must never
+        // carve — the never-OOM proof holds only on a fresh metric.
+        let stale = Observation { used: 950 * MI, capacity: GI, owners: ours(), staleness_secs: 120 };
+        match plan_tick(&stale, &cfg(), Directionality::Bidirectional, false, "breathe-memory", MEMORY_LIMIT_FIELD, FRESH) {
+            TickPlan::Stale { staleness_secs: 120, decision: Decision::Grow { .. } } => {}
+            p => panic!("expected Stale(Grow), got {p:?}"),
+        }
+    }
+
+    #[test]
+    fn plan_observeonly_never_mutates() {
+        // a replica-like ObserveOnly dim: even a strong grow signal yields no write.
+        match plan_tick(&obs(950 * MI, GI, ours()), &cfg(), Directionality::ObserveOnly, false, "breathe-memory", MEMORY_LIMIT_FIELD, FRESH) {
+            TickPlan::Observe { .. } => {}
+            p => panic!("expected Observe (no mutation), got {p:?}"),
+        }
+    }
+}

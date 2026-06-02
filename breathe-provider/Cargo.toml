@@ -1,0 +1,20 @@
+[package]
+name = "breathe-provider"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "The ResourceProvider + Cluster traits — the non-overloadable, category-atomic I/O boundary every breathe dimension implements (theory/BREATHE.md §3). No controller dependency."
+
+[dependencies]
+breathe-control = { path = "../breathe-control", version = "0.1.0" }
+async-trait = "0.1"
+
+[features]
+# The in-memory MockCluster test double — the typed-spec-triplet testability seam.
+mock = []
+
+[lints]
+workspace = true
