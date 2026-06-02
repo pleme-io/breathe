@@ -7,7 +7,7 @@
 //! The [`Band`] trait is the dimension-agnostic accessor the generic controller
 //! dispatches on — one reconcile body for all three kinds.
 
-use breathe_control::BandConfig;
+use breathe_control::{BandConfig, Unit};
 use kube::CustomResource;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -72,12 +72,11 @@ fn band_config_of(
     shrink_factor: f64,
     floor: &str,
     ceiling: &str,
+    unit: Unit,
 ) -> anyhow::Result<BandConfig> {
     let parse = |q: &str| -> anyhow::Result<u64> {
-        parse_size::Config::new()
-            .with_binary()
-            .parse_size(q)
-            .map_err(|e| anyhow::anyhow!("invalid quantity {q:?}: {e}"))
+        unit.parse(q)
+            .ok_or_else(|| anyhow::anyhow!("invalid {unit:?} quantity {q:?}"))
     };
     Ok(BandConfig {
         grow_above,
@@ -90,10 +89,13 @@ fn band_config_of(
     })
 }
 
-/// Stamp one band CRD kind + its [`Band`] impl from the shared field set.
-/// floor/ceiling default to memory-ish values; per-dimension bands set their own.
+/// Stamp one band CRD kind + its [`Band`] impl from the shared field set. Each
+/// kind carries its own [`Unit`] (so cpu parses millicores, memory/storage
+/// bytes) and its own unit-appropriate floor/ceiling defaults (passed as
+/// `serde(default = …)` fn names so an omitted floor on a `CpuBand` defaults to
+/// `250m`, not the byte default `256Mi` which would fail to parse as cpu).
 macro_rules! band_kind {
-    ($spec:ident, $kind:ident, $kindlit:literal, $short:literal) => {
+    ($spec:ident, $kind:ident, $kindlit:literal, $short:literal, $unit:expr, $dfloor:literal, $dceiling:literal) => {
         #[derive(CustomResource, Serialize, Deserialize, Clone, Debug, JsonSchema)]
         #[kube(
             group = "breathe.pleme.io",
@@ -123,9 +125,9 @@ macro_rules! band_kind {
             pub grow_factor: f64,
             #[serde(default = "d_shrink_factor")]
             pub shrink_factor: f64,
-            #[serde(default = "d_floor")]
+            #[serde(default = $dfloor)]
             pub floor: String,
-            #[serde(default = "d_ceiling")]
+            #[serde(default = $dceiling)]
             pub ceiling: String,
             #[serde(default = "d_cooldown")]
             pub cooldown_seconds: u64,
@@ -143,7 +145,7 @@ macro_rules! band_kind {
                 let s = &self.spec;
                 crate::band_config_of(
                     s.setpoint, s.grow_above, s.shrink_below, s.grow_factor, s.shrink_factor,
-                    &s.floor, &s.ceiling,
+                    &s.floor, &s.ceiling, $unit,
                 )
             }
             fn max_staleness_seconds(&self) -> u64 {
@@ -162,12 +164,14 @@ macro_rules! band_kind {
     };
 }
 
-band_kind!(MemoryBandSpec, MemoryBand, "MemoryBand", "mband");
-band_kind!(CpuBandSpec, CpuBand, "CpuBand", "cband");
-band_kind!(StorageBandSpec, StorageBand, "StorageBand", "sband");
+band_kind!(MemoryBandSpec, MemoryBand, "MemoryBand", "mband", Unit::Bytes, "d_floor_bytes", "d_ceiling_bytes");
+band_kind!(CpuBandSpec, CpuBand, "CpuBand", "cband", Unit::Millicores, "d_floor_milli", "d_ceiling_milli");
+band_kind!(StorageBandSpec, StorageBand, "StorageBand", "sband", Unit::Bytes, "d_floor_bytes", "d_ceiling_bytes");
 
-fn d_floor() -> String { "256Mi".into() }
-fn d_ceiling() -> String { "16Gi".into() }
+fn d_floor_bytes() -> String { "256Mi".into() }
+fn d_ceiling_bytes() -> String { "16Gi".into() }
+fn d_floor_milli() -> String { "250m".into() }
+fn d_ceiling_milli() -> String { "2".into() }
 fn d_setpoint() -> f64 { 0.80 }
 fn d_grow_above() -> f64 { 0.85 }
 fn d_shrink_below() -> f64 { 0.70 }
@@ -192,5 +196,29 @@ mod tests {
         let cfg = Band::band_config(&mem).unwrap();
         assert_eq!(cfg.floor_bytes, 512 * (1 << 20));
         assert!(mem.dry_run());
+    }
+
+    #[test]
+    fn cpu_band_parses_floor_ceiling_as_millicores() {
+        let tr = TargetRef { kind: "Cluster".into(), name: "db".into(), api_version: None, container: None };
+        let cpu = CpuBand::new("c", CpuBandSpec {
+            target_ref: tr, setpoint: 0.80, grow_above: 0.85, shrink_below: 0.70,
+            grow_factor: 1.25, shrink_factor: 0.90, floor: "250m".into(), ceiling: "2".into(),
+            cooldown_seconds: 600, max_staleness_seconds: 120, dry_run: false,
+        });
+        let cfg = Band::band_config(&cpu).unwrap();
+        // millicores, NOT bytes: "250m" → 250, "2" cores → 2000m.
+        assert_eq!(cfg.floor_bytes, 250);
+        assert_eq!(cfg.ceiling_bytes, 2000);
+    }
+
+    #[test]
+    fn cpu_band_default_floor_ceiling_parse_as_millicores() {
+        // an omitted floor/ceiling on a CpuBand must default to cpu-valid values
+        // (250m / 2), not the byte default 256Mi which can't parse as millicores.
+        let cfg = crate::band_config_of(0.80, 0.85, 0.70, 1.25, 0.90,
+            &d_floor_milli(), &d_ceiling_milli(), Unit::Millicores).unwrap();
+        assert_eq!(cfg.floor_bytes, 250);
+        assert_eq!(cfg.ceiling_bytes, 2000);
     }
 }

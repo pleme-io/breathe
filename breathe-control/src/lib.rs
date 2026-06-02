@@ -272,6 +272,117 @@ pub fn plan_tick(
     TickPlan::Act { decision }
 }
 
+/// The base unit a dimension's scalars `(used, capacity, floor, ceiling)` live
+/// in. [`decide`] is unit-agnostic — it operates on opaque `u64`s — so units
+/// matter at exactly one boundary: parsing a k8s quantity string into the
+/// scalar, and rendering the scalar back to a k8s-valid quantity. `Bytes`
+/// (memory, storage) and `Millicores` (cpu) cover the fleet today; a new unit is
+/// one arm here and nowhere else.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Unit {
+    /// Memory / storage / ephemeral-storage — a k8s byte quantity
+    /// (`2Gi`, `512Mi`, bare `2147483648`).
+    Bytes,
+    /// CPU — a k8s cpu quantity in millicores (`250m`, `2`, `0.5`;
+    /// metrics-server `5m` / `123456n`).
+    Millicores,
+}
+
+impl Unit {
+    /// The base unit for a k8s resource leaf key. `cpu` → millicores; every other
+    /// resource (`memory`, `storage`, `ephemeral-storage`) → bytes.
+    #[must_use]
+    pub fn for_resource(resource: &str) -> Self {
+        match resource {
+            "cpu" => Self::Millicores,
+            _ => Self::Bytes,
+        }
+    }
+
+    /// Parse a k8s quantity string into this unit's base scalar (bytes for
+    /// [`Unit::Bytes`], millicores for [`Unit::Millicores`]). `None` on malformed
+    /// input — callers surface a typed error rather than guess a wrong limit.
+    #[must_use]
+    pub fn parse(self, q: &str) -> Option<u64> {
+        match self {
+            Self::Bytes => parse_bytes(q),
+            Self::Millicores => parse_millicores(q),
+        }
+    }
+}
+
+/// A scalar + its [`Unit`], rendered to a k8s-valid quantity string via
+/// `Display` — the typed emission surface for a limit value. (The `write!` lives
+/// inside this `Display` impl; there is no bare `format!` of k8s syntax.) Bytes
+/// render as a bare integer (`2147483648`, which k8s accepts and which
+/// round-trips through [`Unit::parse`]); millicores render with the `m` suffix
+/// so k8s never reads the integer as whole cores (`250` cores would be
+/// catastrophic).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Quantity {
+    pub value: u64,
+    pub unit: Unit,
+}
+
+impl std::fmt::Display for Quantity {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.unit {
+            Unit::Bytes => write!(f, "{}", self.value),
+            Unit::Millicores => write!(f, "{}m", self.value),
+        }
+    }
+}
+
+/// Parse a k8s cpu quantity to millicores: `4m`→4, `500000000n`(nano)→500,
+/// `250u`(micro)→0, plain cores `1`→1000, `0.5`→500.
+#[must_use]
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+fn parse_millicores(q: &str) -> Option<u64> {
+    let q = q.trim();
+    if let Some(n) = q.strip_suffix('n') {
+        n.parse::<f64>().ok().map(|v| (v / 1_000_000.0) as u64)
+    } else if let Some(u) = q.strip_suffix('u') {
+        u.parse::<f64>().ok().map(|v| (v / 1_000.0) as u64)
+    } else if let Some(m) = q.strip_suffix('m') {
+        m.parse::<f64>().ok().map(|v| v as u64)
+    } else {
+        q.parse::<f64>().ok().map(|v| (v * 1000.0) as u64)
+    }
+}
+
+/// Parse a k8s byte quantity (binary IEC `Ki/Mi/Gi/Ti/Pi/Ei`, decimal SI
+/// `k/M/G/T/P/E`, or a bare number) to bytes. Hand-rolled to keep
+/// `breathe-control` dependency-free: split the numeric prefix from the unit
+/// suffix, multiply.
+#[must_use]
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss, clippy::cast_precision_loss)]
+fn parse_bytes(q: &str) -> Option<u64> {
+    let q = q.trim();
+    if q.is_empty() {
+        return None;
+    }
+    let split = q.find(|c: char| !(c.is_ascii_digit() || c == '.')).unwrap_or(q.len());
+    let (num, suffix) = q.split_at(split);
+    let n: f64 = num.parse().ok()?;
+    let mult: f64 = match suffix.trim() {
+        "" => 1.0,
+        "Ki" => 1024.0,
+        "Mi" => 1024.0 * 1024.0,
+        "Gi" => 1024.0 * 1024.0 * 1024.0,
+        "Ti" => 1024.0_f64.powi(4),
+        "Pi" => 1024.0_f64.powi(5),
+        "Ei" => 1024.0_f64.powi(6),
+        "k" | "K" => 1e3,
+        "M" => 1e6,
+        "G" => 1e9,
+        "T" => 1e12,
+        "P" => 1e15,
+        "E" => 1e18,
+        _ => return None,
+    };
+    Some((n * mult) as u64)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -599,5 +710,55 @@ mod tests {
             TickPlan::Observe { .. } => {}
             p => panic!("expected Observe (no mutation), got {p:?}"),
         }
+    }
+
+    // ── unit codec: the only place dimensions stop being unit-agnostic ───────
+
+    #[test]
+    fn unit_for_resource_maps_cpu_to_millicores() {
+        assert_eq!(Unit::for_resource("cpu"), Unit::Millicores);
+        assert_eq!(Unit::for_resource("memory"), Unit::Bytes);
+        assert_eq!(Unit::for_resource("storage"), Unit::Bytes);
+        assert_eq!(Unit::for_resource("ephemeral-storage"), Unit::Bytes);
+    }
+
+    #[test]
+    fn bytes_parse_binary_decimal_and_bare() {
+        assert_eq!(Unit::Bytes.parse("2Gi"), Some(2 * GI));
+        assert_eq!(Unit::Bytes.parse("512Mi"), Some(512 * MI));
+        assert_eq!(Unit::Bytes.parse("256Mi"), Some(256 * MI));
+        assert_eq!(Unit::Bytes.parse("80216Ki"), Some(80216 * 1024));
+        // breathe's own written value round-trips (bare bytes).
+        assert_eq!(Unit::Bytes.parse("2147483648"), Some(2 * GI));
+        // decimal SI + fractional.
+        assert_eq!(Unit::Bytes.parse("1G"), Some(1_000_000_000));
+        assert_eq!(Unit::Bytes.parse("1.5Gi"), Some(1_610_612_736));
+        // malformed → None (typed error upstream, never a wrong limit).
+        assert_eq!(Unit::Bytes.parse("garbage"), None);
+        assert_eq!(Unit::Bytes.parse(""), None);
+    }
+
+    #[test]
+    fn millicores_parse_suffixes_and_bare_cores() {
+        assert_eq!(Unit::Millicores.parse("250m"), Some(250));
+        assert_eq!(Unit::Millicores.parse("2"), Some(2000)); // bare cores → millicores
+        assert_eq!(Unit::Millicores.parse("0.5"), Some(500));
+        assert_eq!(Unit::Millicores.parse("1"), Some(1000));
+        assert_eq!(Unit::Millicores.parse("5m"), Some(5)); // metrics-server idle cpu
+        assert_eq!(Unit::Millicores.parse("123456n"), Some(0)); // nanocores, sub-milli
+        assert_eq!(Unit::Millicores.parse("500000000n"), Some(500));
+        assert_eq!(Unit::Millicores.parse("nonsense"), None);
+    }
+
+    #[test]
+    fn quantity_renders_unit_correct_k8s_strings() {
+        // bytes: bare integer (round-trips through parse).
+        let mem = Quantity { value: 2 * GI, unit: Unit::Bytes };
+        assert_eq!(mem.to_string(), "2147483648");
+        assert_eq!(Unit::Bytes.parse(&mem.to_string()), Some(2 * GI));
+        // cpu: MUST carry the `m` suffix — "250" would be read as 250 CORES.
+        let cpu = Quantity { value: 250, unit: Unit::Millicores };
+        assert_eq!(cpu.to_string(), "250m");
+        assert_eq!(Unit::Millicores.parse(&cpu.to_string()), Some(250));
     }
 }

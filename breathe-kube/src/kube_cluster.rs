@@ -10,7 +10,7 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
-use breathe_control::FieldOwner;
+use breathe_control::{FieldOwner, Quantity, Unit};
 use breathe_provider::{
     AppliedReceipt, Cluster, LimitLayout, MetricSource, ProviderError, Sample, SsaPatch, Target,
 };
@@ -154,7 +154,7 @@ impl KubeCluster {
             };
             for c in containers {
                 if let Some(raw) = c.pointer(&format!("/usage/{resource}")).and_then(Value::as_str) {
-                    let v = if resource == "cpu" { parse_millicores(raw) } else { parse_qty(raw) };
+                    let v = Unit::for_resource(resource).parse(raw);
                     if let Some(v) = v {
                         found = true;
                         max = max.max(v);
@@ -168,25 +168,6 @@ impl KubeCluster {
         // metrics-server samples are recent (scrape window ~15-30s); treat as fresh.
         Ok(Sample { value: max, age_secs: 0 })
     }
-}
-
-/// Parse a metrics-server cpu quantity to millicores: `"4m"` → 4, `"500000000n"`
-/// (nanocores) → 500, plain cores `"1"` → 1000.
-fn parse_millicores(q: &str) -> Option<u64> {
-    let q = q.trim();
-    if let Some(n) = q.strip_suffix('n') {
-        n.parse::<f64>().ok().map(|v| (v / 1_000_000.0) as u64)
-    } else if let Some(u) = q.strip_suffix('u') {
-        u.parse::<f64>().ok().map(|v| (v / 1_000.0) as u64)
-    } else if let Some(m) = q.strip_suffix('m') {
-        m.parse::<f64>().ok().map(|v| v as u64)
-    } else {
-        q.parse::<f64>().ok().map(|v| (v * 1000.0) as u64)
-    }
-}
-
-fn parse_qty(q: &str) -> Option<u64> {
-    parse_size::Config::new().with_binary().parse_size(q).ok()
 }
 
 #[async_trait]
@@ -210,7 +191,9 @@ impl Cluster for KubeCluster {
         match Self::read_qty(&obj.data, layout, resource) {
             // Unset limit → 0; decide() seeds it to the floor (the ceded-field path).
             None => Ok(0),
-            Some(qty) => parse_qty(&qty).ok_or(ProviderError::NoCapacityField),
+            // Parse in the resource's base unit (cpu → millicores, else bytes) so
+            // a cpu limit "1" reads as 1000, not 1.
+            Some(qty) => Unit::for_resource(resource).parse(&qty).ok_or(ProviderError::NoCapacityField),
         }
     }
 
@@ -241,7 +224,9 @@ impl Cluster for KubeCluster {
         let target = &patch.target;
         let (g, v) = Self::group_version(target);
         let api_version = if g.is_empty() { v.clone() } else { format!("{g}/{v}") };
-        let qty = patch.value.to_string(); // bytes / millicores as a bare k8s quantity
+        // Render in the resource's base unit: bytes as a bare integer, cpu with
+        // the `m` suffix (a bare "250" would be read by k8s as 250 *cores*).
+        let qty = Quantity { value: patch.value, unit: Unit::for_resource(&patch.resource) }.to_string();
         let res = &patch.resource;
         let spec = match &patch.layout {
             LimitLayout::ClusterTopLevel => json!({ "resources": { "limits": { res: qty } } }),
