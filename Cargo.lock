@@ -149,9 +149,9 @@ dependencies = [
  "breathe-control",
  "breathe-core",
  "breathe-crd",
+ "breathe-dimensions",
  "breathe-kube",
  "breathe-provider",
- "dimension-memory",
  "futures",
  "k8s-openapi",
  "kube",
@@ -167,8 +167,8 @@ name = "breathe-core"
 version = "0.1.0"
 dependencies = [
  "breathe-control",
+ "breathe-dimensions",
  "breathe-provider",
- "dimension-memory",
  "tokio",
 ]
 
@@ -185,6 +185,13 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_yaml",
+]
+
+[[package]]
+name = "breathe-dimensions"
+version = "0.1.0"
+dependencies = [
+ "breathe-provider",
 ]
 
 [[package]]
@@ -356,15 +363,6 @@ checksum = "9ed9a281f7bc9b7576e61468ba615a66a5c8cfdff42420a70aa82701a3b1e292"
 dependencies = [
  "block-buffer",
  "crypto-common",
-]
-
-[[package]]
-name = "dimension-memory"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "breathe-control",
- "breathe-provider",
 ]
 
 [[package]]

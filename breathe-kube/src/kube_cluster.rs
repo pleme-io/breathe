@@ -1,23 +1,18 @@
 //! `KubeCluster` — the real [`Cluster`] implementation over kube-rs.
 //!
-//! The four category-atomic I/O legs the providers call:
-//!   - `metric`   — Prometheus/VictoriaMetrics instant query (value + sample age).
-//!   - `current_allocation` — read the owner's declared limit from its spec.
-//!   - `field_owners` — the live object's `managedFields` → [`FieldOwner`] (the
-//!     field-granular single-writer guard's data source).
-//!   - `apply`    — **true SSA** (`Patch::Apply` + force) with a per-dimension
-//!     field manager, so ownership is a real `managedFields` record.
-//!
-//! Two owner layouts are handled: CNPG `Cluster` (top-level `spec.resources` —
-//! the pangea-database M0 anchor) and pod-template owners (Deployment /
-//! StatefulSet `spec.template.spec.containers[name].resources`).
+//! Dimension-agnostic I/O: `query` runs raw PromQL (with sample age),
+//! `read_limit` reads a quantity at a [`LimitLayout`], `field_owners` extracts
+//! ownership of the layout's fieldsV1 path (resolving the container name from
+//! the live object), `apply` performs **true SSA** (`Patch::Apply` + force).
+//! The layout interpretation — CNPG `Cluster` top-level, pod-template, PVC — is
+//! the only K8s-specific branching, and it lives here, not in the descriptors.
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
 use breathe_control::FieldOwner;
 use breathe_provider::{
-    AppliedReceipt, Cluster, DimensionId, MetricKind, ProviderError, Sample, SsaPatch, Target,
+    AppliedReceipt, Cluster, LimitLayout, ProviderError, Sample, SsaPatch, Target,
 };
 use kube::{
     api::{Api, ApiResource, DynamicObject, Patch, PatchParams},
@@ -26,15 +21,9 @@ use kube::{
 };
 use serde_json::{json, Value};
 
-use crate::managed_fields::{cnpg_cluster_limit_segments, field_owners, pod_template_limit_segments};
-
-/// Where a memory limit lives on a given owner kind.
-enum Layout {
-    /// CNPG `Cluster`: `spec.resources.limits.memory`.
-    ClusterTopLevel,
-    /// Deployment/StatefulSet: `spec.template.spec.containers[name].resources.limits.memory`.
-    PodTemplate { container: Option<String> },
-}
+use crate::managed_fields::{
+    cnpg_cluster_limit_segments, field_owners, pod_template_limit_segments, pvc_request_segments,
+};
 
 pub struct KubeCluster {
     client: Client,
@@ -48,24 +37,16 @@ impl KubeCluster {
         Self { client, prometheus_url, http: reqwest::Client::new() }
     }
 
-    fn layout(target: &Target) -> Layout {
-        match target.kind.as_str() {
-            "Cluster" => Layout::ClusterTopLevel,
-            _ => Layout::PodTemplate { container: target.container.clone() },
-        }
-    }
-
-    /// Resolve the owner's `(group, version)` from `api_version`, inferring a
-    /// sensible default from the kind when unset.
     fn group_version(target: &Target) -> (String, String) {
         if !target.api_version.is_empty() {
             return match target.api_version.split_once('/') {
                 Some((g, v)) => (g.to_string(), v.to_string()),
-                None => (String::new(), target.api_version.clone()), // core group
+                None => (String::new(), target.api_version.clone()),
             };
         }
         match target.kind.as_str() {
             "Cluster" => ("postgresql.cnpg.io".into(), "v1".into()),
+            "PersistentVolumeClaim" => (String::new(), "v1".into()),
             _ => ("apps".into(), "v1".into()),
         }
     }
@@ -73,7 +54,7 @@ impl KubeCluster {
     fn api_for(&self, target: &Target) -> Api<DynamicObject> {
         let (g, v) = Self::group_version(target);
         let gvk = GroupVersionKind::gvk(&g, &v, &target.kind);
-        let ar = ApiResource::from_gvk(&gvk); // naive plural: kind.lower()+"s" (deployments/statefulsets/clusters)
+        let ar = ApiResource::from_gvk(&gvk);
         Api::namespaced_with(self.client.clone(), &target.namespace, &ar)
     }
 
@@ -84,14 +65,28 @@ impl KubeCluster {
         })
     }
 
-    /// Read the declared memory-limit quantity string from a fetched owner.
-    fn read_limit_qty(data: &Value, layout: &Layout) -> Option<String> {
+    /// Resolve the managed container name for a pod-template layout (the given
+    /// name, or the first container in the live object).
+    fn container_name(data: &Value, want: &Option<String>) -> Option<String> {
+        want.clone().or_else(|| {
+            data.pointer("/spec/template/spec/containers/0/name")
+                .and_then(Value::as_str)
+                .map(String::from)
+        })
+    }
+
+    /// JSON pointer to the quantity for a layout+resource within a fetched object.
+    fn read_qty(data: &Value, layout: &LimitLayout, resource: &str) -> Option<String> {
         match layout {
-            Layout::ClusterTopLevel => data
-                .pointer("/spec/resources/limits/memory")
+            LimitLayout::ClusterTopLevel => data
+                .pointer(&format!("/spec/resources/limits/{resource}"))
                 .and_then(Value::as_str)
                 .map(String::from),
-            Layout::PodTemplate { container } => {
+            LimitLayout::PvcRequest => data
+                .pointer("/spec/resources/requests/storage")
+                .and_then(Value::as_str)
+                .map(String::from),
+            LimitLayout::PodTemplate { container } => {
                 let containers = data.pointer("/spec/template/spec/containers")?.as_array()?;
                 let c = match container {
                     Some(name) => containers
@@ -99,7 +94,7 @@ impl KubeCluster {
                         .find(|c| c.get("name").and_then(Value::as_str) == Some(name.as_str()))?,
                     None => containers.first()?,
                 };
-                c.pointer("/resources/limits/memory").and_then(Value::as_str).map(String::from)
+                c.pointer(&format!("/resources/limits/{resource}")).and_then(Value::as_str).map(String::from)
             }
         }
     }
@@ -111,30 +106,18 @@ fn parse_qty(q: &str) -> Option<u64> {
 
 #[async_trait]
 impl Cluster for KubeCluster {
-    async fn metric(&self, target: &Target, kind: MetricKind) -> Result<Sample, ProviderError> {
-        // Used = container working set across the owner's pods; Capacity = spec'd limit.
-        let promql = match kind {
-            MetricKind::Used => format!(
-                r#"max(container_memory_working_set_bytes{{namespace="{ns}",pod=~"{name}.*",container!="",container!="POD"}})"#,
-                ns = target.namespace, name = target.name
-            ),
-            MetricKind::Capacity => format!(
-                r#"max(container_spec_memory_limit_bytes{{namespace="{ns}",pod=~"{name}.*",container!="",container!="POD"}})"#,
-                ns = target.namespace, name = target.name
-            ),
-        };
+    async fn query(&self, promql: &str) -> Result<Sample, ProviderError> {
         let url = format!("{}/api/v1/query", self.prometheus_url.trim_end_matches('/'));
         let resp: Value = self
             .http
             .get(&url)
-            .query(&[("query", promql.as_str())])
+            .query(&[("query", promql)])
             .send()
             .await
             .map_err(|e| ProviderError::ApiTransient(e.to_string()))?
             .json()
             .await
             .map_err(|e| ProviderError::ApiTransient(e.to_string()))?;
-        // result[0].value = [<unix_ts: f64>, "<value>"]
         let pair = resp
             .pointer("/data/result/0/value")
             .and_then(Value::as_array)
@@ -147,72 +130,62 @@ impl Cluster for KubeCluster {
             .map(|f| f as u64)
             .ok_or(ProviderError::MetricsMissing)?;
         let now = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs_f64()).unwrap_or(ts);
-        let age_secs = (now - ts).max(0.0) as u64;
-        Ok(Sample { value, age_secs })
+        Ok(Sample { value, age_secs: (now - ts).max(0.0) as u64 })
     }
 
-    async fn current_allocation(
+    async fn read_limit(
         &self,
         target: &Target,
-        _dim: DimensionId,
+        layout: &LimitLayout,
+        resource: &str,
     ) -> Result<u64, ProviderError> {
         let obj = self.get_owner(target).await?;
-        let layout = Self::layout(target);
-        let qty = Self::read_limit_qty(&obj.data, &layout).ok_or(ProviderError::NoCapacityField)?;
+        let qty = Self::read_qty(&obj.data, layout, resource).ok_or(ProviderError::NoCapacityField)?;
         parse_qty(&qty).ok_or(ProviderError::NoCapacityField)
     }
 
     async fn field_owners(
         &self,
         target: &Target,
-        _field: &str,
+        layout: &LimitLayout,
+        resource: &str,
+        logical_field: &str,
     ) -> Result<Vec<FieldOwner>, ProviderError> {
         let obj = self.get_owner(target).await?;
         let mf = serde_json::to_value(&obj.metadata.managed_fields)
             .map_err(|e| ProviderError::ApiTransient(e.to_string()))?;
-        let (segments, logical) = match Self::layout(target) {
-            Layout::ClusterTopLevel => {
-                (cnpg_cluster_limit_segments("memory"), "spec.resources.limits.memory")
-            }
-            Layout::PodTemplate { container } => {
-                // resolve the container name (first container if unset) for the keyed entry
-                let name = container.or_else(|| {
-                    obj.data
-                        .pointer("/spec/template/spec/containers/0/name")
-                        .and_then(Value::as_str)
-                        .map(String::from)
-                });
-                match name {
-                    Some(c) => (pod_template_limit_segments(&c, "memory"), "resources.limits.memory"),
+        let segments = match layout {
+            LimitLayout::ClusterTopLevel => cnpg_cluster_limit_segments(resource),
+            LimitLayout::PvcRequest => pvc_request_segments(),
+            LimitLayout::PodTemplate { container } => {
+                match Self::container_name(&obj.data, container) {
+                    Some(c) => pod_template_limit_segments(&c, resource),
                     None => return Ok(Vec::new()),
                 }
             }
         };
-        Ok(field_owners(&mf, &segments, logical))
+        Ok(field_owners(&mf, &segments, logical_field))
     }
 
     async fn apply(&self, patch: &SsaPatch) -> Result<AppliedReceipt, ProviderError> {
         let target = &patch.target;
         let (g, v) = Self::group_version(target);
         let api_version = if g.is_empty() { v.clone() } else { format!("{g}/{v}") };
-        let qty = patch.value.to_string(); // bytes as a bare k8s quantity
-        let spec = match Self::layout(target) {
-            Layout::ClusterTopLevel => json!({ "resources": { "limits": { "memory": qty } } }),
-            Layout::PodTemplate { container } => {
-                // SSA merges the containers list by name; resolve the name if unset.
+        let qty = patch.value.to_string(); // bytes / millicores as a bare k8s quantity
+        let res = &patch.resource;
+        let spec = match &patch.layout {
+            LimitLayout::ClusterTopLevel => json!({ "resources": { "limits": { res: qty } } }),
+            LimitLayout::PvcRequest => json!({ "resources": { "requests": { "storage": qty } } }),
+            LimitLayout::PodTemplate { container } => {
                 let cname = match container {
-                    Some(c) => c,
+                    Some(c) => c.clone(),
                     None => {
                         let obj = self.get_owner(target).await?;
-                        obj.data
-                            .pointer("/spec/template/spec/containers/0/name")
-                            .and_then(Value::as_str)
-                            .map(String::from)
-                            .ok_or(ProviderError::NoCapacityField)?
+                        Self::container_name(&obj.data, &None).ok_or(ProviderError::NoCapacityField)?
                     }
                 };
                 json!({ "template": { "spec": { "containers": [
-                    { "name": cname, "resources": { "limits": { "memory": qty } } }
+                    { "name": cname, "resources": { "limits": { res: qty } } }
                 ] } } })
             }
         };
@@ -222,12 +195,10 @@ impl Cluster for KubeCluster {
             "metadata": { "name": target.name, "namespace": target.namespace },
             "spec": spec,
         });
-        let pp = PatchParams::apply(&patch.field_manager).force();
         self.api_for(target)
-            .patch(&target.name, &pp, &Patch::Apply(&body))
+            .patch(&target.name, &PatchParams::apply(&patch.field_manager).force(), &Patch::Apply(&body))
             .await
             .map_err(|e| ProviderError::ApiPermanent(e.to_string()))?;
-        // M1: source_hash placeholder (BLAKE3 attestation wires in with OutcomeChain).
         Ok(AppliedReceipt { source_hash: [0u8; 16] })
     }
 }
