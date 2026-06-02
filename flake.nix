@@ -48,38 +48,76 @@
         };
       };
 
-      image = if pkgs.stdenv.isLinux then
-        pkgs.dockerTools.buildLayeredImage {
-          name = "ghcr.io/pleme-io/breathe-controller";
-          tag = version;
-          contents = with pkgs; [ controller cacert dockerTools.fakeNss ];
-          config = {
-            Entrypoint = [ "${controller}/bin/breathe-controller" ];
-            User = "65532:65532";
-            Env = [
-              "PATH=${controller}/bin"
-              "SSL_CERT_FILE=/etc/ssl/certs/ca-bundle.crt"
-              "RUST_LOG=info,breathe_controller=info"
-            ];
-            Labels = {
-              "org.opencontainers.image.source" = "https://github.com/pleme-io/breathe";
-              "org.opencontainers.image.description" = "breathe resource-homeostasis controller";
-              "org.opencontainers.image.licenses" = "MIT";
-              "org.opencontainers.image.version" = version;
+      # The HANDS — the host agent (a privileged DaemonSet). Same workspace src,
+      # different bin. Runs as root (writes /sys; nsenter to host systemd for the
+      # cgroup dimension later). util-linux ships nsenter for that future path.
+      agent = rustPlatform.buildRustPackage {
+        pname = "breathe-host-agent";
+        version = version;
+        src = ./.;
+        cargoLock = { lockFile = ./Cargo.lock; };
+        cargoBuildFlags = [ "-p" "breathe-host-agent" ];
+        nativeBuildInputs = with pkgs; [ pkg-config cmake perl ];
+        doCheck = false; # the workspace is tested by the controller build above
+        meta = {
+          description = "breathe host agent — the hands (host-dimension reconcile)";
+          license = pkgs.lib.licenses.mit;
+          mainProgram = "breathe-host-agent";
+        };
+      };
+
+      mkImage = { name, bin, user, extraContents ? [], extraPath ? "", logTarget }:
+        if pkgs.stdenv.isLinux then
+          pkgs.dockerTools.buildLayeredImage {
+            name = name;
+            tag = version;
+            contents = (with pkgs; [ cacert dockerTools.fakeNss ]) ++ extraContents;
+            config = {
+              Entrypoint = [ "${bin}" ];
+              User = user;
+              Env = [
+                "PATH=${dirOf bin}${extraPath}"
+                "SSL_CERT_FILE=/etc/ssl/certs/ca-bundle.crt"
+                "RUST_LOG=info,${logTarget}=info"
+              ];
+              Labels = {
+                "org.opencontainers.image.source" = "https://github.com/pleme-io/breathe";
+                "org.opencontainers.image.description" = "breathe ${logTarget}";
+                "org.opencontainers.image.licenses" = "MIT";
+                "org.opencontainers.image.version" = version;
+              };
             };
-          };
-        }
-      else
-        pkgs.runCommand "breathe-controller-image-darwin-stub" {} ''
-          mkdir -p $out
-          echo "Build the OCI image on Linux: nix build .#image --system x86_64-linux" > $out/README
-        '';
+          }
+        else
+          pkgs.runCommand "${name}-image-darwin-stub" {} ''
+            mkdir -p $out
+            echo "Build the OCI image on Linux: nix build .#<image> --system x86_64-linux" > $out/README
+          '';
+
+      image = mkImage {
+        name = "ghcr.io/pleme-io/breathe-controller";
+        bin = "${controller}/bin/breathe-controller";
+        user = "65532:65532";
+        extraContents = [ controller ];
+        logTarget = "breathe_controller";
+      };
+
+      agentImage = mkImage {
+        name = "ghcr.io/pleme-io/breathe-host-agent";
+        bin = "${agent}/bin/breathe-host-agent";
+        user = "0:0"; # root: writes /host/sys, nsenter to host systemd (cgroup, later)
+        extraContents = with pkgs; [ agent util-linux ];
+        extraPath = ":${pkgs.util-linux}/bin";
+        logTarget = "breathe_host_agent";
+      };
 
     in {
       packages = {
         default = controller;
         breathe-controller = controller;
+        breathe-host-agent = agent;
         image = image;
+        agent-image = agentImage;
       };
       apps.default = { type = "app"; program = "${controller}/bin/breathe-controller"; };
       devShells.default = pkgs.mkShellNoCC {
