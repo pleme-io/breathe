@@ -188,6 +188,43 @@ band_kind!(CgroupBandSpec, CgroupBand, "CgroupBand", "gband", Unit::Bytes, "d_fl
 
 // ─────────────────── BreatheNodePool — host enrollment ──────────────────
 
+/// A GiB quantity bounded to a sane node maximum (1 PiB) so that `value * 2^30`
+/// (the bytes conversion the host agent performs) can NEVER overflow `u64`. The
+/// bound is an OpenAPI `maximum` enforced at the apiserver parse boundary — an
+/// overflowing ceiling is rejected at admission, not merely caught at runtime
+/// (★★ UNREPRESENTABILITY: parse-time-rejected). The agent additionally uses
+/// `checked_mul` as a truly-unrepresentable backstop for any non-apiserver write.
+///
+/// `JsonSchema` is hand-written: a `#[serde(transparent)]` newtype drops a
+/// field-level `#[schemars(range)]`, so the `maximum` is injected here directly.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Default)]
+#[serde(transparent)]
+pub struct GiB(pub u64);
+
+/// The largest GiB value whose byte conversion (`* 2^30`) still fits `u64` with
+/// vast headroom — 1 PiB. No real node ARC/cgroup ceiling approaches this.
+pub const GIB_MAX: u64 = 1_048_576;
+
+impl schemars::JsonSchema for GiB {
+    fn schema_name() -> String {
+        "GiB".into()
+    }
+    fn json_schema(_g: &mut schemars::r#gen::SchemaGenerator) -> schemars::schema::Schema {
+        use schemars::schema::{InstanceType, NumberValidation, SchemaObject};
+        SchemaObject {
+            instance_type: Some(InstanceType::Integer.into()),
+            format: Some("uint64".into()),
+            number: Some(Box::new(NumberValidation {
+                minimum: Some(0.0),
+                maximum: Some(GIB_MAX as f64),
+                ..Default::default()
+            })),
+            ..Default::default()
+        }
+        .into()
+    }
+}
+
 /// The per-node L2 ceilings, mirrored from `pleme.nixos.nodeBudget` — the host
 /// agent refuses any write above these (the second safety wall). Cluster-scoped:
 /// one BreatheNodePool enrolls one node.
@@ -209,13 +246,14 @@ pub struct BreatheNodePoolSpec {
     /// The node this pool enrolls (matches `kubernetes.io/hostname`). The agent
     /// reconciles only the pool whose `nodeName` equals its own `NODE_NAME`.
     pub node_name: String,
-    /// L2 ARC ceiling — `nodeBudget.arcMaxGiB` (the boot modprobe cap), in GiB.
-    pub arc_max_gi_b: u64,
+    /// L2 ARC ceiling — `nodeBudget.arcMaxGiB` (the boot modprobe cap), in GiB
+    /// (bounded ≤ 1 PiB so the bytes conversion cannot overflow).
+    pub arc_max_gi_b: GiB,
     /// L2 cgroup ceiling per systemd unit — the unit's `nodeBudget` `memoryMaxGiB`,
     /// in GiB. A `CgroupBand` whose unit is absent here is refused (never written
     /// blind).
     #[serde(default)]
-    pub cgroup_max_gi_b: BTreeMap<String, u64>,
+    pub cgroup_max_gi_b: BTreeMap<String, GiB>,
     /// Node-level MASTER write switch. `false` = the whole node is in SHADOW —
     /// every host band decides + reports but never mutates the host, regardless of
     /// per-band `dryRun`. The safe default; flip to `true` only after the shadow
@@ -318,17 +356,26 @@ mod tests {
     #[test]
     fn nodepool_carries_the_l2_ceilings_and_master_switch() {
         let mut cgroup = BTreeMap::new();
-        cgroup.insert("nix-daemon.service".to_string(), 12u64);
+        cgroup.insert("nix-daemon.service".to_string(), GiB(12));
         let pool = BreatheNodePool::new("rio", BreatheNodePoolSpec {
             node_name: "rio".into(),
-            arc_max_gi_b: 6,
+            arc_max_gi_b: GiB(6),
             cgroup_max_gi_b: cgroup,
             write_enabled: false, // safe default — whole node in shadow
         });
         assert_eq!(pool.spec.node_name, "rio");
-        assert_eq!(pool.spec.arc_max_gi_b, 6);
-        assert_eq!(pool.spec.cgroup_max_gi_b.get("nix-daemon.service"), Some(&12));
+        assert_eq!(pool.spec.arc_max_gi_b, GiB(6));
+        assert_eq!(pool.spec.cgroup_max_gi_b.get("nix-daemon.service"), Some(&GiB(12)));
         assert!(!pool.spec.write_enabled, "writeEnabled must default off (shadow-first)");
+    }
+
+    #[test]
+    fn nodepool_gib_fields_carry_an_openapi_maximum() {
+        // the parse-time bound: the apiserver rejects an arcMaxGiB whose *2^30
+        // would overflow, so an overflowing ceiling is unrepresentable at admission.
+        let crd = <BreatheNodePool as kube::CustomResourceExt>::crd();
+        let yaml = serde_yaml::to_string(&crd).unwrap();
+        assert!(yaml.contains("maximum"), "BreatheNodePool GiB fields must emit an OpenAPI maximum");
     }
 
     #[test]
