@@ -1,0 +1,34 @@
+# pleme-breathe — the breathe controller (memory dimension).
+replicaCount: 1
+
+image:
+  repository: ghcr.io/pleme-io/breathe-controller
+  tag: ""              # falls back to appVersion
+  pullPolicy: IfNotPresent
+
+# Prometheus/VictoriaMetrics base for working-set scrapes.
+prometheusUrl: "http://vmsingle-victoria-metrics-k8s-stack.monitoring.svc.cluster.local:8429"
+# Level-triggered refresh interval (seconds) — the steady tick cadence.
+requeueSeconds: 60
+
+# Tight bound — the controller observes + patches, no heavy work. Per the
+# breathe "contained, never-die" invariant: a single-shot-style reconcile loop
+# with a hard ceiling so the controller can never become the problem.
+resources:
+  requests:
+    cpu: 25m
+    memory: 64Mi
+  limits:
+    cpu: 200m
+    memory: 128Mi
+
+rbac:
+  create: true
+serviceAccount:
+  create: true
+  name: breathe-controller
+
+logLevel: "info,breathe_controller=info"
+
+# Image pull secret(s) for the private ghcr image.
+imagePullSecrets: []

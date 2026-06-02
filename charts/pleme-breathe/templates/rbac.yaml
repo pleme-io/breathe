@@ -1,0 +1,55 @@
+{{- if .Values.serviceAccount.create }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ .Values.serviceAccount.name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: pleme-breathe
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+{{- end }}
+{{- if .Values.rbac.create }}
+---
+# breathe owns the band CRs + the memory-limit field on the target owners.
+# It NEVER writes spec.replicas (KEDA's field) — the disjoint-field
+# composition contract is enforced by what verbs this role does *not* grant.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: pleme-breathe-controller
+  labels:
+    app.kubernetes.io/name: pleme-breathe
+rules:
+  - apiGroups: ["breathe.pleme.io"]
+    resources: ["memorybands", "memorybands/status"]
+    verbs: ["get", "list", "watch", "patch", "update"]
+  # The target owners breathe patches limits.memory on (true SSA).
+  - apiGroups: ["apps"]
+    resources: ["deployments", "statefulsets"]
+    verbs: ["get", "list", "watch", "patch"]
+  - apiGroups: ["postgresql.cnpg.io"]
+    resources: ["clusters"]
+    verbs: ["get", "list", "watch", "patch"]
+  # Read pods for owner→pod resolution (metric label scoping); no mutation.
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list"]
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["create", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: pleme-breathe-controller
+  labels:
+    app.kubernetes.io/name: pleme-breathe
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: pleme-breathe-controller
+subjects:
+  - kind: ServiceAccount
+    name: {{ .Values.serviceAccount.name }}
+    namespace: {{ .Release.Namespace }}
+{{- end }}
