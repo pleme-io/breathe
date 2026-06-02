@@ -152,6 +152,7 @@ dependencies = [
  "breathe-dimensions",
  "breathe-kube",
  "breathe-provider",
+ "breathe-runtime",
  "futures",
  "k8s-openapi",
  "kube",
@@ -204,6 +205,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "breathe-host-agent"
+version = "0.1.0"
+dependencies = [
+ "breathe-control",
+ "breathe-core",
+ "breathe-crd",
+ "breathe-host",
+ "breathe-provider",
+ "breathe-runtime",
+ "futures",
+ "k8s-openapi",
+ "kube",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "breathe-kube"
 version = "0.1.0"
 dependencies = [
@@ -222,6 +243,17 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "breathe-control",
+]
+
+[[package]]
+name = "breathe-runtime"
+version = "0.1.0"
+dependencies = [
+ "breathe-control",
+ "breathe-core",
+ "breathe-crd",
+ "kube",
+ "serde_json",
 ]
 
 [[package]]
