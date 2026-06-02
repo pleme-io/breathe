@@ -12,10 +12,10 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use async_trait::async_trait;
 use breathe_control::FieldOwner;
 use breathe_provider::{
-    AppliedReceipt, Cluster, LimitLayout, ProviderError, Sample, SsaPatch, Target,
+    AppliedReceipt, Cluster, LimitLayout, MetricSource, ProviderError, Sample, SsaPatch, Target,
 };
 use kube::{
-    api::{Api, ApiResource, DynamicObject, Patch, PatchParams},
+    api::{Api, ApiResource, DynamicObject, ListParams, Patch, PatchParams},
     core::GroupVersionKind,
     Client,
 };
@@ -98,15 +98,9 @@ impl KubeCluster {
             }
         }
     }
-}
 
-fn parse_qty(q: &str) -> Option<u64> {
-    parse_size::Config::new().with_binary().parse_size(q).ok()
-}
-
-#[async_trait]
-impl Cluster for KubeCluster {
-    async fn query(&self, promql: &str) -> Result<Sample, ProviderError> {
+    /// Prometheus instant query → (value, sample age).
+    async fn prometheus_used(&self, promql: &str) -> Result<Sample, ProviderError> {
         let url = format!("{}/api/v1/query", self.prometheus_url.trim_end_matches('/'));
         let resp: Value = self
             .http
@@ -131,6 +125,79 @@ impl Cluster for KubeCluster {
             .ok_or(ProviderError::MetricsMissing)?;
         let now = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs_f64()).unwrap_or(ts);
         Ok(Sample { value, age_secs: (now - ts).max(0.0) as u64 })
+    }
+
+    /// The ALWAYS-ON metric source: read live container usage from metrics-server
+    /// (`metrics.k8s.io` PodMetrics) — what `kubectl top` shows. Returns the MAX
+    /// `resource` (memory bytes / cpu millicores) across the owner's pods (those
+    /// whose name starts with `pod_prefix`), so the band holds the hottest
+    /// instance at the setpoint. Independent of any TSDB.
+    async fn pod_metrics_max(&self, resource: &str, pod_prefix: &str) -> Result<Sample, ProviderError> {
+        let gvk = GroupVersionKind::gvk("metrics.k8s.io", "v1beta1", "PodMetrics");
+        let ar = ApiResource::from_gvk_with_plural(&gvk, "pods");
+        // metrics-server is cluster-scoped reads; namespace is inferred from the
+        // prefix's pods — query all namespaces' PodMetrics and filter by name.
+        let api: Api<DynamicObject> = Api::all_with(self.client.clone(), &ar);
+        let list = api
+            .list(&ListParams::default())
+            .await
+            .map_err(|e| ProviderError::ApiTransient(e.to_string()))?;
+        let mut max: u64 = 0;
+        let mut found = false;
+        for pm in &list.items {
+            let name = pm.metadata.name.as_deref().unwrap_or("");
+            if !name.starts_with(pod_prefix) {
+                continue;
+            }
+            let Some(containers) = pm.data.pointer("/containers").and_then(Value::as_array) else {
+                continue;
+            };
+            for c in containers {
+                if let Some(raw) = c.pointer(&format!("/usage/{resource}")).and_then(Value::as_str) {
+                    let v = if resource == "cpu" { parse_millicores(raw) } else { parse_qty(raw) };
+                    if let Some(v) = v {
+                        found = true;
+                        max = max.max(v);
+                    }
+                }
+            }
+        }
+        if !found {
+            return Err(ProviderError::MetricsMissing);
+        }
+        // metrics-server samples are recent (scrape window ~15-30s); treat as fresh.
+        Ok(Sample { value: max, age_secs: 0 })
+    }
+}
+
+/// Parse a metrics-server cpu quantity to millicores: `"4m"` → 4, `"500000000n"`
+/// (nanocores) → 500, plain cores `"1"` → 1000.
+fn parse_millicores(q: &str) -> Option<u64> {
+    let q = q.trim();
+    if let Some(n) = q.strip_suffix('n') {
+        n.parse::<f64>().ok().map(|v| (v / 1_000_000.0) as u64)
+    } else if let Some(u) = q.strip_suffix('u') {
+        u.parse::<f64>().ok().map(|v| (v / 1_000.0) as u64)
+    } else if let Some(m) = q.strip_suffix('m') {
+        m.parse::<f64>().ok().map(|v| v as u64)
+    } else {
+        q.parse::<f64>().ok().map(|v| (v * 1000.0) as u64)
+    }
+}
+
+fn parse_qty(q: &str) -> Option<u64> {
+    parse_size::Config::new().with_binary().parse_size(q).ok()
+}
+
+#[async_trait]
+impl Cluster for KubeCluster {
+    async fn read_used(&self, source: &MetricSource) -> Result<Sample, ProviderError> {
+        match source {
+            MetricSource::Prometheus(promql) => self.prometheus_used(promql).await,
+            MetricSource::PodMetricsMax { resource, pod_prefix } => {
+                self.pod_metrics_max(resource, pod_prefix).await
+            }
+        }
     }
 
     async fn read_limit(

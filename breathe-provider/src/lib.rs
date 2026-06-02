@@ -80,6 +80,21 @@ pub struct Sample {
     pub age_secs: u64,
 }
 
+/// Where a dimension's `used` reading comes from. `PodMetricsMax` is the
+/// always-on metrics-server (`metrics.k8s.io`) — the live working-set/cpu that
+/// `kubectl top` shows, present on any cluster with metrics-server (core)
+/// regardless of whether a TSDB is running. `Prometheus` is a PromQL endpoint
+/// (historical / volume stats). breathe defaults memory+cpu to `PodMetricsMax`
+/// so it never depends on a scale-to-zero TSDB.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MetricSource {
+    /// Raw PromQL against a Prometheus-compatible endpoint (storage / historical).
+    Prometheus(String),
+    /// Max container `resource` (memory bytes / cpu millicores) across the
+    /// owner's pods, read live from metrics-server.
+    PodMetricsMax { resource: String, pod_prefix: String },
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AssignReceipt {
     pub from: u64,
@@ -146,7 +161,8 @@ pub struct SsaPatch {
 /// fieldsV1 path, `apply` performs true SSA.
 #[async_trait]
 pub trait Cluster: Send + Sync {
-    async fn query(&self, promql: &str) -> Result<Sample, ProviderError>;
+    /// Read the dimension's `used` scalar from its [`MetricSource`].
+    async fn read_used(&self, source: &MetricSource) -> Result<Sample, ProviderError>;
     async fn read_limit(
         &self,
         target: &Target,
@@ -181,7 +197,7 @@ pub trait DimensionDescriptor: Send + Sync + 'static {
     /// Where this dimension's limit lives on the given target.
     fn layout(&self, target: &Target) -> LimitLayout;
     /// The PromQL whose scalar is the dimension's `used`.
-    fn used_promql(&self, target: &Target) -> String;
+    fn metric_source(&self, target: &Target) -> MetricSource;
 }
 
 /// The spine — the dyn interface `breathe-core` reconciles through.
@@ -235,7 +251,7 @@ impl<C: Cluster + 'static, D: DimensionDescriptor> ResourceProvider for BandProv
     }
 
     async fn observe(&self, target: &Target) -> Result<Observation, ProviderError> {
-        let used = self.cluster.query(&self.descriptor.used_promql(target)).await?;
+        let used = self.cluster.read_used(&self.descriptor.metric_source(target)).await?;
         let layout = self.descriptor.layout(target);
         let capacity = self.cluster.read_limit(target, &layout, self.descriptor.resource()).await?;
         let owners = self
@@ -272,7 +288,8 @@ impl<C: Cluster + 'static, D: DimensionDescriptor> ResourceProvider for BandProv
 #[cfg(feature = "mock")]
 pub mod mock {
     use super::{
-        AppliedReceipt, Cluster, FieldOwner, LimitLayout, ProviderError, Sample, SsaPatch, Target,
+        AppliedReceipt, Cluster, FieldOwner, LimitLayout, MetricSource, ProviderError, Sample,
+        SsaPatch, Target,
     };
     use async_trait::async_trait;
     use std::sync::Mutex;
@@ -297,7 +314,7 @@ pub mod mock {
 
     #[async_trait]
     impl Cluster for MockCluster {
-        async fn query(&self, _promql: &str) -> Result<Sample, ProviderError> {
+        async fn read_used(&self, _source: &MetricSource) -> Result<Sample, ProviderError> {
             Ok(self.used)
         }
         async fn read_limit(

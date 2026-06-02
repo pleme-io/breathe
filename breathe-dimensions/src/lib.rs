@@ -1,13 +1,18 @@
 //! `breathe-dimensions` — the concrete [`DimensionDescriptor`]s.
 //!
 //! Each descriptor is the *small, genuinely dimension-specific* data: the
-//! metric query, the owned field, the directionality, the owner layout. The
+//! metric source, the owned field, the directionality, the owner layout. The
 //! observe/assign/release orchestration is solved once in
 //! [`breathe_provider::BandProvider`]. Adding a dimension = a descriptor here +
 //! a catalog row in `breathe-catalog`; the controller code never grows.
+//!
+//! memory + cpu read `used` from the **always-on metrics-server**
+//! (`MetricSource::PodMetricsMax`) so breathe never depends on a scale-to-zero
+//! TSDB; storage reads volume stats via PromQL.
 
 use breathe_provider::{
-    ApplySemantics, DimensionDescriptor, DimensionId, Directionality, LimitLayout, Target,
+    ApplySemantics, DimensionDescriptor, DimensionId, Directionality, LimitLayout, MetricSource,
+    Target,
 };
 
 /// memory/cpu live on the pod template (Deployment/StatefulSet) or top-level
@@ -19,16 +24,8 @@ fn pod_or_cluster(target: &Target) -> LimitLayout {
     }
 }
 
-/// Working-set / cpu-rate PromQL scoped to the owner's pods.
-fn pod_scoped(metric_expr: &str, target: &Target) -> String {
-    format!(
-        r#"max({metric_expr}{{namespace="{ns}",pod=~"{name}.*",container!="",container!="POD"}})"#,
-        ns = target.namespace,
-        name = target.name
-    )
-}
-
-/// **Memory** — bidirectional; carve `limits.memory`; the owner rolls.
+/// **Memory** — bidirectional; carve `limits.memory`; the owner rolls. `used` is
+/// the live max container working-set across the owner's pods (metrics-server).
 pub struct MemoryDescriptor;
 impl DimensionDescriptor for MemoryDescriptor {
     fn id(&self) -> DimensionId { DimensionId::Memory }
@@ -38,12 +35,13 @@ impl DimensionDescriptor for MemoryDescriptor {
     fn resource(&self) -> &'static str { "memory" }
     fn semantics(&self) -> ApplySemantics { ApplySemantics::Transactional }
     fn layout(&self, target: &Target) -> LimitLayout { pod_or_cluster(target) }
-    fn used_promql(&self, target: &Target) -> String {
-        pod_scoped("container_memory_working_set_bytes", target)
+    fn metric_source(&self, target: &Target) -> MetricSource {
+        MetricSource::PodMetricsMax { resource: "memory".into(), pod_prefix: target.name.clone() }
     }
 }
 
 /// **CPU** — bidirectional; carve `limits.cpu` (millicores); in-place or roll.
+/// `used` is the live max container cpu across the owner's pods (metrics-server).
 pub struct CpuDescriptor;
 impl DimensionDescriptor for CpuDescriptor {
     fn id(&self) -> DimensionId { DimensionId::Cpu }
@@ -53,19 +51,14 @@ impl DimensionDescriptor for CpuDescriptor {
     fn resource(&self) -> &'static str { "cpu" }
     fn semantics(&self) -> ApplySemantics { ApplySemantics::PartialProgress }
     fn layout(&self, target: &Target) -> LimitLayout { pod_or_cluster(target) }
-    fn used_promql(&self, target: &Target) -> String {
-        // millicores: rate(cpu seconds) * 1000.
-        format!(
-            r#"max(rate(container_cpu_usage_seconds_total{{namespace="{ns}",pod=~"{name}.*",container!="",container!="POD"}}[5m]))*1000"#,
-            ns = target.namespace,
-            name = target.name
-        )
+    fn metric_source(&self, target: &Target) -> MetricSource {
+        MetricSource::PodMetricsMax { resource: "cpu".into(), pod_prefix: target.name.clone() }
     }
 }
 
 /// **Storage** — grow-only (data persists); grow PVC `requests.storage` (CSI
-/// online-resize). The shrink path is mechanically disabled by the core's
-/// directionality clamp — zero storage-specific control code.
+/// online-resize). `used` is volume stats via PromQL (no metrics-server analog).
+/// The shrink path is mechanically disabled by the core's directionality clamp.
 pub struct StorageDescriptor;
 impl DimensionDescriptor for StorageDescriptor {
     fn id(&self) -> DimensionId { DimensionId::Storage }
@@ -75,12 +68,12 @@ impl DimensionDescriptor for StorageDescriptor {
     fn resource(&self) -> &'static str { "storage" }
     fn semantics(&self) -> ApplySemantics { ApplySemantics::ContinuousReconciliation }
     fn layout(&self, _target: &Target) -> LimitLayout { LimitLayout::PvcRequest }
-    fn used_promql(&self, target: &Target) -> String {
-        format!(
+    fn metric_source(&self, target: &Target) -> MetricSource {
+        MetricSource::Prometheus(format!(
             r#"max(kubelet_volume_stats_used_bytes{{namespace="{ns}",persistentvolumeclaim="{name}"}})"#,
             ns = target.namespace,
             name = target.name
-        )
+        ))
     }
 }
 
@@ -96,32 +89,36 @@ mod tests {
     }
 
     #[test]
-    fn memory_descriptor_shape() {
+    fn memory_reads_always_on_metrics_server() {
         let d = MemoryDescriptor;
         assert_eq!(d.id(), DimensionId::Memory);
         assert_eq!(d.directionality(), Directionality::Bidirectional);
-        assert_eq!(d.field_manager(), "breathe/memory");
-        // layout follows the owner kind
         assert_eq!(d.layout(&cnpg()), LimitLayout::ClusterTopLevel);
         assert!(matches!(d.layout(&deploy()), LimitLayout::PodTemplate { .. }));
-        assert!(d.used_promql(&cnpg()).contains("container_memory_working_set_bytes"));
+        match d.metric_source(&cnpg()) {
+            MetricSource::PodMetricsMax { resource, pod_prefix } => {
+                assert_eq!(resource, "memory");
+                assert_eq!(pod_prefix, "pangea-database");
+            }
+            other => panic!("memory must read metrics-server, got {other:?}"),
+        }
     }
 
     #[test]
-    fn cpu_descriptor_is_millicores_and_bidirectional() {
+    fn cpu_reads_metrics_server_bidirectional() {
         let d = CpuDescriptor;
         assert_eq!(d.directionality(), Directionality::Bidirectional);
-        assert_eq!(d.resource(), "cpu");
-        let q = d.used_promql(&deploy());
-        assert!(q.contains("container_cpu_usage_seconds_total") && q.contains("*1000"));
+        assert!(matches!(d.metric_source(&deploy()), MetricSource::PodMetricsMax { .. }));
     }
 
     #[test]
-    fn storage_is_grow_only_and_pvc() {
+    fn storage_is_grow_only_pvc_promql() {
         let d = StorageDescriptor;
         assert_eq!(d.directionality(), Directionality::GrowOnly);
-        // storage alway uses the PVC layout, regardless of the target kind
         assert_eq!(d.layout(&cnpg()), LimitLayout::PvcRequest);
-        assert!(d.used_promql(&cnpg()).contains("kubelet_volume_stats_used_bytes"));
+        match d.metric_source(&cnpg()) {
+            MetricSource::Prometheus(q) => assert!(q.contains("kubelet_volume_stats_used_bytes")),
+            other => panic!("storage uses PromQL, got {other:?}"),
+        }
     }
 }
