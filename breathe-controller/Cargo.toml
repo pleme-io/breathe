@@ -1,0 +1,32 @@
+[package]
+name = "breathe-controller"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "The breathe controller binary — watches MemoryBand CRs and runs the composed reconcile loop (observe → plan → assign) per target via the real KubeCluster (theory/BREATHE.md M1)."
+
+[[bin]]
+name = "breathe-controller"
+path = "src/main.rs"
+
+[dependencies]
+breathe-control = { path = "../breathe-control", version = "0.1.0" }
+breathe-provider = { path = "../breathe-provider", version = "0.1.0" }
+breathe-core = { path = "../breathe-core", version = "0.1.0" }
+breathe-crd = { path = "../breathe-crd", version = "0.1.0" }
+breathe-kube = { path = "../breathe-kube", version = "0.1.0" }
+dimension-memory = { path = "../dimension-memory", version = "0.1.0" }
+kube = { version = "0.96", features = ["client", "runtime", "derive", "rustls-tls"], default-features = false }
+k8s-openapi = { version = "0.23", features = ["latest"] }
+tokio = { version = "1.40", features = ["macros", "rt-multi-thread"] }
+futures = "0.3"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+serde_json = "1.0"
+thiserror = "2"
+
+[lints]
+workspace = true
