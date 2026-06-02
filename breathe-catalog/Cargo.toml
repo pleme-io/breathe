@@ -1,0 +1,15 @@
+[package]
+name = "breathe-catalog"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "The self-describing breathe dimensions catalog (CATALOG REFLECTION). Adding a dimension REQUIRES a catalog row in the same change; the reflection tests fail the build otherwise."
+
+[dependencies]
+breathe-provider = { path = "../breathe-provider", version = "0.1.0" }
+
+[lints]
+workspace = true
