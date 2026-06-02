@@ -1,0 +1,22 @@
+[package]
+name = "breathe-kube"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "The Kubernetes Cluster impl for breathe — true-SSA apply, Prometheus metric reads, and the pure metadata.managedFields → FieldOwner ownership parser that feeds the field-granular single-writer guard (theory/BREATHE.md §3.1, §15.3)."
+
+[dependencies]
+breathe-control = { path = "../breathe-control", version = "0.1.0" }
+breathe-provider = { path = "../breathe-provider", version = "0.1.0" }
+serde_json = "1.0"
+async-trait = "0.1"
+kube = { version = "0.96", features = ["client", "rustls-tls"], default-features = false }
+k8s-openapi = { version = "0.23", features = ["latest"] }
+reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
+parse-size = "1.1"
+
+[lints]
+workspace = true

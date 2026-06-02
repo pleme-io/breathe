@@ -9,6 +9,9 @@ members = [
   "breathe-provider",  # the ResourceProvider + Cluster traits (no controller dep)
   "breathe-core",      # the composed reconcile loop (observe → plan → assign)
   "breathe-catalog",   # the self-describing dimensions catalog (CATALOG REFLECTION)
+  "breathe-kube",      # the Kubernetes Cluster impl + managedFields ownership parser
+  "breathe-crd",       # the MemoryBand CRD (typed enrollment contract)
+  "breathe-controller", # the controller binary (watch MemoryBand → reconcile_one)
   "dimension-memory",  # the memory ResourceProvider (first dimension)
 ]
 
