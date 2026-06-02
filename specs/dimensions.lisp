@@ -68,3 +68,39 @@
   :depends-on  ()
   :mirrors     "KEDA ScaledObject"
   :purpose     "observe replica count; compose with KEDA via disjoint fields (never write)")
+
+;;; ── HOST dimensions ────────────────────────────────────────────────────────
+;;; Boundary = the HostCluster impl (systemd/sysfs), NOT the k8s API. The
+;;; interpreter (breathe-host::HostCluster) rides WITHIN the static nodeBudget L2
+;;; envelopes: it writes ONLY runtime params + `--runtime` transient cgroup
+;;; properties, disjoint from what nix owns (boot modprobe / static MemoryMax /
+;;; cpusets). The applied value is refused above the BreatheNodePool ceiling — the
+;;; second safety wall, independent of the band law's safety_clamp.
+
+(defdimension-arc
+  :name        "arc"
+  :maturity    :working
+  :directionality :bidirectional      ; shrink frees page cache immediately; safe-min clamp protects it
+  :observe     "arcstats.size / zfs_arc_max (bytes)"
+  :field       "host.zfs.arc_max"
+  :manager     "breathe/arc"
+  :assign      :host-sysfs            ; write /sys/module/zfs/parameters/zfs_arc_max
+  :semantics   :continuous-reconciliation
+  :depends-on  ()
+  :mirrors     "/sys/module/zfs/parameters/zfs_arc_max"
+  :ceiling     "BreatheNodePool.arcMaxGiB (= nodeBudget.arcMaxGiB, the boot modprobe cap)"
+  :purpose     "hold the ZFS ARC at the band by carving zfs_arc_max within nodeBudget.arcMaxGiB")
+
+(defdimension-cgroup
+  :name        "cgroup"
+  :maturity    :working
+  :directionality :bidirectional      ; transient MemoryHigh; never the static unit MemoryMax (nix owns that)
+  :observe     "<unit> cgroup memory.current / MemoryHigh (bytes)"
+  :field       "host.cgroup.memory_high"
+  :manager     "breathe/cgroup"
+  :assign      :host-set-property     ; systemctl set-property --runtime <unit> MemoryHigh=
+  :semantics   :continuous-reconciliation
+  :depends-on  ()
+  :mirrors     "systemctl set-property --runtime <unit> MemoryHigh"
+  :ceiling     "BreatheNodePool.cgroupMaxGiB[<unit>] (= nodeBudget per-unit memoryMaxGiB)"
+  :purpose     "hold a unit's working set at the band by carving transient MemoryHigh within its envelope")
