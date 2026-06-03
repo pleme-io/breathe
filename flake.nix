@@ -161,6 +161,7 @@
         breathe-api-server = apiServer;
         image = image;
         agent-image = agentImage;
+        api-server-image = apiServerImage;
       };
       apps.default = { type = "app"; program = "${controller}/bin/breathe-controller"; };
       apps.breathe-mcp = { type = "app"; program = "${mcp}/bin/breathe-mcp"; };
