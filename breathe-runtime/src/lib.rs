@@ -42,10 +42,11 @@ pub fn status_for(receipt: &TickReceipt) -> BandStatus {
             s.last_decision = Some(format!("metric {staleness_secs}s stale — held"));
         }
         TickReceipt::Cooldown => s.phase = Some("Cooldown".into()),
-        TickReceipt::Applied { from, to } => {
+        TickReceipt::Applied { from, to, class } => {
             s.phase = Some(if to > from { "Growing" } else { "Shrinking" }.into());
             s.current_limit = Some(to.to_string());
-            s.last_decision = Some(format!("{from} -> {to}"));
+            // record whether the carve was golden (zero-restart) — the attestation evidence.
+            s.last_decision = Some(format!("{from} -> {to} ({class:?})"));
             s.last_change_epoch = Some(now_secs());
         }
         TickReceipt::DryRunWouldApply { from, to } => {
@@ -133,10 +134,11 @@ mod tests {
 
     #[test]
     fn applied_growth_vs_shrink_is_reported_directionally() {
-        let grow = status_for(&TickReceipt::Applied { from: 100, to: 200 });
+        use breathe_provider::DisruptionClass::RestartFree;
+        let grow = status_for(&TickReceipt::Applied { from: 100, to: 200, class: RestartFree });
         assert_eq!(grow.phase.as_deref(), Some("Growing"));
         assert_eq!(grow.current_limit.as_deref(), Some("200"));
-        let shrink = status_for(&TickReceipt::Applied { from: 200, to: 100 });
+        let shrink = status_for(&TickReceipt::Applied { from: 200, to: 100, class: RestartFree });
         assert_eq!(shrink.phase.as_deref(), Some("Shrinking"));
     }
 
@@ -172,7 +174,7 @@ mod tests {
         let cd = ClassCooldowns::default();
         assert!(cd.well_ordered());
         // a permitted carve looks again at the fast restart-free cadence.
-        assert_eq!(next_requeue(&TickReceipt::Applied { from: 1, to: 2 }, &cd), Duration::from_secs(cd.restart_free));
+        assert_eq!(next_requeue(&TickReceipt::Applied { from: 1, to: 2, class: DisruptionClass::RestartFree }, &cd), Duration::from_secs(cd.restart_free));
         // a refused full-roll crossing backs off the longest.
         assert_eq!(
             next_requeue(&TickReceipt::DeferredWouldRestart { from: 1, to: 2, class: DisruptionClass::RestartRequiring }, &cd),
