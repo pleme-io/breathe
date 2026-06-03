@@ -125,6 +125,48 @@ pub enum ApplySemantics {
     PartialProgress,
 }
 
+/// Whether a carve disturbs the running workload — the property the in-place
+/// keystone makes UNIVERSAL. `ZeroDisruption` = the live resource is re-sized
+/// with no restart (`d(restart)/d(carve) = 0`): the host cgroup/sysfs lever, the
+/// `pods/resize` subresource, the CSI online-expand. `Rolling` = the carve goes
+/// through desired-state and re-creates pods (the pod template, the CNPG
+/// `Cluster` top-level). The substrate is converging on `ZeroDisruption`
+/// everywhere — `PodResize` obsoletes `PodTemplate` wherever the cluster supports
+/// it — so "breathe never rolls (when it can avoid it)" is now a typed property,
+/// not a hope. It is the precondition for the thesis's core claim: *the app
+/// simply exists, continuously provided-for, and never notices a restart*. A
+/// zero-disruption carve is also always-"golden" (it never leaves a
+/// non-converged, pods-pending state) — the eclusa berth property, applied to
+/// resource carving.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Disruption {
+    /// The live container/host resource is re-sized in place — no restart.
+    ZeroDisruption,
+    /// The carve re-creates pods (template / CNPG top-level) — a rolling update.
+    Rolling,
+}
+
+impl Disruption {
+    #[must_use]
+    pub fn is_zero(self) -> bool {
+        matches!(self, Self::ZeroDisruption)
+    }
+}
+
+impl LimitLayout {
+    /// Whether carving at this layout disturbs the running workload. The in-place
+    /// keystone moved memory/cpu (`PodResize`) into the zero-disruption set,
+    /// joining storage (`PvcRequest`) and the host levers (`Host`); only the
+    /// template-write layouts (`PodTemplate`, `ClusterTopLevel`) still roll.
+    #[must_use]
+    pub fn disruption(&self) -> Disruption {
+        match self {
+            Self::PodResize { .. } | Self::PvcRequest | Self::Host(_) => Disruption::ZeroDisruption,
+            Self::PodTemplate { .. } | Self::ClusterTopLevel => Disruption::Rolling,
+        }
+    }
+}
+
 /// A metric reading + the age of the underlying sample (freshness gate input).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Sample {
@@ -335,6 +377,36 @@ impl<C: Cluster + 'static, D: DimensionDescriptor> ResourceProvider for BandProv
 
     async fn release(&self, _target: &Target) -> Result<ReleaseReceipt, ProviderError> {
         Ok(ReleaseReceipt { baseline: None, source_hash: [0u8; 16] })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Disruption, HostKnob, LimitLayout};
+
+    #[test]
+    fn in_place_layouts_are_zero_disruption() {
+        assert!(LimitLayout::PodResize { container: None }.disruption().is_zero());
+        assert!(LimitLayout::PvcRequest.disruption().is_zero());
+        assert!(LimitLayout::Host(HostKnob::ZfsArcMax).disruption().is_zero());
+    }
+
+    #[test]
+    fn template_write_layouts_roll() {
+        assert_eq!(LimitLayout::PodTemplate { container: None }.disruption(), Disruption::Rolling);
+        assert_eq!(LimitLayout::ClusterTopLevel.disruption(), Disruption::Rolling);
+        assert!(!LimitLayout::PodTemplate { container: None }.disruption().is_zero());
+    }
+
+    #[test]
+    fn pod_resize_obsoletes_pod_template_on_the_disruption_axis() {
+        // the keystone: the SAME memory carve is Rolling via the template but
+        // ZeroDisruption via resize — so preferring PodResize strictly removes
+        // disruption with no other change.
+        let roll = LimitLayout::PodTemplate { container: Some("app".into()) };
+        let live = LimitLayout::PodResize { container: Some("app".into()) };
+        assert_eq!(roll.disruption(), Disruption::Rolling);
+        assert!(live.disruption().is_zero());
     }
 }
 
