@@ -1,47 +1,154 @@
 syntax = "proto3";
+
 package breathe.v1;
 
-// The gRPC surface mirrors the REST/GraphQL operations over the same facade.
-// Replies carry the JSON projection of the CRD (the typed-message destination is
-// forge-gen from spec/breathe.openapi.yaml); this hand-served surface keeps the
-// one facade as the single source of truth.
-message JsonReply { string json = 1; }
-message Empty {}
+import "google/protobuf/empty.proto";
+import "google/protobuf/struct.proto";
 
-message ListBandsRequest {
-  string kind = 1;       // memory|cpu|storage|arc|cgroup
-  string namespace = 2;  // empty = all namespaces
+message Band {
+  string api_version = 1;
+  string kind = 2;
+  google.protobuf.Struct metadata = 3;
+  BandSpec spec = 4;
+  BandStatus status = 5;
 }
-message BandRefRequest {
-  string kind = 1;
+
+enum BandKind {
+  BAND_KIND_UNSPECIFIED = 0;
+  BAND_KIND_MEMORY = 1;
+  BAND_KIND_CPU = 2;
+  BAND_KIND_STORAGE = 3;
+  BAND_KIND_ARC = 4;
+  BAND_KIND_CGROUP = 5;
+}
+
+message BandSpec {
+  optional string ceiling = 1;
+  optional int64 cooldown_seconds = 2;
+  optional bool dry_run = 3;
+  optional string floor = 4;
+  optional double grow_above = 5;
+  optional double grow_factor = 6;
+  optional int64 max_staleness_seconds = 7;
+  optional double setpoint = 8;
+  optional double shrink_below = 9;
+  optional double shrink_factor = 10;
+  TargetRef target_ref = 11;
+}
+
+message BandStatus {
+  string conflict_manager = 1;
+  string current_limit = 2;
+  int64 last_change_epoch = 3;
+  string last_decision = 4;
+  string last_util = 5;
+  string phase = 6;
+}
+
+message Catalog {
+  repeated DimensionSpec dimensions = 1;
+}
+
+message DimensionSpec {
+  string authoring_keyword = 1;
+  repeated string depends_on = 2;
+  string directionality = 3;
+  string id = 4;
+  bool is_host = 5;
+  string maturity = 6;
+  string name = 7;
+  string purpose = 8;
+  optional string upstream_mirror = 9;
+}
+
+message NodePool {
+  string api_version = 1;
+  string kind = 2;
+  google.protobuf.Struct metadata = 3;
+  NodePoolSpec spec = 4;
+  NodePoolStatus status = 5;
+}
+
+message NodePoolSpec {
+  int64 arc_max_gi_b = 1;
+  map<string, int64> cgroup_max_gi_b = 2;
+  string node_name = 3;
+  bool write_enabled = 4;
+}
+
+message NodePoolStatus {
+  int64 last_seen_epoch = 1;
+  int64 managed_units = 2;
+  string observed_node = 3;
+  string phase = 4;
+}
+
+message TargetRef {
+  string api_version = 1;
+  string container = 2;
+  string kind = 3;
+  string name = 4;
+}
+
+message BandListRequest {
+  BandKind kind = 1;
+  string namespace = 2;
+}
+
+message BandListResponse {
+  repeated Band items = 1;
+}
+
+message BandGetRequest {
+  BandKind kind = 1;
   string namespace = 2;
   string name = 3;
 }
-message PatchBandRequest {
-  string kind = 1;
+
+message BandPatchRequest {
+  BandKind kind = 1;
   string namespace = 2;
   string name = 3;
-  string spec_json = 4;  // JSON object of spec fields to merge-patch
+  BandSpec body = 4;
 }
-message SetDryRunRequest {
-  string kind = 1;
+
+message BandSetDryRunRequest {
+  BandKind kind = 1;
   string namespace = 2;
   string name = 3;
   bool dry_run = 4;
 }
-message PoolRefRequest { string name = 1; }
-message SetWriteEnabledRequest {
+
+message CatalogListRequest {
+}
+
+message NodepoolListRequest {
+}
+
+message NodepoolListResponse {
+  repeated NodePool items = 1;
+}
+
+message NodepoolGetRequest {
+  string name = 1;
+}
+
+message NodepoolSetWriteEnabledRequest {
   string name = 1;
   bool write_enabled = 2;
 }
 
+message HealthzRequest {
+}
+
 service Breathe {
-  rpc ListBands(ListBandsRequest) returns (JsonReply);
-  rpc GetBand(BandRefRequest) returns (JsonReply);
-  rpc PatchBand(PatchBandRequest) returns (JsonReply);
-  rpc SetDryRun(SetDryRunRequest) returns (JsonReply);
-  rpc ListNodePools(Empty) returns (JsonReply);
-  rpc GetNodePool(PoolRefRequest) returns (JsonReply);
-  rpc SetWriteEnabled(SetWriteEnabledRequest) returns (JsonReply);
-  rpc Catalog(Empty) returns (JsonReply);
+  rpc BandList(BandListRequest) returns (BandListResponse);
+  rpc BandGet(BandGetRequest) returns (Band);
+  rpc BandPatch(BandPatchRequest) returns (Band);
+  rpc BandSetDryRun(BandSetDryRunRequest) returns (Band);
+  rpc CatalogList(CatalogListRequest) returns (Catalog);
+  rpc NodepoolList(NodepoolListRequest) returns (NodepoolListResponse);
+  rpc NodepoolGet(NodepoolGetRequest) returns (NodePool);
+  rpc NodepoolSetWriteEnabled(NodepoolSetWriteEnabledRequest) returns (NodePool);
+  rpc Healthz(HealthzRequest) returns (google.protobuf.Empty);
 }
