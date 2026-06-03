@@ -36,6 +36,7 @@ pub struct MemoryDescriptor {
     pub in_place: bool,
 }
 impl DimensionDescriptor for MemoryDescriptor {
+    fn with_resize_capability(resize_capable: bool) -> Self { Self { in_place: resize_capable } }
     fn id(&self) -> DimensionId { DimensionId::Memory }
     fn directionality(&self) -> Directionality { Directionality::Bidirectional }
     fn field_manager(&self) -> &'static str { "breathe/memory" }
@@ -57,6 +58,7 @@ pub struct CpuDescriptor {
     pub in_place: bool,
 }
 impl DimensionDescriptor for CpuDescriptor {
+    fn with_resize_capability(resize_capable: bool) -> Self { Self { in_place: resize_capable } }
     fn id(&self) -> DimensionId { DimensionId::Cpu }
     fn directionality(&self) -> Directionality { Directionality::Bidirectional }
     fn field_manager(&self) -> &'static str { "breathe/cpu" }
@@ -135,6 +137,17 @@ mod tests {
         assert!(MemoryDescriptor { in_place: true }.layout(&t).disruption().is_zero());
         assert!(CpuDescriptor { in_place: true }.layout(&t).disruption().is_zero());
         assert!(StorageDescriptor.layout(&t).disruption().is_zero());
+    }
+
+    #[test]
+    fn with_resize_capability_makes_zero_disruption_the_default() {
+        // K1 "breathe never rolls": memory/cpu prefer in-place when the cluster
+        // supports pods/resize, and roll only when it does not.
+        assert!(MemoryDescriptor::with_resize_capability(true).in_place);
+        assert!(!MemoryDescriptor::with_resize_capability(false).in_place);
+        assert!(CpuDescriptor::with_resize_capability(true).in_place);
+        // storage ignores it (already zero-disruption) — the default ctor.
+        let _ = StorageDescriptor::with_resize_capability(true);
     }
 
     #[test]
