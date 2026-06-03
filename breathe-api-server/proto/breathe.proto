@@ -1,0 +1,47 @@
+syntax = "proto3";
+package breathe.v1;
+
+// The gRPC surface mirrors the REST/GraphQL operations over the same facade.
+// Replies carry the JSON projection of the CRD (the typed-message destination is
+// forge-gen from spec/breathe.openapi.yaml); this hand-served surface keeps the
+// one facade as the single source of truth.
+message JsonReply { string json = 1; }
+message Empty {}
+
+message ListBandsRequest {
+  string kind = 1;       // memory|cpu|storage|arc|cgroup
+  string namespace = 2;  // empty = all namespaces
+}
+message BandRefRequest {
+  string kind = 1;
+  string namespace = 2;
+  string name = 3;
+}
+message PatchBandRequest {
+  string kind = 1;
+  string namespace = 2;
+  string name = 3;
+  string spec_json = 4;  // JSON object of spec fields to merge-patch
+}
+message SetDryRunRequest {
+  string kind = 1;
+  string namespace = 2;
+  string name = 3;
+  bool dry_run = 4;
+}
+message PoolRefRequest { string name = 1; }
+message SetWriteEnabledRequest {
+  string name = 1;
+  bool write_enabled = 2;
+}
+
+service Breathe {
+  rpc ListBands(ListBandsRequest) returns (JsonReply);
+  rpc GetBand(BandRefRequest) returns (JsonReply);
+  rpc PatchBand(PatchBandRequest) returns (JsonReply);
+  rpc SetDryRun(SetDryRunRequest) returns (JsonReply);
+  rpc ListNodePools(Empty) returns (JsonReply);
+  rpc GetNodePool(PoolRefRequest) returns (JsonReply);
+  rpc SetWriteEnabled(SetWriteEnabledRequest) returns (JsonReply);
+  rpc Catalog(Empty) returns (JsonReply);
+}
