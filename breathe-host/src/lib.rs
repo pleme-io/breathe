@@ -116,37 +116,80 @@ pub trait HostEnvironment: Send + Sync {
 /// the HOST's `/sys` + `/proc` mounted at `HOST_ROOT` (e.g. `/host`) rather than
 /// the container's own. Empty `root` (the default) addresses the real `/` — the
 /// shape unit tests and a bare-metal binary use.
-#[derive(Debug, Default, Clone)]
+///
+/// `nsenter_pid` + `systemctl_bin` carry the host-systemd reach: a pod's own
+/// `systemctl` cannot talk to the host's systemd, so when `nsenter_pid` is set
+/// (the DaemonSet sets `BREATHE_NSENTER_PID=1`) every `systemctl` call is wrapped
+/// in `nsenter -t <pid> -m -u -i -n -p -- <systemctl_bin> …`, entering the host's
+/// namespaces and running the host's `systemctl` (its absolute path on nixos).
+#[derive(Debug, Clone)]
 pub struct SystemdSysfsEnv {
     root: String,
+    nsenter_pid: Option<u32>,
+    systemctl_bin: String,
+}
+
+impl Default for SystemdSysfsEnv {
+    fn default() -> Self {
+        Self { root: String::new(), nsenter_pid: None, systemctl_bin: "systemctl".into() }
+    }
 }
 
 impl SystemdSysfsEnv {
-    /// Read `HOST_ROOT` from the environment (the DaemonSet sets it to `/host`).
+    /// Read the host-access config from the environment (the DaemonSet sets these):
+    /// `HOST_ROOT` (sysfs/procfs prefix), `BREATHE_NSENTER_PID` (host PID to enter,
+    /// e.g. `1`), `BREATHE_SYSTEMCTL_BIN` (the host's systemctl path).
     #[must_use]
     pub fn from_env() -> Self {
-        Self { root: std::env::var("HOST_ROOT").unwrap_or_default() }
+        Self {
+            root: std::env::var("HOST_ROOT").unwrap_or_default(),
+            nsenter_pid: std::env::var("BREATHE_NSENTER_PID").ok().and_then(|s| s.parse().ok()),
+            systemctl_bin: std::env::var("BREATHE_SYSTEMCTL_BIN").unwrap_or_else(|_| "systemctl".into()),
+        }
     }
-    /// Construct with an explicit host-root prefix.
+    /// Construct with an explicit host-root prefix (bare-metal / tests).
     #[must_use]
     pub fn with_root(root: impl Into<String>) -> Self {
-        Self { root: root.into() }
+        Self { root: root.into(), ..Self::default() }
     }
     /// Prefix an absolute host path with the configured root.
     fn at(&self, abs: &str) -> String {
         format!("{}{}", self.root, abs)
     }
 
-    /// Run `systemctl <args…>` and return trimmed stdout. NO shell, NO `format!`
-    /// of a command line — argv is built with `Command::arg` (the typed surface).
-    fn systemctl(args: &[&str]) -> Result<String, HostError> {
-        let out = std::process::Command::new("systemctl")
-            .args(args)
+    /// Build the `(program, argv)` to run host `systemctl`, optionally wrapped in
+    /// `nsenter` to enter the host's namespaces from a pod. Pure + testable — no
+    /// shell, no `format!` of a command line (argv is a typed vector).
+    fn systemctl_invocation(
+        nsenter_pid: Option<u32>,
+        systemctl_bin: &str,
+        args: &[&str],
+    ) -> (String, Vec<String>) {
+        match nsenter_pid {
+            Some(pid) => {
+                let mut v = vec![
+                    "-t".to_string(), pid.to_string(),
+                    "-m".into(), "-u".into(), "-i".into(), "-n".into(), "-p".into(),
+                    "--".into(), systemctl_bin.to_string(),
+                ];
+                v.extend(args.iter().map(|s| (*s).to_string()));
+                ("nsenter".to_string(), v)
+            }
+            None => (systemctl_bin.to_string(), args.iter().map(|s| (*s).to_string()).collect()),
+        }
+    }
+
+    /// Run `systemctl <args…>` (via nsenter when configured) and return trimmed
+    /// stdout.
+    fn systemctl(&self, args: &[&str]) -> Result<String, HostError> {
+        let (prog, argv) = Self::systemctl_invocation(self.nsenter_pid, &self.systemctl_bin, args);
+        let out = std::process::Command::new(&prog)
+            .args(&argv)
             .output()
             .map_err(|e| HostError::Io(e.to_string()))?;
         if !out.status.success() {
             return Err(HostError::Command {
-                argv: format!("systemctl {}", args.join(" ")),
+                argv: format!("{prog} {}", argv.join(" ")),
                 code: out.status.code(),
                 stderr: String::from_utf8_lossy(&out.stderr).trim().to_string(),
             });
@@ -180,12 +223,12 @@ impl HostEnvironment for SystemdSysfsEnv {
 
     fn read_cgroup_memory_current(&self, unit: &str) -> Result<u64, HostError> {
         // `systemctl show <unit> -p MemoryCurrent --value` → bytes (or "[not set]").
-        let v = Self::systemctl(&["show", unit, "-p", "MemoryCurrent", "--value"])?;
+        let v = self.systemctl(&["show", unit, "-p", "MemoryCurrent", "--value"])?;
         v.trim().parse::<u64>().map_err(|e| HostError::Parse(format!("MemoryCurrent={v:?}: {e}")))
     }
 
     fn read_unit_property_u64(&self, unit: &str, property: &str) -> Result<Option<u64>, HostError> {
-        let v = Self::systemctl(&["show", unit, "-p", property, "--value"])?;
+        let v = self.systemctl(&["show", unit, "-p", property, "--value"])?;
         let t = v.trim();
         // systemd reports an unbounded limit as "infinity"; an unset numeric as "".
         if t.is_empty() || t == "infinity" || t == "[not set]" {
@@ -197,7 +240,7 @@ impl HostEnvironment for SystemdSysfsEnv {
     fn set_unit_property_u64(&self, unit: &str, property: &str, value: u64) -> Result<(), HostError> {
         // argv token `Property=value` is the allowed typed surface (Command::arg).
         let assignment = format!("{property}={value}");
-        Self::systemctl(&["set-property", "--runtime", unit, &assignment]).map(|_| ())
+        self.systemctl(&["set-property", "--runtime", unit, &assignment]).map(|_| ())
     }
 }
 
@@ -587,6 +630,30 @@ mod tests {
         // no L2 envelope for `unknown.service` ⇒ no ceiling ⇒ refuse (never write blind).
         assert!(cluster.apply(&patch).await.is_err());
         assert!(cluster.env().writes().is_empty());
+    }
+
+    #[test]
+    fn systemctl_invocation_wraps_in_nsenter_when_a_pid_is_set() {
+        // bare-metal / tests: no nsenter — run systemctl directly.
+        let (prog, argv) = SystemdSysfsEnv::systemctl_invocation(None, "systemctl", &["show", "x", "--value"]);
+        assert_eq!(prog, "systemctl");
+        assert_eq!(argv, vec!["show", "x", "--value"]);
+
+        // in-pod: enter the host's namespaces and run the host's systemctl.
+        let (prog, argv) = SystemdSysfsEnv::systemctl_invocation(
+            Some(1),
+            "/run/current-system/sw/bin/systemctl",
+            &["set-property", "--runtime", "nix-daemon.service", "MemoryHigh=10G"],
+        );
+        assert_eq!(prog, "nsenter");
+        assert_eq!(
+            argv,
+            vec![
+                "-t", "1", "-m", "-u", "-i", "-n", "-p", "--",
+                "/run/current-system/sw/bin/systemctl",
+                "set-property", "--runtime", "nix-daemon.service", "MemoryHigh=10G",
+            ]
+        );
     }
 
     #[tokio::test]
