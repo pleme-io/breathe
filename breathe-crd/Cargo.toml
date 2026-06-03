@@ -10,6 +10,7 @@ description = "The MemoryBand CRD (breathe.pleme.io/v1) — the typed per-target
 
 [dependencies]
 breathe-control = { path = "../breathe-control", version = "0.1.0" }
+breathe-provider = { path = "../breathe-provider", version = "0.1.0" }
 kube = { version = "0.96", features = ["derive"], default-features = false }
 k8s-openapi = { version = "0.23", features = ["latest"] }
 schemars = "0.8"

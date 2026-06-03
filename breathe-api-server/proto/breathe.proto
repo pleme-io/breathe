@@ -25,15 +25,16 @@ enum BandKind {
 message BandSpec {
   optional string ceiling = 1;
   optional int64 cooldown_seconds = 2;
-  optional bool dry_run = 3;
-  optional string floor = 4;
-  optional double grow_above = 5;
-  optional double grow_factor = 6;
-  optional int64 max_staleness_seconds = 7;
-  optional double setpoint = 8;
-  optional double shrink_below = 9;
-  optional double shrink_factor = 10;
-  TargetRef target_ref = 11;
+  optional string disruption_policy = 3;
+  optional bool dry_run = 4;
+  optional string floor = 5;
+  optional double grow_above = 6;
+  optional double grow_factor = 7;
+  optional int64 max_staleness_seconds = 8;
+  optional double setpoint = 9;
+  optional double shrink_below = 10;
+  optional double shrink_factor = 11;
+  TargetRef target_ref = 12;
 }
 
 message BandStatus {

@@ -167,7 +167,8 @@ impl DisruptionClass {
 /// per node; the actuator refuses any action whose [`DisruptionClass`] the policy
 /// does not permit (returning a typed deferral, never a silent roll). The default
 /// is the cautious one — never restart a workload unless explicitly allowed.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
 pub enum DisruptionPolicy {
     /// Only `RestartFree` actions — the workload is NEVER disturbed. A carve that
     /// would require (even conditionally) a restart is deferred + surfaced. The
@@ -184,6 +185,14 @@ pub enum DisruptionPolicy {
 }
 
 impl DisruptionPolicy {
+    /// The default (golden) policy — used as a serde `skip_serializing_if` so a
+    /// band at the default omits the field (keeps the strict typed-gRPC surface
+    /// safe with an api-server that predates the field).
+    #[must_use]
+    pub fn is_restart_free_only(&self) -> bool {
+        matches!(self, Self::RestartFreeOnly)
+    }
+
     /// Whether this policy permits an action of the given restart cost.
     #[must_use]
     pub fn permits(self, class: DisruptionClass) -> bool {

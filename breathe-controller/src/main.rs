@@ -16,7 +16,7 @@ use breathe_core::{reconcile_one, ReconcileInput};
 use breathe_crd::{Band, CpuBand, MemoryBand, StorageBand};
 use breathe_dimensions::{CpuDescriptor, MemoryDescriptor, StorageDescriptor};
 use breathe_kube::KubeCluster;
-use breathe_provider::{BandProvider, ClassCooldowns, DimensionDescriptor, DisruptionPolicy, ResourceProvider, Target};
+use breathe_provider::{BandProvider, ClassCooldowns, DimensionDescriptor, ResourceProvider, Target};
 use breathe_runtime::{error_status, next_requeue, now_secs, patch_status, status_for};
 use futures::StreamExt;
 use kube::{
@@ -40,21 +40,9 @@ struct Ctx {
     /// pod-backed workload IN PLACE (zero restart) instead of rolling it. The K1
     /// "breathe never rolls" default — detected once at startup.
     resize_capable: bool,
-    /// The golden/ceiling gate: a carve whose restart class this policy does not
-    /// permit is DEFERRED, never silently rolled. Default `RestartFreeOnly`.
-    policy: DisruptionPolicy,
     /// Per-restart-class requeue cadence — golden carves re-tick near the scrape
     /// interval; refused crossings back off.
     cooldowns: ClassCooldowns,
-}
-
-/// Parse the fleet `BREATHE_DISRUPTION_POLICY` env (default golden).
-fn parse_policy(s: &str) -> DisruptionPolicy {
-    match s.to_ascii_lowercase().replace('_', "-").as_str() {
-        "allow-restart" => DisruptionPolicy::AllowRestart,
-        "allow-conditional" => DisruptionPolicy::AllowConditional,
-        _ => DisruptionPolicy::RestartFreeOnly,
-    }
 }
 
 /// True when the apiserver is k8s ≥1.33 (the `pods/resize` subresource is GA).
@@ -110,7 +98,9 @@ async fn reconcile<B: Band, D: DimensionDescriptor + Default>(
         max_staleness_secs: obj.max_staleness_seconds(),
         in_cooldown,
         dry_run: obj.dry_run(),
-        policy: ctx.policy,
+        // per-band golden/ceiling gate (default RestartFreeOnly) — the band
+        // declares its own policy; the fleet env is only a fallback default.
+        policy: obj.disruption_policy(),
     };
 
     let receipt = reconcile_one(&input, &provider).await;
@@ -142,15 +132,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
     let client = Client::try_default().await?;
     let resize_capable = detect_resize_capable(&client).await;
-    let policy = parse_policy(&std::env::var("BREATHE_DISRUPTION_POLICY").unwrap_or_default());
     let cooldowns = ClassCooldowns::default();
-    let ctx = Arc::new(Ctx { client: client.clone(), prometheus_url, requeue, resize_capable, policy, cooldowns });
+    let ctx = Arc::new(Ctx { client: client.clone(), prometheus_url, requeue, resize_capable, cooldowns });
 
     info!(
         resize_capable,
-        policy = ?policy,
         carve = if resize_capable { "in-place (pods/resize, zero-restart)" } else { "rolling (template)" },
-        "breathe-controller starting — memory + cpu + storage dimensions (golden-edge gate active)"
+        "breathe-controller starting — golden-edge gate active, per-band DisruptionPolicy (default RestartFreeOnly)"
     );
 
     let mem = Controller::new(Api::<MemoryBand>::all(client.clone()), watcher::Config::default())

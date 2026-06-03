@@ -20,6 +20,7 @@
 use std::collections::BTreeMap;
 
 use breathe_control::{BandConfig, Unit};
+use breathe_provider::DisruptionPolicy;
 use kube::CustomResource;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -74,6 +75,9 @@ pub trait Band:
     fn cooldown_seconds(&self) -> u64;
     fn dry_run(&self) -> bool;
     fn last_change_epoch(&self) -> Option<i64>;
+    /// The band's restart policy — the golden/ceiling gate (default golden
+    /// `RestartFreeOnly`). A carve whose class this forbids is deferred, not rolled.
+    fn disruption_policy(&self) -> DisruptionPolicy;
 }
 
 fn band_config_of(
@@ -147,6 +151,10 @@ macro_rules! band_kind {
             pub max_staleness_seconds: u64,
             #[serde(default)]
             pub dry_run: bool,
+            /// The golden/ceiling gate (default `restartFreeOnly`). Omitted on
+            /// serialize when default so the strict typed-gRPC surface stays safe.
+            #[serde(default, skip_serializing_if = "breathe_provider::DisruptionPolicy::is_restart_free_only")]
+            pub disruption_policy: DisruptionPolicy,
         }
 
         impl crate::Band for $kind {
@@ -171,6 +179,9 @@ macro_rules! band_kind {
             }
             fn last_change_epoch(&self) -> Option<i64> {
                 self.status.as_ref().and_then(|s| s.last_change_epoch)
+            }
+            fn disruption_policy(&self) -> DisruptionPolicy {
+                self.spec.disruption_policy
             }
         }
     };
@@ -299,7 +310,7 @@ mod tests {
         let mem = MemoryBand::new("m", MemoryBandSpec {
             target_ref: tr.clone(), setpoint: 0.80, grow_above: 0.85, shrink_below: 0.70,
             grow_factor: 1.25, shrink_factor: 0.90, floor: "512Mi".into(), ceiling: "4Gi".into(),
-            cooldown_seconds: 600, max_staleness_seconds: 120, dry_run: true,
+            cooldown_seconds: 600, max_staleness_seconds: 120, dry_run: true, disruption_policy: Default::default(),
         });
         let cfg = Band::band_config(&mem).unwrap();
         assert_eq!(cfg.floor_bytes, 512 * (1 << 20));
@@ -312,7 +323,7 @@ mod tests {
         let cpu = CpuBand::new("c", CpuBandSpec {
             target_ref: tr, setpoint: 0.80, grow_above: 0.85, shrink_below: 0.70,
             grow_factor: 1.25, shrink_factor: 0.90, floor: "250m".into(), ceiling: "2".into(),
-            cooldown_seconds: 600, max_staleness_seconds: 120, dry_run: false,
+            cooldown_seconds: 600, max_staleness_seconds: 120, dry_run: false, disruption_policy: Default::default(),
         });
         let cfg = Band::band_config(&cpu).unwrap();
         // millicores, NOT bytes: "250m" → 250, "2" cores → 2000m.
@@ -337,7 +348,7 @@ mod tests {
         let arc = ArcBand::new("rio-arc", ArcBandSpec {
             target_ref: tr, setpoint: 0.80, grow_above: 0.85, shrink_below: 0.70,
             grow_factor: 1.25, shrink_factor: 0.90, floor: "1Gi".into(), ceiling: "6Gi".into(),
-            cooldown_seconds: 600, max_staleness_seconds: 120, dry_run: true,
+            cooldown_seconds: 600, max_staleness_seconds: 120, dry_run: true, disruption_policy: Default::default(),
         });
         let cfg = Band::band_config(&arc).unwrap();
         assert_eq!(cfg.floor_bytes, 1 << 30);
@@ -348,9 +359,27 @@ mod tests {
         let g = CgroupBand::new("nix-daemon", CgroupBandSpec {
             target_ref: TargetRef { kind: "HostUnit".into(), name: "nix-daemon.service".into(), api_version: None, container: None },
             setpoint: 0.80, grow_above: 0.85, shrink_below: 0.70, grow_factor: 1.25, shrink_factor: 0.90,
-            floor: "1Gi".into(), ceiling: "12Gi".into(), cooldown_seconds: 600, max_staleness_seconds: 120, dry_run: true,
+            floor: "1Gi".into(), ceiling: "12Gi".into(), cooldown_seconds: 600, max_staleness_seconds: 120, dry_run: true, disruption_policy: Default::default(),
         });
         assert_eq!(g.target_ref().name, "nix-daemon.service");
+    }
+
+    #[test]
+    fn disruption_policy_defaults_golden_and_parses_per_band() {
+        // omitted → RestartFreeOnly (golden-by-default).
+        let def: MemoryBand = serde_json::from_value(serde_json::json!({
+            "apiVersion": "breathe.pleme.io/v1", "kind": "MemoryBand",
+            "metadata": { "name": "m" },
+            "spec": { "targetRef": { "kind": "Deployment", "name": "app" } }
+        })).unwrap();
+        assert_eq!(def.disruption_policy(), DisruptionPolicy::RestartFreeOnly);
+        // a CNPG band declares allowRestart (its only resize path is a roll).
+        let allow: MemoryBand = serde_json::from_value(serde_json::json!({
+            "apiVersion": "breathe.pleme.io/v1", "kind": "MemoryBand",
+            "metadata": { "name": "db" },
+            "spec": { "targetRef": { "kind": "Cluster", "name": "pangea-database" }, "disruptionPolicy": "allowRestart" }
+        })).unwrap();
+        assert_eq!(allow.disruption_policy(), DisruptionPolicy::AllowRestart);
     }
 
     #[test]
