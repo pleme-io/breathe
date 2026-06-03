@@ -10,7 +10,7 @@
 //! Mirrors `sui-spec`'s catalog template; the maturity gate is a breathe-local
 //! enum (a conscious fork, not a verbatim reuse of sui-spec's `M*TypedOnly`).
 
-use breathe_provider::{DimensionId, Directionality};
+use breathe_provider::{DimensionId, Directionality, DisruptionClass};
 
 /// How a dimension RECOVERS when its allocation is briefly wrong — the property
 /// that decides whether "provided-for on average" is sound or fatal
@@ -167,6 +167,78 @@ pub fn lookup(id: DimensionId) -> Option<&'static DimensionSpec> {
     CATALOG.iter().find(|d| d.id == id)
 }
 
+// ── The ACTION catalog — the explicit, typed enumeration of every knob breathe
+//    can carve, classified by RESTART COST. The restart-free set is what breathe
+//    drives toward real-time through the standard tick; the restart-requiring set
+//    is enumerated, gated by DisruptionPolicy, and used only when the carve is
+//    reachable no other way (or the disruption is worth it). ───────────────────
+
+/// Which actuation plane an action lives on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Plane {
+    /// systemd/sysfs on the node (HostCluster).
+    Host,
+    /// the live pod via `pods/resize` (KubeCluster).
+    Pod,
+    /// the PVC via CSI online-expand.
+    Pvc,
+    /// a controller's desired-state object (pod template / CNPG `Cluster`) — a roll.
+    Workload,
+    /// the cluster's node set (autoscaler / Karpenter).
+    Node,
+}
+
+/// One concrete action breathe can take, declared as typed data.
+#[derive(Debug, Clone, Copy)]
+pub struct ActionSpec {
+    /// Stable id.
+    pub name: &'static str,
+    /// The concrete knob carved.
+    pub knob: &'static str,
+    pub plane: Plane,
+    /// The restart cost — the load-bearing field.
+    pub class: DisruptionClass,
+    /// Drivable in the standard reconcile tick at high cadence (true ⟺ the live
+    /// workload is undisturbed each tick). Every `RestartFree` action is tickable;
+    /// `RestartRequiring` actions are NOT (they gate on cooldown + policy).
+    pub tickable: bool,
+    /// One line. For `RestartRequiring` actions: WHEN it is still worth the roll.
+    pub note: &'static str,
+}
+
+use DisruptionClass::{RestartConditional, RestartFree, RestartRequiring};
+
+/// Every action, enumerated + classified. Adding a knob is one row; the
+/// reflection tests fail the build if a `RestartFree` action is not tickable.
+pub const ACTIONS: &[ActionSpec] = &[
+    // ── RESTART-FREE — the real-time set (no workload disturbance, ever) ────────
+    ActionSpec { name: "arc-max",            knob: "zfs_arc_max",          plane: Plane::Host, class: RestartFree, tickable: true, note: "sysfs write; ARC re-sizes live" },
+    ActionSpec { name: "cgroup-memory-high", knob: "MemoryHigh",           plane: Plane::Host, class: RestartFree, tickable: true, note: "systemd transient set-property; soft reclaim throttle" },
+    ActionSpec { name: "cgroup-cpu-quota",   knob: "CPUQuota",             plane: Plane::Host, class: RestartFree, tickable: true, note: "EXPLOIT: live cpu bandwidth cap on a host unit" },
+    ActionSpec { name: "cgroup-cpu-weight",  knob: "CPUWeight",            plane: Plane::Host, class: RestartFree, tickable: true, note: "EXPLOIT: live cpu share under contention" },
+    ActionSpec { name: "cgroup-io-weight",   knob: "IOWeight",             plane: Plane::Host, class: RestartFree, tickable: true, note: "EXPLOIT: live io share (blkio) under contention" },
+    ActionSpec { name: "pod-cpu-resize",     knob: "pods/resize cpu",      plane: Plane::Pod,  class: RestartFree, tickable: true, note: "in-place both directions; cpu never restarts" },
+    ActionSpec { name: "pod-memory-grow",    knob: "pods/resize memory↑",  plane: Plane::Pod,  class: RestartFree, tickable: true, note: "in-place; a memory GROW never restarts" },
+    ActionSpec { name: "pvc-expand",         knob: "CSI ExpandVolume",     plane: Plane::Pvc,  class: RestartFree, tickable: true, note: "online grow-only; no remount" },
+    ActionSpec { name: "node-add",           knob: "NodePool/Karpenter",   plane: Plane::Node, class: RestartFree, tickable: true, note: "EXPLOIT (K2): grow the envelope; existing pods undisturbed" },
+
+    // ── RESTART-CONDITIONAL — restart-gated in one direction ───────────────────
+    ActionSpec { name: "pod-memory-shrink",  knob: "pods/resize memory↓",  plane: Plane::Pod,  class: RestartConditional, tickable: true, note: "in-place iff resizePolicy memory == NotRequired, else restarts" },
+
+    // ── RESTART-REQUIRING — useful, but disruptive; gated by DisruptionPolicy ──
+    ActionSpec { name: "pod-template-carve", knob: "template resources",   plane: Plane::Workload, class: RestartRequiring, tickable: false, note: "USE when k8s <1.33 (no resize) or a QoS-class change needs a roll" },
+    ActionSpec { name: "cnpg-cluster-carve", knob: "CNPG spec.resources",  plane: Plane::Workload, class: RestartRequiring, tickable: false, note: "USE: the only way to resize a CNPG instance; the operator rolls it safely" },
+    ActionSpec { name: "replica-scale-down", knob: "terminate a pod",      plane: Plane::Workload, class: RestartRequiring, tickable: false, note: "USE: shed load (HPA-class); survivors undisturbed, the shed pod is lost" },
+    ActionSpec { name: "reschedule",         knob: "drain + reschedule",   plane: Plane::Node,     class: RestartRequiring, tickable: false, note: "USE: NUMA/CCD re-placement, bin-packing, escape a degraded node, maintenance" },
+];
+
+/// True when every dimension's carve plane has at least one restart-free action —
+/// the keystone's promise that the live workload can be held without disturbance.
+#[must_use]
+pub fn restart_free_actions() -> impl Iterator<Item = &'static ActionSpec> {
+    ACTIONS.iter().filter(|a| a.class == DisruptionClass::RestartFree)
+}
+
 /// True when the `depends_on` DAG is acyclic (topological order solvable).
 /// Iterative DFS with a visiting-set; pure, no allocation beyond two small vecs.
 #[must_use]
@@ -313,6 +385,66 @@ mod tests {
         for d in CATALOG {
             if d.resource_class == ResourceClass::Hard {
                 assert_eq!(d.directionality, Directionality::Bidirectional, "{} is Hard ⇒ must be Bidirectional", d.name);
+            }
+        }
+    }
+
+    // ── ACTION catalog reflection ───────────────────────────────────────
+
+    /// THE load-bearing invariant: a restart-free action is ALWAYS tickable, and
+    /// a restart-requiring one is NEVER tickable. This is what lets breathe drive
+    /// the restart-free set toward real-time through the standard tick while
+    /// gating the disruptive set on cooldown + policy. Fails the build on drift.
+    #[test]
+    fn restart_free_iff_tickable_and_requiring_never_tickable() {
+        for a in ACTIONS {
+            if a.class == DisruptionClass::RestartFree {
+                assert!(a.tickable, "{} is RestartFree but not tickable", a.name);
+            }
+            if a.class == DisruptionClass::RestartRequiring {
+                assert!(!a.tickable, "{} is RestartRequiring but tickable", a.name);
+            }
+        }
+    }
+
+    #[test]
+    fn action_names_are_unique() {
+        for (i, a) in ACTIONS.iter().enumerate() {
+            for b in &ACTIONS[i + 1..] {
+                assert_ne!(a.name, b.name, "duplicate action {}", a.name);
+            }
+        }
+    }
+
+    #[test]
+    fn restart_cost_partitions_the_action_catalog() {
+        let n = [DisruptionClass::RestartFree, DisruptionClass::RestartConditional, DisruptionClass::RestartRequiring]
+            .iter()
+            .map(|c| ACTIONS.iter().filter(|a| a.class == *c).count())
+            .sum::<usize>();
+        assert_eq!(n, ACTIONS.len());
+    }
+
+    /// The keystone's structural promise: BOTH the host plane and the pod plane
+    /// have a restart-free carve — so a live workload on either plane is held
+    /// without disturbance. (The substrate is converging on restart-free: it is
+    /// the largest class.)
+    #[test]
+    fn both_host_and_pod_planes_have_a_restart_free_action() {
+        let free_planes: Vec<Plane> = restart_free_actions().map(|a| a.plane).collect();
+        assert!(free_planes.contains(&Plane::Host), "host plane needs a restart-free action");
+        assert!(free_planes.contains(&Plane::Pod), "pod plane needs a restart-free action");
+        let free = restart_free_actions().count();
+        assert!(free * 2 > ACTIONS.len(), "restart-free should be the majority (converging)");
+    }
+
+    /// Every restart-requiring action MUST justify itself (a non-empty `note`
+    /// saying when the roll is still worth it) — no silent disruptive action.
+    #[test]
+    fn restart_requiring_actions_justify_the_roll() {
+        for a in ACTIONS {
+            if a.class == DisruptionClass::RestartRequiring {
+                assert!(a.note.contains("USE"), "{} must say when the roll is worth it", a.name);
             }
         }
     }

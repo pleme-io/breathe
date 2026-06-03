@@ -125,44 +125,90 @@ pub enum ApplySemantics {
     PartialProgress,
 }
 
-/// Whether a carve disturbs the running workload — the property the in-place
-/// keystone makes UNIVERSAL. `ZeroDisruption` = the live resource is re-sized
-/// with no restart (`d(restart)/d(carve) = 0`): the host cgroup/sysfs lever, the
-/// `pods/resize` subresource, the CSI online-expand. `Rolling` = the carve goes
-/// through desired-state and re-creates pods (the pod template, the CNPG
-/// `Cluster` top-level). The substrate is converging on `ZeroDisruption`
-/// everywhere — `PodResize` obsoletes `PodTemplate` wherever the cluster supports
-/// it — so "breathe never rolls (when it can avoid it)" is now a typed property,
-/// not a hope. It is the precondition for the thesis's core claim: *the app
-/// simply exists, continuously provided-for, and never notices a restart*. A
-/// zero-disruption carve is also always-"golden" (it never leaves a
-/// non-converged, pods-pending state) — the eclusa berth property, applied to
-/// resource carving.
+/// The RESTART COST of an action — the most load-bearing typed property in
+/// breathe, because *without-restart* is the whole value: a restart-free action
+/// can be driven through the standard tick at any cadence (near-real-time
+/// management of the live workload), while a restart-requiring one must be gated.
+/// Three honest classes, not two:
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Disruption {
-    /// The live container/host resource is re-sized in place — no restart.
-    ZeroDisruption,
-    /// The carve re-creates pods (template / CNPG top-level) — a rolling update.
-    Rolling,
+pub enum DisruptionClass {
+    /// NEVER restarts — the live container/host resource is re-sized in place
+    /// (host cgroup/sysfs lever, a pod cpu resize either way, a pod memory
+    /// resize *up*, CSI online-expand, a survivor of a scale event). Tickable at
+    /// any frequency: this is the set breathe drives toward real-time.
+    RestartFree,
+    /// Restart-free in the safe direction, restart-GATED in the other — a pod
+    /// memory *shrink* is in-place only if the container's `resizePolicy` for
+    /// memory is `NotRequired`; with `RestartContainer` it restarts. The actuator
+    /// must read the policy and either carve in place or honor the gate.
+    RestartConditional,
+    /// ALWAYS re-creates the workload (pod-template write, CNPG `Cluster`
+    /// top-level, image/env change, a drain+reschedule). Disruptive — but often
+    /// the ONLY path (CNPG resize, k8s <1.33, NUMA re-placement) and sometimes
+    /// worth it. Gated by [`DisruptionPolicy`].
+    RestartRequiring,
 }
 
-impl Disruption {
+impl DisruptionClass {
+    /// True only for [`RestartFree`](Self::RestartFree) — drivable through ticks
+    /// at any cadence with zero workload disturbance.
     #[must_use]
-    pub fn is_zero(self) -> bool {
-        matches!(self, Self::ZeroDisruption)
+    pub fn is_restart_free(self) -> bool {
+        matches!(self, Self::RestartFree)
+    }
+    /// True when the action can (possibly) restart the workload.
+    #[must_use]
+    pub fn may_restart(self) -> bool {
+        !matches!(self, Self::RestartFree)
+    }
+}
+
+/// The FLAG that makes "without restart" controllable + explicit. Set per band /
+/// per node; the actuator refuses any action whose [`DisruptionClass`] the policy
+/// does not permit (returning a typed deferral, never a silent roll). The default
+/// is the cautious one — never restart a workload unless explicitly allowed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum DisruptionPolicy {
+    /// Only `RestartFree` actions — the workload is NEVER disturbed. A carve that
+    /// would require (even conditionally) a restart is deferred + surfaced. The
+    /// strictest, real-time-safe default.
+    #[default]
+    RestartFreeOnly,
+    /// `RestartFree` + `RestartConditional` — allow an in-place memory shrink even
+    /// where the resizePolicy may restart the container, but still never a full
+    /// template roll.
+    AllowConditional,
+    /// Any action, including a full re-create — for workloads where the carve is
+    /// only reachable by a roll (CNPG, k8s <1.33) and the disruption is acceptable.
+    AllowRestart,
+}
+
+impl DisruptionPolicy {
+    /// Whether this policy permits an action of the given restart cost.
+    #[must_use]
+    pub fn permits(self, class: DisruptionClass) -> bool {
+        match self {
+            Self::RestartFreeOnly => class == DisruptionClass::RestartFree,
+            Self::AllowConditional => class != DisruptionClass::RestartRequiring,
+            Self::AllowRestart => true,
+        }
     }
 }
 
 impl LimitLayout {
-    /// Whether carving at this layout disturbs the running workload. The in-place
-    /// keystone moved memory/cpu (`PodResize`) into the zero-disruption set,
-    /// joining storage (`PvcRequest`) and the host levers (`Host`); only the
-    /// template-write layouts (`PodTemplate`, `ClusterTopLevel`) still roll.
+    /// The layout's coarse worst-case restart cost. `PodResize` is
+    /// `RestartConditional` (a memory shrink may restart per `resizePolicy`,
+    /// though cpu + memory-grow are restart-free); `PvcRequest` + `Host` are
+    /// `RestartFree`; the template-write layouts (`PodTemplate`, `ClusterTopLevel`)
+    /// are `RestartRequiring`. The precise per-action cost (cpu-resize is
+    /// `RestartFree` both ways; memory-grow is `RestartFree`) lives in the action
+    /// catalog (`breathe_catalog::ACTIONS`).
     #[must_use]
-    pub fn disruption(&self) -> Disruption {
+    pub fn disruption_class(&self) -> DisruptionClass {
         match self {
-            Self::PodResize { .. } | Self::PvcRequest | Self::Host(_) => Disruption::ZeroDisruption,
-            Self::PodTemplate { .. } | Self::ClusterTopLevel => Disruption::Rolling,
+            Self::PvcRequest | Self::Host(_) => DisruptionClass::RestartFree,
+            Self::PodResize { .. } => DisruptionClass::RestartConditional,
+            Self::PodTemplate { .. } | Self::ClusterTopLevel => DisruptionClass::RestartRequiring,
         }
     }
 }
@@ -397,31 +443,42 @@ impl<C: Cluster + 'static, D: DimensionDescriptor> ResourceProvider for BandProv
 
 #[cfg(test)]
 mod tests {
-    use super::{Disruption, HostKnob, LimitLayout};
+    use super::{DisruptionClass, DisruptionPolicy, HostKnob, LimitLayout};
 
     #[test]
-    fn in_place_layouts_are_zero_disruption() {
-        assert!(LimitLayout::PodResize { container: None }.disruption().is_zero());
-        assert!(LimitLayout::PvcRequest.disruption().is_zero());
-        assert!(LimitLayout::Host(HostKnob::ZfsArcMax).disruption().is_zero());
+    fn layouts_classify_by_restart_cost() {
+        assert_eq!(LimitLayout::PvcRequest.disruption_class(), DisruptionClass::RestartFree);
+        assert_eq!(LimitLayout::Host(HostKnob::ZfsArcMax).disruption_class(), DisruptionClass::RestartFree);
+        // PodResize is honestly RestartConditional (memory-shrink may restart).
+        assert_eq!(LimitLayout::PodResize { container: None }.disruption_class(), DisruptionClass::RestartConditional);
+        assert_eq!(LimitLayout::PodTemplate { container: None }.disruption_class(), DisruptionClass::RestartRequiring);
+        assert_eq!(LimitLayout::ClusterTopLevel.disruption_class(), DisruptionClass::RestartRequiring);
     }
 
     #[test]
-    fn template_write_layouts_roll() {
-        assert_eq!(LimitLayout::PodTemplate { container: None }.disruption(), Disruption::Rolling);
-        assert_eq!(LimitLayout::ClusterTopLevel.disruption(), Disruption::Rolling);
-        assert!(!LimitLayout::PodTemplate { container: None }.disruption().is_zero());
+    fn pod_resize_is_strictly_less_disruptive_than_pod_template() {
+        // the keystone: the SAME carve is RestartRequiring via the template but
+        // only RestartConditional via resize — never a forced roll.
+        let roll = LimitLayout::PodTemplate { container: Some("app".into()) }.disruption_class();
+        let live = LimitLayout::PodResize { container: Some("app".into()) }.disruption_class();
+        assert_eq!(roll, DisruptionClass::RestartRequiring);
+        assert!(roll.may_restart() && live.may_restart());
+        assert_ne!(live, DisruptionClass::RestartRequiring); // resize never forces a full roll
     }
 
     #[test]
-    fn pod_resize_obsoletes_pod_template_on_the_disruption_axis() {
-        // the keystone: the SAME memory carve is Rolling via the template but
-        // ZeroDisruption via resize — so preferring PodResize strictly removes
-        // disruption with no other change.
-        let roll = LimitLayout::PodTemplate { container: Some("app".into()) };
-        let live = LimitLayout::PodResize { container: Some("app".into()) };
-        assert_eq!(roll.disruption(), Disruption::Rolling);
-        assert!(live.disruption().is_zero());
+    fn disruption_policy_gates_actions_by_class() {
+        use DisruptionClass::{RestartConditional, RestartFree, RestartRequiring};
+        // RestartFreeOnly (the default): only restart-free actions pass.
+        assert_eq!(DisruptionPolicy::default(), DisruptionPolicy::RestartFreeOnly);
+        assert!(DisruptionPolicy::RestartFreeOnly.permits(RestartFree));
+        assert!(!DisruptionPolicy::RestartFreeOnly.permits(RestartConditional));
+        assert!(!DisruptionPolicy::RestartFreeOnly.permits(RestartRequiring));
+        // AllowConditional: free + conditional, never a full roll.
+        assert!(DisruptionPolicy::AllowConditional.permits(RestartConditional));
+        assert!(!DisruptionPolicy::AllowConditional.permits(RestartRequiring));
+        // AllowRestart: everything.
+        assert!(DisruptionPolicy::AllowRestart.permits(RestartRequiring));
     }
 }
 
