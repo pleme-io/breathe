@@ -36,6 +36,25 @@ struct Ctx {
     client: Client,
     prometheus_url: String,
     requeue: Duration,
+    /// The cluster exposes `pods/resize` (k8s ≥1.33) → memory/cpu carve a
+    /// pod-backed workload IN PLACE (zero restart) instead of rolling it. The K1
+    /// "breathe never rolls" default — detected once at startup.
+    resize_capable: bool,
+}
+
+/// True when the apiserver is k8s ≥1.33 (the `pods/resize` subresource is GA).
+async fn detect_resize_capable(client: &Client) -> bool {
+    match client.apiserver_version().await {
+        Ok(info) => {
+            let digits = |s: &str| s.trim_matches(|c: char| !c.is_ascii_digit()).parse::<u32>().unwrap_or(0);
+            let (major, minor) = (digits(&info.major), digits(&info.minor));
+            major > 1 || (major == 1 && minor >= 33)
+        }
+        Err(e) => {
+            error!(error = %e, "could not read apiserver version; assuming no in-place resize (will roll)");
+            false
+        }
+    }
 }
 
 /// The one reconcile body for every dimension. `B` is the band kind, `D` its descriptor.
@@ -66,7 +85,10 @@ async fn reconcile<B: Band, D: DimensionDescriptor + Default>(
         .last_change_epoch()
         .is_some_and(|last| now_secs().saturating_sub(last) < obj.cooldown_seconds() as i64);
 
-    let provider = BandProvider::new(KubeCluster::new(ctx.client.clone(), ctx.prometheus_url.clone()), D::default());
+    let provider = BandProvider::new(
+        KubeCluster::new(ctx.client.clone(), ctx.prometheus_url.clone()),
+        D::with_resize_capability(ctx.resize_capable),
+    );
     let input = ReconcileInput {
         target: &target,
         cfg: &cfg,
@@ -102,9 +124,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         std::env::var("BREATHE_REQUEUE_SECONDS").ok().and_then(|s| s.parse().ok()).unwrap_or(60),
     );
     let client = Client::try_default().await?;
-    let ctx = Arc::new(Ctx { client: client.clone(), prometheus_url, requeue });
+    let resize_capable = detect_resize_capable(&client).await;
+    let ctx = Arc::new(Ctx { client: client.clone(), prometheus_url, requeue, resize_capable });
 
-    info!("breathe-controller starting — memory + cpu + storage dimensions");
+    info!(
+        resize_capable,
+        carve = if resize_capable { "in-place (pods/resize, zero-restart)" } else { "rolling (template)" },
+        "breathe-controller starting — memory + cpu + storage dimensions"
+    );
 
     let mem = Controller::new(Api::<MemoryBand>::all(client.clone()), watcher::Config::default())
         .run(reconcile::<MemoryBand, MemoryDescriptor>, error_policy::<MemoryBand>, ctx.clone())

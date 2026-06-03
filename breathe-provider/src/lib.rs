@@ -281,6 +281,21 @@ pub trait Cluster: Send + Sync {
 /// [`BandProvider`], so a new dimension is *only* an impl of this trait + a
 /// catalog row. It can carry no band logic (no `decide`/`BandConfig`).
 pub trait DimensionDescriptor: Send + Sync + 'static {
+    /// Construct the descriptor for a cluster that can (`resize_capable`) or
+    /// cannot carve a pod-backed workload in place (`pods/resize`, k8s ≥1.33).
+    /// This is the K1 "breathe never rolls" default: a dimension that *can* carve
+    /// zero-disruption (memory/cpu via `PodResize`) prefers it whenever the
+    /// cluster supports it; dimensions that are already zero-disruption
+    /// (storage/host) or always roll ignore the capability. Default = ignore it
+    /// (`Self::default()`); memory/cpu override to flip on `in_place`.
+    fn with_resize_capability(resize_capable: bool) -> Self
+    where
+        Self: Sized + Default,
+    {
+        let _ = resize_capable;
+        Self::default()
+    }
+
     fn id(&self) -> DimensionId;
     fn directionality(&self) -> Directionality;
     /// SSA field manager (disjoint across dimensions → memory ⟂ cpu, breathe ⟂ KEDA).
