@@ -126,6 +126,18 @@ mod tests {
     }
 
     #[test]
+    fn every_mutating_dimension_has_a_zero_disruption_carve_for_pod_backed_owners() {
+        // The keystone's convergence: memory + cpu carve in-place (PodResize) and
+        // storage online-expands (PvcRequest) — so NO mutating k8s dimension must
+        // roll a pod-backed workload to be held at the band. (CNPG `Cluster`
+        // owners still roll — a documented gap, not a regression.)
+        let t = deploy();
+        assert!(MemoryDescriptor { in_place: true }.layout(&t).disruption().is_zero());
+        assert!(CpuDescriptor { in_place: true }.layout(&t).disruption().is_zero());
+        assert!(StorageDescriptor.layout(&t).disruption().is_zero());
+    }
+
+    #[test]
     fn in_place_carves_pods_via_resize_not_template() {
         // in_place memory on a Deployment → PodResize (zero-restart); a CNPG
         // Cluster still goes top-level (CNPG owns its own resize). Default
