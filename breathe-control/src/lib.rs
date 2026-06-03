@@ -57,6 +57,61 @@ impl Default for BandConfig {
     }
 }
 
+/// Why a [`BandConfig`] is rejected at the CRD→config boundary — the typed
+/// parse-time gate that keeps a *malformed* band out of the loop.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BandConfigError {
+    /// A threshold is outside `(0, 1]` or the deadband is not well-ordered
+    /// (`shrink_below ≤ setpoint ≤ grow_above`).
+    BadBand,
+    /// `grow_factor ≤ 1` (a grow must raise) or `shrink_factor ∉ (0, 1)`.
+    BadFactor,
+    /// `floor_bytes > ceiling_bytes` (an empty operating range).
+    EmptyRange,
+}
+
+impl std::fmt::Display for BandConfigError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::BadBand => f.write_str("band thresholds must satisfy 0 < shrink_below ≤ setpoint ≤ grow_above ≤ 1"),
+            Self::BadFactor => f.write_str("grow_factor must be > 1 and shrink_factor in (0, 1)"),
+            Self::EmptyRange => f.write_str("floor_bytes must be ≤ ceiling_bytes"),
+        }
+    }
+}
+
+impl std::error::Error for BandConfigError {}
+
+impl BandConfig {
+    /// Reject a MALFORMED config at the CRD→config boundary (parse-time), before
+    /// it drives a tick: a well-ordered deadband, a grow that raises, a shrink
+    /// that lowers, a non-empty operating range. The harder *dead-time flap
+    /// margin* (P4) is deliberately NOT asserted here — the naive "a single step
+    /// must land inside the band" bound is wrong (it flags the shipped default,
+    /// which provably converges grow→shrink→hold rather than limit-cycling);
+    /// the true bound is the round-trip-gain analysis and is a typed follow-on.
+    /// `safety_clamp` already proves the load-bearing *never-OOM* invariant for
+    /// any config; this is the authoring-sanity complement.
+    ///
+    /// # Errors
+    /// A typed [`BandConfigError`] naming the first violated invariant.
+    pub fn validate(&self) -> Result<(), BandConfigError> {
+        let in_unit = |x: f64| x > 0.0 && x <= 1.0;
+        if !(in_unit(self.shrink_below) && in_unit(self.setpoint) && in_unit(self.grow_above)
+            && self.shrink_below <= self.setpoint && self.setpoint <= self.grow_above)
+        {
+            return Err(BandConfigError::BadBand);
+        }
+        if self.grow_factor <= 1.0 || !(self.shrink_factor > 0.0 && self.shrink_factor < 1.0) {
+            return Err(BandConfigError::BadFactor);
+        }
+        if self.floor_bytes > self.ceiling_bytes {
+            return Err(BandConfigError::EmptyRange);
+        }
+        Ok(())
+    }
+}
+
 /// The outcome of one band evaluation for one target. Every non-`Hold` variant
 /// is observable (the watcher emits a typed event) so a tick's behaviour is
 /// fully legible in the logs.
@@ -1183,6 +1238,32 @@ mod tests {
         let with = decide_with_rate(&law, 200 * MI, 2 * GI, &c, -(MI as i64));
         assert_eq!(with, decide(200 * MI, 2 * GI, &c));
         assert!(matches!(with, Decision::Shrink { .. }), "prediction must not block a shrink, got {with:?}");
+    }
+
+    #[test]
+    fn band_config_validate_accepts_default_rejects_malformed() {
+        // the shipped default is valid (it converges; it must never be rejected).
+        assert!(BandConfig::default().validate().is_ok());
+        // inverted band.
+        assert_eq!(
+            BandConfig { shrink_below: 0.90, grow_above: 0.70, ..BandConfig::default() }.validate(),
+            Err(BandConfigError::BadBand)
+        );
+        // a grow that doesn't raise.
+        assert_eq!(
+            BandConfig { grow_factor: 1.0, ..BandConfig::default() }.validate(),
+            Err(BandConfigError::BadFactor)
+        );
+        // a shrink that doesn't lower.
+        assert_eq!(
+            BandConfig { shrink_factor: 1.0, ..BandConfig::default() }.validate(),
+            Err(BandConfigError::BadFactor)
+        );
+        // empty operating range.
+        assert_eq!(
+            BandConfig { floor_bytes: 8 << 30, ceiling_bytes: 1 << 30, ..BandConfig::default() }.validate(),
+            Err(BandConfigError::EmptyRange)
+        );
     }
 
     /// The conformance oracle EXTENDED to predictive laws: the shared safety gate
