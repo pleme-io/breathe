@@ -21,9 +21,11 @@ use serde_json::{json, Value};
 
 pub type SharedStore = Arc<dyn BreatheStore>;
 
-/// The full router. `store` is the shared facade (real `KubeStore` or a mock).
+/// The full HTTP router: REST + a `/graphql` endpoint, both over the shared
+/// facade. `store` is the real `KubeStore` or a mock.
 #[must_use]
 pub fn router(store: SharedStore) -> Router {
+    let schema = graphql::schema(store.clone());
     Router::new()
         .route("/healthz", get(|| async { "ok" }))
         .route("/api/v1/catalog", get(catalog))
@@ -33,6 +35,7 @@ pub fn router(store: SharedStore) -> Router {
         .route("/api/v1/nodepools", get(list_pools))
         .route("/api/v1/nodepools/:name", get(get_pool))
         .route("/api/v1/nodepools/:name/write-enabled", patch(set_write_enabled))
+        .route_service("/graphql", async_graphql_axum::GraphQL::new(schema))
         .with_state(store)
 }
 
@@ -122,6 +125,143 @@ async fn set_write_enabled(
     Json(b): Json<WriteEnabledBody>,
 ) -> Response {
     respond(store.patch_pool_spec(name, json!({ "writeEnabled": b.write_enabled })).await)
+}
+
+// ───────────────────────────── GraphQL ─────────────────────────────
+
+/// The GraphQL surface (async-graphql) over the same facade. Resolvers return
+/// the CRD JSON via the `Json` scalar so there is one typed source of truth.
+pub mod graphql {
+    use super::{BandKind, SharedStore, StoreError};
+    use async_graphql::{Context, EmptySubscription, Json, Object, Schema};
+    use serde_json::Value;
+
+    fn gql(e: StoreError) -> async_graphql::Error {
+        async_graphql::Error::new(e.to_string())
+    }
+    fn parse_kind(s: &str) -> async_graphql::Result<BandKind> {
+        BandKind::parse(s).ok_or_else(|| async_graphql::Error::new(format!("unknown band kind '{s}'")))
+    }
+    fn store<'a>(ctx: &Context<'a>) -> async_graphql::Result<&'a SharedStore> {
+        ctx.data::<SharedStore>()
+    }
+
+    pub struct Query;
+    #[Object]
+    impl Query {
+        /// The self-describing dimension catalog.
+        async fn catalog(&self, ctx: &Context<'_>) -> async_graphql::Result<Json<Value>> {
+            Ok(Json(store(ctx)?.catalog()))
+        }
+        /// List bands of a dimension, optionally namespace-scoped.
+        async fn bands(&self, ctx: &Context<'_>, kind: String, namespace: Option<String>) -> async_graphql::Result<Json<Value>> {
+            Ok(Json(store(ctx)?.list_bands(parse_kind(&kind)?, namespace).await.map_err(gql)?))
+        }
+        /// One band CR.
+        async fn band(&self, ctx: &Context<'_>, kind: String, namespace: String, name: String) -> async_graphql::Result<Json<Value>> {
+            Ok(Json(store(ctx)?.get_band(parse_kind(&kind)?, namespace, name).await.map_err(gql)?))
+        }
+        /// All node pools.
+        async fn nodepools(&self, ctx: &Context<'_>) -> async_graphql::Result<Json<Value>> {
+            Ok(Json(store(ctx)?.list_pools().await.map_err(gql)?))
+        }
+        async fn nodepool(&self, ctx: &Context<'_>, name: String) -> async_graphql::Result<Json<Value>> {
+            Ok(Json(store(ctx)?.get_pool(name).await.map_err(gql)?))
+        }
+    }
+
+    pub struct Mutation;
+    #[Object]
+    impl Mutation {
+        /// Merge-patch a band's spec.
+        async fn patch_band(&self, ctx: &Context<'_>, kind: String, namespace: String, name: String, spec: Json<Value>) -> async_graphql::Result<Json<Value>> {
+            Ok(Json(store(ctx)?.patch_band_spec(parse_kind(&kind)?, namespace, name, spec.0).await.map_err(gql)?))
+        }
+        /// Flip a band's dryRun (one of the two safety gates).
+        async fn set_dry_run(&self, ctx: &Context<'_>, kind: String, namespace: String, name: String, dry_run: bool) -> async_graphql::Result<Json<Value>> {
+            Ok(Json(store(ctx)?.patch_band_spec(parse_kind(&kind)?, namespace, name, serde_json::json!({ "dryRun": dry_run })).await.map_err(gql)?))
+        }
+        /// Flip a node's writeEnabled master switch (the node-level safety gate).
+        async fn set_write_enabled(&self, ctx: &Context<'_>, name: String, write_enabled: bool) -> async_graphql::Result<Json<Value>> {
+            Ok(Json(store(ctx)?.patch_pool_spec(name, serde_json::json!({ "writeEnabled": write_enabled })).await.map_err(gql)?))
+        }
+    }
+
+    pub type BreatheSchema = Schema<Query, Mutation, EmptySubscription>;
+
+    #[must_use]
+    pub fn schema(store: SharedStore) -> BreatheSchema {
+        Schema::build(Query, Mutation, EmptySubscription).data(store).finish()
+    }
+}
+
+// ─────────────────────────────── gRPC ──────────────────────────────
+
+/// The gRPC surface (tonic) over the same facade. Replies carry the CRD JSON.
+pub mod grpc {
+    use super::{BandKind, SharedStore, StoreError};
+    use tonic::{Request, Response, Status};
+
+    tonic::include_proto!("breathe.v1");
+
+    fn st(e: StoreError) -> Status {
+        match e {
+            StoreError::BadRequest(m) => Status::invalid_argument(m),
+            other => Status::internal(other.to_string()),
+        }
+    }
+    fn kind(s: &str) -> Result<BandKind, Status> {
+        BandKind::parse(s).ok_or_else(|| Status::invalid_argument(format!("unknown band kind '{s}'")))
+    }
+    fn opt_ns(s: String) -> Option<String> {
+        if s.is_empty() { None } else { Some(s) }
+    }
+    fn reply(v: serde_json::Value) -> Response<JsonReply> {
+        Response::new(JsonReply { json: v.to_string() })
+    }
+
+    pub struct GrpcService {
+        pub store: SharedStore,
+    }
+
+    #[tonic::async_trait]
+    impl breathe_server::Breathe for GrpcService {
+        async fn list_bands(&self, req: Request<ListBandsRequest>) -> Result<Response<JsonReply>, Status> {
+            let r = req.into_inner();
+            Ok(reply(self.store.list_bands(kind(&r.kind)?, opt_ns(r.namespace)).await.map_err(st)?))
+        }
+        async fn get_band(&self, req: Request<BandRefRequest>) -> Result<Response<JsonReply>, Status> {
+            let r = req.into_inner();
+            Ok(reply(self.store.get_band(kind(&r.kind)?, r.namespace, r.name).await.map_err(st)?))
+        }
+        async fn patch_band(&self, req: Request<PatchBandRequest>) -> Result<Response<JsonReply>, Status> {
+            let r = req.into_inner();
+            let spec: serde_json::Value = serde_json::from_str(&r.spec_json).map_err(|e| Status::invalid_argument(format!("spec_json: {e}")))?;
+            Ok(reply(self.store.patch_band_spec(kind(&r.kind)?, r.namespace, r.name, spec).await.map_err(st)?))
+        }
+        async fn set_dry_run(&self, req: Request<SetDryRunRequest>) -> Result<Response<JsonReply>, Status> {
+            let r = req.into_inner();
+            Ok(reply(self.store.patch_band_spec(kind(&r.kind)?, r.namespace, r.name, serde_json::json!({ "dryRun": r.dry_run })).await.map_err(st)?))
+        }
+        async fn list_node_pools(&self, _req: Request<Empty>) -> Result<Response<JsonReply>, Status> {
+            Ok(reply(self.store.list_pools().await.map_err(st)?))
+        }
+        async fn get_node_pool(&self, req: Request<PoolRefRequest>) -> Result<Response<JsonReply>, Status> {
+            Ok(reply(self.store.get_pool(req.into_inner().name).await.map_err(st)?))
+        }
+        async fn set_write_enabled(&self, req: Request<SetWriteEnabledRequest>) -> Result<Response<JsonReply>, Status> {
+            let r = req.into_inner();
+            Ok(reply(self.store.patch_pool_spec(r.name, serde_json::json!({ "writeEnabled": r.write_enabled })).await.map_err(st)?))
+        }
+        async fn catalog(&self, _req: Request<Empty>) -> Result<Response<JsonReply>, Status> {
+            Ok(reply(self.store.catalog()))
+        }
+    }
+
+    #[must_use]
+    pub fn server(store: SharedStore) -> breathe_server::BreatheServer<GrpcService> {
+        breathe_server::BreatheServer::new(GrpcService { store })
+    }
 }
 
 #[cfg(test)]
@@ -227,6 +367,38 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(mock.patches.lock().unwrap()[0].1, json!({ "writeEnabled": true }));
+    }
+
+    #[tokio::test]
+    async fn graphql_set_dry_run_mutation_patches_the_band() {
+        let mock = Arc::new(MockStore::default());
+        let schema = graphql::schema(mock.clone());
+        let resp = schema
+            .execute(r#"mutation { setDryRun(kind:"arc", namespace:"pangea-system", name:"rio-arc", dryRun:false) }"#)
+            .await;
+        assert!(resp.errors.is_empty(), "{:?}", resp.errors);
+        assert_eq!(mock.patches.lock().unwrap()[0].1, json!({ "dryRun": false }));
+    }
+
+    #[tokio::test]
+    async fn graphql_catalog_query_returns_dimensions() {
+        let schema = graphql::schema(Arc::new(MockStore::default()));
+        let resp = schema.execute("{ catalog }").await;
+        assert!(resp.errors.is_empty(), "{:?}", resp.errors);
+        assert!(resp.data.to_string().contains("dimensions"));
+    }
+
+    #[tokio::test]
+    async fn grpc_set_write_enabled_patches_the_pool() {
+        use grpc::breathe_server::Breathe;
+        let mock = Arc::new(MockStore::default());
+        let svc = grpc::GrpcService { store: mock.clone() };
+        let resp = svc
+            .set_write_enabled(tonic::Request::new(grpc::SetWriteEnabledRequest { name: "rio".into(), write_enabled: true }))
+            .await
+            .unwrap();
+        assert!(resp.into_inner().json.contains("writeEnabled"));
         assert_eq!(mock.patches.lock().unwrap()[0].1, json!({ "writeEnabled": true }));
     }
 }

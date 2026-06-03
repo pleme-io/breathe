@@ -39,7 +39,7 @@
         cargoLock = { lockFile = ./Cargo.lock; };
         # Build + test the whole workspace; image entrypoint is the bin.
         cargoBuildFlags = [ "-p" "breathe-controller" ];
-        nativeBuildInputs = with pkgs; [ pkg-config cmake perl ];
+        nativeBuildInputs = with pkgs; [ pkg-config cmake perl protobuf ];
         doCheck = true;
         meta = {
           description = "breathe resource-homeostasis controller (theory/BREATHE.md)";
@@ -57,7 +57,7 @@
         src = ./.;
         cargoLock = { lockFile = ./Cargo.lock; };
         cargoBuildFlags = [ "-p" "breathe-host-agent" ];
-        nativeBuildInputs = with pkgs; [ pkg-config cmake perl ];
+        nativeBuildInputs = with pkgs; [ pkg-config cmake perl protobuf ];
         doCheck = false; # the workspace is tested by the controller build above
         meta = {
           description = "breathe host agent — the hands (host-dimension reconcile)";
@@ -111,6 +111,14 @@
         logTarget = "breathe_host_agent";
       };
 
+      apiServerImage = mkImage {
+        name = "ghcr.io/pleme-io/breathe-api-server";
+        bin = "${apiServer}/bin/breathe-api-server";
+        user = "65532:65532"; # nonroot — a normal pod, no host access (reads/patches CRs)
+        extraContents = [ apiServer ];
+        logTarget = "breathe_api_server";
+      };
+
       # The MCP surface — a model drives breathe over stdio. Run with a kubeconfig
       # pointing at the target cluster: `KUBECONFIG=… nix run .#breathe-mcp`.
       mcp = rustPlatform.buildRustPackage {
@@ -119,7 +127,7 @@
         src = ./.;
         cargoLock = { lockFile = ./Cargo.lock; };
         cargoBuildFlags = [ "-p" "breathe-mcp" ];
-        nativeBuildInputs = with pkgs; [ pkg-config cmake perl ];
+        nativeBuildInputs = with pkgs; [ pkg-config cmake perl protobuf ];
         doCheck = false; # tested by the controller build
         meta = {
           description = "breathe MCP surface — drive the homeostasis substrate from a model";
@@ -135,7 +143,7 @@
         src = ./.;
         cargoLock = { lockFile = ./Cargo.lock; };
         cargoBuildFlags = [ "-p" "breathe-api-server" ];
-        nativeBuildInputs = with pkgs; [ pkg-config cmake perl ];
+        nativeBuildInputs = with pkgs; [ pkg-config cmake perl protobuf ];
         doCheck = false;
         meta = {
           description = "breathe REST API (axum) over the BreatheStore facade";

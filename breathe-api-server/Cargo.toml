@@ -15,11 +15,20 @@ path = "src/main.rs"
 [dependencies]
 breathe-facade = { path = "../breathe-facade", version = "0.1.0" }
 axum = "0.7"
+async-graphql = "7"
+async-graphql-axum = "7"
+tonic = "0.12"
+prost = "0.13"
 tokio = { version = "1.40", features = ["macros", "rt-multi-thread"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1.0"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+
+[build-dependencies]
+tonic-build = "0.12"
+protoc-bin-vendored = "3"   # vendored protoc for local builds; nix uses system protobuf
+which = "6"
 
 [dev-dependencies]
 async-trait = "0.1"
