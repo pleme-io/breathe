@@ -24,6 +24,9 @@ pub enum DimensionId {
     Arc,
     /// HOST: a systemd unit's transient cgroup memory high-water (`MemoryHigh`).
     Cgroup,
+    /// HOST: a systemd unit's transient cgroup cpu bandwidth cap (`CPUQuota`) —
+    /// the host-plane peer of `pod-cpu-resize`, carved live with zero restart.
+    CgroupCpu,
 }
 
 impl DimensionId {
@@ -36,6 +39,7 @@ impl DimensionId {
             Self::Replica => "replica",
             Self::Arc => "arc",
             Self::Cgroup => "cgroup",
+            Self::CgroupCpu => "cgroup-cpu",
         }
     }
 
@@ -43,7 +47,7 @@ impl DimensionId {
     /// `HostCluster`) rather than the Kubernetes API (`KubeCluster`).
     #[must_use]
     pub fn is_host(self) -> bool {
-        matches!(self, Self::Arc | Self::Cgroup)
+        matches!(self, Self::Arc | Self::Cgroup | Self::CgroupCpu)
     }
 }
 
@@ -78,6 +82,12 @@ pub enum HostKnob {
     /// (`nix-daemon.service`, `MemoryHigh`) applied via `systemctl set-property
     /// --runtime`. Never the unit file (that is nodeBudget's static `MemoryMax`).
     CgroupProperty { unit: String, property: String },
+    /// A systemd unit's transient cgroup CPU bandwidth cap (`CPUQuota`) — set via
+    /// `systemctl set-property --runtime <unit> CPUQuota=<percent>%`. A DISTINCT
+    /// knob from [`CgroupProperty`] because its value semantics differ: the band
+    /// value is MILLICORES (read from `CPUQuotaPerSecUSec`, written as a percentage),
+    /// not bytes. Bounded by `nodeBudget`'s cpu territory, never the static cpuset.
+    CgroupCpuQuota { unit: String },
 }
 
 /// Where a HOST dimension reads its `used` scalar from.
@@ -87,6 +97,10 @@ pub enum HostMetric {
     ArcSize,
     /// cgroup v2 `memory.current` for a systemd unit's slice, bytes.
     CgroupMemoryCurrent { unit: String },
+    /// A systemd unit's cpu usage RATE in millicores — derived from two reads of
+    /// the cumulative `CPUUsageNSec` over a sample window (`HostCluster` computes
+    /// the rate; the env exposes the cumulative counter).
+    CgroupCpuUsage { unit: String },
 }
 
 /// Where a managed quantity lives on a target object — interpreted by the

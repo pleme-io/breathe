@@ -397,7 +397,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn catalog_route_returns_six_dimensions() {
+    async fn catalog_route_returns_all_dimensions() {
         let app = router(Arc::new(MockStore::default()));
         let resp = app
             .oneshot(Request::builder().uri("/api/v1/catalog").body(Body::empty()).unwrap())
@@ -405,7 +405,7 @@ mod tests {
             .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
         let v = body_json(resp).await;
-        assert_eq!(v["dimensions"].as_array().unwrap().len(), 6);
+        assert_eq!(v["dimensions"].as_array().unwrap().len(), 7);
     }
 
     #[tokio::test]
@@ -521,8 +521,9 @@ mod tests {
         let svc = grpc::GrpcService { store: Arc::new(MockStore::default()) };
         let resp = svc.catalog_list(tonic::Request::new(grpc::pb::CatalogListRequest {})).await.unwrap();
         let cat = resp.into_inner();
-        assert_eq!(cat.dimensions.len(), 6);
+        assert_eq!(cat.dimensions.len(), 7);
         assert!(cat.dimensions.iter().any(|d| d.id == "arc" && d.is_host));
+        assert!(cat.dimensions.iter().any(|d| d.id == "cgroup-cpu" && d.is_host));
         assert!(cat.dimensions.iter().any(|d| d.id == "memory" && !d.is_host));
     }
 

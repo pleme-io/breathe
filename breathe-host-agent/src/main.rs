@@ -23,9 +23,12 @@ use std::{sync::Arc, time::Duration};
 
 use breathe_core::{reconcile_one, ReconcileInput};
 use breathe_crd::{
-    ArcBand, Band, BreatheNodePool, CgroupBand, GiB, NodePoolStatus,
+    ArcBand, Band, BreatheNodePool, CgroupBand, CgroupCpuBand, GiB, NodePoolStatus,
 };
-use breathe_host::{ArcDescriptor, CgroupMemoryDescriptor, HostCluster, NodeEnvelopes, SystemdSysfsEnv};
+use breathe_host::{
+    ArcDescriptor, CgroupCpuDescriptor, CgroupMemoryDescriptor, CpuSampleCache, HostCluster,
+    NodeEnvelopes, SystemdSysfsEnv, new_cpu_sample_cache,
+};
 use breathe_provider::{BandProvider, ClassCooldowns, DimensionDescriptor, ResourceProvider, Target};
 use breathe_runtime::{error_status, next_requeue, now_secs, patch_status, status_for};
 use futures::StreamExt;
@@ -49,6 +52,9 @@ struct Ctx {
     client: Client,
     requeue: Duration,
     node_name: String,
+    /// Long-lived cross-tick cpu-usage samples — shared into every per-tick
+    /// `HostCluster` so the cgroup-cpu RATE is differenced across ticks.
+    cpu_samples: CpuSampleCache,
 }
 
 /// Find this node's enrollment charter (cluster-scoped; matched by `nodeName`).
@@ -71,7 +77,9 @@ fn envelopes_from(pool: &BreatheNodePool) -> Result<NodeEnvelopes, String> {
     for (unit, gib) in &pool.spec.cgroup_max_gi_b {
         cgroup_max_bytes.insert(unit.clone(), to_bytes(*gib, unit)?);
     }
-    Ok(NodeEnvelopes { arc_max_bytes, cgroup_max_bytes })
+    // cpu ceilings are already millicores (no byte conversion / overflow risk).
+    let cgroup_cpu_max_millicores = pool.spec.cgroup_cpu_max_milli.clone();
+    Ok(NodeEnvelopes { arc_max_bytes, cgroup_max_bytes, cgroup_cpu_max_millicores })
 }
 
 /// The one host reconcile body for every host dimension. `B` is the band kind,
@@ -131,7 +139,8 @@ async fn reconcile_host<B: Band, D: DimensionDescriptor + Default>(
     let effective_dry_run = obj.dry_run() || !write_enabled;
 
     let provider = BandProvider::new(
-        HostCluster::new(SystemdSysfsEnv::from_env(), envelopes, write_enabled),
+        HostCluster::new(SystemdSysfsEnv::from_env(), envelopes, write_enabled)
+            .with_cpu_samples(ctx.cpu_samples.clone()),
         D::default(),
     );
     let input = ReconcileInput {
@@ -204,9 +213,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         std::env::var("BREATHE_REQUEUE_SECONDS").ok().and_then(|s| s.parse().ok()).unwrap_or(30),
     );
     let client = Client::try_default().await?;
-    let ctx = Arc::new(Ctx { client: client.clone(), requeue, node_name: node_name.clone() });
+    let ctx = Arc::new(Ctx {
+        client: client.clone(),
+        requeue,
+        node_name: node_name.clone(),
+        cpu_samples: new_cpu_sample_cache(),
+    });
 
-    info!(node = %node_name, "breathe-host-agent starting — arc + cgroup host dimensions");
+    info!(node = %node_name, "breathe-host-agent starting — arc + cgroup-memory + cgroup-cpu host dimensions");
 
     let arc = Controller::new(Api::<ArcBand>::all(client.clone()), watcher::Config::default())
         .run(reconcile_host::<ArcBand, ArcDescriptor>, error_policy::<ArcBand>, ctx.clone())
@@ -218,11 +232,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             ctx.clone(),
         )
         .for_each(|_| async {});
+    let cgroup_cpu = Controller::new(Api::<CgroupCpuBand>::all(client.clone()), watcher::Config::default())
+        .run(
+            reconcile_host::<CgroupCpuBand, CgroupCpuDescriptor>,
+            error_policy::<CgroupCpuBand>,
+            ctx.clone(),
+        )
+        .for_each(|_| async {});
     let pool = Controller::new(Api::<BreatheNodePool>::all(client.clone()), watcher::Config::default())
         .run(reconcile_pool, pool_error_policy, ctx.clone())
         .for_each(|_| async {});
 
-    tokio::join!(arc, cgroup, pool);
+    tokio::join!(arc, cgroup, cgroup_cpu, pool);
     Ok(())
 }
 
@@ -243,6 +264,7 @@ mod tests {
                 node_name: "rio".into(),
                 arc_max_gi_b: GiB(arc_gib),
                 cgroup_max_gi_b: m,
+                cgroup_cpu_max_milli: BTreeMap::new(),
                 write_enabled: false,
             },
         )

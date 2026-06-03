@@ -196,6 +196,8 @@ band_kind!(StorageBandSpec, StorageBand, "StorageBand", "sband", Unit::Bytes, "d
 // (ArcBand); the agent applies via HostCluster within the BreatheNodePool L2 ceiling.
 band_kind!(ArcBandSpec, ArcBand, "ArcBand", "aband", Unit::Bytes, "d_floor_bytes", "d_ceiling_bytes");
 band_kind!(CgroupBandSpec, CgroupBand, "CgroupBand", "gband", Unit::Bytes, "d_floor_bytes", "d_ceiling_bytes");
+// HOST cpu band — the unit's transient CPUQuota cap, millicores (like CpuBand).
+band_kind!(CgroupCpuBandSpec, CgroupCpuBand, "CgroupCpuBand", "gcband", Unit::Millicores, "d_floor_milli", "d_ceiling_milli");
 
 // ─────────────────── BreatheNodePool — host enrollment ──────────────────
 
@@ -265,6 +267,12 @@ pub struct BreatheNodePoolSpec {
     /// blind).
     #[serde(default)]
     pub cgroup_max_gi_b: BTreeMap<String, GiB>,
+    /// L2 cpu ceiling per systemd unit — the unit's cpu territory in MILLICORES
+    /// (`nodeBudget` cpu budget). A `CgroupCpuBand` whose unit is absent here is
+    /// refused (never written blind). Millicores need no overflow bound (they are
+    /// compared, never multiplied), so a plain integer — unlike `GiB`.
+    #[serde(default)]
+    pub cgroup_cpu_max_milli: BTreeMap<String, u64>,
     /// Node-level MASTER write switch. `false` = the whole node is in SHADOW —
     /// every host band decides + reports but never mutates the host, regardless of
     /// per-band `dryRun`. The safe default; flip to `true` only after the shadow
@@ -386,15 +394,19 @@ mod tests {
     fn nodepool_carries_the_l2_ceilings_and_master_switch() {
         let mut cgroup = BTreeMap::new();
         cgroup.insert("nix-daemon.service".to_string(), GiB(12));
+        let mut cgroup_cpu = BTreeMap::new();
+        cgroup_cpu.insert("nix-daemon.service".to_string(), 8000u64);
         let pool = BreatheNodePool::new("rio", BreatheNodePoolSpec {
             node_name: "rio".into(),
             arc_max_gi_b: GiB(6),
             cgroup_max_gi_b: cgroup,
+            cgroup_cpu_max_milli: cgroup_cpu,
             write_enabled: false, // safe default — whole node in shadow
         });
         assert_eq!(pool.spec.node_name, "rio");
         assert_eq!(pool.spec.arc_max_gi_b, GiB(6));
         assert_eq!(pool.spec.cgroup_max_gi_b.get("nix-daemon.service"), Some(&GiB(12)));
+        assert_eq!(pool.spec.cgroup_cpu_max_milli.get("nix-daemon.service"), Some(&8000));
         assert!(!pool.spec.write_enabled, "writeEnabled must default off (shadow-first)");
     }
 

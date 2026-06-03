@@ -217,11 +217,12 @@ mod tests {
     }
 
     #[test]
-    fn catalog_json_has_six_dimensions_with_host_flags() {
+    fn catalog_json_has_all_dimensions_with_host_flags() {
         let c = catalog_json();
         let dims = c["dimensions"].as_array().unwrap();
-        assert_eq!(dims.len(), 6);
+        assert_eq!(dims.len(), 7);
         assert!(dims.iter().any(|d| d["id"] == "arc" && d["isHost"] == true));
+        assert!(dims.iter().any(|d| d["id"] == "cgroup-cpu" && d["isHost"] == true));
         assert!(dims.iter().any(|d| d["id"] == "memory" && d["isHost"] == false));
     }
 }

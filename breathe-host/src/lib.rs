@@ -27,7 +27,11 @@
 //! the same field, so they compose without contention. On reboot, Nix restores
 //! L2 and breathe re-derives its L1 decisions from live metrics.
 
-use std::collections::BTreeMap;
+use std::{
+    collections::BTreeMap,
+    sync::{Arc, Mutex},
+    time::Instant,
+};
 
 use async_trait::async_trait;
 use breathe_provider::{
@@ -107,6 +111,18 @@ pub trait HostEnvironment: Send + Sync {
         unit: &str,
         property: &str,
         value: u64,
+    ) -> Result<(), HostError>;
+    /// A systemd unit's cumulative CPU time in NANOSECONDS (`CPUUsageNSec`) — the
+    /// raw counter `HostCluster` differences over a window to derive a cpu RATE.
+    fn read_cpu_usage_nsec(&self, unit: &str) -> Result<u64, HostError>;
+    /// Set a transient systemd property to a STRING value (e.g.
+    /// `CPUQuota=150%`) — `CPUQuota` is a percentage, not a bare integer, so it
+    /// cannot go through [`set_unit_property_u64`].
+    fn set_unit_property_str(
+        &self,
+        unit: &str,
+        property: &str,
+        value: &str,
     ) -> Result<(), HostError>;
 }
 
@@ -242,6 +258,21 @@ impl HostEnvironment for SystemdSysfsEnv {
         let assignment = format!("{property}={value}");
         self.systemctl(&["set-property", "--runtime", unit, &assignment]).map(|_| ())
     }
+
+    fn read_cpu_usage_nsec(&self, unit: &str) -> Result<u64, HostError> {
+        // `systemctl show <unit> -p CPUUsageNSec --value` → cumulative ns (or "[not set]").
+        let v = self.systemctl(&["show", unit, "-p", "CPUUsageNSec", "--value"])?;
+        let t = v.trim();
+        if t.is_empty() || t == "[not set]" || t == "infinity" {
+            return Err(HostError::Parse(format!("CPUUsageNSec unavailable: {t:?}")));
+        }
+        t.parse::<u64>().map_err(|e| HostError::Parse(format!("CPUUsageNSec={t:?}: {e}")))
+    }
+
+    fn set_unit_property_str(&self, unit: &str, property: &str, value: &str) -> Result<(), HostError> {
+        let assignment = format!("{property}={value}");
+        self.systemctl(&["set-property", "--runtime", unit, &assignment]).map(|_| ())
+    }
 }
 
 // ───────────────────── the L2 ceilings (mirrored) ──────────────────
@@ -255,15 +286,25 @@ pub struct NodeEnvelopes {
     pub arc_max_bytes: u64,
     /// per-unit `memoryMaxGiB` as bytes — the cgroup `MemoryHigh` ceiling per unit.
     pub cgroup_max_bytes: BTreeMap<String, u64>,
+    /// per-unit cpu ceiling in MILLICORES — the cgroup `CPUQuota` ceiling, the cpu
+    /// territory the unit may breathe within (`nodeBudget`'s per-unit cpu budget).
+    pub cgroup_cpu_max_millicores: BTreeMap<String, u64>,
 }
 
 impl NodeEnvelopes {
-    /// The L2 ceiling for a host lever (the value a write may never exceed).
+    /// The L2 ceiling for a host lever (the value a write may never exceed). Bytes
+    /// for the memory levers, MILLICORES for the cpu lever — same unit as the
+    /// knob's band value, so the [`HostCluster`] ceiling comparison is unit-correct.
     pub fn ceiling_for(&self, knob: &HostKnob) -> Result<u64, HostError> {
         match knob {
             HostKnob::ZfsArcMax => Ok(self.arc_max_bytes),
             HostKnob::CgroupProperty { unit, .. } => self
                 .cgroup_max_bytes
+                .get(unit)
+                .copied()
+                .ok_or_else(|| HostError::NoEnvelope(unit.clone())),
+            HostKnob::CgroupCpuQuota { unit } => self
+                .cgroup_cpu_max_millicores
                 .get(unit)
                 .copied()
                 .ok_or_else(|| HostError::NoEnvelope(unit.clone())),
@@ -276,19 +317,46 @@ impl NodeEnvelopes {
 /// The host `Cluster`. `write_enabled = false` is the SHADOW mode (M3/M4): it
 /// reads + decides + reports `appliedValue` but performs no host mutation, so the
 /// full loop can be observed on a live node before a single byte is written.
+/// A per-unit cpu-usage sample cache: the last `(CPUUsageNSec, Instant)` read for
+/// each systemd unit. `CPUUsageNSec` is cumulative, so a RATE is a difference
+/// between two reads; rather than sleep inside the read (the library has no async
+/// runtime), breathe differences the CURRENT read against the PREVIOUS tick's —
+/// the rate then spans the real host tick (≈30s), more accurate than any short
+/// in-read window, with no artificial latency. Shared (the long-lived agent owns
+/// it; each per-tick `HostCluster` borrows the same handle).
+pub type CpuSampleCache = Arc<Mutex<BTreeMap<String, (u64, Instant)>>>;
+
+/// A fresh, empty cpu-sample cache.
+#[must_use]
+pub fn new_cpu_sample_cache() -> CpuSampleCache {
+    Arc::new(Mutex::new(BTreeMap::new()))
+}
+
 pub struct HostCluster<H: HostEnvironment> {
     env: H,
     envelopes: NodeEnvelopes,
     write_enabled: bool,
+    /// Cross-tick cpu-usage samples (see [`CpuSampleCache`]). `new` gives each
+    /// cluster its OWN cache (fine for non-cpu dims + tests); the agent injects a
+    /// SHARED one via [`with_cpu_samples`](Self::with_cpu_samples) so the rate
+    /// spans ticks.
+    cpu_samples: CpuSampleCache,
 }
 
 impl<H: HostEnvironment> HostCluster<H> {
     pub fn new(env: H, envelopes: NodeEnvelopes, write_enabled: bool) -> Self {
-        Self { env, envelopes, write_enabled }
+        Self { env, envelopes, write_enabled, cpu_samples: new_cpu_sample_cache() }
     }
     /// SHADOW constructor — reads + decides, never writes.
     pub fn shadow(env: H, envelopes: NodeEnvelopes) -> Self {
         Self::new(env, envelopes, false)
+    }
+    /// Inject a SHARED cpu-sample cache (the agent passes its long-lived one so the
+    /// cpu RATE is differenced across ticks, not recomputed from an empty cache).
+    #[must_use]
+    pub fn with_cpu_samples(mut self, cache: CpuSampleCache) -> Self {
+        self.cpu_samples = cache;
+        self
     }
     pub fn env(&self) -> &H {
         &self.env
@@ -298,6 +366,19 @@ impl<H: HostEnvironment> HostCluster<H> {
     }
 }
 
+/// Pure: cpu RATE in millicores from a `CPUUsageNSec` delta over a wall interval.
+/// `delta_nsec` cpu-nanoseconds consumed over `window_nsec` wall-nanoseconds is
+/// `delta/window` cores ⇒ `×1000` millicores. `u128` intermediates so a busy
+/// many-core unit (large delta) cannot overflow. `window_nsec == 0` ⇒ 0 (no window).
+#[must_use]
+pub fn cpu_millicores(delta_nsec: u64, window_nsec: u128) -> u64 {
+    if window_nsec == 0 {
+        return 0;
+    }
+    let milli = u128::from(delta_nsec) * 1000 / window_nsec;
+    u64::try_from(milli).unwrap_or(u64::MAX)
+}
+
 #[async_trait]
 impl<H: HostEnvironment> Cluster for HostCluster<H> {
     async fn read_used(&self, source: &MetricSource) -> Result<Sample, ProviderError> {
@@ -305,6 +386,27 @@ impl<H: HostEnvironment> Cluster for HostCluster<H> {
             MetricSource::Host(HostMetric::ArcSize) => self.env.read_arcstats_size()?,
             MetricSource::Host(HostMetric::CgroupMemoryCurrent { unit }) => {
                 self.env.read_cgroup_memory_current(unit)?
+            }
+            // CPU RATE: difference the cumulative `CPUUsageNSec` against the prior
+            // tick's reading (cross-tick cache) → millicores. The FIRST observation
+            // per unit has no prior sample, so there is no rate yet — hold with a
+            // transient (the next tick differences against this one). No sleep, no
+            // runtime dep; the rate spans the real host tick.
+            MetricSource::Host(HostMetric::CgroupCpuUsage { unit }) => {
+                let nsec_now = self.env.read_cpu_usage_nsec(unit)?;
+                let now = Instant::now();
+                let mut cache = self
+                    .cpu_samples
+                    .lock()
+                    .map_err(|_| ProviderError::ApiTransient("cpu sample cache poisoned".into()))?;
+                match cache.insert(unit.clone(), (nsec_now, now)) {
+                    Some((nsec_prev, t_prev)) => {
+                        let delta = nsec_now.saturating_sub(nsec_prev);
+                        let window = now.saturating_duration_since(t_prev).as_nanos();
+                        cpu_millicores(delta, window)
+                    }
+                    None => return Err(ProviderError::MetricsMissing),
+                }
             }
             // a k8s metric can never reach the host boundary — typed, never silent.
             MetricSource::Prometheus(_) | MetricSource::PodMetricsMax { .. } => {
@@ -334,6 +436,16 @@ impl<H: HostEnvironment> Cluster for HostCluster<H> {
                 // let the band shrink it toward the setpoint.
                 match self.env.read_unit_property_u64(unit, property)? {
                     Some(v) => Ok(v),
+                    None => self.envelopes.ceiling_for(knob).map_err(Into::into),
+                }
+            }
+            LimitLayout::Host(knob @ HostKnob::CgroupCpuQuota { unit }) => {
+                // systemd shows the quota as `CPUQuotaPerSecUSec` (usec/sec); 1 core
+                // = 1_000_000 usec/sec = 1000 millicores ⇒ millicores = usec/sec /
+                // 1000. Unbounded (infinity) ⇒ start from the L2 cpu ceiling and let
+                // the band shrink it toward the setpoint.
+                match self.env.read_unit_property_u64(unit, "CPUQuotaPerSecUSec")? {
+                    Some(usec_per_sec) => Ok(usec_per_sec / 1000),
                     None => self.envelopes.ceiling_for(knob).map_err(Into::into),
                 }
             }
@@ -381,6 +493,13 @@ impl<H: HostEnvironment> Cluster for HostCluster<H> {
             HostKnob::ZfsArcMax => self.env.write_sysfs_u64(ZFS_ARC_MAX_PATH, patch.value)?,
             HostKnob::CgroupProperty { unit, property } => {
                 self.env.set_unit_property_u64(unit, property, patch.value)?;
+            }
+            HostKnob::CgroupCpuQuota { unit } => {
+                // CPUQuota is a PERCENTAGE: 1000 millicores = 1 core = 100%. Render
+                // millicores → percent (floor; sub-1% precision is immaterial for a
+                // bandwidth cap). `set-property --runtime <unit> CPUQuota=<p>%`.
+                let percent = patch.value / 10;
+                self.env.set_unit_property_str(unit, "CPUQuota", &format!("{percent}%"))?;
             }
         }
         Ok(AppliedReceipt { source_hash: [0u8; 16] })
@@ -458,17 +577,56 @@ impl DimensionDescriptor for CgroupMemoryDescriptor {
     }
 }
 
+/// **Cgroup CPU** — bidirectional; a systemd unit's transient `CPUQuota` bandwidth
+/// cap, the host-plane peer of `pod-cpu-resize`. `used` = the unit's cpu RATE in
+/// millicores (differenced from cumulative `CPUUsageNSec`), `limit` = its
+/// `CPUQuota` in millicores, carved within `nodeBudget`'s per-unit cpu territory.
+/// The unit is the band's `Target.name` (e.g. `nix-daemon.service`). `RestartFree`
+/// — a live cgroup bandwidth change never restarts the unit, so it ticks at the
+/// fast golden cadence.
+#[derive(Default)]
+pub struct CgroupCpuDescriptor;
+impl DimensionDescriptor for CgroupCpuDescriptor {
+    fn id(&self) -> DimensionId {
+        DimensionId::CgroupCpu
+    }
+    fn directionality(&self) -> Directionality {
+        Directionality::Bidirectional
+    }
+    fn field_manager(&self) -> &'static str {
+        "breathe/cgroup-cpu"
+    }
+    fn logical_field(&self) -> &'static str {
+        "host.cgroup.cpu_quota"
+    }
+    fn resource(&self) -> &'static str {
+        "cpu"
+    }
+    fn semantics(&self) -> ApplySemantics {
+        ApplySemantics::ContinuousReconciliation
+    }
+    fn layout(&self, target: &Target) -> LimitLayout {
+        LimitLayout::Host(HostKnob::CgroupCpuQuota { unit: target.name.clone() })
+    }
+    fn metric_source(&self, target: &Target) -> MetricSource {
+        MetricSource::Host(HostMetric::CgroupCpuUsage { unit: target.name.clone() })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use breathe_provider::{BandProvider, ResourceProvider};
+    use std::collections::VecDeque;
     use std::sync::Mutex;
 
     const GI: u64 = 1024 * 1024 * 1024;
 
     /// A programmable in-memory [`HostEnvironment`] — the testability seam. Records
     /// every write so a test can assert shadow mode wrote nothing / live mode wrote
-    /// exactly the clamped value.
+    /// exactly the clamped value. `cpu_usage_nsec` is a QUEUE of successive
+    /// cumulative readings (each `read_cpu_usage_nsec` pops one) so a test can drive
+    /// the cross-tick rate; `str_writes` records `set_unit_property_str` calls.
     #[derive(Default)]
     struct MockHostEnv {
         arc_size: u64,
@@ -476,11 +634,16 @@ mod tests {
         cgroup_current: BTreeMap<String, u64>,
         unit_property: BTreeMap<(String, String), Option<u64>>,
         writes: Mutex<Vec<(String, u64)>>,
+        cpu_usage_nsec: Mutex<VecDeque<u64>>,
+        str_writes: Mutex<Vec<(String, String)>>,
     }
 
     impl MockHostEnv {
         fn writes(&self) -> Vec<(String, u64)> {
             self.writes.lock().unwrap().clone()
+        }
+        fn str_writes(&self) -> Vec<(String, String)> {
+            self.str_writes.lock().unwrap().clone()
         }
     }
 
@@ -506,12 +669,25 @@ mod tests {
             self.writes.lock().unwrap().push((format!("{unit}:{property}"), value));
             Ok(())
         }
+        fn read_cpu_usage_nsec(&self, _unit: &str) -> Result<u64, HostError> {
+            self.cpu_usage_nsec
+                .lock()
+                .unwrap()
+                .pop_front()
+                .ok_or_else(|| HostError::Parse("no CPUUsageNSec queued".into()))
+        }
+        fn set_unit_property_str(&self, unit: &str, property: &str, value: &str) -> Result<(), HostError> {
+            self.str_writes.lock().unwrap().push((format!("{unit}:{property}"), value.to_string()));
+            Ok(())
+        }
     }
 
     fn envelopes() -> NodeEnvelopes {
         let mut cgroup = BTreeMap::new();
         cgroup.insert("nix-daemon.service".to_string(), 12 * GI); // nodeBudget memoryMaxGiB = 12
-        NodeEnvelopes { arc_max_bytes: 6 * GI, cgroup_max_bytes: cgroup }
+        let mut cpu = BTreeMap::new();
+        cpu.insert("nix-daemon.service".to_string(), 8000); // nodeBudget cpu territory = 8 cores
+        NodeEnvelopes { arc_max_bytes: 6 * GI, cgroup_max_bytes: cgroup, cgroup_cpu_max_millicores: cpu }
     }
 
     fn node_target() -> Target {
@@ -664,5 +840,72 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(err, ProviderError::ApiPermanent(_)));
+    }
+
+    // ── Phase 3: host cgroup-cpu band (a new RestartFree host dimension) ──────
+
+    #[test]
+    fn cpu_millicores_converts_nsec_delta_over_a_window() {
+        // 1 core for 1s: 1e9 cpu-ns over 1e9 wall-ns → 1000 millicores.
+        assert_eq!(cpu_millicores(1_000_000_000, 1_000_000_000), 1000);
+        // 2 cores → 2000; half a core → 500.
+        assert_eq!(cpu_millicores(2_000_000_000, 1_000_000_000), 2000);
+        assert_eq!(cpu_millicores(500_000_000, 1_000_000_000), 500);
+        // zero window is guarded (no divide-by-zero).
+        assert_eq!(cpu_millicores(1_000_000_000, 0), 0);
+    }
+
+    #[tokio::test]
+    async fn cgroup_cpu_rate_warms_up_then_differences_across_ticks() {
+        // CPUUsageNSec advances 1e9→2e9 across the two ticks; the same cluster's
+        // cross-tick cache holds the first sample.
+        let env = MockHostEnv::default();
+        *env.cpu_usage_nsec.lock().unwrap() = [1_000_000_000u64, 2_000_000_000].into();
+        let cluster = HostCluster::shadow(env, envelopes());
+        let src = MetricSource::Host(HostMetric::CgroupCpuUsage { unit: "nix-daemon.service".into() });
+        // FIRST tick: no prior sample ⇒ warming (a transient), no rate yet.
+        assert!(matches!(cluster.read_used(&src).await, Err(ProviderError::MetricsMissing)));
+        // SECOND tick: differences against the first ⇒ a real rate (exact value is
+        // wall-time dependent; the math is proven by cpu_millicores_converts…).
+        let s = cluster.read_used(&src).await.unwrap();
+        assert_eq!(s.age_secs, 0, "host reads are fresh");
+    }
+
+    #[tokio::test]
+    async fn cgroup_cpu_quota_reads_per_sec_usec_as_millicores() {
+        let layout = LimitLayout::Host(HostKnob::CgroupCpuQuota { unit: "nix-daemon.service".into() });
+        // CPUQuotaPerSecUSec = 1_500_000 usec/sec = 1.5 cores → 1500 millicores.
+        let mut up = BTreeMap::new();
+        up.insert(("nix-daemon.service".to_string(), "CPUQuotaPerSecUSec".to_string()), Some(1_500_000));
+        let cluster = HostCluster::shadow(MockHostEnv { unit_property: up, ..Default::default() }, envelopes());
+        assert_eq!(cluster.read_limit(&unit_target("nix-daemon.service"), &layout, "cpu").await.unwrap(), 1500);
+        // Unbounded (infinity ⇒ no value) → start from the L2 cpu ceiling (8000m).
+        let unbounded = HostCluster::shadow(MockHostEnv::default(), envelopes());
+        assert_eq!(unbounded.read_limit(&unit_target("nix-daemon.service"), &layout, "cpu").await.unwrap(), 8000);
+    }
+
+    #[tokio::test]
+    async fn cgroup_cpu_apply_renders_percent_shadow_safe_and_ceiling_bound() {
+        let layout = LimitLayout::Host(HostKnob::CgroupCpuQuota { unit: "nix-daemon.service".into() });
+        let patch = |value| SsaPatch {
+            target: unit_target("nix-daemon.service"),
+            field_manager: "breathe/cgroup-cpu".into(),
+            layout: layout.clone(),
+            resource: "cpu".into(),
+            value,
+        };
+        // LIVE: 1500 millicores → CPUQuota=150% (a string set-property, not u64).
+        let live = HostCluster::new(MockHostEnv::default(), envelopes(), true);
+        live.apply(&patch(1500)).await.unwrap();
+        assert_eq!(live.env().str_writes(), vec![("nix-daemon.service:CPUQuota".to_string(), "150%".to_string())]);
+        assert!(live.env().writes().is_empty(), "cpu quota goes through the STRING set-property");
+        // SAFETY WALL 2: over the 8000m L2 ceiling ⇒ refused, nothing written.
+        let over = HostCluster::new(MockHostEnv::default(), envelopes(), true);
+        assert!(matches!(over.apply(&patch(9000)).await.unwrap_err(), ProviderError::ApiPermanent(_)));
+        assert!(over.env().str_writes().is_empty(), "a refused cpu write touches nothing");
+        // SHADOW: decides but writes nothing.
+        let shadow = HostCluster::shadow(MockHostEnv::default(), envelopes());
+        shadow.apply(&patch(1500)).await.unwrap();
+        assert!(shadow.env().str_writes().is_empty(), "shadow never writes the host");
     }
 }

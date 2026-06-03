@@ -149,16 +149,28 @@ pub const CATALOG: &[DimensionSpec] = &[
         upstream_mirror: Some("systemctl set-property --runtime <unit> MemoryHigh"),
         depends_on: &[],
     },
+    DimensionSpec {
+        id: DimensionId::CgroupCpu,
+        name: "cgroup-cpu",
+        authoring_keyword: "defdimension-cgroup-cpu",
+        maturity: Maturity::Working,
+        directionality: Directionality::Bidirectional,
+        resource_class: ResourceClass::Soft, // CPUQuota throttles (slow), never kills — a soft cap
+        purpose: "hold a unit's cpu rate at the band by carving transient CPUQuota within its nodeBudget cpu territory",
+        upstream_mirror: Some("systemctl set-property --runtime <unit> CPUQuota"),
+        depends_on: &[],
+    },
 ];
 
 /// All dimension ids the substrate knows (the partition the catalog must cover).
-pub const ALL_DIMENSIONS: [DimensionId; 6] = [
+pub const ALL_DIMENSIONS: [DimensionId; 7] = [
     DimensionId::Memory,
     DimensionId::Storage,
     DimensionId::Cpu,
     DimensionId::Replica,
     DimensionId::Arc,
     DimensionId::Cgroup,
+    DimensionId::CgroupCpu,
 ];
 
 /// Look up a dimension's row.
