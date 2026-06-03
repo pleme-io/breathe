@@ -16,7 +16,9 @@ members = [
   "breathe-host",      # the HostCluster Cluster impl — the host I/O boundary (ARC/cgroup)
   "breathe-runtime",   # shared reconcile glue (status mapping + patch) — brain ⟂ hands no-drift
   "breathe-host-agent", # the HANDS binary — DaemonSet host reconcile loop (ArcBand/CgroupBand)
+  "breathe-facade",    # the typed CRD facade (BreatheStore) — shared by every API surface
   "breathe-mcp",       # the MCP surface — a model drives breathe (bands/nodepools over kube-rs)
+  "breathe-api-server", # the REST surface (axum) over the same facade
 ]
 
 [workspace.package]
