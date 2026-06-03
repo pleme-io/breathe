@@ -99,6 +99,22 @@ pub enum Proposal {
 /// also guards the law against a divide-by-zero on an unset (`0`) limit.
 pub trait ControlLaw {
     fn propose(&self, working_set: u64, current_limit: u64, cfg: &BandConfig) -> Proposal;
+
+    /// Rate-aware proposal — the feed-forward hook. `rate` is the signed rate of
+    /// change of the working set in base-units per second (positive = rising), as
+    /// the reconcile layer measures it across successive fresh samples (`0` when
+    /// no history exists yet). The DEFAULT ignores the rate and delegates to
+    /// [`propose`], so every existing law is byte-unchanged and the proven safety
+    /// scaffolding is untouched; a *predictive* law (see [`PredictiveGrow`])
+    /// overrides this to pre-grow for the burst the instantaneous `working_set`
+    /// can't see yet. The rate-aware path is [`decide_with_rate`]; the proven
+    /// default path ([`decide`]) calls [`propose`] with no rate. Prediction is a
+    /// pure ADD — it can only ever raise a grow target (asymmetric), and the same
+    /// [`safety_clamp`] still contains it (the never-OOM/never-overshoot proof
+    /// holds for predictive laws too — see `safety_gate_contains_any_law`).
+    fn propose_with_rate(&self, working_set: u64, current_limit: u64, cfg: &BandConfig, _rate: i64) -> Proposal {
+        self.propose(working_set, current_limit, cfg)
+    }
 }
 
 /// The SHARED safety gate: turn any law's raw proposal into a SAFE typed
@@ -162,6 +178,30 @@ pub fn decide_with<L: ControlLaw>(
         return Decision::Shrink { from: current_limit, to: cfg.ceiling_bytes };
     }
     safety_clamp(law.propose(working_set, current_limit, cfg), working_set, current_limit, cfg)
+}
+
+/// Rate-aware sibling of [`decide_with`]: runs a law's *feed-forward*
+/// ([`ControlLaw::propose_with_rate`]) through the identical floor-seed /
+/// ceiling-snap / [`safety_clamp`] scaffolding. The only difference from
+/// [`decide_with`] is that the law sees the working-set `rate` (base-units/sec,
+/// signed) — so a predictive law grows AHEAD of a rising burst. The safety gate
+/// is the same, so the never-OOM/never-overshoot proof is unchanged. With
+/// `rate == 0` this is identical to [`decide_with`] for every law.
+#[must_use]
+pub fn decide_with_rate<L: ControlLaw>(
+    law: &L,
+    working_set: u64,
+    current_limit: u64,
+    cfg: &BandConfig,
+    rate: i64,
+) -> Decision {
+    if current_limit < cfg.floor_bytes {
+        return Decision::Grow { from: current_limit, to: cfg.floor_bytes };
+    }
+    if current_limit > cfg.ceiling_bytes {
+        return Decision::Shrink { from: current_limit, to: cfg.ceiling_bytes };
+    }
+    safety_clamp(law.propose_with_rate(working_set, current_limit, cfg, rate), working_set, current_limit, cfg)
 }
 
 /// The default control law + the conformance oracle: a deadband with gentle
@@ -252,6 +292,63 @@ impl<L: ControlLaw> ControlLaw for SlewLimited<L> {
                 Proposal::Target(t.clamp(lo, hi))
             }
         }
+    }
+}
+
+/// The ASYMMETRIC feed-forward decorator — the burst-OOM fix. Wraps any inner
+/// law and adds a *predictive grow*: it projects the working set `lookahead_secs`
+/// into the future at the observed `rate` (`ws + rate·lookahead`) and, if that
+/// near-future working set would breach `grow_above`, grows NOW to seat the
+/// *predicted* working set at the setpoint — even if the instantaneous
+/// utilization is still in-band. The asymmetry is the whole point: the loop's
+/// only fast, prediction-driven action is the one that BUYS headroom (grow), so
+/// dead-time can only ever cost money, never the process. When the prediction is
+/// benign it defers entirely to the inner law (including its shrink) — prediction
+/// never shrinks and never overrides a shrink. With `rate == 0` (no history) the
+/// prediction collapses to the present and the behaviour is exactly the inner
+/// law's. The shared [`safety_clamp`] still caps the grow at the ceiling, so a
+/// runaway rate cannot breach it (proven in `safety_gate_contains_any_law`).
+///
+/// Closes the L0-liveness category error from the breathability thesis:
+/// averaging is fatal for OOM (a pointwise cliff); the fix is not a better
+/// average but a one-sided predictive grow that pre-empts the cliff.
+#[derive(Debug, Clone, Copy)]
+pub struct PredictiveGrow<L> {
+    /// The base control law (band/proportional/slew-limited).
+    pub inner: L,
+    /// How many seconds ahead to project the working set at the observed rate.
+    /// Size it to the provision latency `θ` (refresh + cooldown) the grow must
+    /// cover before the loop sees the next sample.
+    pub lookahead_secs: f64,
+}
+
+impl<L: ControlLaw> ControlLaw for PredictiveGrow<L> {
+    /// Rate-blind fallback: with no rate signal there is nothing to predict, so a
+    /// predictive law is exactly its inner law (the proven default path uses this).
+    fn propose(&self, working_set: u64, current_limit: u64, cfg: &BandConfig) -> Proposal {
+        self.inner.propose(working_set, current_limit, cfg)
+    }
+
+    #[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    fn propose_with_rate(&self, working_set: u64, current_limit: u64, cfg: &BandConfig, rate: i64) -> Proposal {
+        let inner = self.inner.propose_with_rate(working_set, current_limit, cfg, rate);
+        // project the working set forward at the observed rate (never below 0).
+        let predicted_ws = ((working_set as f64) + (rate as f64) * self.lookahead_secs).max(0.0);
+        let predicted_util = predicted_ws / current_limit as f64;
+        // ASYMMETRIC: only a PREDICTED breach of the grow edge triggers a
+        // feed-forward grow; otherwise defer to the inner law verbatim (so its
+        // shrink/hold are untouched — prediction never shrinks).
+        if predicted_util > cfg.grow_above {
+            let ff_target = (predicted_ws / cfg.setpoint).ceil() as u64;
+            let base = match inner {
+                Proposal::Target(t) => t,
+                Proposal::Hold => current_limit,
+            };
+            // grow to whichever is larger — the inner law's grow or the
+            // feed-forward seat — never smaller, never a shrink.
+            return Proposal::Target(base.max(ff_target).max(current_limit));
+        }
+        inner
     }
 }
 
@@ -1028,6 +1125,98 @@ mod tests {
                 assert!(rise <= 0.26, "slew cap holds the per-tick rise near 25% (got {rise})");
             }
             d => panic!("expected a capped Grow, got {d:?}"),
+        }
+    }
+
+    // ── PredictiveGrow: asymmetric feed-forward (the burst-OOM fix) ──────────
+
+    #[test]
+    fn predictive_grow_with_zero_rate_is_identical_to_inner() {
+        // No history (rate 0) ⇒ nothing to predict ⇒ exactly the inner band law.
+        let c = cfg();
+        let law = PredictiveGrow { inner: BandLaw, lookahead_secs: 60.0 };
+        for (ws, lim) in [(800 * MI, GI), (950 * MI, GI), (200 * MI, 2 * GI), (0, 0), (16 * GI, 16 * GI)] {
+            assert_eq!(decide_with_rate(&law, ws, lim, &c, 0), decide(ws, lim, &c), "ws={ws} lim={lim}");
+        }
+    }
+
+    #[test]
+    fn predictive_grow_preempts_a_rising_burst_while_in_band() {
+        // util 0.78 (in-band → plain BandLaw HOLDS), but a +2Mi/s rate predicts
+        // the working set crossing the grow edge within the lookahead → grow NOW.
+        let c = cfg();
+        let law = PredictiveGrow { inner: BandLaw, lookahead_secs: 60.0 };
+        // plain law holds at this in-band utilization …
+        assert_eq!(decide(800 * MI, GI, &c), Decision::Hold);
+        // … but the predictive law grows ahead of the predicted breach.
+        // predicted_ws = 800Mi + 2Mi/s·60s = 920Mi → seat at setpoint: 920Mi/0.8 = 1150Mi.
+        match decide_with_rate(&law, 800 * MI, GI, &c, (2 * MI) as i64) {
+            Decision::Grow { from, to } => {
+                assert_eq!(from, GI);
+                assert_eq!(to, 1150 * MI);
+                assert!(to > from, "a predictive grow raises the limit");
+            }
+            d => panic!("expected a predictive Grow, got {d:?}"),
+        }
+    }
+
+    #[test]
+    fn predictive_grow_is_still_ceiling_clamped() {
+        // a runaway rate cannot breach the ceiling — the shared gate owns that.
+        let c = BandConfig { ceiling_bytes: 4 * GI, ..cfg() };
+        let law = PredictiveGrow { inner: BandLaw, lookahead_secs: 60.0 };
+        match decide_with_rate(&law, 800 * MI, GI, &c, GI as i64 /* 1Gi/s — absurd */) {
+            Decision::Grow { from, to } => {
+                assert_eq!(from, GI);
+                assert_eq!(to, c.ceiling_bytes, "predictive grow capped at the ceiling");
+            }
+            d => panic!("expected a ceiling-capped Grow, got {d:?}"),
+        }
+    }
+
+    #[test]
+    fn predictive_grow_never_blocks_or_inverts_a_shrink() {
+        // low util + a falling rate: the inner law shrinks; prediction (which only
+        // ever grows) must pass the shrink through untouched.
+        let c = cfg();
+        let law = PredictiveGrow { inner: BandLaw, lookahead_secs: 60.0 };
+        let with = decide_with_rate(&law, 200 * MI, 2 * GI, &c, -(MI as i64));
+        assert_eq!(with, decide(200 * MI, 2 * GI, &c));
+        assert!(matches!(with, Decision::Shrink { .. }), "prediction must not block a shrink, got {with:?}");
+    }
+
+    /// The conformance oracle EXTENDED to predictive laws: the shared safety gate
+    /// must contain `PredictiveGrow` over adversarial rates (huge rising / falling)
+    /// exactly as it contains every other law — never grow over the ceiling, never
+    /// shrink below the safe minimum.
+    #[test]
+    fn safety_gate_contains_the_predictive_law() {
+        let c = cfg();
+        let band = PredictiveGrow { inner: BandLaw, lookahead_secs: 60.0 };
+        let prop = PredictiveGrow { inner: ProportionalLaw { gain: 1.0 }, lookahead_secs: 30.0 };
+        for &ws in &[0u64, 100 * MI, 800 * MI, 4 * GI, 16 * GI, 32 * GI] {
+            for &limit in &[256 * MI, GI, 4 * GI, 16 * GI, 20 * GI] {
+                let safe_min = (ws as f64 / c.setpoint).ceil() as u64;
+                for &rate in &[i64::MIN / 2, -(GI as i64), 0, GI as i64, i64::MAX / 2] {
+                    for d in [
+                        decide_with_rate(&band, ws, limit, &c, rate),
+                        decide_with_rate(&prop, ws, limit, &c, rate),
+                    ] {
+                        match d {
+                            Decision::Grow { from, to } => {
+                                assert!(to <= c.ceiling_bytes, "ws={ws} limit={limit} rate={rate}: grew over ceiling to {to}");
+                                assert!(to > from, "a Grow must raise the limit");
+                            }
+                            Decision::Shrink { from, to } => {
+                                assert!(to >= c.floor_bytes || from > c.ceiling_bytes, "shrank below floor");
+                                assert!(to >= safe_min || from > c.ceiling_bytes, "ws={ws} limit={limit} rate={rate}: shrank below safe_min to {to}");
+                                assert!(to < from, "a Shrink must lower the limit");
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+            }
         }
     }
 }
