@@ -19,6 +19,11 @@ async-graphql = "7"
 async-graphql-axum = "7"
 tonic = "0.12"
 prost = "0.13"
+prost-types = "0.13"
+# pbjson makes the generated proto messages serde-(de)serializable (the proto3
+# JSON mapping) so the facade's serde_json::Value bridges to typed gRPC.
+pbjson = "0.7"
+pbjson-types = "0.7"
 tokio = { version = "1.40", features = ["macros", "rt-multi-thread"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1.0"
@@ -27,6 +32,8 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 
 [build-dependencies]
 tonic-build = "0.12"
+prost-build = "0.13"
+pbjson-build = "0.7"
 protoc-bin-vendored = "3"   # vendored protoc for local builds; nix uses system protobuf
 which = "6"
 

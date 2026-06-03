@@ -146,19 +146,25 @@ components:
         container: { type: string }
     BandSpec:
       type: object
-      description: The band policy (all fields optional on PATCH — merge semantics).
+      description: |
+        The band policy (all fields optional on PATCH — RFC-7386 merge semantics).
+        Every scalar is `nullable: true` so the generated proto3 fields carry
+        FIELD PRESENCE (optional): on a merge-patch a present value (incl. a zero
+        like `dryRun: false`) is written, an absent value leaves the field
+        unchanged. Without presence, proto3 omits zero values on serialize and the
+        merge-patch silently drops them — a client could not re-arm a gate.
       properties:
         targetRef: { $ref: "#/components/schemas/TargetRef" }
-        setpoint: { type: number, default: 0.80 }
-        growAbove: { type: number, default: 0.85 }
-        shrinkBelow: { type: number, default: 0.70 }
-        growFactor: { type: number, default: 1.25 }
-        shrinkFactor: { type: number, default: 0.90 }
-        floor: { type: string, description: "quantity (e.g. 2Gi); cpu in millicores" }
-        ceiling: { type: string }
-        cooldownSeconds: { type: integer, default: 600 }
-        maxStalenessSeconds: { type: integer, default: 120 }
-        dryRun: { type: boolean, description: "true = SHADOW (decide + report, never carve)" }
+        setpoint: { type: number, default: 0.80, nullable: true }
+        growAbove: { type: number, default: 0.85, nullable: true }
+        shrinkBelow: { type: number, default: 0.70, nullable: true }
+        growFactor: { type: number, default: 1.25, nullable: true }
+        shrinkFactor: { type: number, default: 0.90, nullable: true }
+        floor: { type: string, description: "quantity (e.g. 2Gi); cpu in millicores", nullable: true }
+        ceiling: { type: string, nullable: true }
+        cooldownSeconds: { type: integer, default: 600, nullable: true }
+        maxStalenessSeconds: { type: integer, default: 120, nullable: true }
+        dryRun: { type: boolean, description: "true = SHADOW (decide + report, never carve)", nullable: true }
     BandStatus:
       type: object
       properties:
