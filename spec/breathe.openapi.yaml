@@ -1,0 +1,221 @@
+openapi: 3.0.3
+info:
+  title: breathe control API
+  version: 0.1.0
+  description: |
+    The control surface for the breathe resource-homeostasis substrate. breathe
+    holds workloads at a utilization band by carving resource limits (memory/cpu/
+    storage in k8s; ZFS ARC + systemd-unit cgroup MemoryHigh on the host).
+
+    This OpenAPI spec is the SINGLE SOURCE OF TRUTH (the canonical pleme-io
+    spec-first standard): forge-gen emits central types + SDKs + docs from it, and
+    every surface (REST/axum, gRPC/tonic, GraphQL/async-graphql, MCP) shares the
+    one BreatheStore facade. The handlers are kube-rs facade calls — breathe's
+    state IS its k8s CRDs (BreatheNodePool + the five *Band kinds), so the API is a
+    typed projection + mutation morphism, not a second store.
+
+    Shadow-first: a band's `dryRun` and a node's `writeEnabled` are the two safety
+    gates; host writes are always bounded by the nodepool's L2 ceiling.
+servers:
+  - url: /
+tags:
+  - name: bands
+    x-pangea-visibility: internal
+  - name: nodepools
+    x-pangea-visibility: internal
+  - name: catalog
+    x-pangea-visibility: internal
+
+paths:
+  /healthz:
+    get:
+      operationId: healthz
+      tags: [catalog]
+      summary: Liveness probe.
+      responses:
+        "200": { description: ok }
+
+  /api/v1/catalog:
+    get:
+      operationId: catalogList
+      tags: [catalog]
+      summary: The self-describing dimension catalog (6 dimensions; maturity, directionality, host-vs-k8s, deps).
+      responses:
+        "200":
+          description: the catalog
+          content: { application/json: { schema: { $ref: "#/components/schemas/Catalog" } } }
+
+  /api/v1/bands/{kind}:
+    get:
+      operationId: bandList
+      tags: [bands]
+      summary: List bands of a dimension, optionally namespace-scoped.
+      parameters:
+        - { name: kind, in: path, required: true, schema: { $ref: "#/components/schemas/BandKind" } }
+        - { name: namespace, in: query, required: false, schema: { type: string } }
+      responses:
+        "200": { description: bands, content: { application/json: { schema: { type: array, items: { $ref: "#/components/schemas/Band" } } } } }
+        "400": { $ref: "#/components/responses/BadRequest" }
+
+  /api/v1/bands/{kind}/{namespace}/{name}:
+    parameters:
+      - { name: kind, in: path, required: true, schema: { $ref: "#/components/schemas/BandKind" } }
+      - { name: namespace, in: path, required: true, schema: { type: string } }
+      - { name: name, in: path, required: true, schema: { type: string } }
+    get:
+      operationId: bandGet
+      tags: [bands]
+      summary: Get one band CR (full spec + status).
+      responses:
+        "200": { description: band, content: { application/json: { schema: { $ref: "#/components/schemas/Band" } } } }
+        "400": { $ref: "#/components/responses/BadRequest" }
+    patch:
+      operationId: bandPatch
+      tags: [bands]
+      summary: Merge-patch a band's spec (tune the homeostasis band).
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: "#/components/schemas/BandSpec" } } }
+      responses:
+        "200": { description: patched band, content: { application/json: { schema: { $ref: "#/components/schemas/Band" } } } }
+        "400": { $ref: "#/components/responses/BadRequest" }
+
+  /api/v1/bands/{kind}/{namespace}/{name}/dry-run:
+    patch:
+      operationId: bandSetDryRun
+      tags: [bands]
+      summary: Flip a band's dryRun (SHADOW ↔ LIVE) — one of the two safety gates.
+      parameters:
+        - { name: kind, in: path, required: true, schema: { $ref: "#/components/schemas/BandKind" } }
+        - { name: namespace, in: path, required: true, schema: { type: string } }
+        - { name: name, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content: { application/json: { schema: { type: object, required: [dryRun], properties: { dryRun: { type: boolean } } } } }
+      responses:
+        "200": { description: patched band, content: { application/json: { schema: { $ref: "#/components/schemas/Band" } } } }
+
+  /api/v1/nodepools:
+    get:
+      operationId: nodepoolList
+      tags: [nodepools]
+      summary: List BreatheNodePools (cluster-scoped enrollment + L2 ceilings + master switch).
+      responses:
+        "200": { description: pools, content: { application/json: { schema: { type: array, items: { $ref: "#/components/schemas/NodePool" } } } } }
+
+  /api/v1/nodepools/{name}:
+    get:
+      operationId: nodepoolGet
+      tags: [nodepools]
+      summary: Get one BreatheNodePool.
+      parameters:
+        - { name: name, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: pool, content: { application/json: { schema: { $ref: "#/components/schemas/NodePool" } } } }
+
+  /api/v1/nodepools/{name}/write-enabled:
+    patch:
+      operationId: nodepoolSetWriteEnabled
+      tags: [nodepools]
+      summary: Flip a node's writeEnabled master switch (whole-node SHADOW ↔ LIVE) — the node-level safety gate.
+      parameters:
+        - { name: name, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content: { application/json: { schema: { type: object, required: [writeEnabled], properties: { writeEnabled: { type: boolean } } } } }
+      responses:
+        "200": { description: patched pool, content: { application/json: { schema: { $ref: "#/components/schemas/NodePool" } } } }
+
+components:
+  responses:
+    BadRequest:
+      description: bad request (e.g. unknown band kind)
+      content: { application/json: { schema: { type: object, properties: { error: { type: string } } } } }
+  schemas:
+    BandKind:
+      type: string
+      enum: [memory, cpu, storage, arc, cgroup]
+      description: The dimension a band controls. memory/cpu/storage are k8s; arc/cgroup are host.
+    TargetRef:
+      type: object
+      required: [kind, name]
+      properties:
+        kind: { type: string, description: "Deployment | StatefulSet | Cluster (CNPG) | PersistentVolumeClaim | Node | HostUnit" }
+        name: { type: string }
+        apiVersion: { type: string }
+        container: { type: string }
+    BandSpec:
+      type: object
+      description: The band policy (all fields optional on PATCH — merge semantics).
+      properties:
+        targetRef: { $ref: "#/components/schemas/TargetRef" }
+        setpoint: { type: number, default: 0.80 }
+        growAbove: { type: number, default: 0.85 }
+        shrinkBelow: { type: number, default: 0.70 }
+        growFactor: { type: number, default: 1.25 }
+        shrinkFactor: { type: number, default: 0.90 }
+        floor: { type: string, description: "quantity (e.g. 2Gi); cpu in millicores" }
+        ceiling: { type: string }
+        cooldownSeconds: { type: integer, default: 600 }
+        maxStalenessSeconds: { type: integer, default: 120 }
+        dryRun: { type: boolean, description: "true = SHADOW (decide + report, never carve)" }
+    BandStatus:
+      type: object
+      properties:
+        phase: { type: string, description: "Holding | Growing | Shrinking | ShadowWouldApply | AtCeiling | AtFloor | Cooldown | Stale | Conflict | Error" }
+        lastUtil: { type: string }
+        currentLimit: { type: string }
+        lastDecision: { type: string }
+        lastChangeEpoch: { type: integer }
+        conflictManager: { type: string }
+    Band:
+      type: object
+      description: A band CR (kube object — apiVersion/kind/metadata + spec + status).
+      properties:
+        apiVersion: { type: string }
+        kind: { type: string }
+        metadata: { type: object }
+        spec: { $ref: "#/components/schemas/BandSpec" }
+        status: { $ref: "#/components/schemas/BandStatus" }
+    NodePoolSpec:
+      type: object
+      required: [nodeName, arcMaxGiB]
+      properties:
+        nodeName: { type: string }
+        arcMaxGiB: { type: integer, maximum: 1048576, description: "L2 ARC ceiling (GiB; bounded ≤ 1 PiB)" }
+        cgroupMaxGiB:
+          type: object
+          additionalProperties: { type: integer, maximum: 1048576 }
+          description: "per-systemd-unit L2 MemoryHigh ceiling (GiB)"
+        writeEnabled: { type: boolean, description: "node master write switch; false = whole node in SHADOW" }
+    NodePoolStatus:
+      type: object
+      properties:
+        phase: { type: string }
+        observedNode: { type: string }
+        managedUnits: { type: integer }
+        lastSeenEpoch: { type: integer }
+    NodePool:
+      type: object
+      properties:
+        apiVersion: { type: string }
+        kind: { type: string }
+        metadata: { type: object }
+        spec: { $ref: "#/components/schemas/NodePoolSpec" }
+        status: { $ref: "#/components/schemas/NodePoolStatus" }
+    DimensionSpec:
+      type: object
+      properties:
+        id: { type: string }
+        name: { type: string }
+        authoringKeyword: { type: string }
+        maturity: { type: string }
+        directionality: { type: string }
+        purpose: { type: string }
+        upstreamMirror: { type: string, nullable: true }
+        isHost: { type: boolean }
+        dependsOn: { type: array, items: { type: string } }
+    Catalog:
+      type: object
+      properties:
+        dimensions: { type: array, items: { $ref: "#/components/schemas/DimensionSpec" } }

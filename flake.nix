@@ -128,17 +128,35 @@
         };
       };
 
+      # The REST surface (axum) over the same facade. `BREATHE_API_BIND=… nix run .#breathe-api-server`.
+      apiServer = rustPlatform.buildRustPackage {
+        pname = "breathe-api-server";
+        version = version;
+        src = ./.;
+        cargoLock = { lockFile = ./Cargo.lock; };
+        cargoBuildFlags = [ "-p" "breathe-api-server" ];
+        nativeBuildInputs = with pkgs; [ pkg-config cmake perl ];
+        doCheck = false;
+        meta = {
+          description = "breathe REST API (axum) over the BreatheStore facade";
+          license = pkgs.lib.licenses.mit;
+          mainProgram = "breathe-api-server";
+        };
+      };
+
     in {
       packages = {
         default = controller;
         breathe-controller = controller;
         breathe-host-agent = agent;
         breathe-mcp = mcp;
+        breathe-api-server = apiServer;
         image = image;
         agent-image = agentImage;
       };
       apps.default = { type = "app"; program = "${controller}/bin/breathe-controller"; };
       apps.breathe-mcp = { type = "app"; program = "${mcp}/bin/breathe-mcp"; };
+      apps.breathe-api-server = { type = "app"; program = "${apiServer}/bin/breathe-api-server"; };
       devShells.default = pkgs.mkShellNoCC {
         buildInputs = with pkgs; [ rustToolchain pkg-config cmake skopeo kubectl helm ];
       };
