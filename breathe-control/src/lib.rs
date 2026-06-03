@@ -476,6 +476,14 @@ pub struct Observation {
     /// returns a stale/zero `used` is indistinguishable from a real reading
     /// without this — so the loop refuses to mutate when it exceeds the bound.
     pub staleness_secs: u64,
+    /// Restart-cost refinement for a memory in-place SHRINK: `true` iff the target
+    /// is a pod whose `resizePolicy[<resource>]` is `NotRequired`, so the kubelet
+    /// resizes it without restarting the container. Only meaningful for a memory
+    /// `PodResize` carve; `false` (conservative — assume a shrink may restart)
+    /// everywhere else, and never consulted unless the carve's base restart class
+    /// is `RestartConditional`. This is what lets a `NotRequired` workload breathe
+    /// DOWN on golden rails (Phase 2 of RIO-GOLDEN-UPDATE).
+    pub memory_shrink_restart_free: bool,
 }
 
 /// Refuse an out-of-policy direction *before* it reaches the provider.
@@ -917,7 +925,7 @@ mod tests {
     // ── plan_tick: the pure reconcile heart (single-writer FIRST) ────────────
 
     fn obs(used: u64, cap: u64, owners: Vec<FieldOwner>) -> Observation {
-        Observation { used, capacity: cap, owners, staleness_secs: 0 }
+        Observation { used, capacity: cap, owners, staleness_secs: 0, memory_shrink_restart_free: false }
     }
     fn ours() -> Vec<FieldOwner> {
         vec![owns("breathe-memory", MEMORY_LIMIT_FIELD)]
@@ -972,7 +980,7 @@ mod tests {
     fn plan_refuses_to_mutate_on_stale_metric() {
         // util 0.95 would Act(Grow), but a sample older than the bound must never
         // carve — the never-OOM proof holds only on a fresh metric.
-        let stale = Observation { used: 950 * MI, capacity: GI, owners: ours(), staleness_secs: 120 };
+        let stale = Observation { used: 950 * MI, capacity: GI, owners: ours(), staleness_secs: 120, memory_shrink_restart_free: false };
         match plan_tick(&stale, &cfg(), Directionality::Bidirectional, false, "breathe-memory", MEMORY_LIMIT_FIELD, FRESH) {
             TickPlan::Stale { staleness_secs: 120, decision: Decision::Grow { .. } } => {}
             p => panic!("expected Stale(Grow), got {p:?}"),

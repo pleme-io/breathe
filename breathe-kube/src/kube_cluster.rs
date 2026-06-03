@@ -119,6 +119,28 @@ impl KubeCluster {
         pod_data.pointer("/spec/containers/0/name").and_then(Value::as_str).map(String::from)
     }
 
+    /// True iff the pod's managed container declares `resizePolicy[<resource>] =
+    /// NotRequired` — the kubelet then resizes that resource in place WITHOUT
+    /// restarting the container. Absent policy ⇒ false (k8s defaults to
+    /// `RestartContainer`); a missing container/spec ⇒ false. This is the live fact
+    /// that turns a memory shrink from `RestartConditional` into `RestartFree`.
+    fn container_resize_not_required(pod_data: &Value, container: &Option<String>, resource: &str) -> bool {
+        let Some(containers) = pod_data.pointer("/spec/containers").and_then(Value::as_array) else {
+            return false;
+        };
+        let c = match container {
+            Some(name) => containers.iter().find(|c| c.get("name").and_then(Value::as_str) == Some(name.as_str())),
+            None => containers.first(),
+        };
+        let Some(policies) = c.and_then(|c| c.pointer("/resizePolicy")).and_then(Value::as_array) else {
+            return false;
+        };
+        policies.iter().any(|p| {
+            p.get("resourceName").and_then(Value::as_str) == Some(resource)
+                && p.get("restartPolicy").and_then(Value::as_str) == Some("NotRequired")
+        })
+    }
+
     /// Build a label selector (`k=v,k2=v2`) from an owner's `spec.selector.matchLabels`.
     fn owner_pod_selector(owner_data: &Value) -> Option<String> {
         let ml = owner_data.pointer("/spec/selector/matchLabels")?.as_object()?;
@@ -386,6 +408,30 @@ impl Cluster for KubeCluster {
             .map_err(|e| ProviderError::ApiPermanent(e.to_string()))?;
         Ok(AppliedReceipt { source_hash: [0u8; 16] })
     }
+
+    /// Phase 2 (resizePolicy-aware shrink): is an in-place shrink of `resource`
+    /// restart-free? Only a `PodResize` carve can be — every other layout is already
+    /// `RestartFree` (host/pvc) or `RestartRequiring` (template/CNPG), so we answer
+    /// the conservative false and never read a pod there. For `PodResize` it is
+    /// restart-free iff EVERY resized pod's managed container declares
+    /// `resizePolicy[<resource>] = NotRequired`; a single `RestartContainer` (or
+    /// absent ⇒ the k8s default) means the shrink may restart, so the gate keeps it
+    /// `RestartConditional`. No live pods ⇒ false (nothing to resize in place).
+    async fn read_resize_restart_free(
+        &self,
+        target: &Target,
+        layout: &LimitLayout,
+        resource: &str,
+    ) -> Result<bool, ProviderError> {
+        let LimitLayout::PodResize { container } = layout else {
+            return Ok(false);
+        };
+        let pods = self.owner_pods(target).await?;
+        if pods.is_empty() {
+            return Ok(false);
+        }
+        Ok(pods.iter().all(|p| Self::container_resize_not_required(&p.data, container, resource)))
+    }
 }
 
 #[cfg(test)]
@@ -444,5 +490,34 @@ mod tests {
             resize_resources_block("Guaranteed", "cpu", 500, Some("250m")),
             json!({ "limits": { "cpu": "500m" }, "requests": { "cpu": "500m" } })
         );
+    }
+
+    #[test]
+    fn resize_not_required_reads_the_container_policy() {
+        use super::KubeCluster;
+        let not_required = json!({ "spec": { "containers": [
+            { "name": "app", "resizePolicy": [
+                { "resourceName": "cpu", "restartPolicy": "NotRequired" },
+                { "resourceName": "memory", "restartPolicy": "NotRequired" }
+            ] }
+        ] } });
+        let restart_container = json!({ "spec": { "containers": [
+            { "name": "app", "resizePolicy": [
+                { "resourceName": "memory", "restartPolicy": "RestartContainer" }
+            ] }
+        ] } });
+        let no_policy = json!({ "spec": { "containers": [ { "name": "app" } ] } });
+
+        let c = Some("app".to_string());
+        // NotRequired ⇒ a memory shrink is restart-free (golden).
+        assert!(KubeCluster::container_resize_not_required(&not_required, &c, "memory"));
+        // RestartContainer (explicit) ⇒ not restart-free.
+        assert!(!KubeCluster::container_resize_not_required(&restart_container, &c, "memory"));
+        // Absent policy ⇒ false (k8s default is RestartContainer for memory).
+        assert!(!KubeCluster::container_resize_not_required(&no_policy, &c, "memory"));
+        // A named container that doesn't exist ⇒ false (never assume).
+        assert!(!KubeCluster::container_resize_not_required(&not_required, &Some("missing".into()), "memory"));
+        // None ⇒ first container; resolves the same policy.
+        assert!(KubeCluster::container_resize_not_required(&not_required, &None, "memory"));
     }
 }
