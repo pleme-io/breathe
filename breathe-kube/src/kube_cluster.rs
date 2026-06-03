@@ -96,9 +96,48 @@ impl KubeCluster {
                 };
                 c.pointer(&format!("/resources/limits/{resource}")).and_then(Value::as_str).map(String::from)
             }
+            // PodResize reads from the live pods (handled in read_limit), not the
+            // fetched owner object — so there is nothing to read here.
+            LimitLayout::PodResize { .. } => None,
             // No k8s object holds a host lever — handled (rejected) in read_limit.
             LimitLayout::Host(_) => None,
         }
+    }
+
+    /// A pod's container quantity at `kind` (`limits`/`requests`) for `resource`.
+    fn pod_container_qty(pod_data: &Value, container: &Option<String>, kind: &str, resource: &str) -> Option<String> {
+        let containers = pod_data.pointer("/spec/containers")?.as_array()?;
+        let c = match container {
+            Some(name) => containers.iter().find(|c| c.get("name").and_then(Value::as_str) == Some(name.as_str()))?,
+            None => containers.first()?,
+        };
+        c.pointer(&format!("/resources/{kind}/{resource}")).and_then(Value::as_str).map(String::from)
+    }
+
+    /// The first container name on a pod (when the band names none).
+    fn pod_first_container(pod_data: &Value) -> Option<String> {
+        pod_data.pointer("/spec/containers/0/name").and_then(Value::as_str).map(String::from)
+    }
+
+    /// Build a label selector (`k=v,k2=v2`) from an owner's `spec.selector.matchLabels`.
+    fn owner_pod_selector(owner_data: &Value) -> Option<String> {
+        let ml = owner_data.pointer("/spec/selector/matchLabels")?.as_object()?;
+        let sel = ml.iter().filter_map(|(k, v)| v.as_str().map(|v| format!("{k}={v}"))).collect::<Vec<_>>().join(",");
+        (!sel.is_empty()).then_some(sel)
+    }
+
+    /// List the live pods owned by `target` (matched by its `spec.selector`).
+    async fn owner_pods(&self, target: &Target) -> Result<Vec<DynamicObject>, ProviderError> {
+        let owner = self.get_owner(target).await?;
+        let sel = Self::owner_pod_selector(&owner.data).ok_or(ProviderError::NoCapacityField)?;
+        let gvk = GroupVersionKind::gvk("", "v1", "Pod");
+        let ar = ApiResource::from_gvk(&gvk);
+        let api: Api<DynamicObject> = Api::namespaced_with(self.client.clone(), &target.namespace, &ar);
+        let pods = api
+            .list(&ListParams::default().labels(&sel))
+            .await
+            .map_err(|e| ProviderError::ApiTransient(e.to_string()))?;
+        Ok(pods.items)
     }
 
     /// Prometheus instant query → (value, sample age).
@@ -172,6 +211,24 @@ impl KubeCluster {
     }
 }
 
+/// The QoS-preserving `resources` block for an in-place pod resize. A Guaranteed
+/// pod (requests == limits) keeps requests == limits so it STAYS Guaranteed
+/// (both grow and shrink); a Burstable/BestEffort pod sets the limit and clamps
+/// its request DOWN to the new limit only if the old request would now exceed it
+/// (k8s rejects request > limit) — otherwise the request is left untouched.
+/// Pure + unit-tested; the actuator's only QoS-relevant decision lives here.
+fn resize_resources_block(qos: &str, resource: &str, value: u64, current_request: Option<&str>) -> Value {
+    let unit = Unit::for_resource(resource);
+    let qty = Quantity { value, unit }.to_string();
+    if qos == "Guaranteed" {
+        return json!({ "limits": { resource: qty.clone() }, "requests": { resource: qty } });
+    }
+    match current_request.and_then(|r| unit.parse(r)) {
+        Some(req) if req > value => json!({ "limits": { resource: qty.clone() }, "requests": { resource: qty } }),
+        _ => json!({ "limits": { resource: qty } }),
+    }
+}
+
 #[async_trait]
 impl Cluster for KubeCluster {
     async fn read_used(&self, source: &MetricSource) -> Result<Sample, ProviderError> {
@@ -194,6 +251,19 @@ impl Cluster for KubeCluster {
         layout: &LimitLayout,
         resource: &str,
     ) -> Result<u64, ProviderError> {
+        // PodResize reads the LIVE pods' current limit (the MAX across the owner's
+        // pods) — that is the value the in-place band manages, not the template.
+        if let LimitLayout::PodResize { container } = layout {
+            let mut max = 0u64;
+            for pod in self.owner_pods(target).await? {
+                if let Some(q) = Self::pod_container_qty(&pod.data, container, "limits", resource) {
+                    if let Some(v) = Unit::for_resource(resource).parse(&q) {
+                        max = max.max(v);
+                    }
+                }
+            }
+            return Ok(max); // 0 ⇒ decide() seeds to the floor (the ceded-field path)
+        }
         let obj = self.get_owner(target).await?;
         match Self::read_qty(&obj.data, layout, resource) {
             // Unset limit → 0; decide() seeds it to the floor (the ceded-field path).
@@ -223,6 +293,10 @@ impl Cluster for KubeCluster {
                     None => return Ok(Vec::new()),
                 }
             }
+            // In-place resize writes the pods' `resize` subresource, which breathe
+            // owns; cross-writer detection on the subresource (a co-resizing VPA)
+            // is a documented v1 follow-on — for now breathe is the sole resizer.
+            LimitLayout::PodResize { .. } => return Ok(Vec::new()),
             LimitLayout::Host(_) => {
                 return Err(ProviderError::ApiPermanent(
                     "host layout on KubeCluster (route host dimensions to HostCluster)".into(),
@@ -234,6 +308,38 @@ impl Cluster for KubeCluster {
 
     async fn apply(&self, patch: &SsaPatch) -> Result<AppliedReceipt, ProviderError> {
         let target = &patch.target;
+
+        // IN-PLACE RESIZE: carve the live pods via the `pods/{name}/resize`
+        // subresource (k8s ≥1.33) — no restart, exactly like HostCluster's live
+        // cgroup write. The template is untouched (a re-created pod re-converges
+        // in-place next tick); QoS is preserved per pod.
+        if let LimitLayout::PodResize { container } = &patch.layout {
+            let pods = self.owner_pods(target).await?;
+            if pods.is_empty() {
+                return Err(ProviderError::TargetNotFound);
+            }
+            let gvk = GroupVersionKind::gvk("", "v1", "Pod");
+            let ar = ApiResource::from_gvk(&gvk);
+            let pod_api: Api<DynamicObject> = Api::namespaced_with(self.client.clone(), &target.namespace, &ar);
+            let pp = PatchParams { field_manager: Some(patch.field_manager.clone()), ..Default::default() };
+            for pod in &pods {
+                let Some(pod_name) = pod.metadata.name.clone() else { continue };
+                let cname = match container {
+                    Some(c) => c.clone(),
+                    None => Self::pod_first_container(&pod.data).ok_or(ProviderError::NoCapacityField)?,
+                };
+                let qos = pod.data.pointer("/status/qosClass").and_then(Value::as_str).unwrap_or("Burstable");
+                let current_req = Self::pod_container_qty(&pod.data, &Some(cname.clone()), "requests", &patch.resource);
+                let resources = resize_resources_block(qos, &patch.resource, patch.value, current_req.as_deref());
+                let body = json!({ "spec": { "containers": [ { "name": cname, "resources": resources } ] } });
+                pod_api
+                    .patch_subresource("resize", &pod_name, &pp, &Patch::Strategic(&body))
+                    .await
+                    .map_err(|e| ProviderError::ApiPermanent(e.to_string()))?;
+            }
+            return Ok(AppliedReceipt { source_hash: [0u8; 16] });
+        }
+
         let (g, v) = Self::group_version(target);
         let api_version = if g.is_empty() { v.clone() } else { format!("{g}/{v}") };
         // Render in the resource's base unit: bytes as a bare integer, cpu with
@@ -255,6 +361,13 @@ impl Cluster for KubeCluster {
                     { "name": cname, "resources": { "limits": { res: qty } } }
                 ] } } })
             }
+            // PodResize is fully handled by the in-place path at the top of
+            // apply; this arm is structurally unreachable (typed error, no panic).
+            LimitLayout::PodResize { .. } => {
+                return Err(ProviderError::ApiPermanent(
+                    "internal: PodResize must be handled by the in-place path".into(),
+                ))
+            }
             LimitLayout::Host(_) => {
                 return Err(ProviderError::ApiPermanent(
                     "host layout on KubeCluster (route host dimensions to HostCluster)".into(),
@@ -272,5 +385,64 @@ impl Cluster for KubeCluster {
             .await
             .map_err(|e| ProviderError::ApiPermanent(e.to_string()))?;
         Ok(AppliedReceipt { source_hash: [0u8; 16] })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::resize_resources_block;
+    use serde_json::json;
+
+    const GI: u64 = 1 << 30;
+    const MI: u64 = 1 << 20;
+
+    #[test]
+    fn guaranteed_pod_keeps_requests_equal_limits_on_grow_and_shrink() {
+        // grow: both requests and limits move to the new value → stays Guaranteed.
+        assert_eq!(
+            resize_resources_block("Guaranteed", "memory", 2 * GI, Some("1Gi")),
+            json!({ "limits": { "memory": "2147483648" }, "requests": { "memory": "2147483648" } })
+        );
+        // shrink: likewise (req == lim preserved).
+        assert_eq!(
+            resize_resources_block("Guaranteed", "memory", 512 * MI, Some("1Gi")),
+            json!({ "limits": { "memory": "536870912" }, "requests": { "memory": "536870912" } })
+        );
+    }
+
+    #[test]
+    fn burstable_pod_sets_only_limit_when_request_still_fits() {
+        // request (512Mi) ≤ new limit (2Gi) → leave the request untouched.
+        assert_eq!(
+            resize_resources_block("Burstable", "memory", 2 * GI, Some("512Mi")),
+            json!({ "limits": { "memory": "2147483648" } })
+        );
+    }
+
+    #[test]
+    fn burstable_pod_clamps_request_down_when_it_would_exceed_the_new_limit() {
+        // shrinking the limit below the existing request (512Mi) → clamp the
+        // request down to the new limit (k8s rejects request > limit).
+        assert_eq!(
+            resize_resources_block("Burstable", "memory", 256 * MI, Some("512Mi")),
+            json!({ "limits": { "memory": "268435456" }, "requests": { "memory": "268435456" } })
+        );
+    }
+
+    #[test]
+    fn besteffort_pod_with_no_request_sets_only_the_limit() {
+        assert_eq!(
+            resize_resources_block("BestEffort", "memory", GI, None),
+            json!({ "limits": { "memory": "1073741824" } })
+        );
+    }
+
+    #[test]
+    fn cpu_resize_carries_the_millicores_suffix() {
+        // cpu must render with the `m` suffix — a bare "500" is 500 CORES.
+        assert_eq!(
+            resize_resources_block("Guaranteed", "cpu", 500, Some("250m")),
+            json!({ "limits": { "cpu": "500m" }, "requests": { "cpu": "500m" } })
+        );
     }
 }
