@@ -26,8 +26,8 @@ use breathe_crd::{
     ArcBand, Band, BreatheNodePool, CgroupBand, GiB, NodePoolStatus,
 };
 use breathe_host::{ArcDescriptor, CgroupMemoryDescriptor, HostCluster, NodeEnvelopes, SystemdSysfsEnv};
-use breathe_provider::{BandProvider, DimensionDescriptor, ResourceProvider, Target};
-use breathe_runtime::{error_status, now_secs, patch_status, status_for};
+use breathe_provider::{BandProvider, ClassCooldowns, DimensionDescriptor, ResourceProvider, Target};
+use breathe_runtime::{error_status, next_requeue, now_secs, patch_status, status_for};
 use futures::StreamExt;
 use kube::{
     api::{Api, ListParams, Patch, PatchParams},
@@ -140,6 +140,9 @@ async fn reconcile_host<B: Band, D: DimensionDescriptor + Default>(
         max_staleness_secs: obj.max_staleness_seconds(),
         in_cooldown,
         dry_run: effective_dry_run,
+        // host carves (ARC/cgroup) are ALWAYS RestartFree → the golden default
+        // permits every one of them; the gate is a no-op on the host plane.
+        policy: breathe_provider::DisruptionPolicy::RestartFreeOnly,
     };
 
     let receipt = reconcile_one(&input, &provider).await;
@@ -149,7 +152,8 @@ async fn reconcile_host<B: Band, D: DimensionDescriptor + Default>(
         write_enabled, phase = ?status.phase, "host reconciled"
     );
     patch_status::<B>(&ctx.client, &ns, &name, &status).await?;
-    Ok(Action::requeue(ctx.requeue))
+    // host carves are all RestartFree → re-tick at the fast golden cadence.
+    Ok(Action::requeue(next_requeue(&receipt, &ClassCooldowns::default())))
 }
 
 /// Reconcile the node's own enrollment charter — surface it as Active so
