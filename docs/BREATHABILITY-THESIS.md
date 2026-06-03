@@ -196,12 +196,14 @@ zero-disruption planes is not two facts; it is the discovery that the property i
 second-order isomorphism the first one unlocks. Naming the destinations (Operating
 Principle #0): the cascade, ordered.
 
-**K1 — `Disruption` typed property → "breathe never rolls." `SHIPPED`.**
-`Disruption {ZeroDisruption | Rolling}` + `LimitLayout::disruption()`. PodResize /
-PvcRequest / Host are zero-disruption; PodTemplate / ClusterTopLevel still roll.
-PodResize *obsoletes* PodTemplate on this axis — the same carve is Rolling via the
-template, ZeroDisruption via resize — so preferring resize strictly removes
-disruption with no other change. Proven convergence: **every mutating k8s
+**K1 — typed restart cost → "breathe never rolls." `SHIPPED` (live on rio).**
+`DisruptionClass {RestartFree | RestartConditional | RestartRequiring}` +
+`LimitLayout::disruption_class()` (§9 refines the original binary `Disruption`).
+PvcRequest / Host are RestartFree; PodResize is RestartConditional (grow-free,
+shrink-gated); PodTemplate / ClusterTopLevel are RestartRequiring. PodResize is
+*strictly less disruptive* than PodTemplate (never a forced roll), and the
+controller now defaults memory/cpu to it whenever the cluster supports
+`pods/resize` (confirmed live: `resize_capable: true`). Proven convergence: **every mutating k8s
 dimension has a zero-disruption carve path for pod-backed owners**
 (memory/cpu→PodResize, storage→PvcRequest). "breathe never rolls" is now a typed,
 tested property. It is also the eclusa **golden berth** at carve granularity: a
@@ -250,3 +252,69 @@ zero-disruption is the seed; from it follow a typed "never roll" property (K1,
 shipped), a recursion of the band law to the cluster envelope (K2), the realized
 zero-disruption burst-pre-emption loop (K3), and a continuity guarantee on the
 provision theorem (K4) — each one a keystone the prior makes representable.
+
+---
+
+## 9. The action taxonomy — restart cost is the load-bearing axis
+
+*Without-restart is the whole value.* A restart-free action can be driven through
+the standard tick at any cadence — that is **near-real-time management of the live
+workload**; a restart-requiring one disturbs the app and must be gated. So breathe
+classifies **every** action it can take by its restart cost, makes the policy an
+explicit flag, drives the restart-free set toward real-time, and uses the
+restart-requiring set deliberately. Typed in `breathe_provider::{DisruptionClass,
+DisruptionPolicy}` + `breathe_catalog::ACTIONS`. `SHIPPED` (the typed core).
+
+**Three classes, not two** (`DisruptionClass`):
+- **`RestartFree`** — never restarts; `tickable` at any frequency. *This is the
+  set we push to real-time.*
+- **`RestartConditional`** — restart-free one direction, restart-gated the other
+  (a pod **memory shrink** is in-place iff `resizePolicy[memory] == NotRequired`).
+- **`RestartRequiring`** — always re-creates the workload; disruptive, gated.
+
+**The flag** (`DisruptionPolicy`, default `RestartFreeOnly`): `RestartFreeOnly`
+(never disturb the app — only restart-free actions execute; anything else defers +
+surfaces) → `AllowConditional` (permit an in-place memory shrink that may restart,
+but never a full roll) → `AllowRestart` (permit a re-create). `permits(class)` is
+the typed gate the actuator consults; the default is the cautious one.
+
+### The complete enumeration (`breathe_catalog::ACTIONS`)
+
+The reflection tests make these mechanical: **every `RestartFree` action is
+`tickable`; no `RestartRequiring` action is; both the host and pod planes have a
+restart-free path; restart-free is the majority class (the substrate is
+converging); every restart-requiring action carries a `USE`-note justifying the
+roll.**
+
+**Restart-free — the real-time set** (host: `arc-max`, `cgroup-memory-high`, and
+the EXPLOIT trio `cgroup-cpu-quota` / `cgroup-cpu-weight` / `cgroup-io-weight`;
+pod: `pod-cpu-resize` (both directions), `pod-memory-grow`; storage: `pvc-expand`;
+cluster: `node-add` — existing pods undisturbed, the K2 envelope grow). These run
+on the tick with zero workload disturbance. The host **cpu-quota / cpu-weight /
+io-weight** levers are new exploits the keystone's logic invites: they are exactly
+as live as `MemoryHigh`, so breathe can already carve a host unit's cpu and io
+share in real time, not just memory.
+
+**Restart-conditional** (`pod-memory-shrink`): tickable with care — the actuator
+reads `resizePolicy` and either carves in place or honors the gate per
+`DisruptionPolicy`.
+
+**Restart-requiring — enumerated, gated, and USEFUL** (each with its `USE`-note):
+`pod-template-carve` (the only path on k8s <1.33, or a QoS-class change that needs
+a roll), `cnpg-cluster-carve` (the only way to resize a CNPG instance — the
+operator rolls it safely), `replica-scale-down` (shed load; survivors undisturbed,
+the shed pod is lost), `reschedule` (drain+reschedule for NUMA/CCD re-placement,
+bin-packing, escaping a degraded node, maintenance). These are first-class
+capabilities, not failures — but they fire only when `DisruptionPolicy` permits
+*and* the carve is reachable no other way.
+
+### Toward real-time
+
+The keystone removes the roll-thrash penalty, so the **restart-free set can tick
+at a much shorter cooldown than the restart-requiring set** — per-class cadence:
+restart-free approaches the scrape interval (near-real-time homeostasis), while
+restart-requiring keeps a long cooldown and a policy gate. *Next wiring:*
+`DisruptionPolicy` becomes a `BandSpec`/`BreatheNodePool` field; the reconcile loop
+selects the per-class cooldown; the actuator consults `permits(class)` before any
+carve and, under `RestartFreeOnly`, emits a typed `Decision::DeferredWouldRestart`
+instead of rolling — making "without restart" a *guarantee*, not a default.

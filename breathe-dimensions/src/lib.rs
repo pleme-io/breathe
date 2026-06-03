@@ -128,15 +128,23 @@ mod tests {
     }
 
     #[test]
-    fn every_mutating_dimension_has_a_zero_disruption_carve_for_pod_backed_owners() {
-        // The keystone's convergence: memory + cpu carve in-place (PodResize) and
-        // storage online-expands (PvcRequest) — so NO mutating k8s dimension must
-        // roll a pod-backed workload to be held at the band. (CNPG `Cluster`
-        // owners still roll — a documented gap, not a regression.)
+    fn no_mutating_dimension_forces_a_roll_for_pod_backed_owners() {
+        // The keystone's convergence: memory + cpu carve via PodResize
+        // (RestartConditional — never a forced roll) and storage online-expands
+        // (PvcRequest — RestartFree) — so NO mutating k8s dimension must ROLL a
+        // pod-backed workload to be held at the band. (CNPG `Cluster` owners are
+        // RestartRequiring — a documented gap, not a regression.)
+        use breathe_provider::DisruptionClass;
         let t = deploy();
-        assert!(MemoryDescriptor { in_place: true }.layout(&t).disruption().is_zero());
-        assert!(CpuDescriptor { in_place: true }.layout(&t).disruption().is_zero());
-        assert!(StorageDescriptor.layout(&t).disruption().is_zero());
+        for layout in [
+            MemoryDescriptor { in_place: true }.layout(&t),
+            CpuDescriptor { in_place: true }.layout(&t),
+            StorageDescriptor.layout(&t),
+        ] {
+            assert_ne!(layout.disruption_class(), DisruptionClass::RestartRequiring);
+        }
+        // storage is the strongest: fully RestartFree.
+        assert_eq!(StorageDescriptor.layout(&t).disruption_class(), DisruptionClass::RestartFree);
     }
 
     #[test]
