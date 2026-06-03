@@ -11,6 +11,11 @@ description = "The ResourceProvider + Cluster traits — the non-overloadable, c
 [dependencies]
 breathe-control = { path = "../breathe-control", version = "0.1.0" }
 async-trait = "0.1"
+# DisruptionPolicy is the one canonical restart-policy type: the behavior gate
+# (permits()) here AND the per-band CRD field (breathe-crd) — so it carries the
+# serde + schemars derives the CRD needs (solve once, no duplicate enum).
+serde = { version = "1", features = ["derive"] }
+schemars = "0.8"
 
 [features]
 # The in-memory MockCluster test double — the typed-spec-triplet testability seam.

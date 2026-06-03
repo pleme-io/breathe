@@ -140,9 +140,9 @@ async fn reconcile_host<B: Band, D: DimensionDescriptor + Default>(
         max_staleness_secs: obj.max_staleness_seconds(),
         in_cooldown,
         dry_run: effective_dry_run,
-        // host carves (ARC/cgroup) are ALWAYS RestartFree → the golden default
-        // permits every one of them; the gate is a no-op on the host plane.
-        policy: breathe_provider::DisruptionPolicy::RestartFreeOnly,
+        // host carves (ARC/cgroup) are ALWAYS RestartFree → any policy permits
+        // them; honor the band's declared policy for consistency anyway.
+        policy: obj.disruption_policy(),
     };
 
     let receipt = reconcile_one(&input, &provider).await;
