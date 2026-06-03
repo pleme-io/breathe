@@ -99,7 +99,7 @@ mod tests {
     const MEMORY_FIELD: &str = "resources.limits.memory";
     const MEMORY_MANAGER: &str = "breathe/memory";
     fn provider(cluster: MockCluster) -> BandProvider<MockCluster, MemoryDescriptor> {
-        BandProvider::new(cluster, MemoryDescriptor)
+        BandProvider::new(cluster, MemoryDescriptor::default())
     }
 
     const MI: u64 = 1 << 20;

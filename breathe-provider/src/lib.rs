@@ -100,7 +100,17 @@ pub enum LimitLayout {
     /// CNPG `Cluster`: `spec.resources.limits.<res>`.
     ClusterTopLevel,
     /// Deployment/StatefulSet: `spec.template.spec.containers[name].resources.limits.<res>`.
+    /// Writing it ROLLS the workload (the controller re-creates pods).
     PodTemplate { container: Option<String> },
+    /// IN-PLACE resize of the live pods via the `pods/{name}/resize` subresource
+    /// (k8s ≥ 1.33) — the homeostasis keystone: carve the running container's
+    /// cgroup with NO restart, exactly as `HostCluster` carves a host unit's
+    /// cgroup. Reads + writes the LIVE pods (found by the owner's selector), not
+    /// the template, so it never rolls; a re-created pod starts at the template
+    /// default and the band re-converges it in-place on the next tick. QoS is
+    /// preserved (a Guaranteed pod stays Guaranteed). Distinct from `PodTemplate`
+    /// precisely because `d(restart)/d(carve) = 0`.
+    PodResize { container: Option<String> },
     /// PVC: `spec.resources.requests.storage` (grow-only).
     PvcRequest,
     /// HOST: a systemd/sysfs lever — written by `HostCluster`, not the k8s API.

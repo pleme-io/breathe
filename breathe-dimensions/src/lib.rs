@@ -15,19 +15,26 @@ use breathe_provider::{
     Target,
 };
 
-/// memory/cpu live on the pod template (Deployment/StatefulSet) or top-level
-/// on a CNPG `Cluster`.
-fn pod_or_cluster(target: &Target) -> LimitLayout {
+/// memory/cpu live on the pod template (Deployment/StatefulSet) or top-level on a
+/// CNPG `Cluster`. When `in_place` is set (and the owner is pod-backed, not a
+/// CNPG Cluster), carve the live pods via the resize subresource — no restart
+/// (`LimitLayout::PodResize`) — instead of the template (which rolls).
+fn pod_layout(target: &Target, in_place: bool) -> LimitLayout {
     match target.kind.as_str() {
         "Cluster" => LimitLayout::ClusterTopLevel,
+        _ if in_place => LimitLayout::PodResize { container: target.container.clone() },
         _ => LimitLayout::PodTemplate { container: target.container.clone() },
     }
 }
 
-/// **Memory** — bidirectional; carve `limits.memory`; the owner rolls. `used` is
-/// the live max container working-set across the owner's pods (metrics-server).
+/// **Memory** — bidirectional; carve `limits.memory`. `used` is the live max
+/// container working-set across the owner's pods (metrics-server). `in_place`
+/// selects zero-restart resize (`pods/resize`, k8s ≥1.33) over a template roll.
 #[derive(Default)]
-pub struct MemoryDescriptor;
+pub struct MemoryDescriptor {
+    /// Carve the live pods in-place (no restart) instead of rolling the template.
+    pub in_place: bool,
+}
 impl DimensionDescriptor for MemoryDescriptor {
     fn id(&self) -> DimensionId { DimensionId::Memory }
     fn directionality(&self) -> Directionality { Directionality::Bidirectional }
@@ -35,16 +42,20 @@ impl DimensionDescriptor for MemoryDescriptor {
     fn logical_field(&self) -> &'static str { "resources.limits.memory" }
     fn resource(&self) -> &'static str { "memory" }
     fn semantics(&self) -> ApplySemantics { ApplySemantics::Transactional }
-    fn layout(&self, target: &Target) -> LimitLayout { pod_or_cluster(target) }
+    fn layout(&self, target: &Target) -> LimitLayout { pod_layout(target, self.in_place) }
     fn metric_source(&self, target: &Target) -> MetricSource {
         MetricSource::PodMetricsMax { resource: "memory".into(), pod_prefix: target.name.clone() }
     }
 }
 
-/// **CPU** — bidirectional; carve `limits.cpu` (millicores); in-place or roll.
-/// `used` is the live max container cpu across the owner's pods (metrics-server).
+/// **CPU** — bidirectional; carve `limits.cpu` (millicores). `used` is the live
+/// max container cpu across the owner's pods (metrics-server). `in_place` selects
+/// zero-restart resize over a template roll (cpu-up is always restart-free).
 #[derive(Default)]
-pub struct CpuDescriptor;
+pub struct CpuDescriptor {
+    /// Carve the live pods in-place (no restart) instead of rolling the template.
+    pub in_place: bool,
+}
 impl DimensionDescriptor for CpuDescriptor {
     fn id(&self) -> DimensionId { DimensionId::Cpu }
     fn directionality(&self) -> Directionality { Directionality::Bidirectional }
@@ -52,7 +63,7 @@ impl DimensionDescriptor for CpuDescriptor {
     fn logical_field(&self) -> &'static str { "resources.limits.cpu" }
     fn resource(&self) -> &'static str { "cpu" }
     fn semantics(&self) -> ApplySemantics { ApplySemantics::PartialProgress }
-    fn layout(&self, target: &Target) -> LimitLayout { pod_or_cluster(target) }
+    fn layout(&self, target: &Target) -> LimitLayout { pod_layout(target, self.in_place) }
     fn metric_source(&self, target: &Target) -> MetricSource {
         MetricSource::PodMetricsMax { resource: "cpu".into(), pod_prefix: target.name.clone() }
     }
@@ -93,7 +104,7 @@ mod tests {
 
     #[test]
     fn memory_reads_always_on_metrics_server() {
-        let d = MemoryDescriptor;
+        let d = MemoryDescriptor::default();
         assert_eq!(d.id(), DimensionId::Memory);
         assert_eq!(d.directionality(), Directionality::Bidirectional);
         assert_eq!(d.layout(&cnpg()), LimitLayout::ClusterTopLevel);
@@ -109,9 +120,22 @@ mod tests {
 
     #[test]
     fn cpu_reads_metrics_server_bidirectional() {
-        let d = CpuDescriptor;
+        let d = CpuDescriptor::default();
         assert_eq!(d.directionality(), Directionality::Bidirectional);
         assert!(matches!(d.metric_source(&deploy()), MetricSource::PodMetricsMax { .. }));
+    }
+
+    #[test]
+    fn in_place_carves_pods_via_resize_not_template() {
+        // in_place memory on a Deployment → PodResize (zero-restart); a CNPG
+        // Cluster still goes top-level (CNPG owns its own resize). Default
+        // (in_place: false) keeps the template-roll behaviour unchanged.
+        let inplace = MemoryDescriptor { in_place: true };
+        assert!(matches!(inplace.layout(&deploy()), LimitLayout::PodResize { .. }));
+        assert_eq!(inplace.layout(&cnpg()), LimitLayout::ClusterTopLevel);
+        assert!(matches!(MemoryDescriptor::default().layout(&deploy()), LimitLayout::PodTemplate { .. }));
+        // cpu likewise.
+        assert!(matches!(CpuDescriptor { in_place: true }.layout(&deploy()), LimitLayout::PodResize { .. }));
     }
 
     #[test]
