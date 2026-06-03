@@ -195,6 +195,41 @@ impl DisruptionPolicy {
     }
 }
 
+/// Per-restart-class cooldown windows — golden berths cost nothing to occupy (a
+/// `RestartFree` carve cools only ~one scrape interval, so the loop tracks the
+/// band in near-real-time), while a ceiling crossing is expensive and stays
+/// damped. This is what turns the catalog's `restart_free ⟺ tickable` promise
+/// into actual loop cadence; a uniform cooldown discards it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ClassCooldowns {
+    pub restart_free: u64,
+    pub restart_conditional: u64,
+    pub restart_requiring: u64,
+}
+
+impl Default for ClassCooldowns {
+    fn default() -> Self {
+        // restart_free ≈ a scrape interval (real-time); crossings stay long.
+        Self { restart_free: 15, restart_conditional: 120, restart_requiring: 600 }
+    }
+}
+
+impl ClassCooldowns {
+    #[must_use]
+    pub fn for_class(&self, class: DisruptionClass) -> u64 {
+        match class {
+            DisruptionClass::RestartFree => self.restart_free,
+            DisruptionClass::RestartConditional => self.restart_conditional,
+            DisruptionClass::RestartRequiring => self.restart_requiring,
+        }
+    }
+    /// Structural invariant: free ≤ conditional ≤ requiring (golden is cheapest).
+    #[must_use]
+    pub fn well_ordered(&self) -> bool {
+        self.restart_free <= self.restart_conditional && self.restart_conditional <= self.restart_requiring
+    }
+}
+
 /// A carve's position relative to the GOLDEN region (the no-restart action
 /// space). A `RestartFree` carve keeps every intermediate limit a comfortable,
 /// always-restable berth — `GoldenPreserving`; anything restart-bearing is a

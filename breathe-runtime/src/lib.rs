@@ -7,11 +7,12 @@
 //! the band CR. Sharing it means the brain and the hands can never drift in how a
 //! decision is reported (a `ShadowWouldApply` means the same thing on both).
 
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use breathe_control::Decision;
 use breathe_core::TickReceipt;
 use breathe_crd::{Band, BandStatus};
+use breathe_provider::ClassCooldowns;
 use kube::{
     api::{Api, Patch, PatchParams},
     Client,
@@ -52,6 +53,13 @@ pub fn status_for(receipt: &TickReceipt) -> BandStatus {
             s.current_limit = Some(from.to_string());
             s.last_decision = Some(format!("dry-run: {from} -> {to}"));
         }
+        TickReceipt::DeferredWouldRestart { from, to, class } => {
+            // the comfortable berth: breathe REFUSED a ceiling crossing — the
+            // workload stays golden (undisturbed), un-converged, limit unchanged.
+            s.phase = Some("DeferredWouldRestart".into());
+            s.current_limit = Some(from.to_string());
+            s.last_decision = Some(format!("{from} -> {to} deferred: {class:?} crossing blocked by DisruptionPolicy (set AllowConditional/AllowRestart to permit)"));
+        }
         TickReceipt::Observed { decision } => {
             s.phase = Some(
                 match decision {
@@ -70,6 +78,31 @@ pub fn status_for(receipt: &TickReceipt) -> BandStatus {
         }
     }
     s
+}
+
+/// The requeue interval for the NEXT tick, keyed on what just happened — the
+/// real-time corollary of the restart-cost axis. A permitted carve (golden under
+/// the default policy) or a shadow requeues at the fast restart-free cadence
+/// (track the band near-real-time); a deferred ceiling crossing backs off by the
+/// blocked class (damp the crossing); everything else takes the mid window. The
+/// band's own `cooldownSeconds` still bounds change frequency — this only
+/// controls how often breathe LOOKS.
+#[must_use]
+pub fn next_requeue(receipt: &TickReceipt, cooldowns: &ClassCooldowns) -> Duration {
+    let secs = match receipt {
+        // a carve that PASSED the policy gate is golden-cadence under the default;
+        // a shadow likewise looks fast (it is observing the live band).
+        TickReceipt::Applied { .. } | TickReceipt::DryRunWouldApply { .. } => cooldowns.restart_free,
+        // a refused crossing: back off by exactly the blocked class.
+        TickReceipt::DeferredWouldRestart { class, .. } => cooldowns.for_class(*class),
+        // non-mutating / transient: the mid window.
+        TickReceipt::Observed { .. }
+        | TickReceipt::Cooldown
+        | TickReceipt::Conflict { .. }
+        | TickReceipt::Stale { .. }
+        | TickReceipt::Error { .. } => cooldowns.restart_conditional,
+    };
+    Duration::from_secs(secs)
 }
 
 /// A short typed error status (band-config parse failures, enrollment gaps).
@@ -121,5 +154,29 @@ mod tests {
         let s = status_for(&TickReceipt::Conflict { manager: "helm".into() });
         assert_eq!(s.phase.as_deref(), Some("Conflict"));
         assert_eq!(s.conflict_manager.as_deref(), Some("helm"));
+    }
+
+    #[test]
+    fn deferred_crossing_maps_to_a_first_class_phase() {
+        use breathe_provider::DisruptionClass;
+        let s = status_for(&TickReceipt::DeferredWouldRestart { from: 1 << 30, to: 2 << 30, class: DisruptionClass::RestartRequiring });
+        assert_eq!(s.phase.as_deref(), Some("DeferredWouldRestart"));
+        // the limit is UNCHANGED — the crossing was refused.
+        assert_eq!(s.current_limit.as_deref(), Some((1u64 << 30).to_string().as_str()));
+        assert!(s.last_decision.as_deref().unwrap().contains("RestartRequiring"));
+    }
+
+    #[test]
+    fn requeue_is_fast_for_carves_and_damped_for_crossings() {
+        use breathe_provider::{ClassCooldowns, DisruptionClass};
+        let cd = ClassCooldowns::default();
+        assert!(cd.well_ordered());
+        // a permitted carve looks again at the fast restart-free cadence.
+        assert_eq!(next_requeue(&TickReceipt::Applied { from: 1, to: 2 }, &cd), Duration::from_secs(cd.restart_free));
+        // a refused full-roll crossing backs off the longest.
+        assert_eq!(
+            next_requeue(&TickReceipt::DeferredWouldRestart { from: 1, to: 2, class: DisruptionClass::RestartRequiring }, &cd),
+            Duration::from_secs(cd.restart_requiring)
+        );
     }
 }
