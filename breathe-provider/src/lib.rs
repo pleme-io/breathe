@@ -195,19 +195,69 @@ impl DisruptionPolicy {
     }
 }
 
+/// A carve's position relative to the GOLDEN region (the no-restart action
+/// space). A `RestartFree` carve keeps every intermediate limit a comfortable,
+/// always-restable berth — `GoldenPreserving`; anything restart-bearing is a
+/// `CeilingCrossing` out of golden (the eclusa §XVIII line, drawn at the layout).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EdgeTier {
+    /// The live workload is undisturbed — golden.
+    GoldenPreserving,
+    /// Crossing out of golden carries this restart cost.
+    CeilingCrossing(DisruptionClass),
+}
+
+impl EdgeTier {
+    #[must_use]
+    pub fn is_golden(self) -> bool {
+        matches!(self, Self::GoldenPreserving)
+    }
+}
+
+impl DisruptionClass {
+    /// Project a restart cost onto the golden/ceiling line: only `RestartFree`
+    /// preserves golden; any restart-bearing class is a crossing.
+    #[must_use]
+    pub fn edge_tier(self) -> EdgeTier {
+        match self {
+            Self::RestartFree => EdgeTier::GoldenPreserving,
+            other => EdgeTier::CeilingCrossing(other),
+        }
+    }
+}
+
 impl LimitLayout {
-    /// The layout's coarse worst-case restart cost. `PodResize` is
-    /// `RestartConditional` (a memory shrink may restart per `resizePolicy`,
-    /// though cpu + memory-grow are restart-free); `PvcRequest` + `Host` are
-    /// `RestartFree`; the template-write layouts (`PodTemplate`, `ClusterTopLevel`)
-    /// are `RestartRequiring`. The precise per-action cost (cpu-resize is
-    /// `RestartFree` both ways; memory-grow is `RestartFree`) lives in the action
-    /// catalog (`breathe_catalog::ACTIONS`).
+    /// The layout's coarse worst-case restart cost — `PodResize` collapses to
+    /// `RestartConditional` (a memory shrink may restart). For the PRECISE
+    /// per-direction class of a specific carve use [`action_class`](Self::action_class).
     #[must_use]
     pub fn disruption_class(&self) -> DisruptionClass {
         match self {
             Self::PvcRequest | Self::Host(_) => DisruptionClass::RestartFree,
             Self::PodResize { .. } => DisruptionClass::RestartConditional,
+            Self::PodTemplate { .. } | Self::ClusterTopLevel => DisruptionClass::RestartRequiring,
+        }
+    }
+
+    /// The PRECISE restart cost of the SPECIFIC carve `(direction, resource)` —
+    /// the fact `disruption_class()` throws away. A `PodResize` carve is
+    /// `RestartFree` for cpu (either direction) AND for a memory GROW; only a
+    /// memory (or other byte-resource) SHRINK is `RestartConditional` (it may
+    /// restart per the container's `resizePolicy`). `PvcRequest`/`Host` are always
+    /// `RestartFree`; the template-write layouts are always `RestartRequiring`.
+    /// This is what lets growth be eager (golden) while only a reclaiming shrink
+    /// can require a crossing.
+    #[must_use]
+    pub fn action_class(&self, growing: bool, resource: &str) -> DisruptionClass {
+        match self {
+            Self::PvcRequest | Self::Host(_) => DisruptionClass::RestartFree,
+            Self::PodResize { .. } => {
+                if resource == "cpu" || growing {
+                    DisruptionClass::RestartFree
+                } else {
+                    DisruptionClass::RestartConditional
+                }
+            }
             Self::PodTemplate { .. } | Self::ClusterTopLevel => DisruptionClass::RestartRequiring,
         }
     }
@@ -322,6 +372,42 @@ pub trait Cluster: Send + Sync {
     async fn apply(&self, patch: &SsaPatch) -> Result<AppliedReceipt, ProviderError>;
 }
 
+/// Whether a band's layout has a GOLDEN path to its setpoint — the eclusa
+/// reachability question made mechanical + typed. Because the band law is
+/// monotone-convergent and every intermediate value is a never-OOM berth
+/// (`safety_clamp`), golden reachability reduces to a pure question about the
+/// carve actions: does every direction the band may move stay `RestartFree`?
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SetpointReachability {
+    /// Every carve toward the setpoint is `RestartFree` — golden end to end.
+    GoldenToSetpoint,
+    /// Reaching the setpoint needs a carve that crosses out of golden (names the
+    /// ceiling) — the band can still PARK golden, but only converges to setpoint
+    /// once the operator's `DisruptionPolicy` permits the crossing.
+    RequiresCrossing { ceiling: DisruptionClass, layout: LimitLayout },
+}
+
+/// Does `layout` have a golden path to the setpoint for `resource`, given the
+/// directions `dir` lets the band move? `ObserveOnly` never carves ⇒ trivially
+/// golden; `GrowOnly` checks only the grow direction; `Bidirectional` needs BOTH
+/// grow and shrink to be `RestartFree`. Policy-independent: golden-ness is a
+/// property of the action space, not of whether the operator permits a crossing.
+#[must_use]
+pub fn setpoint_reachability(layout: &LimitLayout, dir: Directionality, resource: &str) -> SetpointReachability {
+    let directions: &[bool] = match dir {
+        Directionality::Bidirectional => &[true, false],
+        Directionality::GrowOnly => &[true],
+        Directionality::ObserveOnly => &[],
+    };
+    for &growing in directions {
+        let class = layout.action_class(growing, resource);
+        if !class.edge_tier().is_golden() {
+            return SetpointReachability::RequiresCrossing { ceiling: class, layout: layout.clone() };
+        }
+    }
+    SetpointReachability::GoldenToSetpoint
+}
+
 /// The per-dimension data + small layout logic — everything that is genuinely
 /// dimension-specific. The observe/assign/release orchestration lives once in
 /// [`BandProvider`], so a new dimension is *only* an impl of this trait + a
@@ -365,6 +451,21 @@ pub trait ResourceProvider: Send + Sync + 'static {
     fn directionality(&self) -> Directionality;
     fn owned_field(&self) -> OwnedField;
     fn semantics(&self) -> ApplySemantics;
+    /// The layout (plane) this dimension carves `target` at — carries the restart
+    /// class. The loop reads this to NAME the action it is about to take.
+    fn layout_for(&self, target: &Target) -> LimitLayout;
+    /// The leaf resource key (`memory`/`cpu`/`storage`) — for the per-direction class.
+    fn resource_key(&self) -> &str;
+    /// The PRECISE restart class of the carve this provider would make on `target`
+    /// in the `growing` direction. The loop consults this against the band's
+    /// `DisruptionPolicy` before committing a carve (the golden-edge gate).
+    fn action_class(&self, target: &Target, growing: bool) -> DisruptionClass {
+        self.layout_for(target).action_class(growing, self.resource_key())
+    }
+    /// Whether this provider has a golden (restart-free) path to the setpoint.
+    fn setpoint_reachability(&self, target: &Target) -> SetpointReachability {
+        setpoint_reachability(&self.layout_for(target), self.directionality(), self.resource_key())
+    }
     async fn observe(&self, target: &Target) -> Result<Observation, ProviderError>;
     async fn assign(&self, target: &Target, to_value: u64)
         -> Result<AssignReceipt, ProviderError>;
@@ -406,6 +507,12 @@ impl<C: Cluster + 'static, D: DimensionDescriptor> ResourceProvider for BandProv
     }
     fn semantics(&self) -> ApplySemantics {
         self.descriptor.semantics()
+    }
+    fn layout_for(&self, target: &Target) -> LimitLayout {
+        self.descriptor.layout(target)
+    }
+    fn resource_key(&self) -> &str {
+        self.descriptor.resource()
     }
 
     async fn observe(&self, target: &Target) -> Result<Observation, ProviderError> {
@@ -464,6 +571,56 @@ mod tests {
         assert_eq!(roll, DisruptionClass::RestartRequiring);
         assert!(roll.may_restart() && live.may_restart());
         assert_ne!(live, DisruptionClass::RestartRequiring); // resize never forces a full roll
+    }
+
+    #[test]
+    fn edge_tier_is_golden_iff_restart_free() {
+        use DisruptionClass::{RestartConditional, RestartFree, RestartRequiring};
+        assert!(RestartFree.edge_tier().is_golden());
+        assert!(!RestartConditional.edge_tier().is_golden());
+        assert!(!RestartRequiring.edge_tier().is_golden());
+        assert_eq!(RestartRequiring.edge_tier(), super::EdgeTier::CeilingCrossing(RestartRequiring));
+    }
+
+    #[test]
+    fn action_class_is_per_direction_and_per_resource() {
+        use DisruptionClass::{RestartConditional, RestartFree, RestartRequiring};
+        let resize = LimitLayout::PodResize { container: None };
+        // memory: grow is golden/RestartFree, shrink may restart → conditional.
+        assert_eq!(resize.action_class(true, "memory"), RestartFree);
+        assert_eq!(resize.action_class(false, "memory"), RestartConditional);
+        // cpu never restarts, either direction.
+        assert_eq!(resize.action_class(true, "cpu"), RestartFree);
+        assert_eq!(resize.action_class(false, "cpu"), RestartFree);
+        // host + pvc always restart-free; template always requires a roll.
+        assert_eq!(LimitLayout::PvcRequest.action_class(false, "storage"), RestartFree);
+        assert_eq!(LimitLayout::Host(HostKnob::ZfsArcMax).action_class(false, "memory"), RestartFree);
+        assert_eq!(LimitLayout::PodTemplate { container: None }.action_class(true, "memory"), RestartRequiring);
+    }
+
+    #[test]
+    fn setpoint_reachability_names_the_golden_paths() {
+        use super::{setpoint_reachability, Directionality, DisruptionClass, SetpointReachability};
+        // cpu in-place: golden both directions.
+        assert_eq!(
+            setpoint_reachability(&LimitLayout::PodResize { container: None }, Directionality::Bidirectional, "cpu"),
+            SetpointReachability::GoldenToSetpoint
+        );
+        // storage online-expand (grow-only): golden.
+        assert_eq!(
+            setpoint_reachability(&LimitLayout::PvcRequest, Directionality::GrowOnly, "storage"),
+            SetpointReachability::GoldenToSetpoint
+        );
+        // memory in-place, bidirectional: the SHRINK is a conditional crossing.
+        assert_eq!(
+            setpoint_reachability(&LimitLayout::PodResize { container: None }, Directionality::Bidirectional, "memory"),
+            SetpointReachability::RequiresCrossing { ceiling: DisruptionClass::RestartConditional, layout: LimitLayout::PodResize { container: None } }
+        );
+        // CNPG top-level: any carve is a full crossing.
+        assert!(matches!(
+            setpoint_reachability(&LimitLayout::ClusterTopLevel, Directionality::Bidirectional, "memory"),
+            SetpointReachability::RequiresCrossing { ceiling: DisruptionClass::RestartRequiring, .. }
+        ));
     }
 
     #[test]
