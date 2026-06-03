@@ -115,6 +115,12 @@ pub trait HostEnvironment: Send + Sync {
     /// A systemd unit's cumulative CPU time in NANOSECONDS (`CPUUsageNSec`) — the
     /// raw counter `HostCluster` differences over a window to derive a cpu RATE.
     fn read_cpu_usage_nsec(&self, unit: &str) -> Result<u64, HostError>;
+    /// A systemd unit property as its RAW string (`systemctl show --value`). `None`
+    /// = unset/empty. Unlike [`read_unit_property_u64`], the caller parses — needed
+    /// for `CPUQuotaPerSecUSec`, which systemd prints as a timespan (`12s`), not an
+    /// integer.
+    fn read_unit_property_str(&self, unit: &str, property: &str)
+        -> Result<Option<String>, HostError>;
     /// Set a transient systemd property to a STRING value (e.g.
     /// `CPUQuota=150%`) — `CPUQuota` is a percentage, not a bare integer, so it
     /// cannot go through [`set_unit_property_u64`].
@@ -273,6 +279,15 @@ impl HostEnvironment for SystemdSysfsEnv {
         let assignment = format!("{property}={value}");
         self.systemctl(&["set-property", "--runtime", unit, &assignment]).map(|_| ())
     }
+
+    fn read_unit_property_str(&self, unit: &str, property: &str) -> Result<Option<String>, HostError> {
+        let v = self.systemctl(&["show", unit, "-p", property, "--value"])?;
+        let t = v.trim();
+        if t.is_empty() || t == "[not set]" {
+            return Ok(None);
+        }
+        Ok(Some(t.to_string()))
+    }
 }
 
 // ───────────────────── the L2 ceilings (mirrored) ──────────────────
@@ -366,6 +381,41 @@ impl<H: HostEnvironment> HostCluster<H> {
     }
 }
 
+/// Parse systemd's `CPUQuotaPerSecUSec` value (as `systemctl show --value` prints
+/// it: a TIMESPAN like `12s`, `500ms`, `1min 30s`, `1s 500ms`, or `infinity`) into
+/// microseconds-per-second. `Ok(None)` = `infinity` (unbounded). `Err(())` =
+/// unparseable (a typed error, never a silent wrong cap). systemd's
+/// `format_timespan` emits whole-integer components largest-unit-first, so each
+/// space-separated token is `<integer><unit>`; we sum them. This keeps the cpu
+/// dimension entirely on the systemctl interface (like `read_used`/`CPUUsageNSec`),
+/// no cgroup-file dependency.
+#[allow(clippy::result_unit_err)]
+pub fn parse_cpu_quota_usec(s: &str) -> Result<Option<u64>, ()> {
+    let s = s.trim();
+    if s == "infinity" {
+        return Ok(None);
+    }
+    let mut total: u64 = 0;
+    let mut saw_token = false;
+    for tok in s.split_whitespace() {
+        saw_token = true;
+        let split = tok.find(|c: char| c.is_alphabetic()).ok_or(())?;
+        let (num, unit) = tok.split_at(split);
+        let n: u64 = num.parse().map_err(|_| ())?;
+        let mult: u64 = match unit {
+            "us" => 1,
+            "ms" => 1_000,
+            "s" => 1_000_000,
+            "min" => 60_000_000,
+            "h" => 3_600_000_000,
+            "d" => 86_400_000_000,
+            _ => return Err(()),
+        };
+        total = total.checked_add(n.checked_mul(mult).ok_or(())?).ok_or(())?;
+    }
+    if saw_token { Ok(Some(total)) } else { Err(()) }
+}
+
 /// Pure: cpu RATE in millicores from a `CPUUsageNSec` delta over a wall interval.
 /// `delta_nsec` cpu-nanoseconds consumed over `window_nsec` wall-nanoseconds is
 /// `delta/window` cores ⇒ `×1000` millicores. `u128` intermediates so a busy
@@ -440,13 +490,20 @@ impl<H: HostEnvironment> Cluster for HostCluster<H> {
                 }
             }
             LimitLayout::Host(knob @ HostKnob::CgroupCpuQuota { unit }) => {
-                // systemd shows the quota as `CPUQuotaPerSecUSec` (usec/sec); 1 core
+                // systemd prints `CPUQuotaPerSecUSec` as a TIMESPAN (`12s`,
+                // `infinity`), NOT raw usec — so read the string + parse it. 1 core
                 // = 1_000_000 usec/sec = 1000 millicores ⇒ millicores = usec/sec /
-                // 1000. Unbounded (infinity) ⇒ start from the L2 cpu ceiling and let
-                // the band shrink it toward the setpoint.
-                match self.env.read_unit_property_u64(unit, "CPUQuotaPerSecUSec")? {
-                    Some(usec_per_sec) => Ok(usec_per_sec / 1000),
+                // 1000. Unset OR infinity ⇒ start from the L2 cpu ceiling and let the
+                // band shrink it toward the setpoint.
+                match self.env.read_unit_property_str(unit, "CPUQuotaPerSecUSec")? {
                     None => self.envelopes.ceiling_for(knob).map_err(Into::into),
+                    Some(raw) => match parse_cpu_quota_usec(&raw) {
+                        Ok(Some(usec_per_sec)) => Ok(usec_per_sec / 1000),
+                        Ok(None) => self.envelopes.ceiling_for(knob).map_err(Into::into),
+                        Err(()) => Err(ProviderError::ApiPermanent(format!(
+                            "unparseable CPUQuotaPerSecUSec {raw:?} for {unit}"
+                        ))),
+                    },
                 }
             }
             _ => Err(ProviderError::ApiPermanent(
@@ -633,6 +690,7 @@ mod tests {
         sysfs: Mutex<BTreeMap<String, u64>>,
         cgroup_current: BTreeMap<String, u64>,
         unit_property: BTreeMap<(String, String), Option<u64>>,
+        unit_property_str: BTreeMap<(String, String), String>,
         writes: Mutex<Vec<(String, u64)>>,
         cpu_usage_nsec: Mutex<VecDeque<u64>>,
         str_writes: Mutex<Vec<(String, String)>>,
@@ -675,6 +733,9 @@ mod tests {
                 .unwrap()
                 .pop_front()
                 .ok_or_else(|| HostError::Parse("no CPUUsageNSec queued".into()))
+        }
+        fn read_unit_property_str(&self, unit: &str, property: &str) -> Result<Option<String>, HostError> {
+            Ok(self.unit_property_str.get(&(unit.to_string(), property.to_string())).cloned())
         }
         fn set_unit_property_str(&self, unit: &str, property: &str, value: &str) -> Result<(), HostError> {
             self.str_writes.lock().unwrap().push((format!("{unit}:{property}"), value.to_string()));
@@ -871,17 +932,37 @@ mod tests {
         assert_eq!(s.age_secs, 0, "host reads are fresh");
     }
 
+    #[test]
+    fn parse_cpu_quota_timespan_to_usec() {
+        // the real-world forms systemd's `show --value` emits for CPUQuotaPerSecUSec.
+        assert_eq!(parse_cpu_quota_usec("12s"), Ok(Some(12_000_000))); // 12 cores
+        assert_eq!(parse_cpu_quota_usec("500ms"), Ok(Some(500_000))); // half a core
+        assert_eq!(parse_cpu_quota_usec("1s 500ms"), Ok(Some(1_500_000))); // 1.5 cores
+        assert_eq!(parse_cpu_quota_usec("1min 30s"), Ok(Some(90_000_000)));
+        assert_eq!(parse_cpu_quota_usec("250us"), Ok(Some(250)));
+        assert_eq!(parse_cpu_quota_usec("infinity"), Ok(None)); // unbounded
+        // garbage / empty / unknown unit ⇒ a typed error, never a silent cap.
+        assert_eq!(parse_cpu_quota_usec("nonsense"), Err(()));
+        assert_eq!(parse_cpu_quota_usec(""), Err(()));
+        assert_eq!(parse_cpu_quota_usec("12x"), Err(()));
+    }
+
     #[tokio::test]
-    async fn cgroup_cpu_quota_reads_per_sec_usec_as_millicores() {
+    async fn cgroup_cpu_quota_reads_the_timespan_as_millicores() {
         let layout = LimitLayout::Host(HostKnob::CgroupCpuQuota { unit: "nix-daemon.service".into() });
-        // CPUQuotaPerSecUSec = 1_500_000 usec/sec = 1.5 cores → 1500 millicores.
+        // systemd prints "1s 500ms" = 1_500_000 usec/sec = 1.5 cores → 1500 millicores.
         let mut up = BTreeMap::new();
-        up.insert(("nix-daemon.service".to_string(), "CPUQuotaPerSecUSec".to_string()), Some(1_500_000));
-        let cluster = HostCluster::shadow(MockHostEnv { unit_property: up, ..Default::default() }, envelopes());
+        up.insert(("nix-daemon.service".to_string(), "CPUQuotaPerSecUSec".to_string()), "1s 500ms".to_string());
+        let cluster = HostCluster::shadow(MockHostEnv { unit_property_str: up, ..Default::default() }, envelopes());
         assert_eq!(cluster.read_limit(&unit_target("nix-daemon.service"), &layout, "cpu").await.unwrap(), 1500);
-        // Unbounded (infinity ⇒ no value) → start from the L2 cpu ceiling (8000m).
-        let unbounded = HostCluster::shadow(MockHostEnv::default(), envelopes());
+        // "infinity" (no quota) → start from the L2 cpu ceiling (8000m).
+        let mut inf = BTreeMap::new();
+        inf.insert(("nix-daemon.service".to_string(), "CPUQuotaPerSecUSec".to_string()), "infinity".to_string());
+        let unbounded = HostCluster::shadow(MockHostEnv { unit_property_str: inf, ..Default::default() }, envelopes());
         assert_eq!(unbounded.read_limit(&unit_target("nix-daemon.service"), &layout, "cpu").await.unwrap(), 8000);
+        // unset (no property at all) likewise falls back to the ceiling.
+        let unset = HostCluster::shadow(MockHostEnv::default(), envelopes());
+        assert_eq!(unset.read_limit(&unit_target("nix-daemon.service"), &layout, "cpu").await.unwrap(), 8000);
     }
 
     #[tokio::test]
