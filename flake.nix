@@ -111,15 +111,34 @@
         logTarget = "breathe_host_agent";
       };
 
+      # The MCP surface — a model drives breathe over stdio. Run with a kubeconfig
+      # pointing at the target cluster: `KUBECONFIG=… nix run .#breathe-mcp`.
+      mcp = rustPlatform.buildRustPackage {
+        pname = "breathe-mcp";
+        version = version;
+        src = ./.;
+        cargoLock = { lockFile = ./Cargo.lock; };
+        cargoBuildFlags = [ "-p" "breathe-mcp" ];
+        nativeBuildInputs = with pkgs; [ pkg-config cmake perl ];
+        doCheck = false; # tested by the controller build
+        meta = {
+          description = "breathe MCP surface — drive the homeostasis substrate from a model";
+          license = pkgs.lib.licenses.mit;
+          mainProgram = "breathe-mcp";
+        };
+      };
+
     in {
       packages = {
         default = controller;
         breathe-controller = controller;
         breathe-host-agent = agent;
+        breathe-mcp = mcp;
         image = image;
         agent-image = agentImage;
       };
       apps.default = { type = "app"; program = "${controller}/bin/breathe-controller"; };
+      apps.breathe-mcp = { type = "app"; program = "${mcp}/bin/breathe-mcp"; };
       devShells.default = pkgs.mkShellNoCC {
         buildInputs = with pkgs; [ rustToolchain pkg-config cmake skopeo kubectl helm ];
       };
