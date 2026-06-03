@@ -10,7 +10,7 @@
 //! `breathe-control`; this crate adds only the I/O orchestration + the typed receipt.
 
 use breathe_control::{plan_tick, BandConfig, Decision, TickPlan};
-use breathe_provider::{DisruptionClass, DisruptionPolicy, ProviderError, ResourceProvider, Target};
+use breathe_provider::{DisruptionClass, DisruptionPolicy, EdgeTier, ProviderError, ResourceProvider, Target};
 
 /// Everything one tick needs that isn't carried by the provider. The provider
 /// supplies its own `directionality()` and `owned_field()`; this carries the
@@ -40,8 +40,11 @@ pub enum TickReceipt {
     Stale { staleness_secs: u64 },
     /// A mutation was warranted but the target is cooling down.
     Cooldown,
-    /// The one atomic mutation was applied via the provider.
-    Applied { from: u64, to: u64 },
+    /// The one atomic mutation was applied via the provider, with the restart
+    /// cost of the carve (`class`) — the attestation evidence. A `RestartFree`
+    /// Applied is a golden carve; a `RestartRequiring` Applied is a witnessed
+    /// ceiling crossing (only reachable under an `AllowRestart` policy).
+    Applied { from: u64, to: u64, class: DisruptionClass },
     /// dry-run: a mutation would have been applied (shadow attestation).
     DryRunWouldApply { from: u64, to: u64 },
     /// The band law warranted a carve, but its restart cost (`class`) is a
@@ -53,6 +56,29 @@ pub enum TickReceipt {
     Observed { decision: Decision },
     /// A typed provider error (transient → fast requeue; permanent → escalate).
     Error { error: ProviderError },
+}
+
+impl TickReceipt {
+    /// Where this tick sits on the golden/ceiling line — the per-tick attestation
+    /// evidence. A carve that PASSED the gate carries its own class; a refused
+    /// crossing (`DeferredWouldRestart`) is GoldenPreserving (it REFUSED to leave
+    /// golden); every non-mutating outcome is golden. So "this band stayed on
+    /// golden rails (zero ceiling crossings) over window W" is a provable
+    /// property of the receipt stream, not a hope (the K4 continuity theorem).
+    #[must_use]
+    pub fn edge_tier(&self) -> EdgeTier {
+        match self {
+            Self::Applied { class, .. } => class.edge_tier(),
+            // refusing the crossing KEEPS the workload golden.
+            Self::DeferredWouldRestart { .. }
+            | Self::DryRunWouldApply { .. }
+            | Self::Observed { .. }
+            | Self::Cooldown
+            | Self::Stale { .. }
+            | Self::Conflict { .. }
+            | Self::Error { .. } => EdgeTier::GoldenPreserving,
+        }
+    }
 }
 
 /// One reconcile tick for one `(target × dimension)`.
@@ -102,7 +128,7 @@ pub async fn reconcile_one(
                 return TickReceipt::DryRunWouldApply { from, to };
             }
             match provider.assign(input.target, to).await {
-                Ok(r) => TickReceipt::Applied { from: r.from, to: r.to },
+                Ok(r) => TickReceipt::Applied { from: r.from, to: r.to, class },
                 Err(error) => TickReceipt::Error { error },
             }
         }
@@ -151,7 +177,7 @@ mod tests {
         let input = ReconcileInput { target: &t, cfg: &cfg, max_staleness_secs: 60, in_cooldown: false, dry_run: false, policy: DisruptionPolicy::AllowRestart };
 
         match reconcile_one(&input, &prov).await {
-            TickReceipt::Applied { from, to } => {
+            TickReceipt::Applied { from, to, .. } => {
                 assert_eq!(from, GI);
                 assert!(to > from, "must grow");
             }
@@ -215,5 +241,25 @@ mod tests {
             other => panic!("expected DeferredWouldRestart, got {other:?}"),
         }
         assert!(prov.cluster().applied().is_empty(), "a refused crossing carves NOTHING");
+    }
+
+    /// The K4 continuity property: under `RestartFreeOnly` EVERY receipt is
+    /// GoldenPreserving (a permitted golden carve, or a refusal that KEPT the
+    /// workload golden) — zero ceiling crossings. The SAME carve under
+    /// `AllowRestart` is a witnessed crossing — the rare, auditable event.
+    #[tokio::test]
+    async fn golden_continuity_restart_free_only_emits_zero_crossings() {
+        let cfg = BandConfig::default();
+        let t = target(); // CNPG ClusterTopLevel ⇒ RestartRequiring
+        // RestartFreeOnly: the carve is refused → the tick stays golden.
+        let prov = provider(MockCluster::new(950 * MI, 0, GI, we_own()));
+        let golden = ReconcileInput { target: &t, cfg: &cfg, max_staleness_secs: 60, in_cooldown: false, dry_run: false, policy: DisruptionPolicy::RestartFreeOnly };
+        assert!(reconcile_one(&golden, &prov).await.edge_tier().is_golden(), "RestartFreeOnly is golden end-to-end");
+        // AllowRestart: the same carve is APPLIED as a witnessed ceiling crossing.
+        let prov2 = provider(MockCluster::new(950 * MI, 0, GI, we_own()));
+        let allow = ReconcileInput { target: &t, cfg: &cfg, max_staleness_secs: 60, in_cooldown: false, dry_run: false, policy: DisruptionPolicy::AllowRestart };
+        let r = reconcile_one(&allow, &prov2).await;
+        assert!(matches!(r, TickReceipt::Applied { class: DisruptionClass::RestartRequiring, .. }));
+        assert!(!r.edge_tier().is_golden(), "an AllowRestart roll is a witnessed crossing");
     }
 }
