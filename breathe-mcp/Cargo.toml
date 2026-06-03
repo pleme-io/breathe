@@ -1,0 +1,31 @@
+[package]
+name = "breathe-mcp"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "breathe's MCP surface — a model MCPs into a running breathe instance and drives the homeostasis substrate: list/get/author/patch bands + nodepools, flip dryRun + the node writeEnabled switch, read the catalog + status. Hand-served over the breathe-kube client (the CRDs ARE the state; this is a typed facade, not a second store). Behind a BreatheStore trait so the tools are mock-tested without a cluster."
+
+[[bin]]
+name = "breathe-mcp"
+path = "src/main.rs"
+
+[dependencies]
+breathe-crd = { path = "../breathe-crd", version = "0.1.0" }
+breathe-catalog = { path = "../breathe-catalog", version = "0.1.0" }
+rmcp = { version = "0.15", features = ["server", "transport-io"] }
+kube = { version = "0.96", features = ["client", "runtime", "derive", "rustls-tls"], default-features = false }
+k8s-openapi = { version = "0.23", features = ["latest"] }
+tokio = { version = "1.40", features = ["macros", "rt-multi-thread"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1.0"
+async-trait = "0.1"
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+thiserror = "2"
+
+[lints]
+workspace = true
