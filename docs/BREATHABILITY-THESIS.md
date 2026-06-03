@@ -182,3 +182,71 @@ Ordered by leverage (biggest invalidity-gap closure first). Each closes a `where
 **P10 — Window-level promise attestation + typed `ProvisionGuarantee` contract.** Ship the M3 `BreathePromise` PromessaLattice meet + a periodic in-band heartbeat so "target X held 80/20 across ALL enrolled dimensions for window W" is a single `kensa verify --window` theorem (the per-tick chain only proves individual carves). Define a per-tenant `ProvisionGuarantee { setpoint, envelope, on_exhaustion: Backpressure | Reject | Escalate }` so "the concern is handed back, never dropped" is a *typed* contract — the app then drops ad-hoc resilience for the in-envelope case and codes exactly one typed degraded-mode for the out-of-envelope case. State the Nyquist limit (`1/(refresh+cooldown)`) in the promise object so an auditor never reads a mean-utilization promise as a latency SLA.
 
 **Doc discipline (land in `BREATHE.md` verbatim).** Retire "COMPLETELY". State the qualified thesis: *"breathe provides-for the ELASTIC HEADROOM `h_d` on average; it provisions the FLOOR `F_d` from the peak. For soft resources `F_d=0` and the whole allocation is on-average; for hard resources only `h_d = a_d − F_d` is on-average, `F_d` is reactive-conservative and statically summed under the never-swap invariant. on-average is a property of headroom, never of a floor. The adversarial tail is an explicitly typed, escalation-terminating shared concern — never silently dropped."* This makes the thesis falsifiable and forecloses the dangerous reading where a hard resource is held at a green mean while its variance touches the cliff.
+
+---
+
+## 8. The keystone cascade — what in-place resize leverages into
+
+The in-place keystone (`LimitLayout::PodResize`, §5) is not a leaf feature; it is a
+*generative* one. It proved a property — **carve the live resource, zero restart,
+via its native in-place mechanism** — that was already true on the host plane
+(cgroup `set-property`) and is now true on the k8s pod plane. Two proven
+zero-disruption planes is not two facts; it is the discovery that the property is
+**universal**, and the substrate is converging on it. Each keystone below is a
+second-order isomorphism the first one unlocks. Naming the destinations (Operating
+Principle #0): the cascade, ordered.
+
+**K1 — `Disruption` typed property → "breathe never rolls." `SHIPPED`.**
+`Disruption {ZeroDisruption | Rolling}` + `LimitLayout::disruption()`. PodResize /
+PvcRequest / Host are zero-disruption; PodTemplate / ClusterTopLevel still roll.
+PodResize *obsoletes* PodTemplate on this axis — the same carve is Rolling via the
+template, ZeroDisruption via resize — so preferring resize strictly removes
+disruption with no other change. Proven convergence: **every mutating k8s
+dimension has a zero-disruption carve path for pod-backed owners**
+(memory/cpu→PodResize, storage→PvcRequest). "breathe never rolls" is now a typed,
+tested property. It is also the eclusa **golden berth** at carve granularity: a
+zero-disruption carve never leaves a non-converged, pods-pending state — so the
+whole pre-merge / steady-state life of a workload stays golden under continuous
+carving. *Next wiring:* the controller defaults `in_place` to the cluster's resize
+capability (≥1.33), so zero-disruption is the **default**, rolling the forced
+fallback.
+
+**K2 — The envelope IS a band (recurse the band law to cluster scale).**
+Today `Decision::AtCeiling` is terminal (escalate). But growing the *envelope* — a
+NodePool / Karpenter node-add — is ITSELF a zero-disruption operation at the
+cluster level (existing pods keep running): the **same** in-place pattern recursed
+one level up. So `AtCeiling` from an inner band becomes the **grow-signal** for an
+outer *envelope band* whose `used` is the saturation pressure of its inner bands
+and whose carve is cluster capacity. This makes breathe **globally** homeostatic,
+not per-node — the L2 ceiling stops being a hard wall and becomes a soft outer
+band. On fixed hardware (rio) the envelope actuator can only escalate; on a cloud
+pool it provisions. Typed foundation: a `DimensionId::Envelope` + the
+`BreatheNodePool` as its target + `EnvelopeSaturation` (P7) as its observation.
+*The keystone in-place resize unlocks: the inner carve is zero-disruption, so the
+outer (capacity) carve can be too.*
+
+**K3 — The realized fast asymmetric loop (R1 × K1).** PredictiveGrow's asymmetry
+(fast grow, slow shrink — the burst-OOM fix, R1) maps EXACTLY onto in-place
+resize's inherent asymmetry: a memory **grow-up is zero-restart always**, a
+**shrink-down is `resizePolicy`-gated** (may restart). They are the *same*
+asymmetry, and they compose into **zero-disruption burst pre-emption** — breathe
+grows ahead of the cliff (R1) with no restart (K1). This is the first time the
+thesis's "provided-for *ahead of* the burst, and the app never notices" is
+realizable on k8s, not just the host. *Next wiring:* the controller pairs
+`PredictiveGrow` (the law) with `PodResize` (the plane) on enrolled bands, and the
+shrink path honors `resizePolicy` so the slow direction stays conservative.
+
+**K4 — Zero-disruption provision becomes a stronger attested theorem.** Once the
+app never sees a restart, the OutcomeChain (P10) attests not just *"X held in band
+across W"* but *"…held with ZERO disruptions"* — the provision promise gains a
+**no-restart guarantee** an auditor can verify. The `Disruption` property is the
+typed evidence: every `TickReceipt::Applied` can carry the carve's disruption, so
+the chain proves the workload was held continuously AND never interrupted. This is
+the Viggy realization of the thesis: provision as a continuously-attested theorem
+that is also a *continuity* theorem.
+
+**The cascade as one sentence.** The host plane and the pod plane being *both*
+zero-disruption is the seed; from it follow a typed "never roll" property (K1,
+shipped), a recursion of the band law to the cluster envelope (K2), the realized
+zero-disruption burst-pre-emption loop (K3), and a continuity guarantee on the
+provision theorem (K4) — each one a keystone the prior makes representable.
