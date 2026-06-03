@@ -1,9 +1,10 @@
-# Build + push the breathe-controller OCI image on merge to main.
+# Build + push EVERY breathe OCI image on merge to main.
 #
-# Runs on a GitHub Linux runner (network available — sidesteps the rio
-# FOD-DNS-in-sandbox blocker), nix-builds the distroless image from flake.nix,
-# and pushes it PRIVATE to ghcr.io/pleme-io/breathe-controller via skopeo.
-# This is the go-live unblock for the rio shadow deploy.
+# Runs on GitHub Linux runners (network available — sidesteps the rio
+# FOD-DNS-in-sandbox blocker), nix-builds each distroless image from flake.nix,
+# and pushes it PRIVATE to ghcr.io/pleme-io/breathe-* via skopeo. A matrix so
+# adding an image is one row, never a forked workflow — the controller, the host
+# agent (the hands), AND the api-server (REST/GraphQL/gRPC) all ship here.
 name: image
 
 on:
@@ -24,19 +25,29 @@ permissions:
 jobs:
   image:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - flake: image
+            repo: breathe-controller
+          - flake: agent-image
+            repo: breathe-host-agent
+          - flake: api-server-image
+            repo: breathe-api-server
     steps:
       - uses: actions/checkout@v4
       - uses: DeterminateSystems/nix-installer-action@main
       - uses: DeterminateSystems/magic-nix-cache-action@main
       - name: Build the OCI image (distroless, Linux)
-        run: nix build .#image --print-build-logs
+        run: nix build ".#${{ matrix.flake }}" --print-build-logs
       - name: Push (private — breathe is private)
         run: |
           # nixpkgs skopeo rejects the runner's v1 /etc/containers/registries.conf;
           # point it at a minimal v2 file and push with --dest-creds (no login step).
           echo 'unqualified-search-registries = []' > /tmp/registries.conf
           export CONTAINERS_REGISTRIES_CONF=/tmp/registries.conf
-          IMG=ghcr.io/pleme-io/breathe-controller
+          IMG=ghcr.io/pleme-io/${{ matrix.repo }}
           CREDS="${{ github.actor }}:${{ secrets.GITHUB_TOKEN }}"
           nix run nixpkgs#skopeo -- copy --dest-creds "$CREDS" docker-archive:result "docker://$IMG:0.1.0"
           nix run nixpkgs#skopeo -- copy --dest-creds "$CREDS" docker-archive:result "docker://$IMG:latest"
