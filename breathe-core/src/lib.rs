@@ -117,10 +117,13 @@ pub async fn reconcile_one(
             // THE GOLDEN-EDGE GATE: name the precise restart cost of THIS carve
             // (per-direction, per-resource) and refuse a crossing the policy does
             // not permit — never silently roll. A grow is golden (RestartFree); a
-            // memory shrink is RestartConditional; a CNPG/template carve is
-            // RestartRequiring.
+            // memory shrink is RestartConditional UNLESS the observed resizePolicy
+            // is NotRequired (then the in-place shrink is RestartFree → golden
+            // bidirectionally); a CNPG/template carve is RestartRequiring.
             let growing = matches!(decision, Decision::Grow { .. });
-            let class = provider.action_class(input.target, growing);
+            let class = provider
+                .action_class(input.target, growing)
+                .refined_by_resize_policy(obs.memory_shrink_restart_free);
             if !input.policy.permits(class) {
                 return TickReceipt::DeferredWouldRestart { from, to, class };
             }
@@ -139,7 +142,7 @@ pub async fn reconcile_one(
 mod tests {
     use super::*;
     use breathe_control::FieldOwner;
-    use breathe_provider::{mock::MockCluster, BandProvider, Target};
+    use breathe_provider::{mock::MockCluster, BandProvider, DimensionDescriptor, Target};
     use breathe_dimensions::MemoryDescriptor;
 
     const MEMORY_FIELD: &str = "resources.limits.memory";
@@ -261,5 +264,73 @@ mod tests {
         let r = reconcile_one(&allow, &prov2).await;
         assert!(matches!(r, TickReceipt::Applied { class: DisruptionClass::RestartRequiring, .. }));
         assert!(!r.edge_tier().is_golden(), "an AllowRestart roll is a witnessed crossing");
+    }
+
+    // ── Phase 2: resizePolicy-aware shrink — memory breathes DOWN on golden rails ──
+
+    fn deploy_target() -> Target {
+        Target {
+            namespace: "pangea-system".into(),
+            name: "api".into(),
+            kind: "Deployment".into(),
+            api_version: "apps/v1".into(),
+            container: Some("app".into()),
+        }
+    }
+    /// A resize-capable memory provider (k8s ≥1.33) over a Deployment ⇒ the carve
+    /// layout is `PodResize`, so a memory shrink is `RestartConditional` UNLESS the
+    /// observed `resizePolicy[memory]` is `NotRequired`.
+    fn resize_provider(cluster: MockCluster) -> BandProvider<MockCluster, MemoryDescriptor> {
+        BandProvider::new(cluster, MemoryDescriptor::with_resize_capability(true))
+    }
+
+    /// A `resizePolicy[memory] = NotRequired` pod's memory SHRINK is `RestartFree`,
+    /// so breathe ACTS on it even under the strict `RestartFreeOnly` default —
+    /// memory now breathes bidirectionally on golden rails (the Phase 2 win).
+    #[tokio::test]
+    async fn reconcile_acts_on_a_not_required_memory_shrink_under_restart_free_only() {
+        // util 0.20 @ 2Gi (well below shrink_below) ⇒ Act(Shrink); we own the field;
+        // the pod's resizePolicy is NotRequired ⇒ the in-place shrink is golden.
+        let cluster = MockCluster::new(400 * MI, 0, 2 * GI, we_own()).with_resize_restart_free(true);
+        let prov = resize_provider(cluster);
+        let cfg = BandConfig::default();
+        let t = deploy_target();
+        let input = ReconcileInput { target: &t, cfg: &cfg, max_staleness_secs: 60, in_cooldown: false, dry_run: false, policy: DisruptionPolicy::RestartFreeOnly };
+        match reconcile_one(&input, &prov).await {
+            TickReceipt::Applied { from, to, class } => {
+                assert_eq!(from, 2 * GI);
+                assert!(to < from, "a shrink lowers the limit");
+                assert_eq!(class, DisruptionClass::RestartFree, "NotRequired ⇒ the shrink is golden");
+            }
+            other => panic!("expected Applied(RestartFree shrink), got {other:?}"),
+        }
+        assert_eq!(prov.cluster().applied().len(), 1, "exactly one in-place shrink carved");
+    }
+
+    /// The SAME shrink with the default `resizePolicy` (`RestartContainer` ⇒ flag
+    /// false) is `RestartConditional`, so under `RestartFreeOnly` it DEFERS — never
+    /// a silent container restart. Under `AllowConditional` the operator opts in and
+    /// the same carve Acts.
+    #[tokio::test]
+    async fn reconcile_defers_a_restart_container_memory_shrink_under_restart_free_only() {
+        let cfg = BandConfig::default();
+        let t = deploy_target();
+        // RestartFreeOnly + RestartContainer (flag false) ⇒ DEFER, carve nothing.
+        let prov = resize_provider(MockCluster::new(400 * MI, 0, 2 * GI, we_own()));
+        let strict = ReconcileInput { target: &t, cfg: &cfg, max_staleness_secs: 60, in_cooldown: false, dry_run: false, policy: DisruptionPolicy::RestartFreeOnly };
+        match reconcile_one(&strict, &prov).await {
+            TickReceipt::DeferredWouldRestart { class, .. } => {
+                assert_eq!(class, DisruptionClass::RestartConditional, "a may-restart shrink under the strict policy");
+            }
+            other => panic!("expected DeferredWouldRestart(RestartConditional), got {other:?}"),
+        }
+        assert!(prov.cluster().applied().is_empty(), "a deferred conditional shrink carves nothing");
+        // AllowConditional opts the same RestartConditional shrink in ⇒ Applied.
+        let prov2 = resize_provider(MockCluster::new(400 * MI, 0, 2 * GI, we_own()));
+        let allow = ReconcileInput { target: &t, cfg: &cfg, max_staleness_secs: 60, in_cooldown: false, dry_run: false, policy: DisruptionPolicy::AllowConditional };
+        assert!(matches!(
+            reconcile_one(&allow, &prov2).await,
+            TickReceipt::Applied { class: DisruptionClass::RestartConditional, .. }
+        ));
     }
 }

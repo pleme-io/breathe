@@ -161,6 +161,23 @@ impl DisruptionClass {
     pub fn may_restart(self) -> bool {
         !matches!(self, Self::RestartFree)
     }
+
+    /// Refine a class by the target's observed `resizePolicy`. A
+    /// [`RestartConditional`](Self::RestartConditional) class arises ONLY from a
+    /// `PodResize` memory/byte SHRINK (every other carve is already `RestartFree`
+    /// or `RestartRequiring`), so when the container declares
+    /// `resizePolicy[<resource>] = NotRequired` (`shrink_restart_free`) the kubelet
+    /// resizes it in place and the shrink becomes `RestartFree` — a `NotRequired`
+    /// workload then breathes bidirectionally on golden rails. Every other class is
+    /// returned unchanged; a `false` flag (the conservative default, incl. the k8s
+    /// default `RestartContainer`) leaves the conditional class intact.
+    #[must_use]
+    pub fn refined_by_resize_policy(self, shrink_restart_free: bool) -> DisruptionClass {
+        match self {
+            Self::RestartConditional if shrink_restart_free => Self::RestartFree,
+            other => other,
+        }
+    }
 }
 
 /// The FLAG that makes "without restart" controllable + explicit. Set per band /
@@ -414,6 +431,22 @@ pub trait Cluster: Send + Sync {
         logical_field: &str,
     ) -> Result<Vec<FieldOwner>, ProviderError>;
     async fn apply(&self, patch: &SsaPatch) -> Result<AppliedReceipt, ProviderError>;
+
+    /// Whether an in-place SHRINK of `resource` at `layout` on `target` is
+    /// restart-free — `true` iff `layout` is a `PodResize` AND every resized pod's
+    /// container declares `resizePolicy[<resource>] = NotRequired`. The default is
+    /// the CONSERVATIVE answer (`false` — assume a shrink may restart), so a
+    /// cluster impl that does not read the live pod policy (host/storage/mock)
+    /// never spuriously claims a golden shrink. Only `KubeCluster` overrides it.
+    async fn read_resize_restart_free(
+        &self,
+        target: &Target,
+        layout: &LimitLayout,
+        resource: &str,
+    ) -> Result<bool, ProviderError> {
+        let _ = (target, layout, resource);
+        Ok(false)
+    }
 }
 
 /// Whether a band's layout has a GOLDEN path to its setpoint — the eclusa
@@ -567,7 +600,20 @@ impl<C: Cluster + 'static, D: DimensionDescriptor> ResourceProvider for BandProv
             .cluster
             .field_owners(target, &layout, self.descriptor.resource(), self.descriptor.logical_field())
             .await?;
-        Ok(Observation { used: used.value, capacity, owners, staleness_secs: used.age_secs })
+        // Restart-cost refinement input: is an in-place shrink of this resource
+        // restart-free on this target (resizePolicy NotRequired)? Conservative
+        // false everywhere the Cluster impl does not read a live pod policy.
+        let memory_shrink_restart_free = self
+            .cluster
+            .read_resize_restart_free(target, &layout, self.descriptor.resource())
+            .await?;
+        Ok(Observation {
+            used: used.value,
+            capacity,
+            owners,
+            staleness_secs: used.age_secs,
+            memory_shrink_restart_free,
+        })
     }
 
     async fn assign(&self, target: &Target, to_value: u64) -> Result<AssignReceipt, ProviderError> {
@@ -643,6 +689,24 @@ mod tests {
     }
 
     #[test]
+    fn resize_policy_refines_only_the_conditional_shrink() {
+        use DisruptionClass::{RestartConditional, RestartFree, RestartRequiring};
+        // The ONLY class resizePolicy refines: a conditional memory shrink with
+        // NotRequired becomes golden; with RestartContainer (false) it stays.
+        assert_eq!(RestartConditional.refined_by_resize_policy(true), RestartFree);
+        assert_eq!(RestartConditional.refined_by_resize_policy(false), RestartConditional);
+        // Every other class is invariant under the flag (no spurious downgrade of a
+        // template roll, no change to an already-golden grow).
+        assert_eq!(RestartRequiring.refined_by_resize_policy(true), RestartRequiring);
+        assert_eq!(RestartFree.refined_by_resize_policy(true), RestartFree);
+        // Composed with the per-direction class: a NotRequired pod's memory shrink
+        // is golden end to end; a grow already was.
+        let resize = LimitLayout::PodResize { container: None };
+        assert_eq!(resize.action_class(false, "memory").refined_by_resize_policy(true), RestartFree);
+        assert_eq!(resize.action_class(false, "memory").refined_by_resize_policy(false), RestartConditional);
+    }
+
+    #[test]
     fn setpoint_reachability_names_the_golden_paths() {
         use super::{setpoint_reachability, Directionality, DisruptionClass, SetpointReachability};
         // cpu in-place: golden both directions.
@@ -698,13 +762,28 @@ pub mod mock {
         pub used: Sample,
         pub limit: u64,
         pub owners: Vec<FieldOwner>,
+        /// What `read_resize_restart_free` returns (default false = conservative;
+        /// set true to model a `resizePolicy[memory] = NotRequired` pod).
+        pub resize_restart_free: bool,
         applied: Mutex<Vec<SsaPatch>>,
     }
 
     impl MockCluster {
         #[must_use]
         pub fn new(used: u64, age_secs: u64, limit: u64, owners: Vec<FieldOwner>) -> Self {
-            Self { used: Sample { value: used, age_secs }, limit, owners, applied: Mutex::new(Vec::new()) }
+            Self {
+                used: Sample { value: used, age_secs },
+                limit,
+                owners,
+                resize_restart_free: false,
+                applied: Mutex::new(Vec::new()),
+            }
+        }
+        /// Model a pod whose `resizePolicy` makes an in-place shrink restart-free.
+        #[must_use]
+        pub fn with_resize_restart_free(mut self, v: bool) -> Self {
+            self.resize_restart_free = v;
+            self
         }
         #[must_use]
         pub fn applied(&self) -> Vec<SsaPatch> {
@@ -737,6 +816,14 @@ pub mod mock {
         async fn apply(&self, patch: &SsaPatch) -> Result<AppliedReceipt, ProviderError> {
             self.applied.lock().unwrap().push(patch.clone());
             Ok(AppliedReceipt { source_hash: [0u8; 16] })
+        }
+        async fn read_resize_restart_free(
+            &self,
+            _t: &Target,
+            _layout: &LimitLayout,
+            _resource: &str,
+        ) -> Result<bool, ProviderError> {
+            Ok(self.resize_restart_free)
         }
     }
 }
