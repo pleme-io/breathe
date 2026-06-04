@@ -652,6 +652,122 @@ impl<C: Cluster + 'static, D: DimensionDescriptor> ResourceProvider for BandProv
     }
 }
 
+// ============================================================================
+// M0 — the resource-ether shape lift (the breathe provisioning extension).
+//
+// `Forma` is the infra-scale SIBLING of `DimensionId`: where a dimension slices
+// a resource WITHIN a fixed envelope (memory in a pod), a forma provisions the
+// envelope ITSELF (a node, a spot seat, a GPU). The two are orthogonal and
+// compose; BOTH project to a scalar `(used, capacity)` the SAME band law carves.
+// M0 ships the typed seed + the K2 keystone proof (the band law is shape-blind —
+// it converges on a node COUNT exactly as on bytes, into the deadband). The
+// provisioning I/O (`provision`/`deprovision` actually mutating) lands at M2,
+// gated on magma. Validated admission + the auction land as breathe-admission /
+// breathe-auction. Canonical spec: docs/PROVISIONING.md.
+// ============================================================================
+
+/// A SHAPE of resource — the infra-scale peer of [`DimensionId`]. M0 ships only
+/// the seed shape `NodeOnDemand`; M3+ add `NodeSpot` / `Accelerator` /
+/// `ServerlessSlot` / `EdgePlacement` / `JitBuilder` / … (docs/PROVISIONING.md §8).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "kebab-case")]
+pub enum Forma {
+    /// An on-demand cloud node: `used` = node demand (scheduled + pending),
+    /// `capacity` = the node-pool ceiling (the `Densa` envelope). Provisioned via
+    /// a magma `Plan` at M2 — never a direct cloud-API call.
+    NodeOnDemand,
+}
+
+impl Forma {
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::NodeOnDemand => "node-on-demand",
+        }
+    }
+}
+
+impl std::fmt::Display for Forma {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// The per-shape data + projection logic — the infra-scale peer of
+/// [`DimensionDescriptor`]. A new shape is an impl of this + a catalog row; it
+/// carries NO band logic (no `decide`/`BandConfig`), exactly like a dimension.
+pub trait FormaDescriptor: Send + Sync + 'static {
+    fn forma(&self) -> Forma;
+    fn directionality(&self) -> Directionality;
+    /// The provisioning dead-time: how long one `provision(1)` takes to become
+    /// usable capacity. The predictor MUST forecast ≥ this far ahead or
+    /// provisioning is always late (BREATHABILITY-MATH §5.3, thesis P8). Seconds.
+    fn relief_latency_secs(&self) -> u64;
+    /// The unit one `provision(1)` adds (`"node"`, `"gpu"`, `"slot"`).
+    fn unit(&self) -> &'static str;
+}
+
+/// The shape's current `(used, capacity)` scalars — the band law's two inputs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FormaSample {
+    /// Demand for this shape (scheduled + pending), in `unit`s.
+    pub used: u64,
+    /// The provisioned ceiling for this shape (the `Densa` envelope), in `unit`s.
+    pub capacity: u64,
+}
+
+/// Proof of a (idempotent) provision/deprovision action.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ProvisionReceipt {
+    /// Observe-only (`dry_run`) — nothing was mutated; what the M0 seed + any
+    /// shadow forma return. `would` is the signed unit delta it WOULD have applied.
+    DryRun { would: i64 },
+    /// A real provision/deprovision was dispatched (M2+): `delta` units via the
+    /// attested `plan_id` (a magma `Plan` BLAKE3 id — never a direct cloud call).
+    Applied { delta: i64, plan_id: String },
+    /// No-op — already at the requested count (idempotent).
+    NoOp,
+}
+
+/// The provisioning I/O boundary — the infra-scale peer of the [`Cluster`]
+/// trait. Real impls (M2+) emit a magma `Plan`; the M0 seed + tests observe
+/// only. It OBSERVES the shape's `(used, capacity)` and PROVISIONS/DEPROVISIONS
+/// units — but CANNOT re-decide: it receives "grow by N" and returns proof +
+/// readiness. Idempotent provision; graceful (cordon→drain) deprovision.
+#[async_trait]
+pub trait Provedor: Send + Sync {
+    /// The shape's current `(used, capacity)` for the band law.
+    async fn observe(&self) -> Result<FormaSample, ProviderError>;
+    /// Idempotently provision `n` more units. Observe-only impls mutate nothing
+    /// and return [`ProvisionReceipt::DryRun`].
+    async fn provision(&self, n: u64) -> Result<ProvisionReceipt, ProviderError>;
+    /// Gracefully deprovision `n` units (cordon→drain, PDB-aware). Observe-only
+    /// impls return [`ProvisionReceipt::DryRun`].
+    async fn deprovision(&self, n: u64) -> Result<ProvisionReceipt, ProviderError>;
+}
+
+/// The M0 seed descriptor — `Forma::NodeOnDemand`, bidirectional, node-grained.
+/// A node add is restart-free for existing pods (the node joins; nothing rolls);
+/// a node removal is a PDB-aware drain. `relief_latency` is the cloud's
+/// node-boot-to-Ready time (minutes — the dead-time the predictor looks ahead by).
+#[derive(Debug, Clone, Copy, Default)]
+pub struct NodeOnDemandDescriptor;
+
+impl FormaDescriptor for NodeOnDemandDescriptor {
+    fn forma(&self) -> Forma {
+        Forma::NodeOnDemand
+    }
+    fn directionality(&self) -> Directionality {
+        Directionality::Bidirectional
+    }
+    fn relief_latency_secs(&self) -> u64 {
+        180 // ~3 min node boot→Ready; refined per-provider at M2
+    }
+    fn unit(&self) -> &'static str {
+        "node"
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{DisruptionClass, DisruptionPolicy, HostKnob, LimitLayout};
@@ -839,5 +955,104 @@ pub mod mock {
         ) -> Result<bool, ProviderError> {
             Ok(self.resize_restart_free)
         }
+    }
+}
+
+#[cfg(test)]
+mod forma_seed {
+    //! The **K2 keystone proof**: the band law is SHAPE-BLIND. `decide` converges
+    //! on a node COUNT exactly as on bytes, into the deadband `[shrink_below,
+    //! grow_above]` (BREATHABILITY-MATH §3.3 — the attractor is the band INTERVAL,
+    //! NOT the point `setpoint`). This is the entire basis for `Forma` reusing
+    //! `breathe-control` verbatim (docs/PROVISIONING.md §1.1).
+    use super::{Forma, FormaDescriptor, NodeOnDemandDescriptor};
+    use breathe_control::{decide, BandConfig, Decision};
+
+    /// A node-count band config. `*_bytes` is the unit-blind field name (the band
+    /// law never knows it is bytes); here the unit is *nodes*.
+    fn node_count_cfg(floor: u64, ceiling: u64) -> BandConfig {
+        BandConfig {
+            grow_above: 0.85,
+            shrink_below: 0.70,
+            setpoint: 0.80,
+            grow_factor: 1.25,
+            shrink_factor: 0.90,
+            floor_bytes: floor,
+            ceiling_bytes: ceiling,
+        }
+    }
+
+    /// Iterate the band law to its fixed region; return `(settled_limit, last)`.
+    fn converge(demand: u64, mut limit: u64, cfg: &BandConfig) -> (u64, Decision) {
+        let mut last = Decision::Hold;
+        for _ in 0..200 {
+            last = decide(demand, limit, cfg);
+            match last {
+                Decision::Grow { to, .. } | Decision::Shrink { to, .. } => {
+                    if to == limit {
+                        break;
+                    }
+                    limit = to;
+                }
+                _ => break, // Hold / AtCeiling / NoSafeShrink / NoLimit — settled
+            }
+        }
+        (limit, last)
+    }
+
+    #[test]
+    fn seed_descriptor_is_node_on_demand() {
+        let d = NodeOnDemandDescriptor;
+        assert_eq!(d.forma(), Forma::NodeOnDemand);
+        assert_eq!(Forma::NodeOnDemand.as_str(), "node-on-demand");
+        assert_eq!(Forma::NodeOnDemand.to_string(), "node-on-demand");
+        assert_eq!(d.unit(), "node");
+        assert!(d.relief_latency_secs() > 0, "relief latency must be > 0 (P8 dead-time)");
+    }
+
+    #[test]
+    fn band_law_converges_on_node_count_into_the_deadband() {
+        let cfg = node_count_cfg(1, 100);
+        for &demand in &[1u64, 2, 3, 5, 8, 13, 21, 40, 75] {
+            for &l0 in &[1u64, demand.max(1), 100] {
+                let (limit, last) = converge(demand, l0.max(1), &cfg);
+                let util = demand as f64 / limit as f64;
+                // Per MATH §3.3: settles IN the deadband, not at the setpoint.
+                let in_band = util <= cfg.grow_above + 1e-9 && util >= cfg.shrink_below - 1e-9;
+                let at_wall = matches!(last, Decision::AtCeiling { .. } | Decision::NoSafeShrink { .. })
+                    || limit == cfg.ceiling_bytes
+                    || limit == cfg.floor_bytes;
+                assert!(
+                    in_band || at_wall,
+                    "demand={demand} l0={l0} → limit={limit} util={util:.3} last={last:?} \
+                     (want in-band [{},{}] or a wall)",
+                    cfg.shrink_below, cfg.grow_above
+                );
+                // never-over-commit: the settled limit covers the demand (the
+                // provisioning peer of never-OOM), unless the floor binds below it.
+                assert!(
+                    limit >= demand || limit == cfg.floor_bytes,
+                    "over-commit breach: demand={demand} > limit={limit}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn node_count_and_bytes_settle_at_the_same_utilization() {
+        // Shape-blindness made literal: the same starting ratio on a node COUNT
+        // and on BYTES settles at the same in-band utilization (the law sees only
+        // the ratio). 90/100 (over grow_above) must grow both identically.
+        let cfg = node_count_cfg(1, 1_000_000);
+        let (limit_nodes, _) = converge(90, 100, &cfg);
+        let (limit_bytes, _) = converge(90_000, 100_000, &cfg);
+        let util_nodes = 90.0 / limit_nodes as f64;
+        let util_bytes = 90_000.0 / limit_bytes as f64;
+        assert!(
+            (util_nodes - util_bytes).abs() < 0.05,
+            "shape-blindness broken: node util {util_nodes:.3} != byte util {util_bytes:.3}"
+        );
+        // and both landed inside the deadband
+        assert!(util_nodes <= cfg.grow_above + 1e-9 && util_nodes >= cfg.shrink_below - 1e-9);
     }
 }
