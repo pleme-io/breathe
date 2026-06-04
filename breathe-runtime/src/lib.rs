@@ -50,6 +50,63 @@ fn edge_tier_str(t: EdgeTier) -> String {
     }
 }
 
+/// The k8s Event severity for a tick. Kept dep-free of `kube::runtime::events`
+/// (the binaries map it to `EventType`) so breathe-runtime stays a pure mapping.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EventKind {
+    Normal,
+    Warning,
+}
+
+/// Map a reconcile receipt to a k8s Event `(severity, reason, note)`, or `None`
+/// when nothing should be emitted (a resting `Hold`, a transient `Cooldown`). The
+/// `reason` is a stable PascalCase token for `kubectl get events --field-selector
+/// reason=…`; the `note` is the human message. The binaries bind this to a
+/// `kube::runtime::events::Recorder` and gate it with [`should_emit_event`].
+#[must_use]
+pub fn event_for(receipt: &TickReceipt) -> Option<(EventKind, &'static str, String)> {
+    use EventKind::{Normal, Warning};
+    Some(match receipt {
+        TickReceipt::Applied { from, to, class } => (
+            Normal,
+            if to > from { "Grew" } else { "Shrank" },
+            format!("carved {from} -> {to} ({class:?})"),
+        ),
+        TickReceipt::DeferredWouldRestart { from, to, class } => (
+            Warning,
+            "DeferredCrossing",
+            format!("deferred {from} -> {to}: {class:?} crossing blocked by DisruptionPolicy (widen to AllowConditional/AllowRestart to permit)"),
+        ),
+        TickReceipt::Stale { staleness_secs } => {
+            (Warning, "StaleMetric", format!("metric {staleness_secs}s stale — held (never carve on a stale sample)"))
+        }
+        TickReceipt::Conflict { manager } => (Warning, "Yielded", format!("yielded the field to {manager}")),
+        TickReceipt::Error { error } => (Warning, "ReconcileError", error.to_string()),
+        TickReceipt::DryRunWouldApply { from, to } => {
+            (Normal, "ShadowWouldApply", format!("shadow: would carve {from} -> {to} (dryRun — nothing written)"))
+        }
+        TickReceipt::Observed { decision } => match decision {
+            Decision::AtCeiling { current } => (Normal, "AtCeiling", format!("at ceiling {current} — would grow but capped")),
+            Decision::NoSafeShrink { current } => (Normal, "AtFloor", format!("at floor {current} — no safe shrink")),
+            Decision::NoLimit => (Warning, "NoLimit", "no limit set — cannot reason on utilization".into()),
+            Decision::Grow { from, to } | Decision::Shrink { from, to } => {
+                (Normal, "ObservedNoAct", format!("observed {from} -> {to} (directionality/observe-only — not applied)"))
+            }
+            Decision::Hold => return None, // within the deadband — resting, no event
+        },
+        TickReceipt::Cooldown => return None, // transient post-carve wait — no event
+    })
+}
+
+/// Transition-gate for events: a carve (`Applied`) ALWAYS emits (each is a
+/// distinct, meaningful event); every other emittable receipt emits ONLY when the
+/// phase changed from the prior tick — so a band resting in `Holding`/`AtFloor`
+/// produces ~0 events instead of one per 15s tick (no etcd flood).
+#[must_use]
+pub fn should_emit_event(receipt: &TickReceipt, new_phase: Option<&str>, prior_phase: Option<&str>) -> bool {
+    matches!(receipt, TickReceipt::Applied { .. }) || new_phase != prior_phase
+}
+
 /// Map one reconcile OUTCOME to the typed CR status — every branch observable,
 /// none silent. This is the single source of truth for band status semantics
 /// across both reconcile processes. It reports not just *what happened* (phase +
@@ -215,6 +272,26 @@ mod tests {
     /// per-arm fields under test don't need one).
     fn out(receipt: TickReceipt) -> TickOutcome {
         TickOutcome { receipt, observed: None, policy: DisruptionPolicy::RestartFreeOnly, dry_run: false }
+    }
+
+    #[test]
+    fn events_are_typed_and_transition_gated() {
+        use breathe_provider::DisruptionClass::{RestartFree, RestartRequiring};
+        // a carve is a Normal Grew/Shrank event…
+        let (k, reason, _) = event_for(&TickReceipt::Applied { from: 1, to: 2, class: RestartFree }).unwrap();
+        assert_eq!((k, reason), (EventKind::Normal, "Grew"));
+        // …and ALWAYS emits, even when the phase didn't change (each carve is an event).
+        assert!(should_emit_event(&TickReceipt::Applied { from: 1, to: 2, class: RestartFree }, Some("Growing"), Some("Growing")));
+        // a deferred crossing is a Warning.
+        let (k, reason, _) = event_for(&TickReceipt::DeferredWouldRestart { from: 1, to: 2, class: RestartRequiring }).unwrap();
+        assert_eq!((k, reason), (EventKind::Warning, "DeferredCrossing"));
+        // a resting Hold emits NOTHING; Cooldown likewise.
+        assert!(event_for(&TickReceipt::Observed { decision: Decision::Hold }).is_none());
+        assert!(event_for(&TickReceipt::Cooldown).is_none());
+        // a non-carve at the SAME phase is suppressed; a phase CHANGE emits.
+        let atfloor = TickReceipt::Observed { decision: Decision::NoSafeShrink { current: 9 } };
+        assert!(!should_emit_event(&atfloor, Some("AtFloor"), Some("AtFloor")));
+        assert!(should_emit_event(&atfloor, Some("AtFloor"), Some("Holding")));
     }
 
     #[test]
