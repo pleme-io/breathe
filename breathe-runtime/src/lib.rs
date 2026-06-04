@@ -62,16 +62,28 @@ pub fn status_for(receipt: &TickReceipt) -> BandStatus {
             s.last_decision = Some(format!("{from} -> {to} deferred: {class:?} crossing blocked by DisruptionPolicy (set AllowConditional/AllowRestart to permit)"));
         }
         TickReceipt::Observed { decision } => {
-            s.phase = Some(
-                match decision {
-                    Decision::Hold => "Holding",
-                    Decision::AtCeiling { .. } => "AtCeiling",
-                    Decision::NoSafeShrink { .. } => "AtFloor",
-                    Decision::NoLimit => "NoLimit",
-                    Decision::Grow { .. } | Decision::Shrink { .. } => "Observed",
+            // A non-mutating tick still REPORTS the live limit + a legible note, so a
+            // band sitting at rest (held / at floor / at ceiling) never shows a stale
+            // decision string from an earlier carve or shadow tick. The non-carve
+            // decisions carry `current`; Hold/NoLimit have no fresh limit to surface.
+            let (phase, limit, note): (&str, Option<u64>, String) = match decision {
+                Decision::Hold => ("Holding", None, "within band — held".into()),
+                Decision::AtCeiling { current } => {
+                    ("AtCeiling", Some(*current), format!("at ceiling {current} — would grow"))
                 }
-                .into(),
-            );
+                Decision::NoSafeShrink { current } => {
+                    ("AtFloor", Some(*current), format!("at floor {current} — no safe shrink"))
+                }
+                Decision::NoLimit => ("NoLimit", None, "no limit set — cannot reason on utilization".into()),
+                Decision::Grow { from, to } | Decision::Shrink { from, to } => {
+                    ("Observed", Some(*from), format!("observed {from} -> {to} (not applied)"))
+                }
+            };
+            s.phase = Some(phase.into());
+            if let Some(l) = limit {
+                s.current_limit = Some(l.to_string());
+            }
+            s.last_decision = Some(note);
         }
         TickReceipt::Error { error } => {
             s.phase = Some("Error".into());
