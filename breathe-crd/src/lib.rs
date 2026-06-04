@@ -39,6 +39,28 @@ pub struct TargetRef {
     pub container: Option<String>,
 }
 
+/// A standard k8s `metav1.Condition` (schemars-derivable — k8s_openapi's own
+/// `Condition` is not `JsonSchema`). Enables `kubectl wait --for=condition=…` and
+/// Flux/Argo health assessment off breathe bands.
+#[derive(Serialize, Deserialize, Clone, Debug, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct Condition {
+    /// Condition type, e.g. `Ready` / `Converged` / `Throttled` / `Stale` / `Conflict`.
+    #[serde(rename = "type")]
+    pub type_: String,
+    /// `True` | `False` | `Unknown`.
+    pub status: String,
+    /// Machine-readable PascalCase reason.
+    pub reason: String,
+    /// Human-readable message.
+    pub message: String,
+    /// RFC3339 time the condition last flipped status (stable while status holds).
+    pub last_transition_time: String,
+    /// The `metadata.generation` the controller observed when setting this.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub observed_generation: Option<i64>,
+}
+
 /// The per-cycle typed status receipt — shared across all band kinds.
 #[derive(Serialize, Deserialize, Clone, Debug, JsonSchema, Default)]
 #[serde(rename_all = "camelCase")]
@@ -96,6 +118,15 @@ pub struct BandStatus {
     /// Cumulative count of single-writer conflicts (yielded to another manager).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub conflicts_total: Option<i64>,
+
+    // ── M4: standard k8s conditions + observedGeneration (kubectl wait / health). ─
+    /// `metadata.generation` the controller last reconciled — the "controller has
+    /// seen my latest spec edit" signal.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub observed_generation: Option<i64>,
+    /// Standard conditions (Ready / Converged / Throttled / Stale / Conflict).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub conditions: Vec<Condition>,
 }
 
 /// The dimension-agnostic accessor the generic controller reconciles through.
@@ -122,6 +153,11 @@ pub trait Band:
     /// The band's CURRENT status (read before reconcile) — the `prior` that
     /// `status_for` carries cumulative counters + the cooldown epoch forward from.
     fn status(&self) -> Option<&BandStatus>;
+    /// `metadata.generation` — set as `status.observedGeneration` so an operator can
+    /// confirm the controller reconciled their latest spec edit.
+    fn generation(&self) -> Option<i64> {
+        self.meta().generation
+    }
 }
 
 fn band_config_of(
@@ -170,7 +206,8 @@ macro_rules! band_kind {
             printcolumn = r#"{"name":"Util","type":"string","jsonPath":".status.lastUtil"}"#,
             printcolumn = r#"{"name":"Limit","type":"string","jsonPath":".status.currentLimit"}"#,
             printcolumn = r#"{"name":"Last","type":"string","jsonPath":".status.lastDecision"}"#,
-            printcolumn = r#"{"name":"Phase","type":"string","jsonPath":".status.phase"}"#
+            printcolumn = r#"{"name":"Phase","type":"string","jsonPath":".status.phase"}"#,
+            printcolumn = r#"{"name":"Ready","type":"string","jsonPath":".status.conditions[?(@.type=='Ready')].status"}"#
         )]
         #[serde(rename_all = "camelCase")]
         pub struct $spec {
