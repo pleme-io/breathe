@@ -420,6 +420,38 @@ pub fn metrics_for(l: &BandLabels, outcome: &TickOutcome, cfg: &BandConfig, cool
     }
 }
 
+/// The ephemeral-env context for a band's namespace (Dev Loop M3) — the
+/// `EphemeralEnvId` + the namespace `Densa`'s cost-remaining (the cost-guard).
+/// Read-only: a controller fetches it (namespace label + the namespace Densa's
+/// status) and folds it into the band status via [`apply_env_context`]. Both
+/// absent ⇒ the namespace is not an ephemeral env / has no Densa (the rio default
+/// — zero behavior change there).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct EnvContext {
+    pub env_id: Option<String>,
+    pub cost_remaining_cents: Option<i64>,
+}
+
+impl EnvContext {
+    /// Is there anything to surface? (skip the patch entirely when empty.)
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.env_id.is_none() && self.cost_remaining_cents.is_none()
+    }
+}
+
+/// Fold the ephemeral-env context into a band status (read-only surfacing). Only
+/// overwrites a field the context actually carries, so a band in a non-ephemeral
+/// namespace keeps `None` (no churn — the determinism discipline).
+pub fn apply_env_context(status: &mut BandStatus, ctx: &EnvContext) {
+    if ctx.env_id.is_some() {
+        status.observed_env_id = ctx.env_id.clone();
+    }
+    if ctx.cost_remaining_cents.is_some() {
+        status.observed_cost_remaining_cents = ctx.cost_remaining_cents;
+    }
+}
+
 /// The status for a SUSPENDED band — frozen (the controller skips observe/plan/act;
 /// the limit is left exactly as-is). Resume by setting `spec.suspend:false`.
 #[must_use]
@@ -469,6 +501,27 @@ pub async fn patch_status<B: Band>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn apply_env_context_surfaces_only_present_fields() {
+        let mut st = BandStatus::default();
+        // empty context ⇒ band keeps None (the rio / non-ephemeral default)
+        apply_env_context(&mut st, &EnvContext::default());
+        assert_eq!(st.observed_env_id, None);
+        assert_eq!(st.observed_cost_remaining_cents, None);
+        assert!(EnvContext::default().is_empty());
+
+        // env id only
+        apply_env_context(&mut st, &EnvContext { env_id: Some("deadbeef".into()), cost_remaining_cents: None });
+        assert_eq!(st.observed_env_id.as_deref(), Some("deadbeef"));
+        assert_eq!(st.observed_cost_remaining_cents, None);
+
+        // cost remaining (incl. negative = over budget)
+        apply_env_context(&mut st, &EnvContext { env_id: None, cost_remaining_cents: Some(-250) });
+        assert_eq!(st.observed_env_id.as_deref(), Some("deadbeef"), "env id preserved");
+        assert_eq!(st.observed_cost_remaining_cents, Some(-250));
+        assert!(!EnvContext { env_id: None, cost_remaining_cents: Some(-250) }.is_empty());
+    }
 
     /// Wrap a bare receipt in a minimal TickOutcome (no observation; the status
     /// per-arm fields under test don't need one).

@@ -42,6 +42,15 @@ rules:
   - apiGroups: ["breathe.pleme.io"]
     resources: ["breatheconfigs"]
     verbs: ["get", "list", "watch"]
+  # M3 (Dev Loop): READ-ONLY the namespace's ephemeral-env cost-guard — the
+  # EnvId label on the Namespace + the namespace's Densa envelope status. breathe
+  # never WRITES either (no patch/update verb) — it only surfaces them on the band.
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    verbs: ["get", "list"]
+  - apiGroups: ["breathe.pleme.io"]
+    resources: ["densas"]
+    verbs: ["get", "list", "watch"]
   # The target owners breathe patches limits.{memory,cpu} on (true SSA).
   - apiGroups: ["apps"]
     resources: ["deployments", "statefulsets"]

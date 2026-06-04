@@ -58,10 +58,12 @@ message BandStatus {
   string last_decision = 15;
   string last_util = 16;
   int64 observed_capacity = 17;
-  int64 observed_generation = 18;
-  int64 observed_used = 19;
-  double observed_util = 20;
-  string phase = 21;
+  int64 observed_cost_remaining_cents = 18;
+  string observed_env_id = 19;
+  int64 observed_generation = 20;
+  int64 observed_used = 21;
+  double observed_util = 22;
+  string phase = 23;
 }
 
 message Catalog {

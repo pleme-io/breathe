@@ -212,6 +212,8 @@ components:
           type: array
           description: "recent trajectory (over-time view as a k8s object) — last N carves/transitions"
           items: { $ref: "#/components/schemas/TrendSample" }
+        observedEnvId: { type: string, description: "M3: the EphemeralEnvId of the band's namespace (read from the namespace label)" }
+        observedCostRemainingCents: { type: integer, description: "M3: cost remaining (cents) under the namespace Densa envelope SLA; negative = over budget" }
     TrendSample:
       type: object
       description: A point in a band's recent trajectory.
