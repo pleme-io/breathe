@@ -18,7 +18,8 @@ use breathe_dimensions::{CpuDescriptor, MemoryDescriptor, StorageDescriptor};
 use breathe_kube::KubeCluster;
 use breathe_provider::{BandProvider, ClassCooldowns, DimensionDescriptor, ResourceProvider, Target};
 use breathe_runtime::{
-    error_status, event_for, next_requeue, now_secs, patch_status, should_emit_event, status_for, EventKind,
+    error_status, event_for, metrics_for, next_requeue, now_secs, patch_status, should_emit_event, status_for,
+    BandLabels, EventKind,
 };
 use futures::StreamExt;
 use kube::{
@@ -136,6 +137,12 @@ async fn reconcile<B: Band, D: DimensionDescriptor + Default>(
     let status = status_for(&outcome, obj.status(), obj.cooldown_seconds());
     info!(dim = %provider.id(), band = %name, target = %target.name, phase = ?status.phase, "reconciled");
     emit_event(&ctx, obj.as_ref(), &outcome.receipt, status.phase.as_deref(), prior_phase.as_deref()).await;
+    metrics_for(
+        &BandLabels { dim: provider.id().to_string(), namespace: ns.clone(), name: name.clone() },
+        &outcome,
+        &cfg,
+        status.cooldown_remaining_seconds.unwrap_or(0),
+    );
     patch_status::<B>(&ctx.client, &ns, &name, &status).await?;
     // requeue keyed on the action class just taken — golden carves re-tick fast.
     Ok(Action::requeue(next_requeue(&outcome.receipt, &ctx.cooldowns)))
@@ -163,6 +170,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let client = Client::try_default().await?;
     let resize_capable = detect_resize_capable(&client).await;
     let cooldowns = ClassCooldowns::default();
+    // Prometheus /metrics on :9100 — scraped by VictoriaMetrics for the over-time
+    // "watch it breathe" view. Non-fatal: a failed install logs + continues.
+    if let Err(e) = metrics_exporter_prometheus::PrometheusBuilder::new()
+        .with_http_listener(([0, 0, 0, 0], 9100))
+        .install()
+    {
+        error!(error = %e, "failed to install /metrics exporter — continuing without metrics");
+    }
+    metrics::gauge!("breathe_build_info", "binary" => "breathe-controller", "version" => env!("CARGO_PKG_VERSION")).set(1.0);
+
     let reporter = Reporter { controller: "breathe-controller".into(), instance: std::env::var("POD_NAME").ok() };
     let ctx = Arc::new(Ctx { client: client.clone(), prometheus_url, requeue, resize_capable, cooldowns, reporter });
 
