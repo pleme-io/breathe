@@ -388,6 +388,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "breathe-admission"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "breathe-provider",
+ "schemars 0.8.22",
+ "serde",
+]
+
+[[package]]
 name = "breathe-api-server"
 version = "0.1.0"
 dependencies = [
