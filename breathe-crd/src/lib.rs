@@ -541,6 +541,141 @@ pub struct CooldownsSpec {
     pub restart_requiring: u64,
 }
 
+/// **Densa** — the per-namespace capacity + cost ENVELOPE (the breathability
+/// thesis L2 / P7; docs/PROVISIONING.md §2.5). The hard wall every breathe band
+/// in the namespace carves WITHIN (L1 ⊂ L2): a band may grow its workload's
+/// limit, but the sum of the namespace's floors + reserve must always fit
+/// `poolCapacity` (the cluster-scale never-swap proof, BREATHABILITY-MATH §4.3),
+/// and the namespace's cost must stay inside `costSlaCents`. The typed-value peer
+/// is `breathe_catalog::forma::Densa` (Forma-keyed, auction-side); this CRD is the
+/// k8s wire border (string-keyed, namespace-scoped). One per ephemeral-env
+/// namespace = the Dev-Loop cost-guard. `kubectl get densa`.
+#[derive(CustomResource, Serialize, Deserialize, Clone, Debug, JsonSchema)]
+#[kube(
+    group = "breathe.pleme.io",
+    version = "v1",
+    kind = "Densa",
+    namespaced,
+    shortname = "densa",
+    category = "breathe",
+    status = "DensaStatus",
+    printcolumn = r#"{"name":"Fits","type":"boolean","jsonPath":".status.fits"}"#,
+    printcolumn = r#"{"name":"SumFloors","type":"integer","jsonPath":".status.sumFloors"}"#,
+    printcolumn = r#"{"name":"Capacity","type":"integer","jsonPath":".spec.poolCapacity"}"#,
+    printcolumn = r#"{"name":"CostRemaining","type":"integer","jsonPath":".status.costRemainingCents"}"#
+)]
+#[serde(rename_all = "camelCase")]
+pub struct DensaSpec {
+    /// The per-resource bounds (one per dimension/forma the namespace caps).
+    pub bounds: Vec<DensaBound>,
+    /// Units (in the pool's unit) that must stay free — reserve headroom.
+    #[serde(default)]
+    pub reserve: u64,
+    /// The pool's hard capacity (the never-swap denominator), same unit as bounds.
+    pub pool_capacity: u64,
+    /// The cost ceiling (cents per accounting period) the namespace must stay within.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cost_sla_cents: Option<u64>,
+}
+
+/// One resource bound in a [`Densa`] envelope. `name` is the resource key — a
+/// dimension (`memory`/`cpu`) or a forma (`node-on-demand`).
+#[derive(Serialize, Deserialize, Clone, Debug, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct DensaBound {
+    pub name: String,
+    /// The provisioned-from-peak floor (must always fit — the never-swap base).
+    pub floor: u64,
+    /// The L2 hard ceiling — bands carve ≤ it.
+    pub ceiling: u64,
+}
+
+/// Densa status — the fits-check result + the live cost headroom (the Dev-Loop
+/// cost-guard surface the controller keeps current).
+#[derive(Serialize, Deserialize, Clone, Debug, JsonSchema, Default, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct DensaStatus {
+    /// Did the never-swap fits-check pass?
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fits: Option<bool>,
+    /// Σ floors (the fits arithmetic surface).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sum_floors: Option<i64>,
+    /// A human-legible refusal reason when `fits=false`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    /// Cost remaining under the SLA (cents); negative ⇒ over budget.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cost_remaining_cents: Option<i64>,
+    /// The EnvId this envelope bounds (the ephemeral-env binding, Dev Loop).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub observed_env_id: Option<String>,
+}
+
+/// The typed refusal of a [`DensaSpec`] — the never-swap fits-check.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DensaError {
+    FloorAboveCeiling { name: String, floor: u64, ceiling: u64 },
+    DoesNotFit { sum_floors: u64, reserve: u64, capacity: u64 },
+}
+
+impl std::fmt::Display for DensaError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::FloorAboveCeiling { name, floor, ceiling } => {
+                write!(f, "{name}: floor {floor} > ceiling {ceiling}")
+            }
+            Self::DoesNotFit { sum_floors, reserve, capacity } => {
+                write!(f, "Σfloors {sum_floors} + reserve {reserve} > capacity {capacity} (never-swap breach)")
+            }
+        }
+    }
+}
+
+impl DensaSpec {
+    /// The never-swap fits-check (BREATHABILITY-MATH §4.3 / V4): every floor ≤ its
+    /// ceiling AND Σ floors + reserve ≤ `poolCapacity`. A `Densa` that fails is
+    /// REFUSED (`status.fits=false` + reason), never applied — the cluster-scale
+    /// floor-from-peak proof. Same invariant as
+    /// `breathe_catalog::forma::Densa::fits` (string-keyed here, for the namespace
+    /// wire surface).
+    pub fn fits(&self) -> Result<(), DensaError> {
+        for b in &self.bounds {
+            if b.floor > b.ceiling {
+                return Err(DensaError::FloorAboveCeiling { name: b.name.clone(), floor: b.floor, ceiling: b.ceiling });
+            }
+        }
+        let sum: u64 = self.bounds.iter().map(|b| b.floor).sum();
+        if sum.saturating_add(self.reserve) <= self.pool_capacity {
+            Ok(())
+        } else {
+            Err(DensaError::DoesNotFit { sum_floors: sum, reserve: self.reserve, capacity: self.pool_capacity })
+        }
+    }
+
+    /// The L2 ceiling for a resource key (the `BandConfig.ceiling` bands carve within).
+    #[must_use]
+    pub fn ceiling(&self, name: &str) -> Option<u64> {
+        self.bounds.iter().find(|b| b.name == name).map(|b| b.ceiling)
+    }
+
+    /// The status this spec should carry — the fits-check folded into the wire
+    /// surface (a controller patches this; pure so it's unit-testable).
+    #[must_use]
+    pub fn status_now(&self, cost_spent_cents: Option<u64>) -> DensaStatus {
+        let sum_floors = self.bounds.iter().map(|b| b.floor).sum::<u64>() as i64;
+        let (fits, reason) = match self.fits() {
+            Ok(()) => (true, None),
+            Err(e) => (false, Some(e.to_string())),
+        };
+        let cost_remaining_cents = match (self.cost_sla_cents, cost_spent_cents) {
+            (Some(sla), Some(spent)) => Some(sla as i64 - spent as i64),
+            _ => None,
+        };
+        DensaStatus { fits: Some(fits), sum_floors: Some(sum_floors), reason, cost_remaining_cents, observed_env_id: None }
+    }
+}
+
 fn d_floor_bytes() -> String { "256Mi".into() }
 fn d_ceiling_bytes() -> String { "16Gi".into() }
 fn d_floor_milli() -> String { "250m".into() }
@@ -556,6 +691,53 @@ fn d_max_staleness() -> u64 { 120 }
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn densa_fits_check_and_status() {
+        // a valid envelope fits; status reflects it + cost headroom
+        let d = DensaSpec {
+            bounds: vec![
+                DensaBound { name: "memory".into(), floor: 2_000, ceiling: 8_000 },
+                DensaBound { name: "node-on-demand".into(), floor: 1, ceiling: 5 },
+            ],
+            reserve: 500,
+            pool_capacity: 10_000,
+            cost_sla_cents: Some(5_000),
+        };
+        assert!(d.fits().is_ok());
+        assert_eq!(d.ceiling("memory"), Some(8_000));
+        let st = d.status_now(Some(3_000));
+        assert_eq!(st.fits, Some(true));
+        assert_eq!(st.sum_floors, Some(2_001));
+        assert_eq!(st.cost_remaining_cents, Some(2_000)); // 5000 sla − 3000 spent
+
+        // floor above ceiling → refused
+        let bad = DensaSpec {
+            bounds: vec![DensaBound { name: "memory".into(), floor: 9_000, ceiling: 8_000 }],
+            reserve: 0,
+            pool_capacity: 100_000,
+            cost_sla_cents: None,
+        };
+        assert!(matches!(bad.fits(), Err(DensaError::FloorAboveCeiling { .. })));
+        assert_eq!(bad.status_now(None).fits, Some(false));
+        assert!(bad.status_now(None).reason.is_some());
+
+        // over-subscribed floors → never-swap breach
+        let over = DensaSpec {
+            bounds: vec![DensaBound { name: "memory".into(), floor: 9_000, ceiling: 9_500 }],
+            reserve: 2_000,
+            pool_capacity: 10_000,
+            cost_sla_cents: None,
+        };
+        assert!(matches!(over.fits(), Err(DensaError::DoesNotFit { sum_floors: 9_000, reserve: 2_000, capacity: 10_000 })));
+    }
+
+    #[test]
+    fn densa_crd_generates() {
+        let crd = <Densa as kube::CustomResourceExt>::crd();
+        assert_eq!(crd.spec.names.kind, "Densa");
+        assert_eq!(crd.spec.scope, "Namespaced");
+    }
 
     #[test]
     fn three_kinds_share_band_config_parse() {

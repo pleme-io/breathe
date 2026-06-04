@@ -2,7 +2,7 @@
 //! hand-authoring. `cargo run -p breathe-crd --bin crdgen > crds/bands.yaml`.
 
 use breathe_crd::{
-    ArcBand, BreatheConfig, BreatheNodePool, BreatheOverview, CgroupBand, CgroupCpuBand, CpuBand, MemoryBand,
+    ArcBand, BreatheConfig, BreatheNodePool, BreatheOverview, CgroupBand, CgroupCpuBand, CpuBand, Densa, MemoryBand,
     StorageBand,
 };
 use kube::CustomResourceExt;
@@ -20,6 +20,8 @@ fn main() {
         // the fleet-overview dashboard object + the fleet config
         BreatheOverview::crd(),
         BreatheConfig::crd(),
+        // the per-namespace capacity + cost envelope (the L2 wall bands carve within)
+        Densa::crd(),
     ];
     for crd in crds {
         print!("---\n{}", serde_yaml::to_string(&crd).expect("serialize CRD"));
