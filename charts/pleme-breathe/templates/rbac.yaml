@@ -29,6 +29,19 @@ rules:
       - "storagebands"
       - "storagebands/status"
     verbs: ["get", "list", "watch", "patch", "update"]
+  # Host-dim bands: READ-ONLY. The controller lists these only to aggregate the
+  # fleet BreatheOverview — the host-agent owns their status (no patch here).
+  - apiGroups: ["breathe.pleme.io"]
+    resources: ["arcbands", "cgroupbands", "cgroupcpubands"]
+    verbs: ["get", "list", "watch"]
+  # The fleet-overview object (bov): the controller keeps its status current.
+  - apiGroups: ["breathe.pleme.io"]
+    resources: ["breatheoverviews", "breatheoverviews/status"]
+    verbs: ["get", "list", "watch", "patch", "update"]
+  # The fleet config object (bcfg): read on startup + on reload.
+  - apiGroups: ["breathe.pleme.io"]
+    resources: ["breatheconfigs"]
+    verbs: ["get", "list", "watch"]
   # The target owners breathe patches limits.{memory,cpu} on (true SSA).
   - apiGroups: ["apps"]
     resources: ["deployments", "statefulsets"]
@@ -48,7 +61,7 @@ rules:
   - apiGroups: ["metrics.k8s.io"]
     resources: ["pods"]
     verbs: ["get", "list"]
-  - apiGroups: [""]
+  - apiGroups: ["", "events.k8s.io"]   # core + the events.k8s.io/v1 API kube 0.96 Recorder uses
     resources: ["events"]
     verbs: ["create", "patch"]
 ---
@@ -66,4 +79,56 @@ subjects:
   - kind: ServiceAccount
     name: {{ .Values.serviceAccount.name }}
     namespace: {{ .Release.Namespace }}
+{{- end }}
+{{- if .Values.agent.enabled }}
+---
+# The HANDS' identity. The agent does NO k8s-workload mutation — it watches the
+# host band CRs + its BreatheNodePool and patches their status. Its host power
+# comes from the pod SecurityContext (privileged), not from k8s RBAC; this role
+# is deliberately narrow — breathe CRs only, no apps/cnpg/pvc verbs.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ .Values.agent.serviceAccount.name }}
+  namespace: {{ .Values.agent.namespace }}
+  labels:
+    app.kubernetes.io/name: pleme-breathe
+    app.kubernetes.io/component: host-agent
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: pleme-breathe-host-agent
+  labels:
+    app.kubernetes.io/name: pleme-breathe
+rules:
+  - apiGroups: ["breathe.pleme.io"]
+    resources:
+      - "arcbands"
+      - "arcbands/status"
+      - "cgroupbands"
+      - "cgroupbands/status"
+      - "cgroupcpubands"
+      - "cgroupcpubands/status"
+      - "breathenodepools"
+      - "breathenodepools/status"
+    verbs: ["get", "list", "watch", "patch", "update"]
+  - apiGroups: ["", "events.k8s.io"]   # core + the events.k8s.io/v1 API kube 0.96 Recorder uses
+    resources: ["events"]
+    verbs: ["create", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: pleme-breathe-host-agent
+  labels:
+    app.kubernetes.io/name: pleme-breathe
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: pleme-breathe-host-agent
+subjects:
+  - kind: ServiceAccount
+    name: {{ .Values.agent.serviceAccount.name }}
+    namespace: {{ .Values.agent.namespace }}
 {{- end }}
