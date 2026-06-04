@@ -1,0 +1,16 @@
+[package]
+name = "breathe-auction"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "The predict → optimize → auction decision layer for the breathe provisioning extension. The single-forma case is the proven band law lifted to a DecisaoForma; the multi-forma joint planner (Otimizador) is the explicitly-deferred hard arbitration (docs/PROVISIONING.md §2.4, §5)."
+
+[dependencies]
+breathe-control = { path = "../breathe-control", version = "0.1.0" }
+breathe-provider = { path = "../breathe-provider", version = "0.1.0" }
+
+[lints]
+workspace = true

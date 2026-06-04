@@ -426,6 +426,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "breathe-auction"
+version = "0.1.0"
+dependencies = [
+ "breathe-control",
+ "breathe-provider",
+]
+
+[[package]]
 name = "breathe-catalog"
 version = "0.1.0"
 dependencies = [
