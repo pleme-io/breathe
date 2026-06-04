@@ -423,7 +423,7 @@ pub struct BreatheNodePoolSpec {
 }
 
 /// BreatheNodePool status — the enrollment receipt.
-#[derive(Serialize, Deserialize, Clone, Debug, JsonSchema, Default)]
+#[derive(Serialize, Deserialize, Clone, Debug, JsonSchema, Default, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct NodePoolStatus {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -488,7 +488,7 @@ pub struct BandSummary {
 }
 
 /// The aggregated fleet status — totals + the per-band roll-up.
-#[derive(Serialize, Deserialize, Clone, Debug, JsonSchema, Default)]
+#[derive(Serialize, Deserialize, Clone, Debug, JsonSchema, Default, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct OverviewStatus {
     #[serde(default)]

@@ -40,7 +40,7 @@ use kube::{
     runtime::{
         controller::Action,
         events::{Event, EventType, Recorder, Reporter},
-        watcher, Controller,
+        predicates, reflector, watcher, Controller, WatchStreamExt,
     },
     Client, ResourceExt,
 };
@@ -48,6 +48,23 @@ use serde_json::json;
 use tracing::{error, info, warn};
 
 const GIB: u64 = 1024 * 1024 * 1024;
+
+/// Build a `Controller` whose PRIMARY watch ignores its own status self-patches.
+/// `predicates::generation` triggers only on spec/generation changes, so a status
+/// write never re-fires the watch — the structural fix for the whole self-trigger
+/// hot-loop class (the BreatheNodePool's `last_seen_epoch` was the agent's offender).
+/// The reflector store keeps the reconcile's view fresh; `Action::requeue` drives
+/// the periodic host refresh; spec edits still reconcile immediately.
+macro_rules! gen_controller {
+    ($api:expr) => {{
+        let (reader, writer) = reflector::store();
+        let stream = watcher($api, watcher::Config::default())
+            .reflect(writer)
+            .applied_objects()
+            .predicate_filter(predicates::generation);
+        Controller::for_stream(stream, reader)
+    }};
+}
 
 #[derive(Debug, thiserror::Error)]
 enum Error {
@@ -120,7 +137,7 @@ async fn reconcile_host<B: Band, D: DimensionDescriptor + Default>(
 
     // SUSPEND (M5): a frozen band skips everything — no enrollment read, no host I/O.
     if obj.suspended() {
-        patch_status::<B>(&ctx.client, &ns, &name, &suspended_status()).await?;
+        patch_status::<B>(&ctx.client, &ns, &name, &suspended_status(obj.status())).await?;
         return Ok(Action::requeue(ctx.requeue));
     }
 
@@ -216,13 +233,25 @@ async fn reconcile_pool(obj: Arc<BreatheNodePool>, ctx: Arc<Ctx>) -> Result<Acti
         // not ours — another node's agent owns it.
         return Ok(Action::requeue(ctx.requeue));
     }
-    let status = NodePoolStatus {
-        phase: Some(if obj.spec.write_enabled { "Active".into() } else { "Shadow".into() }),
-        observed_node: Some(ctx.node_name.clone()),
-        // every host lever this node manages: cgroup-memory units + cgroup-cpu units + ARC (1).
-        managed_units: Some((obj.spec.cgroup_max_gi_b.len() + obj.spec.cgroup_cpu_max_milli.len() + 1) as i64),
-        last_seen_epoch: Some(now_secs()),
-    };
+    let phase = Some(if obj.spec.write_enabled { "Active".into() } else { "Shadow".into() });
+    let observed_node = Some(ctx.node_name.clone());
+    // every host lever this node manages: cgroup-memory units + cgroup-cpu units + ARC (1).
+    let managed_units =
+        Some((obj.spec.cgroup_max_gi_b.len() + obj.spec.cgroup_cpu_max_milli.len() + 1) as i64);
+
+    // DIFF-GATE: only patch when the SUBSTANTIVE pool state changed. `last_seen_epoch`
+    // then marks the last CHANGE (not the last tick), so a stable enrollment writes
+    // ZERO — the heartbeat can never re-fire the watch. Agent liveness lives on
+    // /metrics + pod readiness, not on a per-tick status write.
+    let unchanged = obj
+        .status
+        .as_ref()
+        .is_some_and(|s| s.phase == phase && s.observed_node == observed_node && s.managed_units == managed_units);
+    if unchanged {
+        return Ok(Action::requeue(ctx.requeue));
+    }
+
+    let status = NodePoolStatus { phase, observed_node, managed_units, last_seen_epoch: Some(now_secs()) };
     let api: Api<BreatheNodePool> = Api::all(ctx.client.clone());
     api.patch_status(&name, &PatchParams::default(), &Patch::Merge(&json!({ "status": status })))
         .await?;
@@ -281,24 +310,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     info!(node = %node_name, "breathe-host-agent starting — arc + cgroup-memory + cgroup-cpu host dimensions");
 
-    let arc = Controller::new(Api::<ArcBand>::all(client.clone()), watcher::Config::default())
+    let arc = gen_controller!(Api::<ArcBand>::all(client.clone()))
         .run(reconcile_host::<ArcBand, ArcDescriptor>, error_policy::<ArcBand>, ctx.clone())
         .for_each(|_| async {});
-    let cgroup = Controller::new(Api::<CgroupBand>::all(client.clone()), watcher::Config::default())
+    let cgroup = gen_controller!(Api::<CgroupBand>::all(client.clone()))
         .run(
             reconcile_host::<CgroupBand, CgroupMemoryDescriptor>,
             error_policy::<CgroupBand>,
             ctx.clone(),
         )
         .for_each(|_| async {});
-    let cgroup_cpu = Controller::new(Api::<CgroupCpuBand>::all(client.clone()), watcher::Config::default())
+    let cgroup_cpu = gen_controller!(Api::<CgroupCpuBand>::all(client.clone()))
         .run(
             reconcile_host::<CgroupCpuBand, CgroupCpuDescriptor>,
             error_policy::<CgroupCpuBand>,
             ctx.clone(),
         )
         .for_each(|_| async {});
-    let pool = Controller::new(Api::<BreatheNodePool>::all(client.clone()), watcher::Config::default())
+    let pool = gen_controller!(Api::<BreatheNodePool>::all(client.clone()))
         .run(reconcile_pool, pool_error_policy, ctx.clone())
         .for_each(|_| async {});
 

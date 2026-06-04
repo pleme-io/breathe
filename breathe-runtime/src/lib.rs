@@ -423,7 +423,13 @@ pub fn metrics_for(l: &BandLabels, outcome: &TickOutcome, cfg: &BandConfig, cool
 /// The status for a SUSPENDED band — frozen (the controller skips observe/plan/act;
 /// the limit is left exactly as-is). Resume by setting `spec.suspend:false`.
 #[must_use]
-pub fn suspended_status() -> BandStatus {
+pub fn suspended_status(prior: Option<&BandStatus>) -> BandStatus {
+    // Preserve the transition time of an existing Ready=False condition so a band
+    // that STAYS suspended yields a byte-identical status tick after tick (no
+    // churn); only stamp `now` on the first transition into suspension.
+    let last_transition_time = prior
+        .and_then(|p| p.conditions.iter().find(|c| c.type_ == "Ready" && c.status == "False"))
+        .map_or_else(now_rfc3339, |c| c.last_transition_time.clone());
     let mut s = BandStatus::default();
     s.phase = Some("Suspended".into());
     s.last_decision = Some("suspended — set spec.suspend:false to resume".into());
@@ -432,7 +438,7 @@ pub fn suspended_status() -> BandStatus {
         status: "False".into(),
         reason: "Suspended".into(),
         message: "band is suspended (spec.suspend:true)".into(),
-        last_transition_time: chrono::Utc::now().to_rfc3339(),
+        last_transition_time,
         observed_generation: None,
     }];
     s

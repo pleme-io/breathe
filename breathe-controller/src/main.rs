@@ -30,12 +30,29 @@ use kube::{
     runtime::{
         controller::Action,
         events::{Event, EventType, Recorder, Reporter},
-        watcher, Controller,
+        predicates, reflector, watcher, Controller, WatchStreamExt,
     },
     Client, ResourceExt,
 };
 use serde_json::json;
 use tracing::{error, info, warn};
+
+/// Build a `Controller` whose PRIMARY watch ignores its own status self-patches.
+/// `predicates::generation` triggers only on spec/generation changes, so a status
+/// write never re-fires the watch — the structural fix for the whole self-trigger
+/// hot-loop class. The reflector store (fed by `reflect` BEFORE the predicate) keeps
+/// the reconcile's view of the object fresh; `Action::requeue` still drives the
+/// periodic refresh; spec edits still reconcile immediately.
+macro_rules! gen_controller {
+    ($api:expr) => {{
+        let (reader, writer) = reflector::store();
+        let stream = watcher($api, watcher::Config::default())
+            .reflect(writer)
+            .applied_objects()
+            .predicate_filter(predicates::generation);
+        Controller::for_stream(stream, reader)
+    }};
+}
 
 #[derive(Debug, thiserror::Error)]
 enum Error {
@@ -104,7 +121,7 @@ async fn reconcile<B: Band, D: DimensionDescriptor + Default>(
     // SUSPEND (M5): a frozen band skips observe/plan/act entirely — the limit is left
     // as-is. A spec edit (suspend:false) fires the watcher to resume.
     if obj.suspended() {
-        patch_status::<B>(&ctx.client, &ns, &name, &suspended_status()).await?;
+        patch_status::<B>(&ctx.client, &ns, &name, &suspended_status(obj.status())).await?;
         return Ok(Action::requeue(ctx.requeue));
     }
 
@@ -206,22 +223,46 @@ async fn reconcile_overview(obj: Arc<BreatheOverview>, ctx: Arc<Ctx>) -> Result<
     bands.sort_by(|a, b| (&a.kind, &a.namespace, &a.name).cmp(&(&b.kind, &b.namespace, &b.name)));
 
     let count = |ps: &[&str]| bands.iter().filter(|b| b.phase.as_deref().is_some_and(|x| ps.contains(&x))).count() as i64;
+    let total = bands.len() as i64;
+    let converged = count(&["Holding", "AtFloor", "AtCeiling"]);
+    let carving = count(&["Growing", "Shrinking"]);
+    let deferred = count(&["DeferredWouldRestart"]);
+    let suspended = count(&["Suspended"]);
+    let shadow = bands.iter().filter(|b| b.dry_run).count() as i64;
+    let refresh = Duration::from_secs(obj.spec.refresh_seconds.max(5));
+
+    // DIFF-GATE: only patch when the SUBSTANTIVE fleet state changed. `last_updated`
+    // then marks the last CHANGE (not the last tick), and a stable fleet produces
+    // ZERO writes — so the heartbeat timestamp can never re-fire the watch (belt to
+    // the generation-predicate's suspenders).
+    let unchanged = obj.status.as_ref().is_some_and(|s| {
+        s.total == total
+            && s.converged == converged
+            && s.carving == carving
+            && s.deferred == deferred
+            && s.suspended == suspended
+            && s.shadow == shadow
+            && s.bands == bands
+    });
+    if unchanged {
+        return Ok(Action::requeue(refresh));
+    }
+
     let status = OverviewStatus {
-        total: bands.len() as i64,
-        converged: count(&["Holding", "AtFloor", "AtCeiling"]),
-        carving: count(&["Growing", "Shrinking"]),
-        deferred: count(&["DeferredWouldRestart"]),
-        suspended: count(&["Suspended"]),
-        shadow: bands.iter().filter(|b| b.dry_run).count() as i64,
+        total,
+        converged,
+        carving,
+        deferred,
+        suspended,
+        shadow,
         last_updated: Some(now_rfc3339()),
         bands,
     };
-    let total = status.total;
     let api: Api<BreatheOverview> = Api::all(ctx.client.clone());
     api.patch_status(&obj.name_any(), &PatchParams::default(), &Patch::Merge(&json!({ "status": status })))
         .await?;
-    info!(overview = %obj.name_any(), total, "fleet overview refreshed");
-    Ok(Action::requeue(Duration::from_secs(obj.spec.refresh_seconds.max(5))))
+    info!(overview = %obj.name_any(), total, "fleet overview changed");
+    Ok(Action::requeue(refresh))
 }
 
 fn overview_error_policy(_obj: Arc<BreatheOverview>, err: &Error, _ctx: Arc<Ctx>) -> Action {
@@ -262,10 +303,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let requeue = Duration::from_secs(bcfg.base_requeue_seconds.unwrap_or_else(|| {
         std::env::var("BREATHE_REQUEUE_SECONDS").ok().and_then(|s| s.parse().ok()).unwrap_or(60)
     }));
+    // `.max(1)`: a user-supplied cooldown of 0 would make a golden carve return
+    // `Action::requeue(Duration::ZERO)` → a CPU-spinning reconcile with no backoff.
+    // Clamp every class to ≥1s so a misconfigured BreatheConfig can't busy-loop.
     let cooldowns = bcfg.class_cooldowns.map_or_else(ClassCooldowns::default, |c| ClassCooldowns {
-        restart_free: c.restart_free,
-        restart_conditional: c.restart_conditional,
-        restart_requiring: c.restart_requiring,
+        restart_free: c.restart_free.max(1),
+        restart_conditional: c.restart_conditional.max(1),
+        restart_requiring: c.restart_requiring.max(1),
     });
     // Prometheus /metrics on :9100 — scraped by VictoriaMetrics for the over-time
     // "watch it breathe" view. Non-fatal: a failed install logs + continues.
@@ -286,17 +330,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "breathe-controller starting — golden-edge gate active, per-band DisruptionPolicy (default RestartFreeOnly)"
     );
 
-    let mem = Controller::new(Api::<MemoryBand>::all(client.clone()), watcher::Config::default())
+    let mem = gen_controller!(Api::<MemoryBand>::all(client.clone()))
         .run(reconcile::<MemoryBand, MemoryDescriptor>, error_policy::<MemoryBand>, ctx.clone())
         .for_each(|_| async {});
-    let cpu = Controller::new(Api::<CpuBand>::all(client.clone()), watcher::Config::default())
+    let cpu = gen_controller!(Api::<CpuBand>::all(client.clone()))
         .run(reconcile::<CpuBand, CpuDescriptor>, error_policy::<CpuBand>, ctx.clone())
         .for_each(|_| async {});
-    let sto = Controller::new(Api::<StorageBand>::all(client.clone()), watcher::Config::default())
+    let sto = gen_controller!(Api::<StorageBand>::all(client.clone()))
         .run(reconcile::<StorageBand, StorageDescriptor>, error_policy::<StorageBand>, ctx.clone())
         .for_each(|_| async {});
     // The fleet-overview reconciler — keeps every BreatheOverview's status current.
-    let overview = Controller::new(Api::<BreatheOverview>::all(client.clone()), watcher::Config::default())
+    let overview = gen_controller!(Api::<BreatheOverview>::all(client.clone()))
         .run(reconcile_overview, overview_error_policy, ctx.clone())
         .for_each(|_| async {});
 
