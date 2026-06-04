@@ -250,6 +250,15 @@ spec:
                 format: int64
                 nullable: true
                 type: integer
+              observedCostRemainingCents:
+                description: Cost remaining (cents) under the namespace's `Densa` envelope SLA; negative ⇒ over budget. Read from the namespace `Densa`'s status — the Dev-Loop cost-guard surfaced on the band, so `kubectl get <band>` shows the env's budget headroom. Read-only (breathe never writes the Densa from a band).
+                format: int64
+                nullable: true
+                type: integer
+              observedEnvId:
+                description: The `EphemeralEnvId` of the band's namespace, if it carries one (the ephemeral-env binding) — read from the namespace label, never written.
+                nullable: true
+                type: string
               observedGeneration:
                 description: '`metadata.generation` the controller last reconciled — the "controller has seen my latest spec edit" signal.'
                 format: int64
@@ -529,6 +538,15 @@ spec:
                 format: int64
                 nullable: true
                 type: integer
+              observedCostRemainingCents:
+                description: Cost remaining (cents) under the namespace's `Densa` envelope SLA; negative ⇒ over budget. Read from the namespace `Densa`'s status — the Dev-Loop cost-guard surfaced on the band, so `kubectl get <band>` shows the env's budget headroom. Read-only (breathe never writes the Densa from a band).
+                format: int64
+                nullable: true
+                type: integer
+              observedEnvId:
+                description: The `EphemeralEnvId` of the band's namespace, if it carries one (the ephemeral-env binding) — read from the namespace label, never written.
+                nullable: true
+                type: string
               observedGeneration:
                 description: '`metadata.generation` the controller last reconciled — the "controller has seen my latest spec edit" signal.'
                 format: int64
@@ -808,6 +826,15 @@ spec:
                 format: int64
                 nullable: true
                 type: integer
+              observedCostRemainingCents:
+                description: Cost remaining (cents) under the namespace's `Densa` envelope SLA; negative ⇒ over budget. Read from the namespace `Densa`'s status — the Dev-Loop cost-guard surfaced on the band, so `kubectl get <band>` shows the env's budget headroom. Read-only (breathe never writes the Densa from a band).
+                format: int64
+                nullable: true
+                type: integer
+              observedEnvId:
+                description: The `EphemeralEnvId` of the band's namespace, if it carries one (the ephemeral-env binding) — read from the namespace label, never written.
+                nullable: true
+                type: string
               observedGeneration:
                 description: '`metadata.generation` the controller last reconciled — the "controller has seen my latest spec edit" signal.'
                 format: int64
@@ -1087,6 +1114,15 @@ spec:
                 format: int64
                 nullable: true
                 type: integer
+              observedCostRemainingCents:
+                description: Cost remaining (cents) under the namespace's `Densa` envelope SLA; negative ⇒ over budget. Read from the namespace `Densa`'s status — the Dev-Loop cost-guard surfaced on the band, so `kubectl get <band>` shows the env's budget headroom. Read-only (breathe never writes the Densa from a band).
+                format: int64
+                nullable: true
+                type: integer
+              observedEnvId:
+                description: The `EphemeralEnvId` of the band's namespace, if it carries one (the ephemeral-env binding) — read from the namespace label, never written.
+                nullable: true
+                type: string
               observedGeneration:
                 description: '`metadata.generation` the controller last reconciled — the "controller has seen my latest spec edit" signal.'
                 format: int64
@@ -1366,6 +1402,15 @@ spec:
                 format: int64
                 nullable: true
                 type: integer
+              observedCostRemainingCents:
+                description: Cost remaining (cents) under the namespace's `Densa` envelope SLA; negative ⇒ over budget. Read from the namespace `Densa`'s status — the Dev-Loop cost-guard surfaced on the band, so `kubectl get <band>` shows the env's budget headroom. Read-only (breathe never writes the Densa from a band).
+                format: int64
+                nullable: true
+                type: integer
+              observedEnvId:
+                description: The `EphemeralEnvId` of the band's namespace, if it carries one (the ephemeral-env binding) — read from the namespace label, never written.
+                nullable: true
+                type: string
               observedGeneration:
                 description: '`metadata.generation` the controller last reconciled — the "controller has seen my latest spec edit" signal.'
                 format: int64
@@ -1645,6 +1690,15 @@ spec:
                 format: int64
                 nullable: true
                 type: integer
+              observedCostRemainingCents:
+                description: Cost remaining (cents) under the namespace's `Densa` envelope SLA; negative ⇒ over budget. Read from the namespace `Densa`'s status — the Dev-Loop cost-guard surfaced on the band, so `kubectl get <band>` shows the env's budget headroom. Read-only (breathe never writes the Densa from a band).
+                format: int64
+                nullable: true
+                type: integer
+              observedEnvId:
+                description: The `EphemeralEnvId` of the band's namespace, if it carries one (the ephemeral-env binding) — read from the namespace label, never written.
+                nullable: true
+                type: string
               observedGeneration:
                 description: '`metadata.generation` the controller last reconciled — the "controller has seen my latest spec edit" signal.'
                 format: int64

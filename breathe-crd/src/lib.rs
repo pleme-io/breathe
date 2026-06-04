@@ -152,6 +152,17 @@ pub struct BandStatus {
     /// or a phase change, capped to the last N samples.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub history: Vec<TrendSample>,
+    // ── M3 (Dev Loop): the ephemeral-env cost-guard readout (read-only). ──────
+    /// The `EphemeralEnvId` of the band's namespace, if it carries one (the
+    /// ephemeral-env binding) — read from the namespace label, never written.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub observed_env_id: Option<String>,
+    /// Cost remaining (cents) under the namespace's `Densa` envelope SLA; negative
+    /// ⇒ over budget. Read from the namespace `Densa`'s status — the Dev-Loop
+    /// cost-guard surfaced on the band, so `kubectl get <band>` shows the env's
+    /// budget headroom. Read-only (breathe never writes the Densa from a band).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub observed_cost_remaining_cents: Option<i64>,
 }
 
 /// The dimension-agnostic accessor the generic controller reconciles through.

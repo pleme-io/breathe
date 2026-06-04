@@ -15,15 +15,16 @@ use std::{sync::Arc, time::Duration};
 use breathe_core::{reconcile_one, ReconcileInput};
 use breathe_crd::{
     ArcBand, Band, BandSummary, BreatheConfig, BreatheConfigSpec, BreatheOverview, CgroupBand, CgroupCpuBand, CpuBand,
-    MemoryBand, OverviewStatus, StorageBand,
+    Densa, MemoryBand, OverviewStatus, StorageBand,
 };
 use breathe_dimensions::{CpuDescriptor, MemoryDescriptor, StorageDescriptor};
 use breathe_kube::KubeCluster;
 use breathe_provider::{BandProvider, ClassCooldowns, DimensionDescriptor, ResourceProvider, Target};
 use breathe_runtime::{
-    error_status, event_for, metrics_for, next_requeue, now_rfc3339, now_secs, patch_status, rfc3339_in_future,
-    should_emit_event, status_for, suspended_status, BandLabels, EventKind,
+    apply_env_context, error_status, event_for, metrics_for, next_requeue, now_rfc3339, now_secs, patch_status,
+    rfc3339_in_future, should_emit_event, status_for, suspended_status, BandLabels, EnvContext, EventKind,
 };
+use k8s_openapi::api::core::v1::Namespace;
 use futures::StreamExt;
 use kube::{
     api::{Api, Patch, PatchParams},
@@ -110,6 +111,35 @@ async fn detect_resize_capable(client: &Client) -> bool {
     }
 }
 
+/// The namespace label carrying a band's `EphemeralEnvId` (the ephemeral-env binding).
+const ENV_ID_LABEL: &str = "breathe.pleme.io/env-id";
+
+/// Read the ephemeral-env cost-guard context for a band's namespace (Dev Loop M3):
+/// the `EphemeralEnvId` from the namespace label + the cost-remaining from the
+/// namespace's `Densa` envelope status. **Read-only + best-effort** — any miss (no
+/// label, no Densa, API error) yields an empty context (the band keeps `None`, the
+/// rio default). breathe NEVER writes the Densa or the namespace from here.
+async fn read_env_context(client: &Client, namespace: &str) -> EnvContext {
+    if namespace.is_empty() {
+        return EnvContext::default();
+    }
+    let env_id = Api::<Namespace>::all(client.clone())
+        .get_opt(namespace)
+        .await
+        .ok()
+        .flatten()
+        .and_then(|ns| ns.metadata.labels)
+        .and_then(|l| l.get(ENV_ID_LABEL).cloned());
+    let cost_remaining_cents = Api::<Densa>::namespaced(client.clone(), namespace)
+        .list(&Default::default())
+        .await
+        .ok()
+        .and_then(|l| l.into_iter().next())
+        .and_then(|d| d.status)
+        .and_then(|s| s.cost_remaining_cents);
+    EnvContext { env_id, cost_remaining_cents }
+}
+
 /// The one reconcile body for every dimension. `B` is the band kind, `D` its descriptor.
 async fn reconcile<B: Band, D: DimensionDescriptor + Default>(
     obj: Arc<B>,
@@ -166,7 +196,12 @@ async fn reconcile<B: Band, D: DimensionDescriptor + Default>(
 
     let outcome = reconcile_one(&input, &provider).await;
     let prior_phase = obj.status().and_then(|s| s.phase.as_deref()).map(String::from);
-    let status = status_for(&outcome, obj.status(), obj.cooldown_seconds(), obj.generation());
+    let mut status = status_for(&outcome, obj.status(), obj.cooldown_seconds(), obj.generation());
+    // M3 (Dev Loop): surface the namespace's ephemeral-env cost-guard (EnvId +
+    // Densa cost-remaining) on the band status. Read-only; empty (no label / no
+    // Densa) ⇒ no change (the rio default).
+    let env_ctx = read_env_context(&ctx.client, &ns).await;
+    apply_env_context(&mut status, &env_ctx);
     info!(dim = %provider.id(), band = %name, target = %target.name, phase = ?status.phase, "reconciled");
     emit_event(&ctx, obj.as_ref(), &outcome.receipt, status.phase.as_deref(), prior_phase.as_deref()).await;
     metrics_for(
