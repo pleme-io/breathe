@@ -12,6 +12,10 @@
 
 use breathe_provider::{DimensionId, Directionality, DisruptionClass};
 
+/// The provisioning catalog (`Floresta`) — the infra-scale peer of the dimension
+/// catalog (resource SHAPES + the `Densa` envelope). See docs/PROVISIONING.md §2.2.
+pub mod forma;
+
 /// How a dimension RECOVERS when its allocation is briefly wrong — the property
 /// that decides whether "provided-for on average" is sound or fatal
 /// (BREATHABILITY-THESIS §2/§3). It is orthogonal to [`Directionality`] (which
