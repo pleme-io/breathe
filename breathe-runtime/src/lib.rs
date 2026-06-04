@@ -385,6 +385,24 @@ pub fn metrics_for(l: &BandLabels, outcome: &TickOutcome, cfg: &BandConfig, cool
     }
 }
 
+/// The status for a SUSPENDED band — frozen (the controller skips observe/plan/act;
+/// the limit is left exactly as-is). Resume by setting `spec.suspend:false`.
+#[must_use]
+pub fn suspended_status() -> BandStatus {
+    let mut s = BandStatus::default();
+    s.phase = Some("Suspended".into());
+    s.last_decision = Some("suspended — set spec.suspend:false to resume".into());
+    s.conditions = vec![Condition {
+        type_: "Ready".into(),
+        status: "False".into(),
+        reason: "Suspended".into(),
+        message: "band is suspended (spec.suspend:true)".into(),
+        last_transition_time: chrono::Utc::now().to_rfc3339(),
+        observed_generation: None,
+    }];
+    s
+}
+
 /// A short typed error status (band-config parse failures, enrollment gaps).
 #[must_use]
 pub fn error_status(decision: impl Into<String>) -> BandStatus {

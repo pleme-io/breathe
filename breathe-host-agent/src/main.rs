@@ -32,7 +32,7 @@ use breathe_host::{
 use breathe_provider::{BandProvider, ClassCooldowns, DimensionDescriptor, ResourceProvider, Target};
 use breathe_runtime::{
     error_status, event_for, metrics_for, next_requeue, now_secs, patch_status, should_emit_event, status_for,
-    BandLabels, EventKind,
+    suspended_status, BandLabels, EventKind,
 };
 use futures::StreamExt;
 use kube::{
@@ -117,6 +117,12 @@ async fn reconcile_host<B: Band, D: DimensionDescriptor + Default>(
 ) -> Result<Action, Error> {
     let ns = obj.namespace().unwrap_or_default();
     let name = obj.name_any();
+
+    // SUSPEND (M5): a frozen band skips everything — no enrollment read, no host I/O.
+    if obj.suspended() {
+        patch_status::<B>(&ctx.client, &ns, &name, &suspended_status()).await?;
+        return Ok(Action::requeue(ctx.requeue));
+    }
 
     // The enrollment charter carries the L2 ceilings + the master write switch.
     // No charter for this node ⇒ refuse to manage anything (never write blind).

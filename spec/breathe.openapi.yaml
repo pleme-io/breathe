@@ -170,6 +170,10 @@ components:
           enum: [restartFreeOnly, allowConditional, allowRestart]
           nullable: true
           description: "the golden/ceiling gate — restartFreeOnly (default: never restart the workload), allowConditional (permit an in-place memory shrink that may restart), allowRestart (permit a full re-create, e.g. a CNPG roll)"
+        suspend:
+          type: boolean
+          nullable: true
+          description: "freeze the band — true = the controller skips observe/plan/act (phase Suspended), the limit is left as-is. Distinct from dryRun (which still observes). The k8s-native pause; resume with suspend:false."
     BandStatus:
       type: object
       properties:

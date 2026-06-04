@@ -19,7 +19,7 @@ use breathe_kube::KubeCluster;
 use breathe_provider::{BandProvider, ClassCooldowns, DimensionDescriptor, ResourceProvider, Target};
 use breathe_runtime::{
     error_status, event_for, metrics_for, next_requeue, now_secs, patch_status, should_emit_event, status_for,
-    BandLabels, EventKind,
+    suspended_status, BandLabels, EventKind,
 };
 use futures::StreamExt;
 use kube::{
@@ -96,6 +96,14 @@ async fn reconcile<B: Band, D: DimensionDescriptor + Default>(
 ) -> Result<Action, Error> {
     let ns = obj.namespace().unwrap_or_default();
     let name = obj.name_any();
+
+    // SUSPEND (M5): a frozen band skips observe/plan/act entirely — the limit is left
+    // as-is. A spec edit (suspend:false) fires the watcher to resume.
+    if obj.suspended() {
+        patch_status::<B>(&ctx.client, &ns, &name, &suspended_status()).await?;
+        return Ok(Action::requeue(ctx.requeue));
+    }
+
     let tr = obj.target_ref();
     let target = Target {
         namespace: ns.clone(),
