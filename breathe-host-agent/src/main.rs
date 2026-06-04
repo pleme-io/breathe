@@ -31,7 +31,8 @@ use breathe_host::{
 };
 use breathe_provider::{BandProvider, ClassCooldowns, DimensionDescriptor, ResourceProvider, Target};
 use breathe_runtime::{
-    error_status, event_for, next_requeue, now_secs, patch_status, should_emit_event, status_for, EventKind,
+    error_status, event_for, metrics_for, next_requeue, now_secs, patch_status, should_emit_event, status_for,
+    BandLabels, EventKind,
 };
 use futures::StreamExt;
 use kube::{
@@ -187,6 +188,12 @@ async fn reconcile_host<B: Band, D: DimensionDescriptor + Default>(
         write_enabled, phase = ?status.phase, "host reconciled"
     );
     emit_event(&ctx, obj.as_ref(), &outcome.receipt, status.phase.as_deref(), prior_phase.as_deref()).await;
+    metrics_for(
+        &BandLabels { dim: provider.id().to_string(), namespace: ns.clone(), name: name.clone() },
+        &outcome,
+        &cfg,
+        status.cooldown_remaining_seconds.unwrap_or(0),
+    );
     patch_status::<B>(&ctx.client, &ns, &name, &status).await?;
     // host carves are all RestartFree → re-tick at the fast golden cadence.
     Ok(Action::requeue(next_requeue(&outcome.receipt, &ClassCooldowns::default())))
@@ -241,6 +248,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         std::env::var("BREATHE_REQUEUE_SECONDS").ok().and_then(|s| s.parse().ok()).unwrap_or(30),
     );
     let client = Client::try_default().await?;
+    // Prometheus /metrics on :9101 (9100 is host node-exporter) — scraped via a
+    // VMPodScrape on the DaemonSet. Non-fatal install.
+    if let Err(e) = metrics_exporter_prometheus::PrometheusBuilder::new()
+        .with_http_listener(([0, 0, 0, 0], 9101))
+        .install()
+    {
+        error!(error = %e, "failed to install /metrics exporter — continuing without metrics");
+    }
+    metrics::gauge!("breathe_build_info", "binary" => "breathe-host-agent", "version" => env!("CARGO_PKG_VERSION")).set(1.0);
+
     let reporter = Reporter {
         controller: "breathe-host-agent".into(),
         instance: std::env::var("POD_NAME").ok().or_else(|| (!node_name.is_empty()).then(|| node_name.clone())),

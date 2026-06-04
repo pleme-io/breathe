@@ -9,10 +9,11 @@
 
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use breathe_control::{Decision, Observation};
+use breathe_control::{BandConfig, Decision, Observation};
 use breathe_core::{TickOutcome, TickReceipt};
 use breathe_crd::{Band, BandStatus};
 use breathe_provider::{ClassCooldowns, DisruptionPolicy, EdgeTier};
+use metrics::{counter, gauge, Label};
 use kube::{
     api::{Api, Patch, PatchParams},
     Client,
@@ -240,6 +241,77 @@ pub fn next_requeue(receipt: &TickReceipt, cooldowns: &ClassCooldowns) -> Durati
         | TickReceipt::Error { .. } => cooldowns.restart_conditional,
     };
     Duration::from_secs(secs)
+}
+
+/// The label set identifying one band's Prometheus series.
+pub struct BandLabels {
+    pub dim: String,
+    pub namespace: String,
+    pub name: String,
+}
+
+/// Record this tick's Prometheus series — the over-time view of breathe's behavior
+/// (`util` oscillating inside the band, the carved limit, carve/defer/conflict
+/// rates). The scrape endpoint is installed by each binary's exporter; this records
+/// into the global recorder. Driven by the SAME `TickOutcome` as `status_for` /
+/// `event_for`, so status, events, and metrics never disagree about a tick.
+#[allow(clippy::cast_precision_loss, clippy::cast_sign_loss)]
+pub fn metrics_for(l: &BandLabels, outcome: &TickOutcome, cfg: &BandConfig, cooldown_remaining_s: i64) {
+    let base = || {
+        vec![
+            Label::new("dim", l.dim.clone()),
+            Label::new("namespace", l.namespace.clone()),
+            Label::new("name", l.name.clone()),
+        ]
+    };
+    // band-shape gauges — the green band the operator watches util oscillate inside.
+    gauge!("breathe_band_setpoint_ratio", base()).set(cfg.setpoint);
+    gauge!("breathe_band_grow_above_ratio", base()).set(cfg.grow_above);
+    gauge!("breathe_band_shrink_below_ratio", base()).set(cfg.shrink_below);
+    gauge!("breathe_band_floor", base()).set(cfg.floor_bytes as f64);
+    gauge!("breathe_band_ceiling", base()).set(cfg.ceiling_bytes as f64);
+    gauge!("breathe_band_dry_run", base()).set(f64::from(u8::from(outcome.dry_run)));
+    gauge!("breathe_band_cooldown_remaining_seconds", base()).set(cooldown_remaining_s as f64);
+
+    // observed gauges — the live signal driving the loop.
+    if let Some(obs) = &outcome.observed {
+        gauge!("breathe_band_used", base()).set(obs.used as f64);
+        gauge!("breathe_band_capacity", base()).set(obs.capacity as f64);
+        gauge!("breathe_band_staleness_seconds", base()).set(obs.staleness_secs as f64);
+        if let Some(u) = util_of(obs) {
+            gauge!("breathe_band_util_ratio", base()).set(u);
+        }
+    }
+
+    // the carved limit, tracked over time.
+    let limit = match &outcome.receipt {
+        TickReceipt::Applied { to, .. } => Some(*to),
+        TickReceipt::DryRunWouldApply { from, .. } | TickReceipt::DeferredWouldRestart { from, .. } => Some(*from),
+        _ => outcome.observed.as_ref().map(|o| o.capacity),
+    };
+    if let Some(v) = limit {
+        gauge!("breathe_band_current_limit", base()).set(v as f64);
+    }
+
+    // counters — one reconcile per tick + the outcome class.
+    counter!("breathe_reconciles_total", base()).increment(1);
+    match &outcome.receipt {
+        TickReceipt::Applied { from, to, class } => {
+            let mut ls = base();
+            ls.push(Label::new("dir", if to > from { "grow" } else { "shrink" }));
+            ls.push(Label::new("class", format!("{class:?}")));
+            counter!("breathe_carves_total", ls).increment(1);
+        }
+        TickReceipt::DeferredWouldRestart { class, .. } => {
+            let mut ls = base();
+            ls.push(Label::new("class", format!("{class:?}")));
+            counter!("breathe_deferred_total", ls).increment(1);
+        }
+        TickReceipt::Conflict { .. } => counter!("breathe_conflicts_total", base()).increment(1),
+        TickReceipt::Stale { .. } => counter!("breathe_stale_total", base()).increment(1),
+        TickReceipt::Error { .. } => counter!("breathe_errors_total", base()).increment(1),
+        _ => {}
+    }
 }
 
 /// A short typed error status (band-config parse failures, enrollment gaps).
