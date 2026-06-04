@@ -11,7 +11,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use breathe_control::{BandConfig, Decision, Observation};
 use breathe_core::{TickOutcome, TickReceipt};
-use breathe_crd::{Band, BandStatus};
+use breathe_crd::{Band, BandStatus, Condition};
 use breathe_provider::{ClassCooldowns, DisruptionPolicy, EdgeTier};
 use metrics::{counter, gauge, Label};
 use kube::{
@@ -108,6 +108,68 @@ pub fn should_emit_event(receipt: &TickReceipt, new_phase: Option<&str>, prior_p
     matches!(receipt, TickReceipt::Applied { .. }) || new_phase != prior_phase
 }
 
+/// Upsert one condition into `out`, keeping `last_transition_time` STABLE while the
+/// status holds (only stamped `now` when the True↔False status actually flips).
+fn upsert_condition(
+    out: &mut Vec<Condition>,
+    prior: &[Condition],
+    now: &str,
+    type_: &str,
+    ok: bool,
+    reason: &str,
+    message: &str,
+    generation: Option<i64>,
+) {
+    let status = if ok { "True" } else { "False" };
+    let last_transition_time = prior
+        .iter()
+        .find(|c| c.type_ == type_ && c.status == status)
+        .map_or_else(|| now.to_string(), |c| c.last_transition_time.clone());
+    out.push(Condition {
+        type_: type_.into(),
+        status: status.into(),
+        reason: reason.into(),
+        message: message.into(),
+        last_transition_time,
+        observed_generation: generation,
+    });
+}
+
+/// Derive the standard k8s conditions (Ready/Converged/Throttled/Stale/Conflict)
+/// from the SAME receipt the status + events + metrics read. The FULL array is
+/// always returned (a `Patch::Merge` cannot delete a stale element). `kubectl wait
+/// --for=condition=Converged` and Flux/Argo health-gating key off these.
+#[must_use]
+pub fn conditions_for(outcome: &TickOutcome, prior: &[Condition], generation: Option<i64>) -> Vec<Condition> {
+    let now = chrono::Utc::now().to_rfc3339();
+    let r = &outcome.receipt;
+    let observable =
+        !matches!(r, TickReceipt::Error { .. } | TickReceipt::Observed { decision: Decision::NoLimit });
+    let converged = matches!(
+        r,
+        TickReceipt::Observed { decision: Decision::Hold | Decision::AtCeiling { .. } | Decision::NoSafeShrink { .. } }
+    );
+    let throttled =
+        matches!(r, TickReceipt::Cooldown | TickReceipt::DeferredWouldRestart { .. } | TickReceipt::Stale { .. });
+    let stale = matches!(r, TickReceipt::Stale { .. });
+    let conflict = matches!(r, TickReceipt::Conflict { .. });
+
+    let mut out = Vec::with_capacity(5);
+    upsert_condition(&mut out, prior, &now, "Ready", observable,
+        if observable { "Reconciling" } else { "NotObservable" },
+        if observable { "enrolled, config parses, metric observable" } else { "no metric/limit to reason on" }, generation);
+    upsert_condition(&mut out, prior, &now, "Converged", converged,
+        if converged { "WithinBand" } else { "Adjusting" },
+        if converged { "utilization is within the deadband" } else { "carving/waiting toward the setpoint" }, generation);
+    upsert_condition(&mut out, prior, &now, "Throttled", throttled,
+        if throttled { "Throttled" } else { "Free" }, "in cooldown / deferred crossing / stale metric", generation);
+    upsert_condition(&mut out, prior, &now, "Stale", stale,
+        if stale { "StaleMetric" } else { "Fresh" }, "driving metric sample age vs maxStaleness", generation);
+    upsert_condition(&mut out, prior, &now, "Conflict", conflict,
+        if conflict { "FieldOwnedElsewhere" } else { "SoleWriter" }, "single-writer guard", generation);
+    out
+}
+
 /// Map one reconcile OUTCOME to the typed CR status — every branch observable,
 /// none silent. This is the single source of truth for band status semantics
 /// across both reconcile processes. It reports not just *what happened* (phase +
@@ -121,7 +183,12 @@ pub fn should_emit_event(receipt: &TickReceipt, new_phase: Option<&str>, prior_p
 /// read-then-increment is race-free) and to compute the cooldown remaining from the
 /// last carve epoch. `cooldown_seconds` is the band's configured cooldown window.
 #[must_use]
-pub fn status_for(outcome: &TickOutcome, prior: Option<&BandStatus>, cooldown_seconds: u64) -> BandStatus {
+pub fn status_for(
+    outcome: &TickOutcome,
+    prior: Option<&BandStatus>,
+    cooldown_seconds: u64,
+    generation: Option<i64>,
+) -> BandStatus {
     let mut s = BandStatus::default();
     let receipt = &outcome.receipt;
 
@@ -214,6 +281,10 @@ pub fn status_for(outcome: &TickOutcome, prior: Option<&BandStatus>, cooldown_se
     let last_carve = s.last_change_epoch.or_else(|| prior.and_then(|p| p.last_change_epoch)).unwrap_or(0);
     let remaining = (last_carve + cooldown_seconds as i64 - now_secs()).max(0);
     s.cooldown_remaining_seconds = Some(remaining);
+
+    // ── M4: observedGeneration + standard conditions (kubectl wait / health). ──
+    s.observed_generation = generation;
+    s.conditions = conditions_for(outcome, prior.map_or(&[][..], |p| p.conditions.as_slice()), generation);
 
     s
 }
@@ -369,17 +440,17 @@ mod tests {
     #[test]
     fn applied_growth_vs_shrink_is_reported_directionally() {
         use breathe_provider::DisruptionClass::RestartFree;
-        let grow = status_for(&out(TickReceipt::Applied { from: 100, to: 200, class: RestartFree }), None, 0);
+        let grow = status_for(&out(TickReceipt::Applied { from: 100, to: 200, class: RestartFree }), None, 0, None);
         assert_eq!(grow.phase.as_deref(), Some("Growing"));
         assert_eq!(grow.current_limit.as_deref(), Some("200"));
         assert_eq!(grow.carves_total, Some(1));
-        let shrink = status_for(&out(TickReceipt::Applied { from: 200, to: 100, class: RestartFree }), None, 0);
+        let shrink = status_for(&out(TickReceipt::Applied { from: 200, to: 100, class: RestartFree }), None, 0, None);
         assert_eq!(shrink.phase.as_deref(), Some("Shrinking"));
     }
 
     #[test]
     fn shadow_reports_what_would_have_happened_without_changing_the_limit() {
-        let s = status_for(&out(TickReceipt::DryRunWouldApply { from: 100, to: 250 }), None, 0);
+        let s = status_for(&out(TickReceipt::DryRunWouldApply { from: 100, to: 250 }), None, 0, None);
         assert_eq!(s.phase.as_deref(), Some("ShadowWouldApply"));
         // the reported current limit is the UNCHANGED value — shadow mutates nothing.
         assert_eq!(s.current_limit.as_deref(), Some("100"));
@@ -388,7 +459,7 @@ mod tests {
 
     #[test]
     fn conflict_records_the_yielded_to_manager() {
-        let s = status_for(&out(TickReceipt::Conflict { manager: "helm".into() }), None, 0);
+        let s = status_for(&out(TickReceipt::Conflict { manager: "helm".into() }), None, 0, None);
         assert_eq!(s.conflicts_total, Some(1));
         assert_eq!(s.phase.as_deref(), Some("Conflict"));
         assert_eq!(s.conflict_manager.as_deref(), Some("helm"));
@@ -397,7 +468,7 @@ mod tests {
     #[test]
     fn deferred_crossing_maps_to_a_first_class_phase() {
         use breathe_provider::DisruptionClass;
-        let s = status_for(&out(TickReceipt::DeferredWouldRestart { from: 1 << 30, to: 2 << 30, class: DisruptionClass::RestartRequiring }), None, 0);
+        let s = status_for(&out(TickReceipt::DeferredWouldRestart { from: 1 << 30, to: 2 << 30, class: DisruptionClass::RestartRequiring }), None, 0, None);
         assert_eq!(s.phase.as_deref(), Some("DeferredWouldRestart"));
         // the limit is UNCHANGED — the crossing was refused.
         assert_eq!(s.current_limit.as_deref(), Some((1u64 << 30).to_string().as_str()));

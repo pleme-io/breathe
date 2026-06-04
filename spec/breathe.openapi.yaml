@@ -191,6 +191,21 @@ components:
         carvesTotal: { type: integer, description: "cumulative carves (Applied) over the controller lifetime" }
         deferralsTotal: { type: integer, description: "cumulative deferred ceiling crossings" }
         conflictsTotal: { type: integer, description: "cumulative single-writer conflicts" }
+        observedGeneration: { type: integer, description: "metadata.generation the controller last reconciled" }
+        conditions:
+          type: array
+          description: "standard k8s conditions (Ready/Converged/Throttled/Stale/Conflict)"
+          items: { $ref: "#/components/schemas/Condition" }
+    Condition:
+      type: object
+      description: A standard k8s metav1.Condition.
+      properties:
+        type: { type: string }
+        status: { type: string, description: "True | False | Unknown" }
+        reason: { type: string }
+        message: { type: string }
+        lastTransitionTime: { type: string }
+        observedGeneration: { type: integer }
     Band:
       type: object
       description: A band CR (kube object — apiVersion/kind/metadata + spec + status).

@@ -134,7 +134,7 @@ async fn reconcile<B: Band, D: DimensionDescriptor + Default>(
 
     let outcome = reconcile_one(&input, &provider).await;
     let prior_phase = obj.status().and_then(|s| s.phase.as_deref()).map(String::from);
-    let status = status_for(&outcome, obj.status(), obj.cooldown_seconds());
+    let status = status_for(&outcome, obj.status(), obj.cooldown_seconds(), obj.generation());
     info!(dim = %provider.id(), band = %name, target = %target.name, phase = ?status.phase, "reconciled");
     emit_event(&ctx, obj.as_ref(), &outcome.receipt, status.phase.as_deref(), prior_phase.as_deref()).await;
     metrics_for(

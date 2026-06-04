@@ -182,7 +182,7 @@ async fn reconcile_host<B: Band, D: DimensionDescriptor + Default>(
 
     let outcome = reconcile_one(&input, &provider).await;
     let prior_phase = obj.status().and_then(|s| s.phase.as_deref()).map(String::from);
-    let status = status_for(&outcome, obj.status(), obj.cooldown_seconds());
+    let status = status_for(&outcome, obj.status(), obj.cooldown_seconds(), obj.generation());
     info!(
         dim = %provider.id(), band = %name, unit = %target.name,
         write_enabled, phase = ?status.phase, "host reconciled"
