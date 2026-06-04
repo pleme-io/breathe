@@ -31,8 +31,8 @@ use breathe_host::{
 };
 use breathe_provider::{BandProvider, ClassCooldowns, DimensionDescriptor, ResourceProvider, Target};
 use breathe_runtime::{
-    error_status, event_for, metrics_for, next_requeue, now_secs, patch_status, should_emit_event, status_for,
-    suspended_status, BandLabels, EventKind,
+    error_status, event_for, metrics_for, next_requeue, now_secs, patch_status, rfc3339_in_future,
+    should_emit_event, status_for, suspended_status, BandLabels, EventKind,
 };
 use futures::StreamExt;
 use kube::{
@@ -175,6 +175,8 @@ async fn reconcile_host<B: Band, D: DimensionDescriptor + Default>(
             .with_cpu_samples(ctx.cpu_samples.clone()),
         D::default(),
     );
+    // BREAK-GLASS forceLimit (still bounded by the L2 ceiling in HostCluster::apply).
+    let force = obj.force_limit_value().filter(|_| obj.force_limit_expiry().map_or(true, rfc3339_in_future));
     let input = ReconcileInput {
         target: &target,
         cfg: &cfg,
@@ -184,6 +186,7 @@ async fn reconcile_host<B: Band, D: DimensionDescriptor + Default>(
         // host carves (ARC/cgroup) are ALWAYS RestartFree → any policy permits
         // them; honor the band's declared policy for consistency anyway.
         policy: obj.disruption_policy(),
+        force,
     };
 
     let outcome = reconcile_one(&input, &provider).await;

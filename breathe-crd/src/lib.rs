@@ -61,6 +61,27 @@ pub struct Condition {
     pub observed_generation: Option<i64>,
 }
 
+/// A point in a band's recent trajectory — the OVER-TIME view as a k8s object (no
+/// Grafana needed). Appended on a carve or a phase change, capped to the last N, so
+/// `kubectl get <band> -o yaml` shows how the adjustments have been going inline.
+#[derive(Serialize, Deserialize, Clone, Debug, JsonSchema, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct TrendSample {
+    /// RFC3339 time of this sample.
+    pub time: String,
+    /// Observed utilization ratio at this point.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub util: Option<f64>,
+    /// The limit at this point.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<i64>,
+    /// The phase at this point.
+    pub phase: String,
+    /// The decision that produced this sample (carve / transition).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decision: Option<String>,
+}
+
 /// The per-cycle typed status receipt — shared across all band kinds.
 #[derive(Serialize, Deserialize, Clone, Debug, JsonSchema, Default)]
 #[serde(rename_all = "camelCase")]
@@ -127,6 +148,10 @@ pub struct BandStatus {
     /// Standard conditions (Ready / Converged / Throttled / Stale / Conflict).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub conditions: Vec<Condition>,
+    /// The recent TRAJECTORY (over-time view as a k8s object) — appended on a carve
+    /// or a phase change, capped to the last N samples.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub history: Vec<TrendSample>,
 }
 
 /// The dimension-agnostic accessor the generic controller reconciles through.
@@ -152,6 +177,10 @@ pub trait Band:
     fn disruption_policy(&self) -> DisruptionPolicy;
     /// `true` ⇒ the band is FROZEN (skip observe/plan/act; leave the limit as-is).
     fn suspended(&self) -> bool;
+    /// A break-glass forced limit value (parsed in the band's unit), or `None`.
+    fn force_limit_value(&self) -> Option<u64>;
+    /// RFC3339 expiry of the forced limit, if any.
+    fn force_limit_expiry(&self) -> Option<&str>;
     /// The band's CURRENT status (read before reconcile) — the `prior` that
     /// `status_for` carries cumulative counters + the cooldown epoch forward from.
     fn status(&self) -> Option<&BandStatus>;
@@ -244,6 +273,17 @@ macro_rules! band_kind {
             /// is "stop deciding". Resume with `suspend:false`. The k8s-native pause.
             #[serde(default, skip_serializing_if = "std::ops::Not::not")]
             pub suspend: bool,
+            /// BREAK-GLASS: pin the limit to exactly this value (a quantity string in
+            /// the band's unit, e.g. `8Gi` / `2`). breathe skips the band law and
+            /// carves to it — but STILL through the gate (DisruptionPolicy + the
+            /// single-writer guard + the L2 ceiling all apply; it cannot bypass
+            /// safety). Clear it to resume normal homeostasis. Pair with
+            /// `forceLimitExpiry` for an auto-releasing pin.
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            pub force_limit: Option<String>,
+            /// RFC3339 time after which `forceLimit` is ignored (auto-release the pin).
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            pub force_limit_expiry: Option<String>,
         }
 
         impl crate::Band for $kind {
@@ -274,6 +314,12 @@ macro_rules! band_kind {
             }
             fn suspended(&self) -> bool {
                 self.spec.suspend
+            }
+            fn force_limit_value(&self) -> Option<u64> {
+                self.spec.force_limit.as_deref().and_then(|q| $unit.parse(q))
+            }
+            fn force_limit_expiry(&self) -> Option<&str> {
+                self.spec.force_limit_expiry.as_deref()
             }
             fn status(&self) -> Option<&BandStatus> {
                 self.status.as_ref()
@@ -390,6 +436,111 @@ pub struct NodePoolStatus {
     pub last_seen_epoch: Option<i64>,
 }
 
+// ─────────────────── BreatheOverview — the fleet dashboard as a k8s object ──────
+
+/// A FLEET-OVERVIEW object (cluster-scoped). The controller keeps its status
+/// current by listing EVERY band, so ONE `kubectl get breatheoverview` (bov) shows
+/// the whole fleet's homeostasis at a glance — the dashboard as a single k8s object,
+/// no Grafana. Create one (e.g. `metadata.name: rio`); the controller fills the rest.
+#[derive(CustomResource, Serialize, Deserialize, Clone, Debug, JsonSchema)]
+#[kube(
+    group = "breathe.pleme.io",
+    version = "v1",
+    kind = "BreatheOverview",
+    shortname = "bov",
+    category = "breathe",
+    status = "OverviewStatus",
+    printcolumn = r#"{"name":"Bands","type":"integer","jsonPath":".status.total"}"#,
+    printcolumn = r#"{"name":"Converged","type":"integer","jsonPath":".status.converged"}"#,
+    printcolumn = r#"{"name":"Carving","type":"integer","jsonPath":".status.carving"}"#,
+    printcolumn = r#"{"name":"Deferred","type":"integer","jsonPath":".status.deferred"}"#,
+    printcolumn = r#"{"name":"Shadow","type":"integer","jsonPath":".status.shadow"}"#,
+    printcolumn = r#"{"name":"Updated","type":"string","jsonPath":".status.lastUpdated"}"#
+)]
+#[serde(rename_all = "camelCase")]
+pub struct BreatheOverviewSpec {
+    /// How often (seconds) the controller re-aggregates the fleet (default 30).
+    #[serde(default = "d_overview_refresh")]
+    pub refresh_seconds: u64,
+}
+fn d_overview_refresh() -> u64 {
+    30
+}
+
+/// One band's line in the fleet overview.
+#[derive(Serialize, Deserialize, Clone, Debug, JsonSchema, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct BandSummary {
+    pub kind: String,
+    pub namespace: String,
+    pub name: String,
+    pub target: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub util: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub phase: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub current_limit: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub policy: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub dry_run: bool,
+}
+
+/// The aggregated fleet status — totals + the per-band roll-up.
+#[derive(Serialize, Deserialize, Clone, Debug, JsonSchema, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct OverviewStatus {
+    #[serde(default)]
+    pub total: i64,
+    #[serde(default)]
+    pub converged: i64,
+    #[serde(default)]
+    pub carving: i64,
+    #[serde(default)]
+    pub deferred: i64,
+    #[serde(default)]
+    pub suspended: i64,
+    #[serde(default)]
+    pub shadow: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_updated: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub bands: Vec<BandSummary>,
+}
+
+// ─────────────────── BreatheConfig — the env knobs as a k8s object ──────────────
+
+/// Cluster-scoped fleet CONFIG — lifts breathe's last env-only knobs onto the k8s
+/// API. Both binaries read it at startup (merging over the env defaults), so an
+/// operator tunes the fleet via `kubectl edit breatheconfig <name>` instead of
+/// editing a Deployment env + redeploying (dynamic hot-reload is a noted refinement;
+/// a config change currently applies on the next controller restart). Create one
+/// (e.g. `metadata.name: default`).
+#[derive(CustomResource, Serialize, Deserialize, Clone, Debug, JsonSchema, Default)]
+#[kube(group = "breathe.pleme.io", version = "v1", kind = "BreatheConfig", shortname = "bcfg", category = "breathe")]
+#[serde(rename_all = "camelCase")]
+pub struct BreatheConfigSpec {
+    /// PromQL endpoint the storage dimension reads `used` from.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prometheus_url: Option<String>,
+    /// Base requeue interval (seconds) when no per-class cadence applies.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base_requeue_seconds: Option<u64>,
+    /// Per-restart-class cooldown windows (seconds) — the real-time cadence knob.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub class_cooldowns: Option<CooldownsSpec>,
+}
+
+/// Per-restart-class cooldown windows (seconds): golden ≤ conditional ≤ requiring.
+#[derive(Serialize, Deserialize, Clone, Debug, JsonSchema, Default, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CooldownsSpec {
+    pub restart_free: u64,
+    pub restart_conditional: u64,
+    pub restart_requiring: u64,
+}
+
 fn d_floor_bytes() -> String { "256Mi".into() }
 fn d_ceiling_bytes() -> String { "16Gi".into() }
 fn d_floor_milli() -> String { "250m".into() }
@@ -413,7 +564,7 @@ mod tests {
         let mem = MemoryBand::new("m", MemoryBandSpec {
             target_ref: tr.clone(), setpoint: 0.80, grow_above: 0.85, shrink_below: 0.70,
             grow_factor: 1.25, shrink_factor: 0.90, floor: "512Mi".into(), ceiling: "4Gi".into(),
-            cooldown_seconds: 600, max_staleness_seconds: 120, dry_run: true, disruption_policy: Default::default(), suspend: false,
+            cooldown_seconds: 600, max_staleness_seconds: 120, dry_run: true, disruption_policy: Default::default(), suspend: false, force_limit: None, force_limit_expiry: None,
         });
         let cfg = Band::band_config(&mem).unwrap();
         assert_eq!(cfg.floor_bytes, 512 * (1 << 20));
@@ -426,7 +577,7 @@ mod tests {
         let cpu = CpuBand::new("c", CpuBandSpec {
             target_ref: tr, setpoint: 0.80, grow_above: 0.85, shrink_below: 0.70,
             grow_factor: 1.25, shrink_factor: 0.90, floor: "250m".into(), ceiling: "2".into(),
-            cooldown_seconds: 600, max_staleness_seconds: 120, dry_run: false, disruption_policy: Default::default(), suspend: false,
+            cooldown_seconds: 600, max_staleness_seconds: 120, dry_run: false, disruption_policy: Default::default(), suspend: false, force_limit: None, force_limit_expiry: None,
         });
         let cfg = Band::band_config(&cpu).unwrap();
         // millicores, NOT bytes: "250m" → 250, "2" cores → 2000m.
@@ -451,7 +602,7 @@ mod tests {
         let arc = ArcBand::new("rio-arc", ArcBandSpec {
             target_ref: tr, setpoint: 0.80, grow_above: 0.85, shrink_below: 0.70,
             grow_factor: 1.25, shrink_factor: 0.90, floor: "1Gi".into(), ceiling: "6Gi".into(),
-            cooldown_seconds: 600, max_staleness_seconds: 120, dry_run: true, disruption_policy: Default::default(), suspend: false,
+            cooldown_seconds: 600, max_staleness_seconds: 120, dry_run: true, disruption_policy: Default::default(), suspend: false, force_limit: None, force_limit_expiry: None,
         });
         let cfg = Band::band_config(&arc).unwrap();
         assert_eq!(cfg.floor_bytes, 1 << 30);
@@ -462,7 +613,7 @@ mod tests {
         let g = CgroupBand::new("nix-daemon", CgroupBandSpec {
             target_ref: TargetRef { kind: "HostUnit".into(), name: "nix-daemon.service".into(), api_version: None, container: None },
             setpoint: 0.80, grow_above: 0.85, shrink_below: 0.70, grow_factor: 1.25, shrink_factor: 0.90,
-            floor: "1Gi".into(), ceiling: "12Gi".into(), cooldown_seconds: 600, max_staleness_seconds: 120, dry_run: true, disruption_policy: Default::default(), suspend: false,
+            floor: "1Gi".into(), ceiling: "12Gi".into(), cooldown_seconds: 600, max_staleness_seconds: 120, dry_run: true, disruption_policy: Default::default(), suspend: false, force_limit: None, force_limit_expiry: None,
         });
         assert_eq!(g.target_ref().name, "nix-daemon.service");
     }

@@ -174,6 +174,14 @@ components:
           type: boolean
           nullable: true
           description: "freeze the band — true = the controller skips observe/plan/act (phase Suspended), the limit is left as-is. Distinct from dryRun (which still observes). The k8s-native pause; resume with suspend:false."
+        forceLimit:
+          type: string
+          nullable: true
+          description: "break-glass: pin the limit to exactly this quantity (in the band's unit). breathe skips the band law but STILL gates it (DisruptionPolicy + single-writer + L2 ceiling apply). Clear to resume homeostasis."
+        forceLimitExpiry:
+          type: string
+          nullable: true
+          description: "RFC3339 time after which forceLimit auto-releases."
     BandStatus:
       type: object
       properties:
@@ -200,6 +208,19 @@ components:
           type: array
           description: "standard k8s conditions (Ready/Converged/Throttled/Stale/Conflict)"
           items: { $ref: "#/components/schemas/Condition" }
+        history:
+          type: array
+          description: "recent trajectory (over-time view as a k8s object) — last N carves/transitions"
+          items: { $ref: "#/components/schemas/TrendSample" }
+    TrendSample:
+      type: object
+      description: A point in a band's recent trajectory.
+      properties:
+        time: { type: string }
+        util: { type: number }
+        limit: { type: integer }
+        phase: { type: string }
+        decision: { type: string }
     Condition:
       type: object
       description: A standard k8s metav1.Condition.
