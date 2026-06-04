@@ -17,14 +17,20 @@ use breathe_crd::{Band, CpuBand, MemoryBand, StorageBand};
 use breathe_dimensions::{CpuDescriptor, MemoryDescriptor, StorageDescriptor};
 use breathe_kube::KubeCluster;
 use breathe_provider::{BandProvider, ClassCooldowns, DimensionDescriptor, ResourceProvider, Target};
-use breathe_runtime::{error_status, next_requeue, now_secs, patch_status, status_for};
+use breathe_runtime::{
+    error_status, event_for, next_requeue, now_secs, patch_status, should_emit_event, status_for, EventKind,
+};
 use futures::StreamExt;
 use kube::{
     api::Api,
-    runtime::{controller::Action, watcher, Controller},
+    runtime::{
+        controller::Action,
+        events::{Event, EventType, Recorder, Reporter},
+        watcher, Controller,
+    },
     Client, ResourceExt,
 };
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 #[derive(Debug, thiserror::Error)]
 enum Error {
@@ -43,6 +49,28 @@ struct Ctx {
     /// Per-restart-class requeue cadence — golden carves re-tick near the scrape
     /// interval; refused crossings back off.
     cooldowns: ClassCooldowns,
+    /// The k8s Event reporter identity (controller name + pod instance) — every
+    /// carve/defer/conflict is published as an Event on the band object.
+    reporter: Reporter,
+}
+
+/// Publish a k8s Event for this tick onto `obj`, transition-gated so a resting
+/// band emits ~0 events. Non-fatal: a failed publish is logged, never propagated
+/// (an event is observability, not the reconcile's job).
+async fn emit_event<B: Band>(ctx: &Ctx, obj: &B, receipt: &breathe_core::TickReceipt, new_phase: Option<&str>, prior_phase: Option<&str>) {
+    let Some((kind, reason, note)) = event_for(receipt) else { return };
+    if !should_emit_event(receipt, new_phase, prior_phase) {
+        return;
+    }
+    let type_ = match kind {
+        EventKind::Normal => EventType::Normal,
+        EventKind::Warning => EventType::Warning,
+    };
+    let recorder = Recorder::new(ctx.client.clone(), ctx.reporter.clone(), obj.object_ref(&()));
+    let ev = Event { type_, reason: reason.to_string(), note: Some(note), action: "Reconcile".to_string(), secondary: None };
+    if let Err(e) = recorder.publish(ev).await {
+        warn!(error = %e, "event publish failed (non-fatal)");
+    }
 }
 
 /// True when the apiserver is k8s ≥1.33 (the `pods/resize` subresource is GA).
@@ -104,8 +132,10 @@ async fn reconcile<B: Band, D: DimensionDescriptor + Default>(
     };
 
     let outcome = reconcile_one(&input, &provider).await;
+    let prior_phase = obj.status().and_then(|s| s.phase.as_deref()).map(String::from);
     let status = status_for(&outcome, obj.status(), obj.cooldown_seconds());
     info!(dim = %provider.id(), band = %name, target = %target.name, phase = ?status.phase, "reconciled");
+    emit_event(&ctx, obj.as_ref(), &outcome.receipt, status.phase.as_deref(), prior_phase.as_deref()).await;
     patch_status::<B>(&ctx.client, &ns, &name, &status).await?;
     // requeue keyed on the action class just taken — golden carves re-tick fast.
     Ok(Action::requeue(next_requeue(&outcome.receipt, &ctx.cooldowns)))
@@ -133,7 +163,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let client = Client::try_default().await?;
     let resize_capable = detect_resize_capable(&client).await;
     let cooldowns = ClassCooldowns::default();
-    let ctx = Arc::new(Ctx { client: client.clone(), prometheus_url, requeue, resize_capable, cooldowns });
+    let reporter = Reporter { controller: "breathe-controller".into(), instance: std::env::var("POD_NAME").ok() };
+    let ctx = Arc::new(Ctx { client: client.clone(), prometheus_url, requeue, resize_capable, cooldowns, reporter });
 
     info!(
         resize_capable,

@@ -30,11 +30,17 @@ use breathe_host::{
     NodeEnvelopes, SystemdSysfsEnv, new_cpu_sample_cache,
 };
 use breathe_provider::{BandProvider, ClassCooldowns, DimensionDescriptor, ResourceProvider, Target};
-use breathe_runtime::{error_status, next_requeue, now_secs, patch_status, status_for};
+use breathe_runtime::{
+    error_status, event_for, next_requeue, now_secs, patch_status, should_emit_event, status_for, EventKind,
+};
 use futures::StreamExt;
 use kube::{
     api::{Api, ListParams, Patch, PatchParams},
-    runtime::{controller::Action, watcher, Controller},
+    runtime::{
+        controller::Action,
+        events::{Event, EventType, Recorder, Reporter},
+        watcher, Controller,
+    },
     Client, ResourceExt,
 };
 use serde_json::json;
@@ -55,6 +61,25 @@ struct Ctx {
     /// Long-lived cross-tick cpu-usage samples — shared into every per-tick
     /// `HostCluster` so the cgroup-cpu RATE is differenced across ticks.
     cpu_samples: CpuSampleCache,
+    /// The k8s Event reporter identity (agent name + node instance).
+    reporter: Reporter,
+}
+
+/// Publish a k8s Event for this host tick onto `obj`, transition-gated. Non-fatal.
+async fn emit_event<B: Band>(ctx: &Ctx, obj: &B, receipt: &breathe_core::TickReceipt, new_phase: Option<&str>, prior_phase: Option<&str>) {
+    let Some((kind, reason, note)) = event_for(receipt) else { return };
+    if !should_emit_event(receipt, new_phase, prior_phase) {
+        return;
+    }
+    let type_ = match kind {
+        EventKind::Normal => EventType::Normal,
+        EventKind::Warning => EventType::Warning,
+    };
+    let recorder = Recorder::new(ctx.client.clone(), ctx.reporter.clone(), obj.object_ref(&()));
+    let ev = Event { type_, reason: reason.to_string(), note: Some(note), action: "Reconcile".to_string(), secondary: None };
+    if let Err(e) = recorder.publish(ev).await {
+        warn!(error = %e, "event publish failed (non-fatal)");
+    }
 }
 
 /// Find this node's enrollment charter (cluster-scoped; matched by `nodeName`).
@@ -155,11 +180,13 @@ async fn reconcile_host<B: Band, D: DimensionDescriptor + Default>(
     };
 
     let outcome = reconcile_one(&input, &provider).await;
+    let prior_phase = obj.status().and_then(|s| s.phase.as_deref()).map(String::from);
     let status = status_for(&outcome, obj.status(), obj.cooldown_seconds());
     info!(
         dim = %provider.id(), band = %name, unit = %target.name,
         write_enabled, phase = ?status.phase, "host reconciled"
     );
+    emit_event(&ctx, obj.as_ref(), &outcome.receipt, status.phase.as_deref(), prior_phase.as_deref()).await;
     patch_status::<B>(&ctx.client, &ns, &name, &status).await?;
     // host carves are all RestartFree → re-tick at the fast golden cadence.
     Ok(Action::requeue(next_requeue(&outcome.receipt, &ClassCooldowns::default())))
@@ -214,11 +241,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         std::env::var("BREATHE_REQUEUE_SECONDS").ok().and_then(|s| s.parse().ok()).unwrap_or(30),
     );
     let client = Client::try_default().await?;
+    let reporter = Reporter {
+        controller: "breathe-host-agent".into(),
+        instance: std::env::var("POD_NAME").ok().or_else(|| (!node_name.is_empty()).then(|| node_name.clone())),
+    };
     let ctx = Arc::new(Ctx {
         client: client.clone(),
         requeue,
         node_name: node_name.clone(),
         cpu_samples: new_cpu_sample_cache(),
+        reporter,
     });
 
     info!(node = %node_name, "breathe-host-agent starting — arc + cgroup-memory + cgroup-cpu host dimensions");
