@@ -1960,3 +1960,120 @@ spec:
     served: true
     storage: true
     subresources: {}
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: densas.breathe.pleme.io
+spec:
+  group: breathe.pleme.io
+  names:
+    categories:
+    - breathe
+    kind: Densa
+    plural: densas
+    shortNames:
+    - densa
+    singular: densa
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .status.fits
+      name: Fits
+      type: boolean
+    - jsonPath: .status.sumFloors
+      name: SumFloors
+      type: integer
+    - jsonPath: .spec.poolCapacity
+      name: Capacity
+      type: integer
+    - jsonPath: .status.costRemainingCents
+      name: CostRemaining
+      type: integer
+    name: v1
+    schema:
+      openAPIV3Schema:
+        description: Auto-generated derived type for DensaSpec via `CustomResource`
+        properties:
+          spec:
+            description: '**Densa** — the per-namespace capacity + cost ENVELOPE (the breathability thesis L2 / P7; docs/PROVISIONING.md §2.5). The hard wall every breathe band in the namespace carves WITHIN (L1 ⊂ L2): a band may grow its workload''s limit, but the sum of the namespace''s floors + reserve must always fit `poolCapacity` (the cluster-scale never-swap proof, BREATHABILITY-MATH §4.3), and the namespace''s cost must stay inside `costSlaCents`. The typed-value peer is `breathe_catalog::forma::Densa` (Forma-keyed, auction-side); this CRD is the k8s wire border (string-keyed, namespace-scoped). One per ephemeral-env namespace = the Dev-Loop cost-guard. `kubectl get densa`.'
+            properties:
+              bounds:
+                description: The per-resource bounds (one per dimension/forma the namespace caps).
+                items:
+                  description: One resource bound in a [`Densa`] envelope. `name` is the resource key — a dimension (`memory`/`cpu`) or a forma (`node-on-demand`).
+                  properties:
+                    ceiling:
+                      description: The L2 hard ceiling — bands carve ≤ it.
+                      format: uint64
+                      minimum: 0.0
+                      type: integer
+                    floor:
+                      description: The provisioned-from-peak floor (must always fit — the never-swap base).
+                      format: uint64
+                      minimum: 0.0
+                      type: integer
+                    name:
+                      type: string
+                  required:
+                  - ceiling
+                  - floor
+                  - name
+                  type: object
+                type: array
+              costSlaCents:
+                description: The cost ceiling (cents per accounting period) the namespace must stay within.
+                format: uint64
+                minimum: 0.0
+                nullable: true
+                type: integer
+              poolCapacity:
+                description: The pool's hard capacity (the never-swap denominator), same unit as bounds.
+                format: uint64
+                minimum: 0.0
+                type: integer
+              reserve:
+                default: 0
+                description: Units (in the pool's unit) that must stay free — reserve headroom.
+                format: uint64
+                minimum: 0.0
+                type: integer
+            required:
+            - bounds
+            - poolCapacity
+            type: object
+          status:
+            description: Densa status — the fits-check result + the live cost headroom (the Dev-Loop cost-guard surface the controller keeps current).
+            nullable: true
+            properties:
+              costRemainingCents:
+                description: Cost remaining under the SLA (cents); negative ⇒ over budget.
+                format: int64
+                nullable: true
+                type: integer
+              fits:
+                description: Did the never-swap fits-check pass?
+                nullable: true
+                type: boolean
+              observedEnvId:
+                description: The EnvId this envelope bounds (the ephemeral-env binding, Dev Loop).
+                nullable: true
+                type: string
+              reason:
+                description: A human-legible refusal reason when `fits=false`.
+                nullable: true
+                type: string
+              sumFloors:
+                description: Σ floors (the fits arithmetic surface).
+                format: int64
+                nullable: true
+                type: integer
+            type: object
+        required:
+        - spec
+        title: Densa
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}
