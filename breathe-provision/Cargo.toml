@@ -1,0 +1,23 @@
+[package]
+name = "breathe-provision"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "The closed reconcile loop for a Forma: observe → predict → decide (the band law via the auctioneer) → act (provision + validated admission into the Viveiro). The single-row pipeline that proves the provisioning substrate composes end-to-end (docs/PROVISIONING.md)."
+
+[dependencies]
+breathe-control = { path = "../breathe-control", version = "0.1.0" }
+breathe-provider = { path = "../breathe-provider", version = "0.1.0" }
+breathe-auction = { path = "../breathe-auction", version = "0.1.0" }
+breathe-admission = { path = "../breathe-admission", version = "0.1.0" }
+
+[dev-dependencies]
+# Only the test doubles (MockProvedor) implement the async `Provedor` trait; the
+# loop itself only CALLS it, so async-trait is dev-only.
+async-trait = "0.1"
+
+[lints]
+workspace = true

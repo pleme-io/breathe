@@ -9,6 +9,7 @@ members = [
   "breathe-provider",  # the ResourceProvider + Cluster traits (no controller dep)
   "breathe-admission", # validated-resource admission FSM + Admitido<T> + Viveiro (provisioning M1)
   "breathe-auction",   # the predict→optimize→auction decision layer (provisioning; single-forma solved, Otimizador deferred)
+  "breathe-provision", # the closed reconcile_forma loop (observe→decide→provision→validated admission) — the substrate composed end-to-end
   "breathe-core",      # the composed reconcile loop (observe → plan → assign)
   "breathe-catalog",   # the self-describing dimensions catalog (CATALOG REFLECTION)
   "breathe-kube",      # the Kubernetes Cluster impl + managedFields ownership parser
