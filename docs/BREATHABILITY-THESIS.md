@@ -1,6 +1,8 @@
 # The Breathability Thesis — Reinforced, Adversarially Honest
 
 > **PRIVATE design doc.** Canonical reinforcement of the breathability idea, stress-tested across six lenses (control theory, hard/soft resources, finite contended provider, Kubernetes control-surface, Viggy systems-programming, adversarial-invalidity). Read `BREATHE.md` for mechanism; read this for *what the thesis is and is not*.
+>
+> **The formal law lives in [`BREATHABILITY-MATH.md`](./BREATHABILITY-MATH.md)** — the decomposition below stated as precise mathematical objects (the relay-with-hysteresis controller, the forward-invariant deadband, the pointwise-vs-average theorem, the EVT envelope, the hierarchical composition), each tier-graded and adversarially soundness-audited against the live `breathe-control` source. Read this thesis for the *idea*; read the math doc for the *theorem*.
 
 ---
 
