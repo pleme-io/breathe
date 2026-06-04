@@ -38,12 +38,24 @@ message BandSpec {
 }
 
 message BandStatus {
-  string conflict_manager = 1;
-  string current_limit = 2;
-  int64 last_change_epoch = 3;
-  string last_decision = 4;
-  string last_util = 5;
-  string phase = 6;
+  int64 carves_total = 1;
+  string conflict_manager = 2;
+  int64 conflicts_total = 3;
+  int64 cooldown_remaining_seconds = 4;
+  string current_limit = 5;
+  int64 deferrals_total = 6;
+  string edge_tier = 7;
+  bool effective_dry_run = 8;
+  string effective_policy = 9;
+  int64 freshness_seconds = 10;
+  string last_action_class = 11;
+  int64 last_change_epoch = 12;
+  string last_decision = 13;
+  string last_util = 14;
+  int64 observed_capacity = 15;
+  int64 observed_used = 16;
+  double observed_util = 17;
+  string phase = 18;
 }
 
 message Catalog {
