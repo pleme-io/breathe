@@ -28,14 +28,16 @@ message BandSpec {
   optional string disruption_policy = 3;
   optional bool dry_run = 4;
   optional string floor = 5;
-  optional double grow_above = 6;
-  optional double grow_factor = 7;
-  optional int64 max_staleness_seconds = 8;
-  optional double setpoint = 9;
-  optional double shrink_below = 10;
-  optional double shrink_factor = 11;
-  optional bool suspend = 12;
-  TargetRef target_ref = 13;
+  optional string force_limit = 6;
+  optional string force_limit_expiry = 7;
+  optional double grow_above = 8;
+  optional double grow_factor = 9;
+  optional int64 max_staleness_seconds = 10;
+  optional double setpoint = 11;
+  optional double shrink_below = 12;
+  optional double shrink_factor = 13;
+  optional bool suspend = 14;
+  TargetRef target_ref = 15;
 }
 
 message BandStatus {
@@ -50,15 +52,16 @@ message BandStatus {
   bool effective_dry_run = 9;
   string effective_policy = 10;
   int64 freshness_seconds = 11;
-  string last_action_class = 12;
-  int64 last_change_epoch = 13;
-  string last_decision = 14;
-  string last_util = 15;
-  int64 observed_capacity = 16;
-  int64 observed_generation = 17;
-  int64 observed_used = 18;
-  double observed_util = 19;
-  string phase = 20;
+  repeated TrendSample history = 12;
+  string last_action_class = 13;
+  int64 last_change_epoch = 14;
+  string last_decision = 15;
+  string last_util = 16;
+  int64 observed_capacity = 17;
+  int64 observed_generation = 18;
+  int64 observed_used = 19;
+  double observed_util = 20;
+  string phase = 21;
 }
 
 message Catalog {
@@ -113,6 +116,14 @@ message TargetRef {
   string container = 2;
   string kind = 3;
   string name = 4;
+}
+
+message TrendSample {
+  string decision = 1;
+  int64 limit = 2;
+  string phase = 3;
+  string time = 4;
+  double util = 5;
 }
 
 message BandListRequest {

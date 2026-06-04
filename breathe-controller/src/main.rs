@@ -13,17 +13,20 @@
 use std::{sync::Arc, time::Duration};
 
 use breathe_core::{reconcile_one, ReconcileInput};
-use breathe_crd::{Band, CpuBand, MemoryBand, StorageBand};
+use breathe_crd::{
+    ArcBand, Band, BandSummary, BreatheConfig, BreatheConfigSpec, BreatheOverview, CgroupBand, CgroupCpuBand, CpuBand,
+    MemoryBand, OverviewStatus, StorageBand,
+};
 use breathe_dimensions::{CpuDescriptor, MemoryDescriptor, StorageDescriptor};
 use breathe_kube::KubeCluster;
 use breathe_provider::{BandProvider, ClassCooldowns, DimensionDescriptor, ResourceProvider, Target};
 use breathe_runtime::{
-    error_status, event_for, metrics_for, next_requeue, now_secs, patch_status, should_emit_event, status_for,
-    suspended_status, BandLabels, EventKind,
+    error_status, event_for, metrics_for, next_requeue, now_rfc3339, now_secs, patch_status, rfc3339_in_future,
+    should_emit_event, status_for, suspended_status, BandLabels, EventKind,
 };
 use futures::StreamExt;
 use kube::{
-    api::Api,
+    api::{Api, Patch, PatchParams},
     runtime::{
         controller::Action,
         events::{Event, EventType, Recorder, Reporter},
@@ -31,6 +34,7 @@ use kube::{
     },
     Client, ResourceExt,
 };
+use serde_json::json;
 use tracing::{error, info, warn};
 
 #[derive(Debug, thiserror::Error)]
@@ -129,6 +133,8 @@ async fn reconcile<B: Band, D: DimensionDescriptor + Default>(
         KubeCluster::new(ctx.client.clone(), ctx.prometheus_url.clone()),
         D::with_resize_capability(ctx.resize_capable),
     );
+    // BREAK-GLASS forceLimit: active iff set AND (no expiry OR expiry in the future).
+    let force = obj.force_limit_value().filter(|_| obj.force_limit_expiry().map_or(true, rfc3339_in_future));
     let input = ReconcileInput {
         target: &target,
         cfg: &cfg,
@@ -138,6 +144,7 @@ async fn reconcile<B: Band, D: DimensionDescriptor + Default>(
         // per-band golden/ceiling gate (default RestartFreeOnly) — the band
         // declares its own policy; the fleet env is only a fallback default.
         policy: obj.disruption_policy(),
+        force,
     };
 
     let outcome = reconcile_one(&input, &provider).await;
@@ -161,6 +168,79 @@ fn error_policy<B: Band>(_obj: Arc<B>, err: &Error, ctx: Arc<Ctx>) -> Action {
     Action::requeue(ctx.requeue)
 }
 
+/// Summarize every band of kind `B` (across all namespaces) into the fleet overview.
+async fn summarize<B: Band>(client: &Client, kind: &str, out: &mut Vec<BandSummary>) {
+    let api: Api<B> = Api::all(client.clone());
+    match api.list(&Default::default()).await {
+        Ok(list) => {
+            for b in list {
+                let st = b.status();
+                out.push(BandSummary {
+                    kind: kind.to_string(),
+                    namespace: b.namespace().unwrap_or_default(),
+                    name: b.name_any(),
+                    target: b.target_ref().name.clone(),
+                    util: st.and_then(|s| s.last_util.clone()),
+                    phase: st.and_then(|s| s.phase.clone()),
+                    current_limit: st.and_then(|s| s.current_limit.clone()),
+                    policy: st.and_then(|s| s.effective_policy.clone()),
+                    dry_run: b.dry_run(),
+                });
+            }
+        }
+        Err(e) => warn!(kind, error = %e, "overview: failed to list a band kind"),
+    }
+}
+
+/// Keep the fleet-OVERVIEW object current: list EVERY band across every namespace,
+/// roll up the totals, patch the status. One `kubectl get bov` = the whole fleet's
+/// homeostasis at a glance — the dashboard as a single k8s object (no Grafana).
+async fn reconcile_overview(obj: Arc<BreatheOverview>, ctx: Arc<Ctx>) -> Result<Action, Error> {
+    let mut bands = Vec::new();
+    summarize::<MemoryBand>(&ctx.client, "MemoryBand", &mut bands).await;
+    summarize::<CpuBand>(&ctx.client, "CpuBand", &mut bands).await;
+    summarize::<StorageBand>(&ctx.client, "StorageBand", &mut bands).await;
+    summarize::<ArcBand>(&ctx.client, "ArcBand", &mut bands).await;
+    summarize::<CgroupBand>(&ctx.client, "CgroupBand", &mut bands).await;
+    summarize::<CgroupCpuBand>(&ctx.client, "CgroupCpuBand", &mut bands).await;
+    bands.sort_by(|a, b| (&a.kind, &a.namespace, &a.name).cmp(&(&b.kind, &b.namespace, &b.name)));
+
+    let count = |ps: &[&str]| bands.iter().filter(|b| b.phase.as_deref().is_some_and(|x| ps.contains(&x))).count() as i64;
+    let status = OverviewStatus {
+        total: bands.len() as i64,
+        converged: count(&["Holding", "AtFloor", "AtCeiling"]),
+        carving: count(&["Growing", "Shrinking"]),
+        deferred: count(&["DeferredWouldRestart"]),
+        suspended: count(&["Suspended"]),
+        shadow: bands.iter().filter(|b| b.dry_run).count() as i64,
+        last_updated: Some(now_rfc3339()),
+        bands,
+    };
+    let total = status.total;
+    let api: Api<BreatheOverview> = Api::all(ctx.client.clone());
+    api.patch_status(&obj.name_any(), &PatchParams::default(), &Patch::Merge(&json!({ "status": status })))
+        .await?;
+    info!(overview = %obj.name_any(), total, "fleet overview refreshed");
+    Ok(Action::requeue(Duration::from_secs(obj.spec.refresh_seconds.max(5))))
+}
+
+fn overview_error_policy(_obj: Arc<BreatheOverview>, err: &Error, _ctx: Arc<Ctx>) -> Action {
+    error!(error = %err, "overview reconcile error — backing off");
+    Action::requeue(Duration::from_secs(30))
+}
+
+/// Load the cluster `BreatheConfig` (the first one found) — its set fields override
+/// the env defaults. Empty/absent ⇒ all defaults. (Read once at startup; a config
+/// change applies on the next controller restart — dynamic reload is a refinement.)
+async fn load_breathe_config(client: &Client) -> BreatheConfigSpec {
+    Api::<BreatheConfig>::all(client.clone())
+        .list(&Default::default())
+        .await
+        .ok()
+        .and_then(|l| l.into_iter().next())
+        .map_or_else(BreatheConfigSpec::default, |c| c.spec)
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt()
@@ -171,13 +251,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
         .init();
 
-    let prometheus_url = std::env::var("BREATHE_PROMETHEUS_URL").unwrap_or_default();
-    let requeue = Duration::from_secs(
-        std::env::var("BREATHE_REQUEUE_SECONDS").ok().and_then(|s| s.parse().ok()).unwrap_or(60),
-    );
     let client = Client::try_default().await?;
     let resize_capable = detect_resize_capable(&client).await;
-    let cooldowns = ClassCooldowns::default();
+    // BreatheConfig (a cluster k8s object) overrides the env defaults for the last
+    // env-only knobs — prometheusUrl / requeue / class cooldowns.
+    let bcfg = load_breathe_config(&client).await;
+    let prometheus_url = bcfg
+        .prometheus_url
+        .unwrap_or_else(|| std::env::var("BREATHE_PROMETHEUS_URL").unwrap_or_default());
+    let requeue = Duration::from_secs(bcfg.base_requeue_seconds.unwrap_or_else(|| {
+        std::env::var("BREATHE_REQUEUE_SECONDS").ok().and_then(|s| s.parse().ok()).unwrap_or(60)
+    }));
+    let cooldowns = bcfg.class_cooldowns.map_or_else(ClassCooldowns::default, |c| ClassCooldowns {
+        restart_free: c.restart_free,
+        restart_conditional: c.restart_conditional,
+        restart_requiring: c.restart_requiring,
+    });
     // Prometheus /metrics on :9100 — scraped by VictoriaMetrics for the over-time
     // "watch it breathe" view. Non-fatal: a failed install logs + continues.
     if let Err(e) = metrics_exporter_prometheus::PrometheusBuilder::new()
@@ -206,7 +295,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let sto = Controller::new(Api::<StorageBand>::all(client.clone()), watcher::Config::default())
         .run(reconcile::<StorageBand, StorageDescriptor>, error_policy::<StorageBand>, ctx.clone())
         .for_each(|_| async {});
+    // The fleet-overview reconciler — keeps every BreatheOverview's status current.
+    let overview = Controller::new(Api::<BreatheOverview>::all(client.clone()), watcher::Config::default())
+        .run(reconcile_overview, overview_error_policy, ctx.clone())
+        .for_each(|_| async {});
 
-    tokio::join!(mem, cpu, sto);
+    tokio::join!(mem, cpu, sto, overview);
     Ok(())
 }

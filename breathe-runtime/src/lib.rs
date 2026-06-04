@@ -11,7 +11,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use breathe_control::{BandConfig, Decision, Observation};
 use breathe_core::{TickOutcome, TickReceipt};
-use breathe_crd::{Band, BandStatus, Condition};
+use breathe_crd::{Band, BandStatus, Condition, TrendSample};
 use breathe_provider::{ClassCooldowns, DisruptionPolicy, EdgeTier};
 use metrics::{counter, gauge, Label};
 use kube::{
@@ -24,6 +24,20 @@ use serde_json::json;
 #[must_use]
 pub fn now_secs() -> i64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0)
+}
+
+/// The current time as an RFC3339 string (condition/sample/overview timestamps).
+#[must_use]
+pub fn now_rfc3339() -> String {
+    chrono::Utc::now().to_rfc3339()
+}
+
+/// True if an RFC3339 timestamp is in the FUTURE (a forceLimit pin is still active).
+/// An unparseable expiry is treated as no-expiry (active) — a malformed string must
+/// not silently disable a break-glass pin.
+#[must_use]
+pub fn rfc3339_in_future(s: &str) -> bool {
+    chrono::DateTime::parse_from_rfc3339(s).map_or(true, |t| t > chrono::Utc::now())
 }
 
 /// Observed utilization (`used / capacity`) as a ratio, or `None` when there is
@@ -285,6 +299,27 @@ pub fn status_for(
     // ── M4: observedGeneration + standard conditions (kubectl wait / health). ──
     s.observed_generation = generation;
     s.conditions = conditions_for(outcome, prior.map_or(&[][..], |p| p.conditions.as_slice()), generation);
+
+    // ── B: per-band TREND (the over-time view as a k8s object, no Grafana) —
+    //    append on a carve or a phase change, cap to the last N. A resting band's
+    //    history stays put, so `kubectl get <band> -o yaml` shows the trajectory. ─
+    const HISTORY_MAX: usize = 16;
+    let phase_changed = prior.and_then(|p| p.phase.as_deref()) != s.phase.as_deref();
+    let carved = matches!(receipt, TickReceipt::Applied { .. });
+    let mut history = prior.map_or_else(Vec::new, |p| p.history.clone());
+    if carved || phase_changed {
+        history.push(TrendSample {
+            time: chrono::Utc::now().to_rfc3339(),
+            util: s.observed_util,
+            limit: s.current_limit.as_deref().and_then(|l| l.parse().ok()),
+            phase: s.phase.clone().unwrap_or_default(),
+            decision: s.last_decision.clone(),
+        });
+        if history.len() > HISTORY_MAX {
+            history.drain(0..history.len() - HISTORY_MAX);
+        }
+    }
+    s.history = history;
 
     s
 }
