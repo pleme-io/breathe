@@ -16,6 +16,12 @@ use breathe_provider::{DimensionId, Directionality, DisruptionClass};
 /// catalog (resource SHAPES + the `Densa` envelope). See docs/PROVISIONING.md §2.2.
 pub mod forma;
 
+/// The complete breathability HANDLE control surface — every cgroup-v2 / k8s /
+/// host resource lever, typed with its control semantics (breathed vs steered),
+/// plus the `steer_diff` for adjusting a workload's resource map + weights on the
+/// fly. See [`handle`].
+pub mod handle;
+
 /// How a dimension RECOVERS when its allocation is briefly wrong — the property
 /// that decides whether "provided-for on average" is sound or fatal
 /// (BREATHABILITY-THESIS §2/§3). It is orthogonal to [`Directionality`] (which
