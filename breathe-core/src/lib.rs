@@ -9,7 +9,7 @@
 //! the one atomic mutation via the provider. The decision math lives entirely in
 //! `breathe-control`; this crate adds only the I/O orchestration + the typed receipt.
 
-use breathe_control::{plan_tick, BandConfig, Decision, TickPlan};
+use breathe_control::{plan_tick, BandConfig, Decision, Observation, TickPlan};
 use breathe_provider::{DisruptionClass, DisruptionPolicy, EdgeTier, ProviderError, ResourceProvider, Target};
 
 /// Everything one tick needs that isn't carried by the provider. The provider
@@ -81,15 +81,37 @@ impl TickReceipt {
     }
 }
 
+/// The full result of one tick — the [`TickReceipt`] (what happened) PLUS the
+/// `Observation` that drove it (`used`/`capacity`/`staleness`) and the effective
+/// `policy`/`dry_run`. This is the KEYSTONE for observability: `status_for`,
+/// `event_for`, and `metrics_for` all `match` on this ONE value, so the status,
+/// the k8s Events, and the Prometheus series can never disagree about what a tick
+/// meant — and the observed utilization (`used/capacity`) finally reaches the
+/// surface instead of being discarded after `plan_tick`. `observed` is `None`
+/// ONLY on the pre-observe Error arm (there is no reading yet).
+#[derive(Debug)]
+pub struct TickOutcome {
+    pub receipt: TickReceipt,
+    pub observed: Option<Observation>,
+    pub policy: DisruptionPolicy,
+    pub dry_run: bool,
+}
+
 /// One reconcile tick for one `(target × dimension)`.
 pub async fn reconcile_one(
     input: &ReconcileInput<'_>,
     provider: &dyn ResourceProvider,
-) -> TickReceipt {
+) -> TickOutcome {
+    let outcome = |receipt, observed| TickOutcome {
+        receipt,
+        observed,
+        policy: input.policy,
+        dry_run: input.dry_run,
+    };
     // OBSERVE — read-only projection via the provider.
     let obs = match provider.observe(input.target).await {
         Ok(o) => o,
-        Err(error) => return TickReceipt::Error { error },
+        Err(error) => return outcome(TickReceipt::Error { error }, None),
     };
     // PLAN — pure: single-writer guard → band law → directionality → freshness → cooldown.
     let of = provider.owned_field();
@@ -102,40 +124,40 @@ pub async fn reconcile_one(
         &of.path,
         input.max_staleness_secs,
     );
-    match plan {
+    let receipt = match plan {
         TickPlan::Conflict { manager } => TickReceipt::Conflict { manager },
         TickPlan::Stale { staleness_secs, .. } => TickReceipt::Stale { staleness_secs },
         TickPlan::Cooldown { .. } => TickReceipt::Cooldown,
         TickPlan::Observe { decision } => TickReceipt::Observed { decision },
         // ACT — the ONLY mutation, delegated atomically to the provider.
-        TickPlan::Act { decision } => {
-            let (from, to) = match decision {
-                Decision::Grow { from, to } | Decision::Shrink { from, to } => (from, to),
-                // unreachable: plan_tick only emits Act for Grow/Shrink.
-                other => return TickReceipt::Observed { decision: other },
-            };
-            // THE GOLDEN-EDGE GATE: name the precise restart cost of THIS carve
-            // (per-direction, per-resource) and refuse a crossing the policy does
-            // not permit — never silently roll. A grow is golden (RestartFree); a
-            // memory shrink is RestartConditional UNLESS the observed resizePolicy
-            // is NotRequired (then the in-place shrink is RestartFree → golden
-            // bidirectionally); a CNPG/template carve is RestartRequiring.
-            let growing = matches!(decision, Decision::Grow { .. });
-            let class = provider
-                .action_class(input.target, growing)
-                .refined_by_resize_policy(obs.memory_shrink_restart_free);
-            if !input.policy.permits(class) {
-                return TickReceipt::DeferredWouldRestart { from, to, class };
+        TickPlan::Act { decision } => match decision {
+            Decision::Grow { from, to } | Decision::Shrink { from, to } => {
+                // THE GOLDEN-EDGE GATE: name the precise restart cost of THIS carve
+                // (per-direction, per-resource) and refuse a crossing the policy
+                // does not permit — never silently roll. A grow is golden
+                // (RestartFree); a memory shrink is RestartConditional UNLESS the
+                // observed resizePolicy is NotRequired (then in-place → golden); a
+                // CNPG/template carve is RestartRequiring.
+                let growing = matches!(decision, Decision::Grow { .. });
+                let class = provider
+                    .action_class(input.target, growing)
+                    .refined_by_resize_policy(obs.memory_shrink_restart_free);
+                if !input.policy.permits(class) {
+                    TickReceipt::DeferredWouldRestart { from, to, class }
+                } else if input.dry_run {
+                    TickReceipt::DryRunWouldApply { from, to }
+                } else {
+                    match provider.assign(input.target, to).await {
+                        Ok(r) => TickReceipt::Applied { from: r.from, to: r.to, class },
+                        Err(error) => TickReceipt::Error { error },
+                    }
+                }
             }
-            if input.dry_run {
-                return TickReceipt::DryRunWouldApply { from, to };
-            }
-            match provider.assign(input.target, to).await {
-                Ok(r) => TickReceipt::Applied { from: r.from, to: r.to, class },
-                Err(error) => TickReceipt::Error { error },
-            }
-        }
-    }
+            // unreachable: plan_tick only emits Act for Grow/Shrink.
+            other => TickReceipt::Observed { decision: other },
+        },
+    };
+    outcome(receipt, Some(obs))
 }
 
 #[cfg(test)]
@@ -179,7 +201,7 @@ mod tests {
         let t = target();
         let input = ReconcileInput { target: &t, cfg: &cfg, max_staleness_secs: 60, in_cooldown: false, dry_run: false, policy: DisruptionPolicy::AllowRestart };
 
-        match reconcile_one(&input, &prov).await {
+        match reconcile_one(&input, &prov).await.receipt {
             TickReceipt::Applied { from, to, .. } => {
                 assert_eq!(from, GI);
                 assert!(to > from, "must grow");
@@ -201,7 +223,7 @@ mod tests {
         let cfg = BandConfig::default();
         let t = target();
         let input = ReconcileInput { target: &t, cfg: &cfg, max_staleness_secs: 60, in_cooldown: false, dry_run: false, policy: DisruptionPolicy::AllowRestart };
-        assert_eq!(reconcile_one(&input, &prov).await, TickReceipt::Conflict { manager: "vpa".into() });
+        assert_eq!(reconcile_one(&input, &prov).await.receipt, TickReceipt::Conflict { manager: "vpa".into() });
         assert!(prov.cluster().applied().is_empty(), "must not carve under conflict");
     }
 
@@ -212,13 +234,13 @@ mod tests {
         // stale sample (120s > 60s bound) → Stale, no carve.
         let stale = provider(MockCluster::new(950 * MI, 120, GI, we_own()));
         let in_stale = ReconcileInput { target: &t, cfg: &cfg, max_staleness_secs: 60, in_cooldown: false, dry_run: false, policy: DisruptionPolicy::AllowRestart };
-        assert_eq!(reconcile_one(&in_stale, &stale).await, TickReceipt::Stale { staleness_secs: 120 });
+        assert_eq!(reconcile_one(&in_stale, &stale).await.receipt, TickReceipt::Stale { staleness_secs: 120 });
         assert!(stale.cluster().applied().is_empty());
 
         // dry-run with a real grow signal → DryRunWouldApply, no carve.
         let dry = provider(MockCluster::new(950 * MI, 0, GI, we_own()));
         let in_dry = ReconcileInput { target: &t, cfg: &cfg, max_staleness_secs: 60, in_cooldown: false, dry_run: true, policy: DisruptionPolicy::AllowRestart };
-        match reconcile_one(&in_dry, &dry).await {
+        match reconcile_one(&in_dry, &dry).await.receipt {
             TickReceipt::DryRunWouldApply { .. } => {}
             other => panic!("expected DryRunWouldApply, got {other:?}"),
         }
@@ -235,7 +257,7 @@ mod tests {
         let cfg = BandConfig::default();
         let t = target(); // kind = Cluster ⇒ ClusterTopLevel ⇒ RestartRequiring
         let input = ReconcileInput { target: &t, cfg: &cfg, max_staleness_secs: 60, in_cooldown: false, dry_run: false, policy: DisruptionPolicy::RestartFreeOnly };
-        match reconcile_one(&input, &prov).await {
+        match reconcile_one(&input, &prov).await.receipt {
             TickReceipt::DeferredWouldRestart { from, to, class } => {
                 assert_eq!(from, GI);
                 assert!(to > from);
@@ -257,11 +279,11 @@ mod tests {
         // RestartFreeOnly: the carve is refused → the tick stays golden.
         let prov = provider(MockCluster::new(950 * MI, 0, GI, we_own()));
         let golden = ReconcileInput { target: &t, cfg: &cfg, max_staleness_secs: 60, in_cooldown: false, dry_run: false, policy: DisruptionPolicy::RestartFreeOnly };
-        assert!(reconcile_one(&golden, &prov).await.edge_tier().is_golden(), "RestartFreeOnly is golden end-to-end");
+        assert!(reconcile_one(&golden, &prov).await.receipt.edge_tier().is_golden(), "RestartFreeOnly is golden end-to-end");
         // AllowRestart: the same carve is APPLIED as a witnessed ceiling crossing.
         let prov2 = provider(MockCluster::new(950 * MI, 0, GI, we_own()));
         let allow = ReconcileInput { target: &t, cfg: &cfg, max_staleness_secs: 60, in_cooldown: false, dry_run: false, policy: DisruptionPolicy::AllowRestart };
-        let r = reconcile_one(&allow, &prov2).await;
+        let r = reconcile_one(&allow, &prov2).await.receipt;
         assert!(matches!(r, TickReceipt::Applied { class: DisruptionClass::RestartRequiring, .. }));
         assert!(!r.edge_tier().is_golden(), "an AllowRestart roll is a witnessed crossing");
     }
@@ -296,7 +318,7 @@ mod tests {
         let cfg = BandConfig::default();
         let t = deploy_target();
         let input = ReconcileInput { target: &t, cfg: &cfg, max_staleness_secs: 60, in_cooldown: false, dry_run: false, policy: DisruptionPolicy::RestartFreeOnly };
-        match reconcile_one(&input, &prov).await {
+        match reconcile_one(&input, &prov).await.receipt {
             TickReceipt::Applied { from, to, class } => {
                 assert_eq!(from, 2 * GI);
                 assert!(to < from, "a shrink lowers the limit");
@@ -318,7 +340,7 @@ mod tests {
         // RestartFreeOnly + RestartContainer (flag false) ⇒ DEFER, carve nothing.
         let prov = resize_provider(MockCluster::new(400 * MI, 0, 2 * GI, we_own()));
         let strict = ReconcileInput { target: &t, cfg: &cfg, max_staleness_secs: 60, in_cooldown: false, dry_run: false, policy: DisruptionPolicy::RestartFreeOnly };
-        match reconcile_one(&strict, &prov).await {
+        match reconcile_one(&strict, &prov).await.receipt {
             TickReceipt::DeferredWouldRestart { class, .. } => {
                 assert_eq!(class, DisruptionClass::RestartConditional, "a may-restart shrink under the strict policy");
             }
@@ -329,7 +351,7 @@ mod tests {
         let prov2 = resize_provider(MockCluster::new(400 * MI, 0, 2 * GI, we_own()));
         let allow = ReconcileInput { target: &t, cfg: &cfg, max_staleness_secs: 60, in_cooldown: false, dry_run: false, policy: DisruptionPolicy::AllowConditional };
         assert!(matches!(
-            reconcile_one(&allow, &prov2).await,
+            reconcile_one(&allow, &prov2).await.receipt,
             TickReceipt::Applied { class: DisruptionClass::RestartConditional, .. }
         ));
     }

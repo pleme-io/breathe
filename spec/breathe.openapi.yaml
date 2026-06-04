@@ -173,12 +173,24 @@ components:
     BandStatus:
       type: object
       properties:
-        phase: { type: string, description: "Holding | Growing | Shrinking | ShadowWouldApply | AtCeiling | AtFloor | Cooldown | Stale | Conflict | Error" }
-        lastUtil: { type: string }
+        phase: { type: string, description: "Holding | Growing | Shrinking | ShadowWouldApply | AtCeiling | AtFloor | Cooldown | Stale | Conflict | DeferredWouldRestart | Error" }
+        lastUtil: { type: string, description: "observed utilization, human-readable (e.g. 82%)" }
         currentLimit: { type: string }
         lastDecision: { type: string }
         lastChangeEpoch: { type: integer }
         conflictManager: { type: string }
+        observedUtil: { type: number, description: "observed utilization ratio (used/capacity) that drove this tick" }
+        observedUsed: { type: integer, description: "observed used scalar (bytes / millicores)" }
+        observedCapacity: { type: integer, description: "observed capacity (the limit util is measured against)" }
+        freshnessSeconds: { type: integer, description: "age of the driving metric sample, seconds" }
+        lastActionClass: { type: string, description: "restart cost of the last carve (RestartFree | RestartConditional | RestartRequiring)" }
+        edgeTier: { type: string, description: "golden | crossing:<class> — the K4 golden/ceiling continuity evidence" }
+        effectivePolicy: { type: string, description: "DisruptionPolicy in effect (restartFreeOnly | allowConditional | allowRestart)" }
+        effectiveDryRun: { type: boolean, description: "true = SHADOW (observe + attest, never carve)" }
+        cooldownRemainingSeconds: { type: integer, description: "seconds remaining in the post-carve cooldown" }
+        carvesTotal: { type: integer, description: "cumulative carves (Applied) over the controller lifetime" }
+        deferralsTotal: { type: integer, description: "cumulative deferred ceiling crossings" }
+        conflictsTotal: { type: integer, description: "cumulative single-writer conflicts" }
     Band:
       type: object
       description: A band CR (kube object — apiVersion/kind/metadata + spec + status).

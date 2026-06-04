@@ -154,15 +154,15 @@ async fn reconcile_host<B: Band, D: DimensionDescriptor + Default>(
         policy: obj.disruption_policy(),
     };
 
-    let receipt = reconcile_one(&input, &provider).await;
-    let status = status_for(&receipt);
+    let outcome = reconcile_one(&input, &provider).await;
+    let status = status_for(&outcome, obj.status(), obj.cooldown_seconds());
     info!(
         dim = %provider.id(), band = %name, unit = %target.name,
         write_enabled, phase = ?status.phase, "host reconciled"
     );
     patch_status::<B>(&ctx.client, &ns, &name, &status).await?;
     // host carves are all RestartFree → re-tick at the fast golden cadence.
-    Ok(Action::requeue(next_requeue(&receipt, &ClassCooldowns::default())))
+    Ok(Action::requeue(next_requeue(&outcome.receipt, &ClassCooldowns::default())))
 }
 
 /// Reconcile the node's own enrollment charter — surface it as Active so
@@ -176,7 +176,8 @@ async fn reconcile_pool(obj: Arc<BreatheNodePool>, ctx: Arc<Ctx>) -> Result<Acti
     let status = NodePoolStatus {
         phase: Some(if obj.spec.write_enabled { "Active".into() } else { "Shadow".into() }),
         observed_node: Some(ctx.node_name.clone()),
-        managed_units: Some(obj.spec.cgroup_max_gi_b.len() as i64),
+        // every host lever this node manages: cgroup-memory units + cgroup-cpu units + ARC (1).
+        managed_units: Some((obj.spec.cgroup_max_gi_b.len() + obj.spec.cgroup_cpu_max_milli.len() + 1) as i64),
         last_seen_epoch: Some(now_secs()),
     };
     let api: Api<BreatheNodePool> = Api::all(ctx.client.clone());

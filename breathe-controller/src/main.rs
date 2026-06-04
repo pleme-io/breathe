@@ -103,12 +103,12 @@ async fn reconcile<B: Band, D: DimensionDescriptor + Default>(
         policy: obj.disruption_policy(),
     };
 
-    let receipt = reconcile_one(&input, &provider).await;
-    let status = status_for(&receipt);
+    let outcome = reconcile_one(&input, &provider).await;
+    let status = status_for(&outcome, obj.status(), obj.cooldown_seconds());
     info!(dim = %provider.id(), band = %name, target = %target.name, phase = ?status.phase, "reconciled");
     patch_status::<B>(&ctx.client, &ns, &name, &status).await?;
     // requeue keyed on the action class just taken — golden carves re-tick fast.
-    Ok(Action::requeue(next_requeue(&receipt, &ctx.cooldowns)))
+    Ok(Action::requeue(next_requeue(&outcome.receipt, &ctx.cooldowns)))
 }
 
 fn error_policy<B: Band>(_obj: Arc<B>, err: &Error, ctx: Arc<Ctx>) -> Action {

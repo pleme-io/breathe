@@ -55,6 +55,47 @@ pub struct BandStatus {
     pub last_change_epoch: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub conflict_manager: Option<String>,
+
+    // ── M1 typed observability (jsonpath-queryable; the data already existed at
+    //    decision time and was previously discarded after plan_tick). ──────────
+    /// The observed utilization that drove this tick, as a ratio (`used/capacity`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub observed_util: Option<f64>,
+    /// The observed `used` scalar (bytes for memory/arc/cgroup; millicores for cpu).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub observed_used: Option<i64>,
+    /// The observed `capacity` (the current limit the util is measured against).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub observed_capacity: Option<i64>,
+    /// Age of the driving metric sample, in seconds (the freshness gate input).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub freshness_seconds: Option<i64>,
+    /// The restart cost of the last carve/decision (`RestartFree` / `RestartConditional`
+    /// / `RestartRequiring`) — the per-tick attestation evidence, now typed in status.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_action_class: Option<String>,
+    /// Where the last tick sat on the golden/ceiling line (`GoldenPreserving` /
+    /// `CeilingCrossing`) — the K4 continuity evidence, surfaced.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub edge_tier: Option<String>,
+    /// The DisruptionPolicy in effect for this band (`restartFreeOnly` / …).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effective_policy: Option<String>,
+    /// The effective mode: `true` = SHADOW (observe + attest, never carve).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effective_dry_run: Option<bool>,
+    /// Seconds remaining in the post-carve cooldown (0 = ready to carve).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cooldown_remaining_seconds: Option<i64>,
+    /// Cumulative count of carves (Applied) over this controller's lifetime.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub carves_total: Option<i64>,
+    /// Cumulative count of deferred ceiling crossings (policy refused a restart).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deferrals_total: Option<i64>,
+    /// Cumulative count of single-writer conflicts (yielded to another manager).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub conflicts_total: Option<i64>,
 }
 
 /// The dimension-agnostic accessor the generic controller reconciles through.
@@ -78,6 +119,9 @@ pub trait Band:
     /// The band's restart policy — the golden/ceiling gate (default golden
     /// `RestartFreeOnly`). A carve whose class this forbids is deferred, not rolled.
     fn disruption_policy(&self) -> DisruptionPolicy;
+    /// The band's CURRENT status (read before reconcile) — the `prior` that
+    /// `status_for` carries cumulative counters + the cooldown epoch forward from.
+    fn status(&self) -> Option<&BandStatus>;
 }
 
 fn band_config_of(
@@ -182,6 +226,9 @@ macro_rules! band_kind {
             }
             fn disruption_policy(&self) -> DisruptionPolicy {
                 self.spec.disruption_policy
+            }
+            fn status(&self) -> Option<&BandStatus> {
+                self.status.as_ref()
             }
         }
     };

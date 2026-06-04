@@ -9,10 +9,10 @@
 
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use breathe_control::Decision;
-use breathe_core::TickReceipt;
+use breathe_control::{Decision, Observation};
+use breathe_core::{TickOutcome, TickReceipt};
 use breathe_crd::{Band, BandStatus};
-use breathe_provider::ClassCooldowns;
+use breathe_provider::{ClassCooldowns, DisruptionPolicy, EdgeTier};
 use kube::{
     api::{Api, Patch, PatchParams},
     Client,
@@ -25,12 +25,64 @@ pub fn now_secs() -> i64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0)
 }
 
-/// Map one reconcile receipt to the typed CR status — every branch observable,
-/// none silent. This is the single source of truth for band status semantics
-/// across both reconcile processes.
+/// Observed utilization (`used / capacity`) as a ratio, or `None` when there is
+/// no denominator (capacity == 0 ⇒ no limit set).
 #[must_use]
-pub fn status_for(receipt: &TickReceipt) -> BandStatus {
+pub fn util_of(obs: &Observation) -> Option<f64> {
+    (obs.capacity > 0).then(|| obs.used as f64 / obs.capacity as f64)
+}
+
+/// The DisruptionPolicy as its camelCase wire string (matches the CRD enum).
+fn policy_str(p: DisruptionPolicy) -> String {
+    match p {
+        DisruptionPolicy::RestartFreeOnly => "restartFreeOnly",
+        DisruptionPolicy::AllowConditional => "allowConditional",
+        DisruptionPolicy::AllowRestart => "allowRestart",
+    }
+    .into()
+}
+
+/// Where the tick sat on the golden/ceiling line, as a short status string.
+fn edge_tier_str(t: EdgeTier) -> String {
+    match t {
+        EdgeTier::GoldenPreserving => "golden".into(),
+        EdgeTier::CeilingCrossing(c) => format!("crossing:{c:?}"),
+    }
+}
+
+/// Map one reconcile OUTCOME to the typed CR status — every branch observable,
+/// none silent. This is the single source of truth for band status semantics
+/// across both reconcile processes. It reports not just *what happened* (phase +
+/// legible last_decision) but the OBSERVED inputs that drove it (util/used/capacity/
+/// freshness), the effective mode (dry-run/policy), the golden/ceiling edge tier,
+/// the cooldown remaining, and cumulative carve/deferral/conflict counters —
+/// everything `kubectl get/describe` and Grafana need, all from the one TickOutcome.
+///
+/// `prior` is the band's CURRENT status (read before reconcile) — used to carry the
+/// cumulative counters forward (reconciles are serialized per-object, so a
+/// read-then-increment is race-free) and to compute the cooldown remaining from the
+/// last carve epoch. `cooldown_seconds` is the band's configured cooldown window.
+#[must_use]
+pub fn status_for(outcome: &TickOutcome, prior: Option<&BandStatus>, cooldown_seconds: u64) -> BandStatus {
     let mut s = BandStatus::default();
+    let receipt = &outcome.receipt;
+
+    // ── COMMON: the observed inputs + effective mode + edge tier (from the
+    //    outcome, available on every non-pre-observe-error tick). ──────────────
+    s.effective_dry_run = Some(outcome.dry_run);
+    s.effective_policy = Some(policy_str(outcome.policy));
+    s.edge_tier = Some(edge_tier_str(receipt.edge_tier()));
+    if let Some(obs) = &outcome.observed {
+        s.observed_used = Some(obs.used as i64);
+        s.observed_capacity = Some(obs.capacity as i64);
+        s.freshness_seconds = Some(obs.staleness_secs as i64);
+        if let Some(u) = util_of(obs) {
+            s.observed_util = Some(u);
+            s.last_util = Some(format!("{:.0}%", u * 100.0)); // the headline Util column
+        }
+    }
+
+    // ── PER-RECEIPT: phase, legible decision, current_limit, action class. ────
     match receipt {
         TickReceipt::Conflict { manager } => {
             s.phase = Some("Conflict".into());
@@ -41,48 +93,41 @@ pub fn status_for(receipt: &TickReceipt) -> BandStatus {
             s.phase = Some("Stale".into());
             s.last_decision = Some(format!("metric {staleness_secs}s stale — held"));
         }
-        TickReceipt::Cooldown => s.phase = Some("Cooldown".into()),
+        TickReceipt::Cooldown => {
+            s.phase = Some("Cooldown".into());
+            s.last_decision = Some("cooling down after a carve".into());
+        }
         TickReceipt::Applied { from, to, class } => {
             s.phase = Some(if to > from { "Growing" } else { "Shrinking" }.into());
             s.current_limit = Some(to.to_string());
-            // record whether the carve was golden (zero-restart) — the attestation evidence.
             s.last_decision = Some(format!("{from} -> {to} ({class:?})"));
+            s.last_action_class = Some(format!("{class:?}"));
             s.last_change_epoch = Some(now_secs());
         }
         TickReceipt::DryRunWouldApply { from, to } => {
             s.phase = Some("ShadowWouldApply".into());
-            s.current_limit = Some(from.to_string());
+            s.current_limit = Some(from.to_string()); // shadow mutates nothing — the UNCHANGED limit
             s.last_decision = Some(format!("dry-run: {from} -> {to}"));
         }
         TickReceipt::DeferredWouldRestart { from, to, class } => {
             // the comfortable berth: breathe REFUSED a ceiling crossing — the
             // workload stays golden (undisturbed), un-converged, limit unchanged.
             s.phase = Some("DeferredWouldRestart".into());
-            s.current_limit = Some(from.to_string());
+            s.current_limit = Some(from.to_string()); // the crossing was refused — limit unchanged
             s.last_decision = Some(format!("{from} -> {to} deferred: {class:?} crossing blocked by DisruptionPolicy (set AllowConditional/AllowRestart to permit)"));
+            s.last_action_class = Some(format!("{class:?}"));
         }
         TickReceipt::Observed { decision } => {
-            // A non-mutating tick still REPORTS the live limit + a legible note, so a
-            // band sitting at rest (held / at floor / at ceiling) never shows a stale
-            // decision string from an earlier carve or shadow tick. The non-carve
-            // decisions carry `current`; Hold/NoLimit have no fresh limit to surface.
-            let (phase, limit, note): (&str, Option<u64>, String) = match decision {
-                Decision::Hold => ("Holding", None, "within band — held".into()),
-                Decision::AtCeiling { current } => {
-                    ("AtCeiling", Some(*current), format!("at ceiling {current} — would grow"))
-                }
-                Decision::NoSafeShrink { current } => {
-                    ("AtFloor", Some(*current), format!("at floor {current} — no safe shrink"))
-                }
-                Decision::NoLimit => ("NoLimit", None, "no limit set — cannot reason on utilization".into()),
+            let (phase, note) = match decision {
+                Decision::Hold => ("Holding", "within band — held".to_string()),
+                Decision::AtCeiling { current } => ("AtCeiling", format!("at ceiling {current} — would grow")),
+                Decision::NoSafeShrink { current } => ("AtFloor", format!("at floor {current} — no safe shrink")),
+                Decision::NoLimit => ("NoLimit", "no limit set — cannot reason on utilization".to_string()),
                 Decision::Grow { from, to } | Decision::Shrink { from, to } => {
-                    ("Observed", Some(*from), format!("observed {from} -> {to} (not applied)"))
+                    ("Observed", format!("observed {from} -> {to} (not applied)"))
                 }
             };
             s.phase = Some(phase.into());
-            if let Some(l) = limit {
-                s.current_limit = Some(l.to_string());
-            }
             s.last_decision = Some(note);
         }
         TickReceipt::Error { error } => {
@@ -90,6 +135,28 @@ pub fn status_for(receipt: &TickReceipt) -> BandStatus {
             s.last_decision = Some(error.to_string());
         }
     }
+
+    // current_limit on EVERY arm: any non-carve tick reports the LIVE limit (the
+    // observed capacity) rather than a stale value; Applied set its own `to` above.
+    if s.current_limit.is_none() {
+        if let Some(obs) = &outcome.observed {
+            s.current_limit = Some(obs.capacity.to_string());
+        }
+    }
+
+    // ── CUMULATIVE COUNTERS — read prior + increment (serialized per object). ─
+    let prior_n = |get: fn(&BandStatus) -> Option<i64>| prior.and_then(get).unwrap_or(0);
+    s.carves_total = Some(prior_n(|p| p.carves_total) + i64::from(matches!(receipt, TickReceipt::Applied { .. })));
+    s.deferrals_total =
+        Some(prior_n(|p| p.deferrals_total) + i64::from(matches!(receipt, TickReceipt::DeferredWouldRestart { .. })));
+    s.conflicts_total =
+        Some(prior_n(|p| p.conflicts_total) + i64::from(matches!(receipt, TickReceipt::Conflict { .. })));
+
+    // ── COOLDOWN REMAINING — from the last carve epoch (this tick's, or prior's). ─
+    let last_carve = s.last_change_epoch.or_else(|| prior.and_then(|p| p.last_change_epoch)).unwrap_or(0);
+    let remaining = (last_carve + cooldown_seconds as i64 - now_secs()).max(0);
+    s.cooldown_remaining_seconds = Some(remaining);
+
     s
 }
 
@@ -144,19 +211,26 @@ pub async fn patch_status<B: Band>(
 mod tests {
     use super::*;
 
+    /// Wrap a bare receipt in a minimal TickOutcome (no observation; the status
+    /// per-arm fields under test don't need one).
+    fn out(receipt: TickReceipt) -> TickOutcome {
+        TickOutcome { receipt, observed: None, policy: DisruptionPolicy::RestartFreeOnly, dry_run: false }
+    }
+
     #[test]
     fn applied_growth_vs_shrink_is_reported_directionally() {
         use breathe_provider::DisruptionClass::RestartFree;
-        let grow = status_for(&TickReceipt::Applied { from: 100, to: 200, class: RestartFree });
+        let grow = status_for(&out(TickReceipt::Applied { from: 100, to: 200, class: RestartFree }), None, 0);
         assert_eq!(grow.phase.as_deref(), Some("Growing"));
         assert_eq!(grow.current_limit.as_deref(), Some("200"));
-        let shrink = status_for(&TickReceipt::Applied { from: 200, to: 100, class: RestartFree });
+        assert_eq!(grow.carves_total, Some(1));
+        let shrink = status_for(&out(TickReceipt::Applied { from: 200, to: 100, class: RestartFree }), None, 0);
         assert_eq!(shrink.phase.as_deref(), Some("Shrinking"));
     }
 
     #[test]
     fn shadow_reports_what_would_have_happened_without_changing_the_limit() {
-        let s = status_for(&TickReceipt::DryRunWouldApply { from: 100, to: 250 });
+        let s = status_for(&out(TickReceipt::DryRunWouldApply { from: 100, to: 250 }), None, 0);
         assert_eq!(s.phase.as_deref(), Some("ShadowWouldApply"));
         // the reported current limit is the UNCHANGED value — shadow mutates nothing.
         assert_eq!(s.current_limit.as_deref(), Some("100"));
@@ -165,7 +239,8 @@ mod tests {
 
     #[test]
     fn conflict_records_the_yielded_to_manager() {
-        let s = status_for(&TickReceipt::Conflict { manager: "helm".into() });
+        let s = status_for(&out(TickReceipt::Conflict { manager: "helm".into() }), None, 0);
+        assert_eq!(s.conflicts_total, Some(1));
         assert_eq!(s.phase.as_deref(), Some("Conflict"));
         assert_eq!(s.conflict_manager.as_deref(), Some("helm"));
     }
@@ -173,7 +248,7 @@ mod tests {
     #[test]
     fn deferred_crossing_maps_to_a_first_class_phase() {
         use breathe_provider::DisruptionClass;
-        let s = status_for(&TickReceipt::DeferredWouldRestart { from: 1 << 30, to: 2 << 30, class: DisruptionClass::RestartRequiring });
+        let s = status_for(&out(TickReceipt::DeferredWouldRestart { from: 1 << 30, to: 2 << 30, class: DisruptionClass::RestartRequiring }), None, 0);
         assert_eq!(s.phase.as_deref(), Some("DeferredWouldRestart"));
         // the limit is UNCHANGED — the crossing was refused.
         assert_eq!(s.current_limit.as_deref(), Some((1u64 << 30).to_string().as_str()));
