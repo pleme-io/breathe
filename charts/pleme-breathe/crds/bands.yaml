@@ -34,6 +34,9 @@ spec:
     - jsonPath: .status.phase
       name: Phase
       type: string
+    - jsonPath: .status.conditions[?(@.type=='Ready')].status
+      name: Ready
+      type: string
     name: v1
     schema:
       openAPIV3Schema:
@@ -49,11 +52,26 @@ spec:
                 format: uint64
                 minimum: 0.0
                 type: integer
+              disruptionPolicy:
+                description: The golden/ceiling gate (default `restartFreeOnly`). Omitted on serialize when default so the strict typed-gRPC surface stays safe.
+                enum:
+                - restartFreeOnly
+                - allowConditional
+                - allowRestart
+                type: string
               dryRun:
                 default: false
                 type: boolean
               floor:
                 default: 256Mi
+                type: string
+              forceLimit:
+                description: 'BREAK-GLASS: pin the limit to exactly this value (a quantity string in the band''s unit, e.g. `8Gi` / `2`). breathe skips the band law and carves to it — but STILL through the gate (DisruptionPolicy + the single-writer guard + the L2 ceiling all apply; it cannot bypass safety). Clear it to resume normal homeostasis. Pair with `forceLimitExpiry` for an auto-releasing pin.'
+                nullable: true
+                type: string
+              forceLimitExpiry:
+                description: RFC3339 time after which `forceLimit` is ignored (auto-release the pin).
+                nullable: true
                 type: string
               growAbove:
                 default: 0.85
@@ -80,6 +98,9 @@ spec:
                 default: 0.9
                 format: double
                 type: number
+              suspend:
+                description: 'FREEZE this band — `true` ⇒ the controller skips observe/plan/act entirely (phase `Suspended`), the limit is left exactly as-is. Distinct from `dryRun` (which still observes + reports what it WOULD do): suspend is "stop deciding". Resume with `suspend:false`. The k8s-native pause.'
+                type: boolean
               targetRef:
                 description: The workload owner whose limit a band controls. For CNPG the kind is `Cluster` (the patched field lives on the `Cluster` CR); for storage the kind is `PersistentVolumeClaim`.
                 properties:
@@ -104,10 +125,114 @@ spec:
             description: The per-cycle typed status receipt — shared across all band kinds.
             nullable: true
             properties:
+              carvesTotal:
+                description: Cumulative count of carves (Applied) over this controller's lifetime.
+                format: int64
+                nullable: true
+                type: integer
+              conditions:
+                description: Standard conditions (Ready / Converged / Throttled / Stale / Conflict).
+                items:
+                  description: A standard k8s `metav1.Condition` (schemars-derivable — k8s_openapi's own `Condition` is not `JsonSchema`). Enables `kubectl wait --for=condition=…` and Flux/Argo health assessment off breathe bands.
+                  properties:
+                    lastTransitionTime:
+                      description: RFC3339 time the condition last flipped status (stable while status holds).
+                      type: string
+                    message:
+                      description: Human-readable message.
+                      type: string
+                    observedGeneration:
+                      description: The `metadata.generation` the controller observed when setting this.
+                      format: int64
+                      nullable: true
+                      type: integer
+                    reason:
+                      description: Machine-readable PascalCase reason.
+                      type: string
+                    status:
+                      description: '`True` | `False` | `Unknown`.'
+                      type: string
+                    type:
+                      description: Condition type, e.g. `Ready` / `Converged` / `Throttled` / `Stale` / `Conflict`.
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
               conflictManager:
                 nullable: true
                 type: string
+              conflictsTotal:
+                description: Cumulative count of single-writer conflicts (yielded to another manager).
+                format: int64
+                nullable: true
+                type: integer
+              cooldownRemainingSeconds:
+                description: Seconds remaining in the post-carve cooldown (0 = ready to carve).
+                format: int64
+                nullable: true
+                type: integer
               currentLimit:
+                nullable: true
+                type: string
+              deferralsTotal:
+                description: Cumulative count of deferred ceiling crossings (policy refused a restart).
+                format: int64
+                nullable: true
+                type: integer
+              edgeTier:
+                description: Where the last tick sat on the golden/ceiling line (`GoldenPreserving` / `CeilingCrossing`) — the K4 continuity evidence, surfaced.
+                nullable: true
+                type: string
+              effectiveDryRun:
+                description: 'The effective mode: `true` = SHADOW (observe + attest, never carve).'
+                nullable: true
+                type: boolean
+              effectivePolicy:
+                description: The DisruptionPolicy in effect for this band (`restartFreeOnly` / …).
+                nullable: true
+                type: string
+              freshnessSeconds:
+                description: Age of the driving metric sample, in seconds (the freshness gate input).
+                format: int64
+                nullable: true
+                type: integer
+              history:
+                description: The recent TRAJECTORY (over-time view as a k8s object) — appended on a carve or a phase change, capped to the last N samples.
+                items:
+                  description: A point in a band's recent trajectory — the OVER-TIME view as a k8s object (no Grafana needed). Appended on a carve or a phase change, capped to the last N, so `kubectl get <band> -o yaml` shows how the adjustments have been going inline.
+                  properties:
+                    decision:
+                      description: The decision that produced this sample (carve / transition).
+                      nullable: true
+                      type: string
+                    limit:
+                      description: The limit at this point.
+                      format: int64
+                      nullable: true
+                      type: integer
+                    phase:
+                      description: The phase at this point.
+                      type: string
+                    time:
+                      description: RFC3339 time of this sample.
+                      type: string
+                    util:
+                      description: Observed utilization ratio at this point.
+                      format: double
+                      nullable: true
+                      type: number
+                  required:
+                  - phase
+                  - time
+                  type: object
+                type: array
+              lastActionClass:
+                description: The restart cost of the last carve/decision (`RestartFree` / `RestartConditional` / `RestartRequiring`) — the per-tick attestation evidence, now typed in status.
                 nullable: true
                 type: string
               lastChangeEpoch:
@@ -120,6 +245,26 @@ spec:
               lastUtil:
                 nullable: true
                 type: string
+              observedCapacity:
+                description: The observed `capacity` (the current limit the util is measured against).
+                format: int64
+                nullable: true
+                type: integer
+              observedGeneration:
+                description: '`metadata.generation` the controller last reconciled — the "controller has seen my latest spec edit" signal.'
+                format: int64
+                nullable: true
+                type: integer
+              observedUsed:
+                description: The observed `used` scalar (bytes for memory/arc/cgroup; millicores for cpu).
+                format: int64
+                nullable: true
+                type: integer
+              observedUtil:
+                description: The observed utilization that drove this tick, as a ratio (`used/capacity`).
+                format: double
+                nullable: true
+                type: number
               phase:
                 nullable: true
                 type: string
@@ -168,6 +313,9 @@ spec:
     - jsonPath: .status.phase
       name: Phase
       type: string
+    - jsonPath: .status.conditions[?(@.type=='Ready')].status
+      name: Ready
+      type: string
     name: v1
     schema:
       openAPIV3Schema:
@@ -176,18 +324,33 @@ spec:
           spec:
             properties:
               ceiling:
-                default: 16Gi
+                default: '2'
                 type: string
               cooldownSeconds:
                 default: 600
                 format: uint64
                 minimum: 0.0
                 type: integer
+              disruptionPolicy:
+                description: The golden/ceiling gate (default `restartFreeOnly`). Omitted on serialize when default so the strict typed-gRPC surface stays safe.
+                enum:
+                - restartFreeOnly
+                - allowConditional
+                - allowRestart
+                type: string
               dryRun:
                 default: false
                 type: boolean
               floor:
-                default: 256Mi
+                default: 250m
+                type: string
+              forceLimit:
+                description: 'BREAK-GLASS: pin the limit to exactly this value (a quantity string in the band''s unit, e.g. `8Gi` / `2`). breathe skips the band law and carves to it — but STILL through the gate (DisruptionPolicy + the single-writer guard + the L2 ceiling all apply; it cannot bypass safety). Clear it to resume normal homeostasis. Pair with `forceLimitExpiry` for an auto-releasing pin.'
+                nullable: true
+                type: string
+              forceLimitExpiry:
+                description: RFC3339 time after which `forceLimit` is ignored (auto-release the pin).
+                nullable: true
                 type: string
               growAbove:
                 default: 0.85
@@ -214,6 +377,9 @@ spec:
                 default: 0.9
                 format: double
                 type: number
+              suspend:
+                description: 'FREEZE this band — `true` ⇒ the controller skips observe/plan/act entirely (phase `Suspended`), the limit is left exactly as-is. Distinct from `dryRun` (which still observes + reports what it WOULD do): suspend is "stop deciding". Resume with `suspend:false`. The k8s-native pause.'
+                type: boolean
               targetRef:
                 description: The workload owner whose limit a band controls. For CNPG the kind is `Cluster` (the patched field lives on the `Cluster` CR); for storage the kind is `PersistentVolumeClaim`.
                 properties:
@@ -238,10 +404,114 @@ spec:
             description: The per-cycle typed status receipt — shared across all band kinds.
             nullable: true
             properties:
+              carvesTotal:
+                description: Cumulative count of carves (Applied) over this controller's lifetime.
+                format: int64
+                nullable: true
+                type: integer
+              conditions:
+                description: Standard conditions (Ready / Converged / Throttled / Stale / Conflict).
+                items:
+                  description: A standard k8s `metav1.Condition` (schemars-derivable — k8s_openapi's own `Condition` is not `JsonSchema`). Enables `kubectl wait --for=condition=…` and Flux/Argo health assessment off breathe bands.
+                  properties:
+                    lastTransitionTime:
+                      description: RFC3339 time the condition last flipped status (stable while status holds).
+                      type: string
+                    message:
+                      description: Human-readable message.
+                      type: string
+                    observedGeneration:
+                      description: The `metadata.generation` the controller observed when setting this.
+                      format: int64
+                      nullable: true
+                      type: integer
+                    reason:
+                      description: Machine-readable PascalCase reason.
+                      type: string
+                    status:
+                      description: '`True` | `False` | `Unknown`.'
+                      type: string
+                    type:
+                      description: Condition type, e.g. `Ready` / `Converged` / `Throttled` / `Stale` / `Conflict`.
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
               conflictManager:
                 nullable: true
                 type: string
+              conflictsTotal:
+                description: Cumulative count of single-writer conflicts (yielded to another manager).
+                format: int64
+                nullable: true
+                type: integer
+              cooldownRemainingSeconds:
+                description: Seconds remaining in the post-carve cooldown (0 = ready to carve).
+                format: int64
+                nullable: true
+                type: integer
               currentLimit:
+                nullable: true
+                type: string
+              deferralsTotal:
+                description: Cumulative count of deferred ceiling crossings (policy refused a restart).
+                format: int64
+                nullable: true
+                type: integer
+              edgeTier:
+                description: Where the last tick sat on the golden/ceiling line (`GoldenPreserving` / `CeilingCrossing`) — the K4 continuity evidence, surfaced.
+                nullable: true
+                type: string
+              effectiveDryRun:
+                description: 'The effective mode: `true` = SHADOW (observe + attest, never carve).'
+                nullable: true
+                type: boolean
+              effectivePolicy:
+                description: The DisruptionPolicy in effect for this band (`restartFreeOnly` / …).
+                nullable: true
+                type: string
+              freshnessSeconds:
+                description: Age of the driving metric sample, in seconds (the freshness gate input).
+                format: int64
+                nullable: true
+                type: integer
+              history:
+                description: The recent TRAJECTORY (over-time view as a k8s object) — appended on a carve or a phase change, capped to the last N samples.
+                items:
+                  description: A point in a band's recent trajectory — the OVER-TIME view as a k8s object (no Grafana needed). Appended on a carve or a phase change, capped to the last N, so `kubectl get <band> -o yaml` shows how the adjustments have been going inline.
+                  properties:
+                    decision:
+                      description: The decision that produced this sample (carve / transition).
+                      nullable: true
+                      type: string
+                    limit:
+                      description: The limit at this point.
+                      format: int64
+                      nullable: true
+                      type: integer
+                    phase:
+                      description: The phase at this point.
+                      type: string
+                    time:
+                      description: RFC3339 time of this sample.
+                      type: string
+                    util:
+                      description: Observed utilization ratio at this point.
+                      format: double
+                      nullable: true
+                      type: number
+                  required:
+                  - phase
+                  - time
+                  type: object
+                type: array
+              lastActionClass:
+                description: The restart cost of the last carve/decision (`RestartFree` / `RestartConditional` / `RestartRequiring`) — the per-tick attestation evidence, now typed in status.
                 nullable: true
                 type: string
               lastChangeEpoch:
@@ -254,6 +524,26 @@ spec:
               lastUtil:
                 nullable: true
                 type: string
+              observedCapacity:
+                description: The observed `capacity` (the current limit the util is measured against).
+                format: int64
+                nullable: true
+                type: integer
+              observedGeneration:
+                description: '`metadata.generation` the controller last reconciled — the "controller has seen my latest spec edit" signal.'
+                format: int64
+                nullable: true
+                type: integer
+              observedUsed:
+                description: The observed `used` scalar (bytes for memory/arc/cgroup; millicores for cpu).
+                format: int64
+                nullable: true
+                type: integer
+              observedUtil:
+                description: The observed utilization that drove this tick, as a ratio (`used/capacity`).
+                format: double
+                nullable: true
+                type: number
               phase:
                 nullable: true
                 type: string
@@ -302,6 +592,9 @@ spec:
     - jsonPath: .status.phase
       name: Phase
       type: string
+    - jsonPath: .status.conditions[?(@.type=='Ready')].status
+      name: Ready
+      type: string
     name: v1
     schema:
       openAPIV3Schema:
@@ -317,11 +610,26 @@ spec:
                 format: uint64
                 minimum: 0.0
                 type: integer
+              disruptionPolicy:
+                description: The golden/ceiling gate (default `restartFreeOnly`). Omitted on serialize when default so the strict typed-gRPC surface stays safe.
+                enum:
+                - restartFreeOnly
+                - allowConditional
+                - allowRestart
+                type: string
               dryRun:
                 default: false
                 type: boolean
               floor:
                 default: 256Mi
+                type: string
+              forceLimit:
+                description: 'BREAK-GLASS: pin the limit to exactly this value (a quantity string in the band''s unit, e.g. `8Gi` / `2`). breathe skips the band law and carves to it — but STILL through the gate (DisruptionPolicy + the single-writer guard + the L2 ceiling all apply; it cannot bypass safety). Clear it to resume normal homeostasis. Pair with `forceLimitExpiry` for an auto-releasing pin.'
+                nullable: true
+                type: string
+              forceLimitExpiry:
+                description: RFC3339 time after which `forceLimit` is ignored (auto-release the pin).
+                nullable: true
                 type: string
               growAbove:
                 default: 0.85
@@ -348,6 +656,9 @@ spec:
                 default: 0.9
                 format: double
                 type: number
+              suspend:
+                description: 'FREEZE this band — `true` ⇒ the controller skips observe/plan/act entirely (phase `Suspended`), the limit is left exactly as-is. Distinct from `dryRun` (which still observes + reports what it WOULD do): suspend is "stop deciding". Resume with `suspend:false`. The k8s-native pause.'
+                type: boolean
               targetRef:
                 description: The workload owner whose limit a band controls. For CNPG the kind is `Cluster` (the patched field lives on the `Cluster` CR); for storage the kind is `PersistentVolumeClaim`.
                 properties:
@@ -372,10 +683,114 @@ spec:
             description: The per-cycle typed status receipt — shared across all band kinds.
             nullable: true
             properties:
+              carvesTotal:
+                description: Cumulative count of carves (Applied) over this controller's lifetime.
+                format: int64
+                nullable: true
+                type: integer
+              conditions:
+                description: Standard conditions (Ready / Converged / Throttled / Stale / Conflict).
+                items:
+                  description: A standard k8s `metav1.Condition` (schemars-derivable — k8s_openapi's own `Condition` is not `JsonSchema`). Enables `kubectl wait --for=condition=…` and Flux/Argo health assessment off breathe bands.
+                  properties:
+                    lastTransitionTime:
+                      description: RFC3339 time the condition last flipped status (stable while status holds).
+                      type: string
+                    message:
+                      description: Human-readable message.
+                      type: string
+                    observedGeneration:
+                      description: The `metadata.generation` the controller observed when setting this.
+                      format: int64
+                      nullable: true
+                      type: integer
+                    reason:
+                      description: Machine-readable PascalCase reason.
+                      type: string
+                    status:
+                      description: '`True` | `False` | `Unknown`.'
+                      type: string
+                    type:
+                      description: Condition type, e.g. `Ready` / `Converged` / `Throttled` / `Stale` / `Conflict`.
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
               conflictManager:
                 nullable: true
                 type: string
+              conflictsTotal:
+                description: Cumulative count of single-writer conflicts (yielded to another manager).
+                format: int64
+                nullable: true
+                type: integer
+              cooldownRemainingSeconds:
+                description: Seconds remaining in the post-carve cooldown (0 = ready to carve).
+                format: int64
+                nullable: true
+                type: integer
               currentLimit:
+                nullable: true
+                type: string
+              deferralsTotal:
+                description: Cumulative count of deferred ceiling crossings (policy refused a restart).
+                format: int64
+                nullable: true
+                type: integer
+              edgeTier:
+                description: Where the last tick sat on the golden/ceiling line (`GoldenPreserving` / `CeilingCrossing`) — the K4 continuity evidence, surfaced.
+                nullable: true
+                type: string
+              effectiveDryRun:
+                description: 'The effective mode: `true` = SHADOW (observe + attest, never carve).'
+                nullable: true
+                type: boolean
+              effectivePolicy:
+                description: The DisruptionPolicy in effect for this band (`restartFreeOnly` / …).
+                nullable: true
+                type: string
+              freshnessSeconds:
+                description: Age of the driving metric sample, in seconds (the freshness gate input).
+                format: int64
+                nullable: true
+                type: integer
+              history:
+                description: The recent TRAJECTORY (over-time view as a k8s object) — appended on a carve or a phase change, capped to the last N samples.
+                items:
+                  description: A point in a band's recent trajectory — the OVER-TIME view as a k8s object (no Grafana needed). Appended on a carve or a phase change, capped to the last N, so `kubectl get <band> -o yaml` shows how the adjustments have been going inline.
+                  properties:
+                    decision:
+                      description: The decision that produced this sample (carve / transition).
+                      nullable: true
+                      type: string
+                    limit:
+                      description: The limit at this point.
+                      format: int64
+                      nullable: true
+                      type: integer
+                    phase:
+                      description: The phase at this point.
+                      type: string
+                    time:
+                      description: RFC3339 time of this sample.
+                      type: string
+                    util:
+                      description: Observed utilization ratio at this point.
+                      format: double
+                      nullable: true
+                      type: number
+                  required:
+                  - phase
+                  - time
+                  type: object
+                type: array
+              lastActionClass:
+                description: The restart cost of the last carve/decision (`RestartFree` / `RestartConditional` / `RestartRequiring`) — the per-tick attestation evidence, now typed in status.
                 nullable: true
                 type: string
               lastChangeEpoch:
@@ -388,6 +803,26 @@ spec:
               lastUtil:
                 nullable: true
                 type: string
+              observedCapacity:
+                description: The observed `capacity` (the current limit the util is measured against).
+                format: int64
+                nullable: true
+                type: integer
+              observedGeneration:
+                description: '`metadata.generation` the controller last reconciled — the "controller has seen my latest spec edit" signal.'
+                format: int64
+                nullable: true
+                type: integer
+              observedUsed:
+                description: The observed `used` scalar (bytes for memory/arc/cgroup; millicores for cpu).
+                format: int64
+                nullable: true
+                type: integer
+              observedUtil:
+                description: The observed utilization that drove this tick, as a ratio (`used/capacity`).
+                format: double
+                nullable: true
+                type: number
               phase:
                 nullable: true
                 type: string
@@ -400,3 +835,1128 @@ spec:
     storage: true
     subresources:
       status: {}
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: arcbands.breathe.pleme.io
+spec:
+  group: breathe.pleme.io
+  names:
+    categories:
+    - breathe
+    kind: ArcBand
+    plural: arcbands
+    shortNames:
+    - aband
+    singular: arcband
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.targetRef.kind
+      name: Target
+      type: string
+    - jsonPath: .spec.targetRef.name
+      name: Name
+      type: string
+    - jsonPath: .status.lastUtil
+      name: Util
+      type: string
+    - jsonPath: .status.currentLimit
+      name: Limit
+      type: string
+    - jsonPath: .status.lastDecision
+      name: Last
+      type: string
+    - jsonPath: .status.phase
+      name: Phase
+      type: string
+    - jsonPath: .status.conditions[?(@.type=='Ready')].status
+      name: Ready
+      type: string
+    name: v1
+    schema:
+      openAPIV3Schema:
+        description: Auto-generated derived type for ArcBandSpec via `CustomResource`
+        properties:
+          spec:
+            properties:
+              ceiling:
+                default: 16Gi
+                type: string
+              cooldownSeconds:
+                default: 600
+                format: uint64
+                minimum: 0.0
+                type: integer
+              disruptionPolicy:
+                description: The golden/ceiling gate (default `restartFreeOnly`). Omitted on serialize when default so the strict typed-gRPC surface stays safe.
+                enum:
+                - restartFreeOnly
+                - allowConditional
+                - allowRestart
+                type: string
+              dryRun:
+                default: false
+                type: boolean
+              floor:
+                default: 256Mi
+                type: string
+              forceLimit:
+                description: 'BREAK-GLASS: pin the limit to exactly this value (a quantity string in the band''s unit, e.g. `8Gi` / `2`). breathe skips the band law and carves to it — but STILL through the gate (DisruptionPolicy + the single-writer guard + the L2 ceiling all apply; it cannot bypass safety). Clear it to resume normal homeostasis. Pair with `forceLimitExpiry` for an auto-releasing pin.'
+                nullable: true
+                type: string
+              forceLimitExpiry:
+                description: RFC3339 time after which `forceLimit` is ignored (auto-release the pin).
+                nullable: true
+                type: string
+              growAbove:
+                default: 0.85
+                format: double
+                type: number
+              growFactor:
+                default: 1.25
+                format: double
+                type: number
+              maxStalenessSeconds:
+                default: 120
+                format: uint64
+                minimum: 0.0
+                type: integer
+              setpoint:
+                default: 0.8
+                format: double
+                type: number
+              shrinkBelow:
+                default: 0.7
+                format: double
+                type: number
+              shrinkFactor:
+                default: 0.9
+                format: double
+                type: number
+              suspend:
+                description: 'FREEZE this band — `true` ⇒ the controller skips observe/plan/act entirely (phase `Suspended`), the limit is left exactly as-is. Distinct from `dryRun` (which still observes + reports what it WOULD do): suspend is "stop deciding". Resume with `suspend:false`. The k8s-native pause.'
+                type: boolean
+              targetRef:
+                description: The workload owner whose limit a band controls. For CNPG the kind is `Cluster` (the patched field lives on the `Cluster` CR); for storage the kind is `PersistentVolumeClaim`.
+                properties:
+                  apiVersion:
+                    nullable: true
+                    type: string
+                  container:
+                    nullable: true
+                    type: string
+                  kind:
+                    type: string
+                  name:
+                    type: string
+                required:
+                - kind
+                - name
+                type: object
+            required:
+            - targetRef
+            type: object
+          status:
+            description: The per-cycle typed status receipt — shared across all band kinds.
+            nullable: true
+            properties:
+              carvesTotal:
+                description: Cumulative count of carves (Applied) over this controller's lifetime.
+                format: int64
+                nullable: true
+                type: integer
+              conditions:
+                description: Standard conditions (Ready / Converged / Throttled / Stale / Conflict).
+                items:
+                  description: A standard k8s `metav1.Condition` (schemars-derivable — k8s_openapi's own `Condition` is not `JsonSchema`). Enables `kubectl wait --for=condition=…` and Flux/Argo health assessment off breathe bands.
+                  properties:
+                    lastTransitionTime:
+                      description: RFC3339 time the condition last flipped status (stable while status holds).
+                      type: string
+                    message:
+                      description: Human-readable message.
+                      type: string
+                    observedGeneration:
+                      description: The `metadata.generation` the controller observed when setting this.
+                      format: int64
+                      nullable: true
+                      type: integer
+                    reason:
+                      description: Machine-readable PascalCase reason.
+                      type: string
+                    status:
+                      description: '`True` | `False` | `Unknown`.'
+                      type: string
+                    type:
+                      description: Condition type, e.g. `Ready` / `Converged` / `Throttled` / `Stale` / `Conflict`.
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+              conflictManager:
+                nullable: true
+                type: string
+              conflictsTotal:
+                description: Cumulative count of single-writer conflicts (yielded to another manager).
+                format: int64
+                nullable: true
+                type: integer
+              cooldownRemainingSeconds:
+                description: Seconds remaining in the post-carve cooldown (0 = ready to carve).
+                format: int64
+                nullable: true
+                type: integer
+              currentLimit:
+                nullable: true
+                type: string
+              deferralsTotal:
+                description: Cumulative count of deferred ceiling crossings (policy refused a restart).
+                format: int64
+                nullable: true
+                type: integer
+              edgeTier:
+                description: Where the last tick sat on the golden/ceiling line (`GoldenPreserving` / `CeilingCrossing`) — the K4 continuity evidence, surfaced.
+                nullable: true
+                type: string
+              effectiveDryRun:
+                description: 'The effective mode: `true` = SHADOW (observe + attest, never carve).'
+                nullable: true
+                type: boolean
+              effectivePolicy:
+                description: The DisruptionPolicy in effect for this band (`restartFreeOnly` / …).
+                nullable: true
+                type: string
+              freshnessSeconds:
+                description: Age of the driving metric sample, in seconds (the freshness gate input).
+                format: int64
+                nullable: true
+                type: integer
+              history:
+                description: The recent TRAJECTORY (over-time view as a k8s object) — appended on a carve or a phase change, capped to the last N samples.
+                items:
+                  description: A point in a band's recent trajectory — the OVER-TIME view as a k8s object (no Grafana needed). Appended on a carve or a phase change, capped to the last N, so `kubectl get <band> -o yaml` shows how the adjustments have been going inline.
+                  properties:
+                    decision:
+                      description: The decision that produced this sample (carve / transition).
+                      nullable: true
+                      type: string
+                    limit:
+                      description: The limit at this point.
+                      format: int64
+                      nullable: true
+                      type: integer
+                    phase:
+                      description: The phase at this point.
+                      type: string
+                    time:
+                      description: RFC3339 time of this sample.
+                      type: string
+                    util:
+                      description: Observed utilization ratio at this point.
+                      format: double
+                      nullable: true
+                      type: number
+                  required:
+                  - phase
+                  - time
+                  type: object
+                type: array
+              lastActionClass:
+                description: The restart cost of the last carve/decision (`RestartFree` / `RestartConditional` / `RestartRequiring`) — the per-tick attestation evidence, now typed in status.
+                nullable: true
+                type: string
+              lastChangeEpoch:
+                format: int64
+                nullable: true
+                type: integer
+              lastDecision:
+                nullable: true
+                type: string
+              lastUtil:
+                nullable: true
+                type: string
+              observedCapacity:
+                description: The observed `capacity` (the current limit the util is measured against).
+                format: int64
+                nullable: true
+                type: integer
+              observedGeneration:
+                description: '`metadata.generation` the controller last reconciled — the "controller has seen my latest spec edit" signal.'
+                format: int64
+                nullable: true
+                type: integer
+              observedUsed:
+                description: The observed `used` scalar (bytes for memory/arc/cgroup; millicores for cpu).
+                format: int64
+                nullable: true
+                type: integer
+              observedUtil:
+                description: The observed utilization that drove this tick, as a ratio (`used/capacity`).
+                format: double
+                nullable: true
+                type: number
+              phase:
+                nullable: true
+                type: string
+            type: object
+        required:
+        - spec
+        title: ArcBand
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: cgroupbands.breathe.pleme.io
+spec:
+  group: breathe.pleme.io
+  names:
+    categories:
+    - breathe
+    kind: CgroupBand
+    plural: cgroupbands
+    shortNames:
+    - gband
+    singular: cgroupband
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.targetRef.kind
+      name: Target
+      type: string
+    - jsonPath: .spec.targetRef.name
+      name: Name
+      type: string
+    - jsonPath: .status.lastUtil
+      name: Util
+      type: string
+    - jsonPath: .status.currentLimit
+      name: Limit
+      type: string
+    - jsonPath: .status.lastDecision
+      name: Last
+      type: string
+    - jsonPath: .status.phase
+      name: Phase
+      type: string
+    - jsonPath: .status.conditions[?(@.type=='Ready')].status
+      name: Ready
+      type: string
+    name: v1
+    schema:
+      openAPIV3Schema:
+        description: Auto-generated derived type for CgroupBandSpec via `CustomResource`
+        properties:
+          spec:
+            properties:
+              ceiling:
+                default: 16Gi
+                type: string
+              cooldownSeconds:
+                default: 600
+                format: uint64
+                minimum: 0.0
+                type: integer
+              disruptionPolicy:
+                description: The golden/ceiling gate (default `restartFreeOnly`). Omitted on serialize when default so the strict typed-gRPC surface stays safe.
+                enum:
+                - restartFreeOnly
+                - allowConditional
+                - allowRestart
+                type: string
+              dryRun:
+                default: false
+                type: boolean
+              floor:
+                default: 256Mi
+                type: string
+              forceLimit:
+                description: 'BREAK-GLASS: pin the limit to exactly this value (a quantity string in the band''s unit, e.g. `8Gi` / `2`). breathe skips the band law and carves to it — but STILL through the gate (DisruptionPolicy + the single-writer guard + the L2 ceiling all apply; it cannot bypass safety). Clear it to resume normal homeostasis. Pair with `forceLimitExpiry` for an auto-releasing pin.'
+                nullable: true
+                type: string
+              forceLimitExpiry:
+                description: RFC3339 time after which `forceLimit` is ignored (auto-release the pin).
+                nullable: true
+                type: string
+              growAbove:
+                default: 0.85
+                format: double
+                type: number
+              growFactor:
+                default: 1.25
+                format: double
+                type: number
+              maxStalenessSeconds:
+                default: 120
+                format: uint64
+                minimum: 0.0
+                type: integer
+              setpoint:
+                default: 0.8
+                format: double
+                type: number
+              shrinkBelow:
+                default: 0.7
+                format: double
+                type: number
+              shrinkFactor:
+                default: 0.9
+                format: double
+                type: number
+              suspend:
+                description: 'FREEZE this band — `true` ⇒ the controller skips observe/plan/act entirely (phase `Suspended`), the limit is left exactly as-is. Distinct from `dryRun` (which still observes + reports what it WOULD do): suspend is "stop deciding". Resume with `suspend:false`. The k8s-native pause.'
+                type: boolean
+              targetRef:
+                description: The workload owner whose limit a band controls. For CNPG the kind is `Cluster` (the patched field lives on the `Cluster` CR); for storage the kind is `PersistentVolumeClaim`.
+                properties:
+                  apiVersion:
+                    nullable: true
+                    type: string
+                  container:
+                    nullable: true
+                    type: string
+                  kind:
+                    type: string
+                  name:
+                    type: string
+                required:
+                - kind
+                - name
+                type: object
+            required:
+            - targetRef
+            type: object
+          status:
+            description: The per-cycle typed status receipt — shared across all band kinds.
+            nullable: true
+            properties:
+              carvesTotal:
+                description: Cumulative count of carves (Applied) over this controller's lifetime.
+                format: int64
+                nullable: true
+                type: integer
+              conditions:
+                description: Standard conditions (Ready / Converged / Throttled / Stale / Conflict).
+                items:
+                  description: A standard k8s `metav1.Condition` (schemars-derivable — k8s_openapi's own `Condition` is not `JsonSchema`). Enables `kubectl wait --for=condition=…` and Flux/Argo health assessment off breathe bands.
+                  properties:
+                    lastTransitionTime:
+                      description: RFC3339 time the condition last flipped status (stable while status holds).
+                      type: string
+                    message:
+                      description: Human-readable message.
+                      type: string
+                    observedGeneration:
+                      description: The `metadata.generation` the controller observed when setting this.
+                      format: int64
+                      nullable: true
+                      type: integer
+                    reason:
+                      description: Machine-readable PascalCase reason.
+                      type: string
+                    status:
+                      description: '`True` | `False` | `Unknown`.'
+                      type: string
+                    type:
+                      description: Condition type, e.g. `Ready` / `Converged` / `Throttled` / `Stale` / `Conflict`.
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+              conflictManager:
+                nullable: true
+                type: string
+              conflictsTotal:
+                description: Cumulative count of single-writer conflicts (yielded to another manager).
+                format: int64
+                nullable: true
+                type: integer
+              cooldownRemainingSeconds:
+                description: Seconds remaining in the post-carve cooldown (0 = ready to carve).
+                format: int64
+                nullable: true
+                type: integer
+              currentLimit:
+                nullable: true
+                type: string
+              deferralsTotal:
+                description: Cumulative count of deferred ceiling crossings (policy refused a restart).
+                format: int64
+                nullable: true
+                type: integer
+              edgeTier:
+                description: Where the last tick sat on the golden/ceiling line (`GoldenPreserving` / `CeilingCrossing`) — the K4 continuity evidence, surfaced.
+                nullable: true
+                type: string
+              effectiveDryRun:
+                description: 'The effective mode: `true` = SHADOW (observe + attest, never carve).'
+                nullable: true
+                type: boolean
+              effectivePolicy:
+                description: The DisruptionPolicy in effect for this band (`restartFreeOnly` / …).
+                nullable: true
+                type: string
+              freshnessSeconds:
+                description: Age of the driving metric sample, in seconds (the freshness gate input).
+                format: int64
+                nullable: true
+                type: integer
+              history:
+                description: The recent TRAJECTORY (over-time view as a k8s object) — appended on a carve or a phase change, capped to the last N samples.
+                items:
+                  description: A point in a band's recent trajectory — the OVER-TIME view as a k8s object (no Grafana needed). Appended on a carve or a phase change, capped to the last N, so `kubectl get <band> -o yaml` shows how the adjustments have been going inline.
+                  properties:
+                    decision:
+                      description: The decision that produced this sample (carve / transition).
+                      nullable: true
+                      type: string
+                    limit:
+                      description: The limit at this point.
+                      format: int64
+                      nullable: true
+                      type: integer
+                    phase:
+                      description: The phase at this point.
+                      type: string
+                    time:
+                      description: RFC3339 time of this sample.
+                      type: string
+                    util:
+                      description: Observed utilization ratio at this point.
+                      format: double
+                      nullable: true
+                      type: number
+                  required:
+                  - phase
+                  - time
+                  type: object
+                type: array
+              lastActionClass:
+                description: The restart cost of the last carve/decision (`RestartFree` / `RestartConditional` / `RestartRequiring`) — the per-tick attestation evidence, now typed in status.
+                nullable: true
+                type: string
+              lastChangeEpoch:
+                format: int64
+                nullable: true
+                type: integer
+              lastDecision:
+                nullable: true
+                type: string
+              lastUtil:
+                nullable: true
+                type: string
+              observedCapacity:
+                description: The observed `capacity` (the current limit the util is measured against).
+                format: int64
+                nullable: true
+                type: integer
+              observedGeneration:
+                description: '`metadata.generation` the controller last reconciled — the "controller has seen my latest spec edit" signal.'
+                format: int64
+                nullable: true
+                type: integer
+              observedUsed:
+                description: The observed `used` scalar (bytes for memory/arc/cgroup; millicores for cpu).
+                format: int64
+                nullable: true
+                type: integer
+              observedUtil:
+                description: The observed utilization that drove this tick, as a ratio (`used/capacity`).
+                format: double
+                nullable: true
+                type: number
+              phase:
+                nullable: true
+                type: string
+            type: object
+        required:
+        - spec
+        title: CgroupBand
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: cgroupcpubands.breathe.pleme.io
+spec:
+  group: breathe.pleme.io
+  names:
+    categories:
+    - breathe
+    kind: CgroupCpuBand
+    plural: cgroupcpubands
+    shortNames:
+    - gcband
+    singular: cgroupcpuband
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.targetRef.kind
+      name: Target
+      type: string
+    - jsonPath: .spec.targetRef.name
+      name: Name
+      type: string
+    - jsonPath: .status.lastUtil
+      name: Util
+      type: string
+    - jsonPath: .status.currentLimit
+      name: Limit
+      type: string
+    - jsonPath: .status.lastDecision
+      name: Last
+      type: string
+    - jsonPath: .status.phase
+      name: Phase
+      type: string
+    - jsonPath: .status.conditions[?(@.type=='Ready')].status
+      name: Ready
+      type: string
+    name: v1
+    schema:
+      openAPIV3Schema:
+        description: Auto-generated derived type for CgroupCpuBandSpec via `CustomResource`
+        properties:
+          spec:
+            properties:
+              ceiling:
+                default: '2'
+                type: string
+              cooldownSeconds:
+                default: 600
+                format: uint64
+                minimum: 0.0
+                type: integer
+              disruptionPolicy:
+                description: The golden/ceiling gate (default `restartFreeOnly`). Omitted on serialize when default so the strict typed-gRPC surface stays safe.
+                enum:
+                - restartFreeOnly
+                - allowConditional
+                - allowRestart
+                type: string
+              dryRun:
+                default: false
+                type: boolean
+              floor:
+                default: 250m
+                type: string
+              forceLimit:
+                description: 'BREAK-GLASS: pin the limit to exactly this value (a quantity string in the band''s unit, e.g. `8Gi` / `2`). breathe skips the band law and carves to it — but STILL through the gate (DisruptionPolicy + the single-writer guard + the L2 ceiling all apply; it cannot bypass safety). Clear it to resume normal homeostasis. Pair with `forceLimitExpiry` for an auto-releasing pin.'
+                nullable: true
+                type: string
+              forceLimitExpiry:
+                description: RFC3339 time after which `forceLimit` is ignored (auto-release the pin).
+                nullable: true
+                type: string
+              growAbove:
+                default: 0.85
+                format: double
+                type: number
+              growFactor:
+                default: 1.25
+                format: double
+                type: number
+              maxStalenessSeconds:
+                default: 120
+                format: uint64
+                minimum: 0.0
+                type: integer
+              setpoint:
+                default: 0.8
+                format: double
+                type: number
+              shrinkBelow:
+                default: 0.7
+                format: double
+                type: number
+              shrinkFactor:
+                default: 0.9
+                format: double
+                type: number
+              suspend:
+                description: 'FREEZE this band — `true` ⇒ the controller skips observe/plan/act entirely (phase `Suspended`), the limit is left exactly as-is. Distinct from `dryRun` (which still observes + reports what it WOULD do): suspend is "stop deciding". Resume with `suspend:false`. The k8s-native pause.'
+                type: boolean
+              targetRef:
+                description: The workload owner whose limit a band controls. For CNPG the kind is `Cluster` (the patched field lives on the `Cluster` CR); for storage the kind is `PersistentVolumeClaim`.
+                properties:
+                  apiVersion:
+                    nullable: true
+                    type: string
+                  container:
+                    nullable: true
+                    type: string
+                  kind:
+                    type: string
+                  name:
+                    type: string
+                required:
+                - kind
+                - name
+                type: object
+            required:
+            - targetRef
+            type: object
+          status:
+            description: The per-cycle typed status receipt — shared across all band kinds.
+            nullable: true
+            properties:
+              carvesTotal:
+                description: Cumulative count of carves (Applied) over this controller's lifetime.
+                format: int64
+                nullable: true
+                type: integer
+              conditions:
+                description: Standard conditions (Ready / Converged / Throttled / Stale / Conflict).
+                items:
+                  description: A standard k8s `metav1.Condition` (schemars-derivable — k8s_openapi's own `Condition` is not `JsonSchema`). Enables `kubectl wait --for=condition=…` and Flux/Argo health assessment off breathe bands.
+                  properties:
+                    lastTransitionTime:
+                      description: RFC3339 time the condition last flipped status (stable while status holds).
+                      type: string
+                    message:
+                      description: Human-readable message.
+                      type: string
+                    observedGeneration:
+                      description: The `metadata.generation` the controller observed when setting this.
+                      format: int64
+                      nullable: true
+                      type: integer
+                    reason:
+                      description: Machine-readable PascalCase reason.
+                      type: string
+                    status:
+                      description: '`True` | `False` | `Unknown`.'
+                      type: string
+                    type:
+                      description: Condition type, e.g. `Ready` / `Converged` / `Throttled` / `Stale` / `Conflict`.
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+              conflictManager:
+                nullable: true
+                type: string
+              conflictsTotal:
+                description: Cumulative count of single-writer conflicts (yielded to another manager).
+                format: int64
+                nullable: true
+                type: integer
+              cooldownRemainingSeconds:
+                description: Seconds remaining in the post-carve cooldown (0 = ready to carve).
+                format: int64
+                nullable: true
+                type: integer
+              currentLimit:
+                nullable: true
+                type: string
+              deferralsTotal:
+                description: Cumulative count of deferred ceiling crossings (policy refused a restart).
+                format: int64
+                nullable: true
+                type: integer
+              edgeTier:
+                description: Where the last tick sat on the golden/ceiling line (`GoldenPreserving` / `CeilingCrossing`) — the K4 continuity evidence, surfaced.
+                nullable: true
+                type: string
+              effectiveDryRun:
+                description: 'The effective mode: `true` = SHADOW (observe + attest, never carve).'
+                nullable: true
+                type: boolean
+              effectivePolicy:
+                description: The DisruptionPolicy in effect for this band (`restartFreeOnly` / …).
+                nullable: true
+                type: string
+              freshnessSeconds:
+                description: Age of the driving metric sample, in seconds (the freshness gate input).
+                format: int64
+                nullable: true
+                type: integer
+              history:
+                description: The recent TRAJECTORY (over-time view as a k8s object) — appended on a carve or a phase change, capped to the last N samples.
+                items:
+                  description: A point in a band's recent trajectory — the OVER-TIME view as a k8s object (no Grafana needed). Appended on a carve or a phase change, capped to the last N, so `kubectl get <band> -o yaml` shows how the adjustments have been going inline.
+                  properties:
+                    decision:
+                      description: The decision that produced this sample (carve / transition).
+                      nullable: true
+                      type: string
+                    limit:
+                      description: The limit at this point.
+                      format: int64
+                      nullable: true
+                      type: integer
+                    phase:
+                      description: The phase at this point.
+                      type: string
+                    time:
+                      description: RFC3339 time of this sample.
+                      type: string
+                    util:
+                      description: Observed utilization ratio at this point.
+                      format: double
+                      nullable: true
+                      type: number
+                  required:
+                  - phase
+                  - time
+                  type: object
+                type: array
+              lastActionClass:
+                description: The restart cost of the last carve/decision (`RestartFree` / `RestartConditional` / `RestartRequiring`) — the per-tick attestation evidence, now typed in status.
+                nullable: true
+                type: string
+              lastChangeEpoch:
+                format: int64
+                nullable: true
+                type: integer
+              lastDecision:
+                nullable: true
+                type: string
+              lastUtil:
+                nullable: true
+                type: string
+              observedCapacity:
+                description: The observed `capacity` (the current limit the util is measured against).
+                format: int64
+                nullable: true
+                type: integer
+              observedGeneration:
+                description: '`metadata.generation` the controller last reconciled — the "controller has seen my latest spec edit" signal.'
+                format: int64
+                nullable: true
+                type: integer
+              observedUsed:
+                description: The observed `used` scalar (bytes for memory/arc/cgroup; millicores for cpu).
+                format: int64
+                nullable: true
+                type: integer
+              observedUtil:
+                description: The observed utilization that drove this tick, as a ratio (`used/capacity`).
+                format: double
+                nullable: true
+                type: number
+              phase:
+                nullable: true
+                type: string
+            type: object
+        required:
+        - spec
+        title: CgroupCpuBand
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: breathenodepools.breathe.pleme.io
+spec:
+  group: breathe.pleme.io
+  names:
+    categories:
+    - breathe
+    kind: BreatheNodePool
+    plural: breathenodepools
+    shortNames:
+    - bnp
+    singular: breathenodepool
+  scope: Cluster
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.nodeName
+      name: Node
+      type: string
+    - jsonPath: .spec.writeEnabled
+      name: Writes
+      type: boolean
+    - jsonPath: .spec.arcMaxGiB
+      name: ArcMaxGiB
+      type: integer
+    - jsonPath: .status.phase
+      name: Phase
+      type: string
+    name: v1
+    schema:
+      openAPIV3Schema:
+        description: Auto-generated derived type for BreatheNodePoolSpec via `CustomResource`
+        properties:
+          spec:
+            description: 'The per-node L2 ceilings, mirrored from `pleme.nixos.nodeBudget` — the host agent refuses any write above these (the second safety wall). Cluster-scoped: one BreatheNodePool enrolls one node.'
+            properties:
+              arcMaxGiB:
+                description: L2 ARC ceiling — `nodeBudget.arcMaxGiB` (the boot modprobe cap), in GiB (bounded ≤ 1 PiB so the bytes conversion cannot overflow).
+                format: uint64
+                maximum: 1048576.0
+                minimum: 0.0
+                type: integer
+              cgroupCpuMaxMilli:
+                additionalProperties:
+                  format: uint64
+                  minimum: 0.0
+                  type: integer
+                default: {}
+                description: L2 cpu ceiling per systemd unit — the unit's cpu territory in MILLICORES (`nodeBudget` cpu budget). A `CgroupCpuBand` whose unit is absent here is refused (never written blind). Millicores need no overflow bound (they are compared, never multiplied), so a plain integer — unlike `GiB`.
+                type: object
+              cgroupMaxGiB:
+                additionalProperties:
+                  format: uint64
+                  maximum: 1048576.0
+                  minimum: 0.0
+                  type: integer
+                default: {}
+                description: L2 cgroup ceiling per systemd unit — the unit's `nodeBudget` `memoryMaxGiB`, in GiB. A `CgroupBand` whose unit is absent here is refused (never written blind).
+                type: object
+              nodeName:
+                description: The node this pool enrolls (matches `kubernetes.io/hostname`). The agent reconciles only the pool whose `nodeName` equals its own `NODE_NAME`.
+                type: string
+              writeEnabled:
+                default: false
+                description: Node-level MASTER write switch. `false` = the whole node is in SHADOW — every host band decides + reports but never mutates the host, regardless of per-band `dryRun`. The safe default; flip to `true` only after the shadow window holds.
+                type: boolean
+            required:
+            - arcMaxGiB
+            - nodeName
+            type: object
+          status:
+            description: BreatheNodePool status — the enrollment receipt.
+            nullable: true
+            properties:
+              lastSeenEpoch:
+                format: int64
+                nullable: true
+                type: integer
+              managedUnits:
+                format: int64
+                nullable: true
+                type: integer
+              observedNode:
+                nullable: true
+                type: string
+              phase:
+                nullable: true
+                type: string
+            type: object
+        required:
+        - spec
+        title: BreatheNodePool
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: breatheoverviews.breathe.pleme.io
+spec:
+  group: breathe.pleme.io
+  names:
+    categories:
+    - breathe
+    kind: BreatheOverview
+    plural: breatheoverviews
+    shortNames:
+    - bov
+    singular: breatheoverview
+  scope: Cluster
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .status.total
+      name: Bands
+      type: integer
+    - jsonPath: .status.converged
+      name: Converged
+      type: integer
+    - jsonPath: .status.carving
+      name: Carving
+      type: integer
+    - jsonPath: .status.deferred
+      name: Deferred
+      type: integer
+    - jsonPath: .status.shadow
+      name: Shadow
+      type: integer
+    - jsonPath: .status.lastUpdated
+      name: Updated
+      type: string
+    name: v1
+    schema:
+      openAPIV3Schema:
+        description: Auto-generated derived type for BreatheOverviewSpec via `CustomResource`
+        properties:
+          spec:
+            description: 'A FLEET-OVERVIEW object (cluster-scoped). The controller keeps its status current by listing EVERY band, so ONE `kubectl get breatheoverview` (bov) shows the whole fleet''s homeostasis at a glance — the dashboard as a single k8s object, no Grafana. Create one (e.g. `metadata.name: rio`); the controller fills the rest.'
+            properties:
+              refreshSeconds:
+                default: 30
+                description: How often (seconds) the controller re-aggregates the fleet (default 30).
+                format: uint64
+                minimum: 0.0
+                type: integer
+            type: object
+          status:
+            description: The aggregated fleet status — totals + the per-band roll-up.
+            nullable: true
+            properties:
+              bands:
+                items:
+                  description: One band's line in the fleet overview.
+                  properties:
+                    currentLimit:
+                      nullable: true
+                      type: string
+                    dryRun:
+                      type: boolean
+                    kind:
+                      type: string
+                    name:
+                      type: string
+                    namespace:
+                      type: string
+                    phase:
+                      nullable: true
+                      type: string
+                    policy:
+                      nullable: true
+                      type: string
+                    target:
+                      type: string
+                    util:
+                      nullable: true
+                      type: string
+                  required:
+                  - kind
+                  - name
+                  - namespace
+                  - target
+                  type: object
+                type: array
+              carving:
+                default: 0
+                format: int64
+                type: integer
+              converged:
+                default: 0
+                format: int64
+                type: integer
+              deferred:
+                default: 0
+                format: int64
+                type: integer
+              lastUpdated:
+                nullable: true
+                type: string
+              shadow:
+                default: 0
+                format: int64
+                type: integer
+              suspended:
+                default: 0
+                format: int64
+                type: integer
+              total:
+                default: 0
+                format: int64
+                type: integer
+            type: object
+        required:
+        - spec
+        title: BreatheOverview
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: breatheconfigs.breathe.pleme.io
+spec:
+  group: breathe.pleme.io
+  names:
+    categories:
+    - breathe
+    kind: BreatheConfig
+    plural: breatheconfigs
+    shortNames:
+    - bcfg
+    singular: breatheconfig
+  scope: Cluster
+  versions:
+  - additionalPrinterColumns: []
+    name: v1
+    schema:
+      openAPIV3Schema:
+        description: Auto-generated derived type for BreatheConfigSpec via `CustomResource`
+        properties:
+          spec:
+            description: 'Cluster-scoped fleet CONFIG — lifts breathe''s last env-only knobs onto the k8s API. Both binaries read it at startup (merging over the env defaults), so an operator tunes the fleet via `kubectl edit breatheconfig <name>` instead of editing a Deployment env + redeploying (dynamic hot-reload is a noted refinement; a config change currently applies on the next controller restart). Create one (e.g. `metadata.name: default`).'
+            properties:
+              baseRequeueSeconds:
+                description: Base requeue interval (seconds) when no per-class cadence applies.
+                format: uint64
+                minimum: 0.0
+                nullable: true
+                type: integer
+              classCooldowns:
+                description: Per-restart-class cooldown windows (seconds) — the real-time cadence knob.
+                nullable: true
+                properties:
+                  restartConditional:
+                    format: uint64
+                    minimum: 0.0
+                    type: integer
+                  restartFree:
+                    format: uint64
+                    minimum: 0.0
+                    type: integer
+                  restartRequiring:
+                    format: uint64
+                    minimum: 0.0
+                    type: integer
+                required:
+                - restartConditional
+                - restartFree
+                - restartRequiring
+                type: object
+              prometheusUrl:
+                description: PromQL endpoint the storage dimension reads `used` from.
+                nullable: true
+                type: string
+            type: object
+        required:
+        - spec
+        title: BreatheConfig
+        type: object
+    served: true
+    storage: true
+    subresources: {}
