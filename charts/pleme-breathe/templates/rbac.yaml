@@ -53,7 +53,7 @@ rules:
     verbs: ["get", "list", "watch"]
   # The target owners breathe patches limits.{memory,cpu} on (true SSA).
   - apiGroups: ["apps"]
-    resources: ["deployments", "statefulsets"]
+    resources: ["deployments", "statefulsets", "daemonsets"]
     verbs: ["get", "list", "watch", "patch"]
   - apiGroups: ["postgresql.cnpg.io"]
     resources: ["clusters"]
