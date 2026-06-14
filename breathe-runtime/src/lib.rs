@@ -96,6 +96,11 @@ pub fn event_for(receipt: &TickReceipt) -> Option<(EventKind, &'static str, Stri
             (Warning, "StaleMetric", format!("metric {staleness_secs}s stale — held (never carve on a stale sample)"))
         }
         TickReceipt::Conflict { manager } => (Warning, "Yielded", format!("yielded the field to {manager}")),
+        TickReceipt::MetricUnrepresentable { used, capacity } => (
+            Warning,
+            "MetricUnrepresentable",
+            format!("metric reports used {used} > capacity {capacity} — not a per-entity gauge (e.g. local-path PVC stats the whole node fs); held, never carved"),
+        ),
         TickReceipt::Error { error } => (Warning, "ReconcileError", error.to_string()),
         TickReceipt::DryRunWouldApply { from, to } => {
             (Normal, "ShadowWouldApply", format!("shadow: would carve {from} -> {to} (dryRun — nothing written)"))
@@ -157,8 +162,12 @@ fn upsert_condition(
 pub fn conditions_for(outcome: &TickOutcome, prior: &[Condition], generation: Option<i64>) -> Vec<Condition> {
     let now = chrono::Utc::now().to_rfc3339();
     let r = &outcome.receipt;
-    let observable =
-        !matches!(r, TickReceipt::Error { .. } | TickReceipt::Observed { decision: Decision::NoLimit });
+    let observable = !matches!(
+        r,
+        TickReceipt::Error { .. }
+            | TickReceipt::MetricUnrepresentable { .. }
+            | TickReceipt::Observed { decision: Decision::NoLimit }
+    );
     let converged = matches!(
         r,
         TickReceipt::Observed { decision: Decision::Hold | Decision::AtCeiling { .. } | Decision::NoSafeShrink { .. } }
@@ -227,6 +236,12 @@ pub fn status_for(
             s.phase = Some("Conflict".into());
             s.conflict_manager = Some(manager.clone());
             s.last_decision = Some(format!("yielded to {manager}"));
+        }
+        TickReceipt::MetricUnrepresentable { used, capacity } => {
+            s.phase = Some("MetricUnrepresentable".into());
+            s.last_decision = Some(format!(
+                "used {used} > capacity {capacity} — metric not per-entity (e.g. local-path PVC = whole-node fs); held"
+            ));
         }
         TickReceipt::Stale { staleness_secs } => {
             s.phase = Some("Stale".into());
@@ -343,6 +358,7 @@ pub fn next_requeue(receipt: &TickReceipt, cooldowns: &ClassCooldowns) -> Durati
         TickReceipt::Observed { .. }
         | TickReceipt::Cooldown
         | TickReceipt::Conflict { .. }
+        | TickReceipt::MetricUnrepresentable { .. }
         | TickReceipt::Stale { .. }
         | TickReceipt::Error { .. } => cooldowns.restart_conditional,
     };

@@ -54,6 +54,10 @@ pub struct PredictiveInput {
 pub enum TickReceipt {
     /// Another manager owns the field — yielded, never fought.
     Conflict { manager: String },
+    /// The driving metric reports `used > capacity` — impossible for a true
+    /// per-entity gauge, so it is not measuring this entity (local-path PVC →
+    /// whole-node-fs bytes). Held + surfaced; NEVER carved on the lie.
+    MetricUnrepresentable { used: u64, capacity: u64 },
     /// The driving sample was too old to carve — held + surfaced.
     Stale { staleness_secs: u64 },
     /// A mutation was warranted but the target is cooling down.
@@ -94,6 +98,7 @@ impl TickReceipt {
             | Self::Cooldown
             | Self::Stale { .. }
             | Self::Conflict { .. }
+            | Self::MetricUnrepresentable { .. }
             | Self::Error { .. } => EdgeTier::GoldenPreserving,
         }
     }
@@ -177,6 +182,9 @@ pub async fn reconcile_one(
     );
     let receipt = match plan {
         TickPlan::Conflict { manager } => TickReceipt::Conflict { manager },
+        TickPlan::Unrepresentable { used, capacity } => {
+            TickReceipt::MetricUnrepresentable { used, capacity }
+        }
         TickPlan::Stale { staleness_secs, .. } => TickReceipt::Stale { staleness_secs },
         TickPlan::Cooldown { .. } => TickReceipt::Cooldown,
         TickPlan::Observe { decision } => TickReceipt::Observed { decision },
