@@ -22,7 +22,7 @@ use kube::{
 use serde_json::{json, Value};
 
 use crate::managed_fields::{
-    cnpg_cluster_limit_segments, field_owners, pod_template_limit_segments, pvc_request_segments,
+    cnpg_cluster_limit_segments, cnpg_storage_segments, field_owners, pod_template_limit_segments, pvc_request_segments,
 };
 
 pub struct KubeCluster {
@@ -84,6 +84,10 @@ impl KubeCluster {
                 .map(String::from),
             LimitLayout::PvcRequest => data
                 .pointer("/spec/resources/requests/storage")
+                .and_then(Value::as_str)
+                .map(String::from),
+            LimitLayout::ClusterStorage => data
+                .pointer("/spec/storage/size")
                 .and_then(Value::as_str)
                 .map(String::from),
             LimitLayout::PodTemplate { container } => {
@@ -309,6 +313,7 @@ impl Cluster for KubeCluster {
         let segments = match layout {
             LimitLayout::ClusterTopLevel => cnpg_cluster_limit_segments(resource),
             LimitLayout::PvcRequest => pvc_request_segments(),
+            LimitLayout::ClusterStorage => cnpg_storage_segments(),
             LimitLayout::PodTemplate { container } => {
                 match Self::container_name(&obj.data, container) {
                     Some(c) => pod_template_limit_segments(&c, resource),
@@ -371,6 +376,7 @@ impl Cluster for KubeCluster {
         let spec = match &patch.layout {
             LimitLayout::ClusterTopLevel => json!({ "resources": { "limits": { res: qty } } }),
             LimitLayout::PvcRequest => json!({ "resources": { "requests": { "storage": qty } } }),
+            LimitLayout::ClusterStorage => json!({ "storage": { "size": qty } }),
             LimitLayout::PodTemplate { container } => {
                 let cname = match container {
                     Some(c) => c.clone(),

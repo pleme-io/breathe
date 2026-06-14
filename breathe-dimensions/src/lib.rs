@@ -83,12 +83,21 @@ impl DimensionDescriptor for StorageDescriptor {
     fn logical_field(&self) -> &'static str { "spec.resources.requests.storage" }
     fn resource(&self) -> &'static str { "storage" }
     fn semantics(&self) -> ApplySemantics { ApplySemantics::ContinuousReconciliation }
-    fn layout(&self, _target: &Target) -> LimitLayout { LimitLayout::PvcRequest }
+    fn layout(&self, target: &Target) -> LimitLayout {
+        match target.kind.as_str() {
+            "Cluster" => LimitLayout::ClusterStorage,
+            _ => LimitLayout::PvcRequest,
+        }
+    }
     fn metric_source(&self, target: &Target) -> MetricSource {
+        let pvc_sel = if target.kind == "Cluster" {
+            format!(r#"persistentvolumeclaim=~"{name}-[0-9]+""#, name = target.name)
+        } else {
+            format!(r#"persistentvolumeclaim="{name}""#, name = target.name)
+        };
         MetricSource::Prometheus(format!(
-            r#"max(kubelet_volume_stats_used_bytes{{namespace="{ns}",persistentvolumeclaim="{name}"}})"#,
-            ns = target.namespace,
-            name = target.name
+            r#"max(kubelet_volume_stats_used_bytes{{namespace="{ns}",{pvc_sel}}})"#,
+            ns = target.namespace
         ))
     }
 }
@@ -172,12 +181,26 @@ mod tests {
     }
 
     #[test]
-    fn storage_is_grow_only_pvc_promql() {
+    fn storage_is_grow_only_kind_aware_promql() {
         let d = StorageDescriptor;
         assert_eq!(d.directionality(), Directionality::GrowOnly);
-        assert_eq!(d.layout(&cnpg()), LimitLayout::PvcRequest);
+        // A raw PVC target carves its own requests.storage, keyed on its exact name.
+        let pvc = Target { namespace: "drive".into(), name: "data-garage-0".into(), kind: "PersistentVolumeClaim".into(), api_version: "v1".into(), container: None };
+        assert_eq!(d.layout(&pvc), LimitLayout::PvcRequest);
+        match d.metric_source(&pvc) {
+            MetricSource::Prometheus(q) => {
+                assert!(q.contains("kubelet_volume_stats_used_bytes"));
+                assert!(q.contains(r#"persistentvolumeclaim="data-garage-0""#), "exact PVC name: {q}");
+            }
+            other => panic!("storage uses PromQL, got {other:?}"),
+        }
+        // A CNPG `Cluster` owns the raw PVC; breathe carves spec.storage.size and
+        // aggregates the volume stats across the cluster's instance PVCs (<name>-N).
+        assert_eq!(d.layout(&cnpg()), LimitLayout::ClusterStorage);
         match d.metric_source(&cnpg()) {
-            MetricSource::Prometheus(q) => assert!(q.contains("kubelet_volume_stats_used_bytes")),
+            MetricSource::Prometheus(q) => {
+                assert!(q.contains(r#"persistentvolumeclaim=~"pangea-database-[0-9]+""#), "regex over instance PVCs: {q}");
+            }
             other => panic!("storage uses PromQL, got {other:?}"),
         }
     }

@@ -95,6 +95,13 @@ pub fn pvc_request_segments() -> Vec<String> {
     ]
 }
 
+/// fieldsV1 segments for a CNPG `Cluster`'s `spec.storage.size` — the database
+/// operator's storage field breathe carves for managed-database disk homeostasis.
+#[must_use]
+pub fn cnpg_storage_segments() -> Vec<String> {
+    vec!["f:spec".into(), "f:storage".into(), "f:size".into()]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

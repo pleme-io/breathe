@@ -104,3 +104,17 @@
   :mirrors     "systemctl set-property --runtime <unit> MemoryHigh"
   :ceiling     "BreatheNodePool.cgroupMaxGiB[<unit>] (= nodeBudget per-unit memoryMaxGiB)"
   :purpose     "hold a unit's working set at the band by carving transient MemoryHigh within its envelope")
+
+(defdimension-cgroup-cpu
+  :name        "cgroup-cpu"
+  :maturity    :working
+  :directionality :bidirectional
+  :observe     "<unit> cgroup cpu.stat usage_usec rate / CPUQuota (millicores)"
+  :field       "host.cgroup.cpu_quota"
+  :manager     "breathe/cgroup-cpu"
+  :assign      :host-set-property
+  :semantics   :continuous-reconciliation
+  :depends-on  ()
+  :mirrors     "systemctl set-property --runtime <unit> CPUQuota"
+  :ceiling     "BreatheNodePool.cgroupCpuMaxMilli[<unit>] (= nodeBudget per-unit cpu territory)"
+  :purpose     "hold a unit's cpu rate at the band by carving transient CPUQuota within its nodeBudget cpu territory")
