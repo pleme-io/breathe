@@ -57,19 +57,36 @@ One `DimensionDescriptor` impl (`breathe-dimensions`) + one catalog row
 `band_kind!` line (`breathe-crd`, passing the dimension's `Unit` + default
 floor/ceiling). The controller code never grows. **Never touch `decide`.**
 
-## rio go-live status (2026-06-02)
+## rio go-live status (2026-06-13)
 
 - **memory — LIVE on pangea-database.** breathe owns `Cluster.spec.resources.limits.memory`
   (floor 2Gi / ceiling 4Gi), seeded via the Helm-`null` cede, holding `AtFloor`,
-  auto-grows on pressure. **OOMKill class closed.**
+  auto-grows on pressure. **OOMKill class closed.** **M0 predictive ON** here
+  (`predictive: true`, `predictiveLookaheadSeconds: 60`) — the dormant
+  `PredictiveGrow<BandLaw>` grows headroom on working-set velocity *before* the
+  spike, strictly safer for OOM than reactive (only ever raises the limit
+  earlier; still through `safety_clamp`; the never-OOM oracle covers it via
+  `safety_gate_contains_the_predictive_law`). Default off fleet-wide.
 - **cpu — LIVE on pangea-database** (floor 500m / ceiling 2). Same CNPG Cluster,
   `limits.cpu`, `breathe/cpu` field manager (disjoint from `breathe/memory`).
-- **storage — code-complete, deferred on rio.** Two *environmental* blockers
-  (no breathe gap): `local-path` storageClass has `allowVolumeExpansion: false`
-  (PVCs are immutable) **and** there's no always-on volume-stats metric
-  (vmsingle is scaled to zero). **Named trigger to go live:** enroll a
-  `StorageBand` on a workload backed by an expansion-capable CSI storageClass
-  with Prometheus available.
+- **storage — code-complete + CLUSTER-AWARE, correctly PARKED on rio.** The
+  `ClusterStorage` layout carves a CNPG `Cluster`'s `spec.storage.size` (the one
+  declarative field the operator owns + reconciles to every instance PVC) and
+  aggregates the instance-PVC metric (`<name>-[0-9]+`); the pangea-database band
+  reads `spec.storage.size=10Gi` correctly. `local-path` now has
+  `allowVolumeExpansion: true`, **but the deeper blocker stands and is now
+  understood + guarded:** local-path PVCs have **no per-volume accounting**, so
+  `kubelet_volume_stats` reports the *whole node filesystem* (466 G used / 972 G
+  cap) for a 10 Gi volume. The new **`MetricUnrepresentable` guard** makes that a
+  typed, observable, never-carves terminal (`used > capacity` on a `GrowOnly`
+  band proves the metric isn't per-entity), so a ceded local-path band can never
+  run away to ceiling on the lie. On rio the storage bands sit in **Conflict**
+  (operator-owned fields, single-writer-first) — correct + safe. **Named trigger
+  to go live:** a CSI storageClass with **per-volume accounting + enforced
+  quotas** (Longhorn / Ceph-RBD / EBS), then cede the field as memory did.
+- **Program backlog:** the full carve-vector enumeration (96 vectors, 7 hazard
+  classes, 15-PR sequenced plan) + the shipped ledger live in
+  `theory/BREATHABILITY-PROGRAM.md`.
 
 ## Build + ship
 
