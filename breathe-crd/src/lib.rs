@@ -781,7 +781,7 @@ mod tests {
         let mem = MemoryBand::new("m", MemoryBandSpec {
             target_ref: tr.clone(), setpoint: 0.80, grow_above: 0.85, shrink_below: 0.70,
             grow_factor: 1.25, shrink_factor: 0.90, floor: "512Mi".into(), ceiling: "4Gi".into(),
-            cooldown_seconds: 600, max_staleness_seconds: 120, dry_run: true, disruption_policy: Default::default(), suspend: false, force_limit: None, force_limit_expiry: None,
+            cooldown_seconds: 600, max_staleness_seconds: 120, dry_run: true, disruption_policy: Default::default(), suspend: false, force_limit: None, force_limit_expiry: None, predictive: false, predictive_lookahead_seconds: 60,
         });
         let cfg = Band::band_config(&mem).unwrap();
         assert_eq!(cfg.floor_bytes, 512 * (1 << 20));
@@ -794,7 +794,7 @@ mod tests {
         let cpu = CpuBand::new("c", CpuBandSpec {
             target_ref: tr, setpoint: 0.80, grow_above: 0.85, shrink_below: 0.70,
             grow_factor: 1.25, shrink_factor: 0.90, floor: "250m".into(), ceiling: "2".into(),
-            cooldown_seconds: 600, max_staleness_seconds: 120, dry_run: false, disruption_policy: Default::default(), suspend: false, force_limit: None, force_limit_expiry: None,
+            cooldown_seconds: 600, max_staleness_seconds: 120, dry_run: false, disruption_policy: Default::default(), suspend: false, force_limit: None, force_limit_expiry: None, predictive: false, predictive_lookahead_seconds: 60,
         });
         let cfg = Band::band_config(&cpu).unwrap();
         // millicores, NOT bytes: "250m" → 250, "2" cores → 2000m.
@@ -819,7 +819,7 @@ mod tests {
         let arc = ArcBand::new("rio-arc", ArcBandSpec {
             target_ref: tr, setpoint: 0.80, grow_above: 0.85, shrink_below: 0.70,
             grow_factor: 1.25, shrink_factor: 0.90, floor: "1Gi".into(), ceiling: "6Gi".into(),
-            cooldown_seconds: 600, max_staleness_seconds: 120, dry_run: true, disruption_policy: Default::default(), suspend: false, force_limit: None, force_limit_expiry: None,
+            cooldown_seconds: 600, max_staleness_seconds: 120, dry_run: true, disruption_policy: Default::default(), suspend: false, force_limit: None, force_limit_expiry: None, predictive: false, predictive_lookahead_seconds: 60,
         });
         let cfg = Band::band_config(&arc).unwrap();
         assert_eq!(cfg.floor_bytes, 1 << 30);
@@ -830,7 +830,7 @@ mod tests {
         let g = CgroupBand::new("nix-daemon", CgroupBandSpec {
             target_ref: TargetRef { kind: "HostUnit".into(), name: "nix-daemon.service".into(), api_version: None, container: None },
             setpoint: 0.80, grow_above: 0.85, shrink_below: 0.70, grow_factor: 1.25, shrink_factor: 0.90,
-            floor: "1Gi".into(), ceiling: "12Gi".into(), cooldown_seconds: 600, max_staleness_seconds: 120, dry_run: true, disruption_policy: Default::default(), suspend: false, force_limit: None, force_limit_expiry: None,
+            floor: "1Gi".into(), ceiling: "12Gi".into(), cooldown_seconds: 600, max_staleness_seconds: 120, dry_run: true, disruption_policy: Default::default(), suspend: false, force_limit: None, force_limit_expiry: None, predictive: false, predictive_lookahead_seconds: 60,
         });
         assert_eq!(g.target_ref().name, "nix-daemon.service");
     }
