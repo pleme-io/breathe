@@ -86,6 +86,15 @@ spec:
                 format: uint64
                 minimum: 0.0
                 type: integer
+              predictive:
+                description: 'M0 PREDICTIVE (opt-in, default off → behaviour byte-unchanged): when `true`, breathe measures the working-set velocity and pre-grows the limit for the projected burst via the proven `PredictiveGrow<BandLaw>` — asymmetric (only ever raises a grow), still `safety_clamp`-contained (the never-OOM oracle covers it). Shadow-first: observe the predictive grows under `dryRun` before promoting to live.'
+                type: boolean
+              predictiveLookaheadSeconds:
+                default: 60
+                description: Forecast horizon for predictive carving (seconds). Default 60s (≈ refresh + cooldown for memory); set higher for slow-filling resources (storage = resize-cooldown × safety factor).
+                format: uint64
+                minimum: 0.0
+                type: integer
               setpoint:
                 default: 0.8
                 format: double
@@ -371,6 +380,15 @@ spec:
                 type: number
               maxStalenessSeconds:
                 default: 120
+                format: uint64
+                minimum: 0.0
+                type: integer
+              predictive:
+                description: 'M0 PREDICTIVE (opt-in, default off → behaviour byte-unchanged): when `true`, breathe measures the working-set velocity and pre-grows the limit for the projected burst via the proven `PredictiveGrow<BandLaw>` — asymmetric (only ever raises a grow), still `safety_clamp`-contained (the never-OOM oracle covers it). Shadow-first: observe the predictive grows under `dryRun` before promoting to live.'
+                type: boolean
+              predictiveLookaheadSeconds:
+                default: 60
+                description: Forecast horizon for predictive carving (seconds). Default 60s (≈ refresh + cooldown for memory); set higher for slow-filling resources (storage = resize-cooldown × safety factor).
                 format: uint64
                 minimum: 0.0
                 type: integer
@@ -662,6 +680,15 @@ spec:
                 format: uint64
                 minimum: 0.0
                 type: integer
+              predictive:
+                description: 'M0 PREDICTIVE (opt-in, default off → behaviour byte-unchanged): when `true`, breathe measures the working-set velocity and pre-grows the limit for the projected burst via the proven `PredictiveGrow<BandLaw>` — asymmetric (only ever raises a grow), still `safety_clamp`-contained (the never-OOM oracle covers it). Shadow-first: observe the predictive grows under `dryRun` before promoting to live.'
+                type: boolean
+              predictiveLookaheadSeconds:
+                default: 60
+                description: Forecast horizon for predictive carving (seconds). Default 60s (≈ refresh + cooldown for memory); set higher for slow-filling resources (storage = resize-cooldown × safety factor).
+                format: uint64
+                minimum: 0.0
+                type: integer
               setpoint:
                 default: 0.8
                 format: double
@@ -947,6 +974,15 @@ spec:
                 type: number
               maxStalenessSeconds:
                 default: 120
+                format: uint64
+                minimum: 0.0
+                type: integer
+              predictive:
+                description: 'M0 PREDICTIVE (opt-in, default off → behaviour byte-unchanged): when `true`, breathe measures the working-set velocity and pre-grows the limit for the projected burst via the proven `PredictiveGrow<BandLaw>` — asymmetric (only ever raises a grow), still `safety_clamp`-contained (the never-OOM oracle covers it). Shadow-first: observe the predictive grows under `dryRun` before promoting to live.'
+                type: boolean
+              predictiveLookaheadSeconds:
+                default: 60
+                description: Forecast horizon for predictive carving (seconds). Default 60s (≈ refresh + cooldown for memory); set higher for slow-filling resources (storage = resize-cooldown × safety factor).
                 format: uint64
                 minimum: 0.0
                 type: integer
@@ -1238,6 +1274,15 @@ spec:
                 format: uint64
                 minimum: 0.0
                 type: integer
+              predictive:
+                description: 'M0 PREDICTIVE (opt-in, default off → behaviour byte-unchanged): when `true`, breathe measures the working-set velocity and pre-grows the limit for the projected burst via the proven `PredictiveGrow<BandLaw>` — asymmetric (only ever raises a grow), still `safety_clamp`-contained (the never-OOM oracle covers it). Shadow-first: observe the predictive grows under `dryRun` before promoting to live.'
+                type: boolean
+              predictiveLookaheadSeconds:
+                default: 60
+                description: Forecast horizon for predictive carving (seconds). Default 60s (≈ refresh + cooldown for memory); set higher for slow-filling resources (storage = resize-cooldown × safety factor).
+                format: uint64
+                minimum: 0.0
+                type: integer
               setpoint:
                 default: 0.8
                 format: double
@@ -1523,6 +1568,15 @@ spec:
                 type: number
               maxStalenessSeconds:
                 default: 120
+                format: uint64
+                minimum: 0.0
+                type: integer
+              predictive:
+                description: 'M0 PREDICTIVE (opt-in, default off → behaviour byte-unchanged): when `true`, breathe measures the working-set velocity and pre-grows the limit for the projected burst via the proven `PredictiveGrow<BandLaw>` — asymmetric (only ever raises a grow), still `safety_clamp`-contained (the never-OOM oracle covers it). Shadow-first: observe the predictive grows under `dryRun` before promoting to live.'
+                type: boolean
+              predictiveLookaheadSeconds:
+                default: 60
+                description: Forecast horizon for predictive carving (seconds). Default 60s (≈ refresh + cooldown for memory); set higher for slow-filling resources (storage = resize-cooldown × safety factor).
                 format: uint64
                 minimum: 0.0
                 type: integer
