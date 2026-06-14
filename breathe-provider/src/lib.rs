@@ -127,6 +127,11 @@ pub enum LimitLayout {
     PodResize { container: Option<String> },
     /// PVC: `spec.resources.requests.storage` (grow-only).
     PvcRequest,
+    /// CNPG `Cluster`: `spec.storage.size` (grow-only) — the storage analogue of
+    /// `ClusterTopLevel`. The DB operator owns the raw PVC's `requests.storage`,
+    /// so breathe carves the operator's storage field and lets it expand the
+    /// instance PVCs (managed-database disk homeostasis).
+    ClusterStorage,
     /// HOST: a systemd/sysfs lever — written by `HostCluster`, not the k8s API.
     Host(HostKnob),
 }
@@ -308,7 +313,7 @@ impl LimitLayout {
     #[must_use]
     pub fn disruption_class(&self) -> DisruptionClass {
         match self {
-            Self::PvcRequest | Self::Host(_) => DisruptionClass::RestartFree,
+            Self::PvcRequest | Self::ClusterStorage | Self::Host(_) => DisruptionClass::RestartFree,
             Self::PodResize { .. } => DisruptionClass::RestartConditional,
             Self::PodTemplate { .. } | Self::ClusterTopLevel => DisruptionClass::RestartRequiring,
         }
@@ -325,7 +330,7 @@ impl LimitLayout {
     #[must_use]
     pub fn action_class(&self, growing: bool, resource: &str) -> DisruptionClass {
         match self {
-            Self::PvcRequest | Self::Host(_) => DisruptionClass::RestartFree,
+            Self::PvcRequest | Self::ClusterStorage | Self::Host(_) => DisruptionClass::RestartFree,
             Self::PodResize { .. } => {
                 if resource == "cpu" || growing {
                     DisruptionClass::RestartFree
