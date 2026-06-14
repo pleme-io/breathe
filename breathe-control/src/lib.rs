@@ -511,6 +511,16 @@ pub fn clamp_to_directionality(d: Decision, dir: Directionality) -> Decision {
 pub enum TickPlan {
     /// Another field-manager owns the field — yield (single-writer invariant).
     Conflict { manager: String },
+    /// The driving metric reports usage that EXCEEDS the entity's own capacity —
+    /// physically impossible for a true per-entity gauge, so the metric is not
+    /// measuring THIS entity (the classic local-path PVC case: `kubelet_volume_stats`
+    /// reports the whole node filesystem, ~466G used / ~905G cap, for a 10Gi volume).
+    /// Carving on that number would slam the limit to ceiling on a lie, so this is a
+    /// typed, observable, NEVER-carves terminal — the metric mismatch is named, not
+    /// silently acted on. Only reachable for `GrowOnly` hard-capped dimensions
+    /// (storage), where `used ≤ capacity` is an invariant a real gauge always honours
+    /// (reserved blocks keep even a 100%-full filesystem strictly below capacity).
+    Unrepresentable { used: u64, capacity: u64 },
     /// A mutation is warranted but the driving sample is too old to trust —
     /// hold + surface (the never-OOM proof requires a fresh metric).
     Stale { staleness_secs: u64, decision: Decision },
@@ -542,6 +552,18 @@ pub fn plan_tick(
 ) -> TickPlan {
     if let Some(manager) = competing_field_manager(&obs.owners, our_manager, our_field) {
         return TickPlan::Conflict { manager };
+    }
+    // PER-ENTITY METRIC INVARIANT (storage / any GrowOnly hard-capped dimension):
+    // a real per-entity usage gauge can never exceed the entity's own capacity —
+    // a full filesystem reports used STRICTLY below capacity (reserved blocks), a
+    // file table can't exceed file-max, etc. `used > capacity` therefore PROVES the
+    // metric is measuring something else (the local-path PVC reporting the whole
+    // node fs). Refuse to derive a carve from a number that isn't about this entity;
+    // surface it as a typed, observable, non-mutating outcome instead. Scoped to
+    // GrowOnly so a Bidirectional memory/cpu band — where a transient over-limit
+    // sample is a legitimate "grow hard" signal — is untouched.
+    if dir == Directionality::GrowOnly && obs.used > obs.capacity {
+        return TickPlan::Unrepresentable { used: obs.used, capacity: obs.capacity };
     }
     // Per-resource law selection (M0): predictive `Some((rate, lookahead))` carves
     // through the proven `PredictiveGrow<BandLaw>` — pre-grows for the burst the
@@ -990,6 +1012,41 @@ mod tests {
         match plan_tick(&obs(200 * MI, GI, ours()), &cfg(), Directionality::GrowOnly, false, "breathe-memory", MEMORY_LIMIT_FIELD, FRESH, None) {
             TickPlan::Observe { decision: Decision::NoSafeShrink { .. } } => {}
             p => panic!("expected Observe(NoSafeShrink), got {p:?}"),
+        }
+    }
+
+    #[test]
+    fn plan_flags_growonly_used_over_capacity_as_unrepresentable() {
+        // the local-path PVC case: kubelet_volume_stats reports the whole node fs
+        // (used 2Gi) for a 1Gi volume (capacity). A per-volume gauge can NEVER do
+        // this (reserved blocks keep a full fs strictly below capacity), so the
+        // metric isn't about this entity — refuse to carve, surface it typed.
+        match plan_tick(&obs(2 * GI, GI, ours()), &cfg(), Directionality::GrowOnly, false, "breathe-memory", MEMORY_LIMIT_FIELD, FRESH, None) {
+            TickPlan::Unrepresentable { used, capacity } => {
+                assert_eq!((used, capacity), (2 * GI, GI));
+            }
+            p => panic!("expected Unrepresentable, got {p:?}"),
+        }
+    }
+
+    #[test]
+    fn plan_does_not_flag_bidirectional_over_limit_as_unrepresentable() {
+        // a memory/cpu band reading momentarily ABOVE its limit is a legitimate
+        // "grow hard" signal — the guard is scoped to GrowOnly and must not fire.
+        match plan_tick(&obs(2 * GI, GI, ours()), &cfg(), Directionality::Bidirectional, false, "breathe-memory", MEMORY_LIMIT_FIELD, FRESH, None) {
+            TickPlan::Act { decision: Decision::Grow { .. } } => {}
+            p => panic!("expected Act(Grow) for an over-limit Bidirectional band, got {p:?}"),
+        }
+    }
+
+    #[test]
+    fn plan_does_not_flag_growonly_full_volume_as_unrepresentable() {
+        // a genuinely 100%-full GrowOnly volume reads used == capacity (a valid
+        // per-volume reading) — it must carve (grow), NOT be flagged unrepresentable.
+        // Only used STRICTLY > capacity proves the wrong-entity metric.
+        match plan_tick(&obs(GI, GI, ours()), &cfg(), Directionality::GrowOnly, false, "breathe-memory", MEMORY_LIMIT_FIELD, FRESH, None) {
+            TickPlan::Act { decision: Decision::Grow { .. } } => {}
+            p => panic!("expected Act(Grow) for a full GrowOnly volume, got {p:?}"),
         }
     }
 
