@@ -204,6 +204,7 @@ async fn reconcile_host<B: Band, D: DimensionDescriptor + Default>(
         // them; honor the band's declared policy for consistency anyway.
         policy: obj.disruption_policy(),
         force,
+        predictive: None,
     };
 
     let outcome = reconcile_one(&input, &provider).await;
