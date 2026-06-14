@@ -538,11 +538,28 @@ pub fn plan_tick(
     our_manager: &str,
     our_field: &str,
     max_staleness_secs: u64,
+    predictive: Option<(i64, f64)>,
 ) -> TickPlan {
     if let Some(manager) = competing_field_manager(&obs.owners, our_manager, our_field) {
         return TickPlan::Conflict { manager };
     }
-    let decision = clamp_to_directionality(decide(obs.used, obs.capacity, cfg), dir);
+    // Per-resource law selection (M0): predictive `Some((rate, lookahead))` carves
+    // through the proven `PredictiveGrow<BandLaw>` — pre-grows for the burst the
+    // instantaneous working-set misses, asymmetric (only ever raises a grow), still
+    // contained by `safety_clamp` (the never-OOM oracle covers it via
+    // `safety_gate_contains_the_predictive_law`). `None` = the plain reactive
+    // `BandLaw`, byte-identical to before.
+    let raw = match predictive {
+        Some((rate, lookahead_secs)) => decide_with_rate(
+            &PredictiveGrow { inner: BandLaw, lookahead_secs },
+            obs.used,
+            obs.capacity,
+            cfg,
+            rate,
+        ),
+        None => decide(obs.used, obs.capacity, cfg),
+    };
+    let decision = clamp_to_directionality(raw, dir);
     let is_mutation = matches!(decision, Decision::Grow { .. } | Decision::Shrink { .. });
     if !is_mutation {
         return TickPlan::Observe { decision };
@@ -937,14 +954,14 @@ mod tests {
         // util 0.95 would Act, but a competing same-field owner must yield FIRST.
         let owners = vec![owns("vpa", MEMORY_LIMIT_FIELD)];
         assert_eq!(
-            plan_tick(&obs(950 * MI, GI, owners), &cfg(), Directionality::Bidirectional, false, "breathe-memory", MEMORY_LIMIT_FIELD, FRESH),
+            plan_tick(&obs(950 * MI, GI, owners), &cfg(), Directionality::Bidirectional, false, "breathe-memory", MEMORY_LIMIT_FIELD, FRESH, None),
             TickPlan::Conflict { manager: "vpa".into() }
         );
     }
 
     #[test]
     fn plan_acts_when_mutation_and_not_in_cooldown() {
-        match plan_tick(&obs(950 * MI, GI, ours()), &cfg(), Directionality::Bidirectional, false, "breathe-memory", MEMORY_LIMIT_FIELD, FRESH) {
+        match plan_tick(&obs(950 * MI, GI, ours()), &cfg(), Directionality::Bidirectional, false, "breathe-memory", MEMORY_LIMIT_FIELD, FRESH, None) {
             TickPlan::Act { decision: Decision::Grow { .. } } => {}
             p => panic!("expected Act(Grow), got {p:?}"),
         }
@@ -952,7 +969,7 @@ mod tests {
 
     #[test]
     fn plan_defers_mutation_in_cooldown() {
-        match plan_tick(&obs(950 * MI, GI, ours()), &cfg(), Directionality::Bidirectional, true, "breathe-memory", MEMORY_LIMIT_FIELD, FRESH) {
+        match plan_tick(&obs(950 * MI, GI, ours()), &cfg(), Directionality::Bidirectional, true, "breathe-memory", MEMORY_LIMIT_FIELD, FRESH, None) {
             TickPlan::Cooldown { decision: Decision::Grow { .. } } => {}
             p => panic!("expected Cooldown(Grow), got {p:?}"),
         }
@@ -961,7 +978,7 @@ mod tests {
     #[test]
     fn plan_observes_hold_without_mutation() {
         assert_eq!(
-            plan_tick(&obs(800 * MI, GI, ours()), &cfg(), Directionality::Bidirectional, false, "breathe-memory", MEMORY_LIMIT_FIELD, FRESH),
+            plan_tick(&obs(800 * MI, GI, ours()), &cfg(), Directionality::Bidirectional, false, "breathe-memory", MEMORY_LIMIT_FIELD, FRESH, None),
             TickPlan::Observe { decision: Decision::Hold }
         );
     }
@@ -970,7 +987,7 @@ mod tests {
     fn plan_observes_growonly_shrink_as_nosafeshrink() {
         // storage-like: util 0.20 would Shrink, but GrowOnly turns it into an
         // observable NoSafeShrink — one band law, no storage-specific path.
-        match plan_tick(&obs(200 * MI, GI, ours()), &cfg(), Directionality::GrowOnly, false, "breathe-memory", MEMORY_LIMIT_FIELD, FRESH) {
+        match plan_tick(&obs(200 * MI, GI, ours()), &cfg(), Directionality::GrowOnly, false, "breathe-memory", MEMORY_LIMIT_FIELD, FRESH, None) {
             TickPlan::Observe { decision: Decision::NoSafeShrink { .. } } => {}
             p => panic!("expected Observe(NoSafeShrink), got {p:?}"),
         }
@@ -981,7 +998,7 @@ mod tests {
         // util 0.95 would Act(Grow), but a sample older than the bound must never
         // carve — the never-OOM proof holds only on a fresh metric.
         let stale = Observation { used: 950 * MI, capacity: GI, owners: ours(), staleness_secs: 120, memory_shrink_restart_free: false };
-        match plan_tick(&stale, &cfg(), Directionality::Bidirectional, false, "breathe-memory", MEMORY_LIMIT_FIELD, FRESH) {
+        match plan_tick(&stale, &cfg(), Directionality::Bidirectional, false, "breathe-memory", MEMORY_LIMIT_FIELD, FRESH, None) {
             TickPlan::Stale { staleness_secs: 120, decision: Decision::Grow { .. } } => {}
             p => panic!("expected Stale(Grow), got {p:?}"),
         }
@@ -990,7 +1007,7 @@ mod tests {
     #[test]
     fn plan_observeonly_never_mutates() {
         // a replica-like ObserveOnly dim: even a strong grow signal yields no write.
-        match plan_tick(&obs(950 * MI, GI, ours()), &cfg(), Directionality::ObserveOnly, false, "breathe-memory", MEMORY_LIMIT_FIELD, FRESH) {
+        match plan_tick(&obs(950 * MI, GI, ours()), &cfg(), Directionality::ObserveOnly, false, "breathe-memory", MEMORY_LIMIT_FIELD, FRESH, None) {
             TickPlan::Observe { .. } => {}
             p => panic!("expected Observe (no mutation), got {p:?}"),
         }

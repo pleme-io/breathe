@@ -195,6 +195,11 @@ pub trait Band:
     /// The band's CURRENT status (read before reconcile) — the `prior` that
     /// `status_for` carries cumulative counters + the cooldown epoch forward from.
     fn status(&self) -> Option<&BandStatus>;
+    /// M0 PREDICTIVE: `Some(lookahead_secs)` when the band opts into preemptive
+    /// carving (`predictive: true`) — the controller measures the working-set
+    /// velocity and feeds `PredictiveGrow` so the limit pre-grows for the burst
+    /// the instantaneous reading misses. `None` (default) ⇒ plain reactive carving.
+    fn predictive(&self) -> Option<f64>;
     /// `metadata.generation` — set as `status.observedGeneration` so an operator can
     /// confirm the controller reconciled their latest spec edit.
     fn generation(&self) -> Option<i64> {
@@ -295,6 +300,19 @@ macro_rules! band_kind {
             /// RFC3339 time after which `forceLimit` is ignored (auto-release the pin).
             #[serde(default, skip_serializing_if = "Option::is_none")]
             pub force_limit_expiry: Option<String>,
+            /// M0 PREDICTIVE (opt-in, default off → behaviour byte-unchanged): when
+            /// `true`, breathe measures the working-set velocity and pre-grows the
+            /// limit for the projected burst via the proven `PredictiveGrow<BandLaw>`
+            /// — asymmetric (only ever raises a grow), still `safety_clamp`-contained
+            /// (the never-OOM oracle covers it). Shadow-first: observe the predictive
+            /// grows under `dryRun` before promoting to live.
+            #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+            pub predictive: bool,
+            /// Forecast horizon for predictive carving (seconds). Default 60s
+            /// (≈ refresh + cooldown for memory); set higher for slow-filling
+            /// resources (storage = resize-cooldown × safety factor).
+            #[serde(default = "d_predictive_lookahead")]
+            pub predictive_lookahead_seconds: u64,
         }
 
         impl crate::Band for $kind {
@@ -331,6 +349,11 @@ macro_rules! band_kind {
             }
             fn force_limit_expiry(&self) -> Option<&str> {
                 self.spec.force_limit_expiry.as_deref()
+            }
+            fn predictive(&self) -> Option<f64> {
+                self.spec
+                    .predictive
+                    .then_some(self.spec.predictive_lookahead_seconds as f64)
             }
             fn status(&self) -> Option<&BandStatus> {
                 self.status.as_ref()
@@ -698,6 +721,7 @@ fn d_grow_factor() -> f64 { 1.25 }
 fn d_shrink_factor() -> f64 { 0.90 }
 fn d_cooldown() -> u64 { 600 }
 fn d_max_staleness() -> u64 { 120 }
+fn d_predictive_lookahead() -> u64 { 60 }
 
 #[cfg(test)]
 mod tests {

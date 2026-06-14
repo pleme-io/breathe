@@ -12,7 +12,7 @@
 
 use std::{sync::Arc, time::Duration};
 
-use breathe_core::{reconcile_one, ReconcileInput};
+use breathe_core::{reconcile_one, PredictiveInput, ReconcileInput};
 use breathe_crd::{
     ArcBand, Band, BandSummary, BreatheConfig, BreatheConfigSpec, BreatheOverview, CgroupBand, CgroupCpuBand, CpuBand,
     Densa, MemoryBand, OverviewStatus, StorageBand,
@@ -182,6 +182,15 @@ async fn reconcile<B: Band, D: DimensionDescriptor + Default>(
     );
     // BREAK-GLASS forceLimit: active iff set AND (no expiry OR expiry in the future).
     let force = obj.force_limit_value().filter(|_| obj.force_limit_expiry().map_or(true, rfc3339_in_future));
+    // M0 PREDICTIVE: when the band opts in, feed the prior observed `used` + the
+    // reconcile cadence so `reconcile_one` can measure the working-set velocity and
+    // pre-grow via PredictiveGrow. Skipped (None) on the first tick (no prior used)
+    // and for non-predictive bands — both keep the plain reactive path.
+    let predictive = obj.predictive().and_then(|lookahead_secs| {
+        let prior_used = u64::try_from(obj.status()?.observed_used?).ok()?;
+        let dt_secs = ctx.requeue.as_secs_f64();
+        (dt_secs > 0.0).then_some(PredictiveInput { prior_used, dt_secs, lookahead_secs })
+    });
     let input = ReconcileInput {
         target: &target,
         cfg: &cfg,
@@ -192,6 +201,7 @@ async fn reconcile<B: Band, D: DimensionDescriptor + Default>(
         // declares its own policy; the fleet env is only a fallback default.
         policy: obj.disruption_policy(),
         force,
+        predictive,
     };
 
     let outcome = reconcile_one(&input, &provider).await;
