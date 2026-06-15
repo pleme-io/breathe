@@ -20,6 +20,16 @@ descriptors — every enrolled workload held in a typed utilization band
 construction, never-OOM by construction. Architecture of record:
 `docs/BREATHE.md`. Born from the live rio pangea-database OOMKill need.
 
+**What's actually novel (tier-honest, do not overclaim):** breathe is a novel
+*synthesis*, not a novel *primitive* — its in-place `pods/resize` actuation is
+commodity 2026 k8s (KEP-1287 GA, VPA InPlace, ScaleOps). The defensible claims
+are the **conjunction** of band-control-on-the-limit + cooperative-by-default
+`managedFields`-yield + the unified pod/host/node scope (the host-OS leg has no
+prior art). The single-writer guard is `only-mitigated` (per-reconcile yield),
+**not** `unrepresentable` — a force-applying peer can still construct a conflict.
+Full adversarial prior-art ledger + the must-not-claim caveats:
+[`docs/BREATHABILITY-PRIOR-ART.md`](docs/BREATHABILITY-PRIOR-ART.md).
+
 ## Crate map
 
 | Crate | Owns |
