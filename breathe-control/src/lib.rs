@@ -407,6 +407,90 @@ impl<L: ControlLaw> ControlLaw for PredictiveGrow<L> {
     }
 }
 
+/// **QuantizedSlice** — the discrete-geometry law (census hazard class
+/// `count-based` / `discrete`). Wraps any inner law and SNAPS its continuous
+/// target to a legal multiple of `slice`, rounding in the SAFE direction:
+/// **always up**. Rounding a grow up over-provisions slightly (safe for
+/// never-starve); rounding a shrink up makes it less aggressive (safe — the
+/// gate turns an over-rounded shrink into `NoSafeShrink`). One law serves every
+/// quantized count vector — pids/TasksMax (slice 1), cpuset cores, MIG profiles,
+/// Kafka partitions, worker pools — by varying `slice`. Funnels through
+/// `safety_clamp` unchanged, so it inherits never-starve/never-overshoot.
+#[derive(Debug, Clone, Copy)]
+pub struct QuantizedSlice<L> {
+    pub inner: L,
+    /// The discrete quantum the target snaps to (≥ 1; `1` = every integer legal).
+    pub slice: u64,
+}
+
+impl<L: ControlLaw> ControlLaw for QuantizedSlice<L> {
+    fn propose(&self, working_set: u64, current_limit: u64, cfg: &BandConfig) -> Proposal {
+        snap_up(self.inner.propose(working_set, current_limit, cfg), self.slice)
+    }
+    fn propose_with_rate(&self, working_set: u64, current_limit: u64, cfg: &BandConfig, rate: i64) -> Proposal {
+        snap_up(self.inner.propose_with_rate(working_set, current_limit, cfg, rate), self.slice)
+    }
+}
+
+/// Round a proposal's target UP to the nearest multiple of `slice` (the safe
+/// direction for both grow and shrink). `slice <= 1` is a no-op.
+#[must_use]
+fn snap_up(p: Proposal, slice: u64) -> Proposal {
+    match p {
+        Proposal::Hold => Proposal::Hold,
+        Proposal::Target(t) if slice <= 1 => Proposal::Target(t),
+        Proposal::Target(t) => {
+            let snapped = t.div_ceil(slice).saturating_mul(slice);
+            Proposal::Target(snapped)
+        }
+    }
+}
+
+/// **ThrottleAware** — the rate-shaped / soft-hazard anti-flap law (census
+/// hazard class `cpu-soft` + `rate-shaped`; ~32 vectors). A soft cap (CPU quota,
+/// io.max, network bandwidth, a rate limiter) signals saturation by THROTTLING,
+/// not by a level — so a band keyed on the level alone will shrink the cap right
+/// as the workload is being throttled, then grow it back: flap. ThrottleAware
+/// wraps any inner level-law and reads a *throttle signal* through the
+/// feed-forward `rate` channel (throttle events/sec, PSI stall %, dropped/sec —
+/// whatever the descriptor's metric measures): **while the signal is positive
+/// (live throttling), a shrink is suppressed to a Hold** (never tighten a cap
+/// that is actively throttling); a grow or hold from the inner law passes
+/// through. With no throttle signal it is exactly the inner law. The never-OOM
+/// `safety_clamp` `ceil(working_set/setpoint)` carries over VERBATIM as
+/// never-throttle-live (the offered-load rate seated at the setpoint), so this
+/// law inherits the whole safety proof — it only ever makes a shrink LESS
+/// aggressive, never escapes the envelope.
+#[derive(Debug, Clone, Copy)]
+pub struct ThrottleAware<L> {
+    pub inner: L,
+}
+
+impl<L: ControlLaw> ControlLaw for ThrottleAware<L> {
+    /// No throttle signal available → exactly the inner level-law.
+    fn propose(&self, working_set: u64, current_limit: u64, cfg: &BandConfig) -> Proposal {
+        self.inner.propose(working_set, current_limit, cfg)
+    }
+
+    /// `rate` here is the THROTTLE signal (≥ 0 = stalls/throttle-events per sec).
+    /// While throttling, suppress any shrink to a Hold (anti-flap); otherwise the
+    /// inner law verbatim. A grow is never suppressed — relieving throttle is the
+    /// safe move.
+    fn propose_with_rate(&self, working_set: u64, current_limit: u64, cfg: &BandConfig, rate: i64) -> Proposal {
+        let inner = self.inner.propose(working_set, current_limit, cfg);
+        if rate > 0 {
+            match inner {
+                // Actively throttling: do NOT tighten the cap. A proposed shrink
+                // becomes a Hold; grow/hold pass through.
+                Proposal::Target(t) if t < current_limit => Proposal::Hold,
+                other => other,
+            }
+        } else {
+            inner
+        }
+    }
+}
+
 /// The memory dimension's owned field path (the first consumer's constant).
 /// Every provider declares the dotted `managedFields` path it owns; the guard
 /// compares against *this exact path*, never a per-object flag.
@@ -609,6 +693,11 @@ pub enum Unit {
     /// CPU — a k8s cpu quantity in millicores (`250m`, `2`, `0.5`;
     /// metrics-server `5m` / `123456n`).
     Millicores,
+    /// A bare integer count — pids, connections, slots, file descriptors,
+    /// conntrack entries, partitions, series, NODES. Decimal-SI tolerant on
+    /// parse (`1k` = 1000, never binary `Ki`); renders as a bare integer. The
+    /// band law is shape-blind, so it converges on a count exactly as on bytes.
+    Count,
 }
 
 impl Unit {
@@ -630,6 +719,7 @@ impl Unit {
         match self {
             Self::Bytes => parse_bytes(q),
             Self::Millicores => parse_millicores(q),
+            Self::Count => parse_count(q),
         }
     }
 }
@@ -652,6 +742,7 @@ impl std::fmt::Display for Quantity {
         match self.unit {
             Unit::Bytes => write!(f, "{}", self.value),
             Unit::Millicores => write!(f, "{}m", self.value),
+            Unit::Count => write!(f, "{}", self.value),
         }
     }
 }
@@ -671,6 +762,32 @@ fn parse_millicores(q: &str) -> Option<u64> {
     } else {
         q.parse::<f64>().ok().map(|v| (v * 1000.0) as u64)
     }
+}
+
+/// Parse a count quantity to a bare integer: a plain `u64` fast path, else a
+/// DECIMAL-SI suffix (`1k`→1000, `2M`→2_000_000) — counts are decimal, never
+/// binary (a conntrack/pids/file-max value is a base-10 magnitude, not bytes).
+#[must_use]
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss, clippy::cast_precision_loss)]
+fn parse_count(q: &str) -> Option<u64> {
+    let q = q.trim();
+    if q.is_empty() {
+        return None;
+    }
+    if let Ok(n) = q.parse::<u64>() {
+        return Some(n);
+    }
+    let split = q.find(|c: char| !(c.is_ascii_digit() || c == '.')).unwrap_or(q.len());
+    let (num, suffix) = q.split_at(split);
+    let n: f64 = num.parse().ok()?;
+    let mult: f64 = match suffix.trim() {
+        "" => 1.0,
+        "k" | "K" => 1e3,
+        "M" => 1e6,
+        "G" => 1e9,
+        _ => return None,
+    };
+    Some((n * mult) as u64)
 }
 
 /// Parse a k8s byte quantity (binary IEC `Ki/Mi/Gi/Ti/Pi/Ei`, decimal SI
@@ -1178,6 +1295,18 @@ mod tests {
                     decide_with(&ProportionalLaw { gain: 0.5 }, ws, limit, &c),
                     decide_with(&SlewLimited { inner: GrowToMax, max_step_frac: 0.25 }, ws, limit, &c),
                     decide_with(&SlewLimited { inner: ShrinkToZero, max_step_frac: 0.25 }, ws, limit, &c),
+                    // PR-1: QuantizedSlice — snapping a target to a quantum cannot
+                    // escape the envelope (the gate still owns floor/ceiling/safe_min).
+                    decide_with(&QuantizedSlice { inner: GrowToMax, slice: 64 }, ws, limit, &c),
+                    decide_with(&QuantizedSlice { inner: ShrinkToZero, slice: 64 }, ws, limit, &c),
+                    decide_with(&QuantizedSlice { inner: BandLaw, slice: 1 }, ws, limit, &c),
+                    // PR-3: ThrottleAware — no-rate path is the inner law verbatim.
+                    decide_with(&ThrottleAware { inner: GrowToMax }, ws, limit, &c),
+                    decide_with(&ThrottleAware { inner: ShrinkToZero }, ws, limit, &c),
+                    // PR-3: ThrottleAware under an ACTIVE throttle signal — a shrink
+                    // is suppressed to Hold, a grow still clamps to the ceiling.
+                    decide_with_rate(&ThrottleAware { inner: GrowToMax }, ws, limit, &c, 5),
+                    decide_with_rate(&ThrottleAware { inner: ShrinkToZero }, ws, limit, &c, 5),
                 ] {
                     match d {
                         Decision::Grow { from, to } => {
@@ -1196,6 +1325,48 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn count_unit_parses_and_renders_bare_integers() {
+        assert_eq!(Unit::Count.parse("42"), Some(42));
+        assert_eq!(Unit::Count.parse("1k"), Some(1000)); // decimal-SI, not binary
+        assert_eq!(Unit::Count.parse("2M"), Some(2_000_000));
+        assert_eq!(Unit::Count.parse(""), None);
+        assert_eq!(Unit::Count.parse("garbage"), None);
+        assert_eq!(Quantity { value: 110, unit: Unit::Count }.to_string(), "110");
+    }
+
+    #[test]
+    fn quantized_slice_snaps_targets_up_to_the_quantum() {
+        let c = cfg();
+        // A band grow gets snapped UP to a multiple of `slice` (over-provision = safe).
+        // slice=1 is a no-op; a wide slice rounds up.
+        assert_eq!(snap_up(Proposal::Target(130), 64), Proposal::Target(192)); // 130→2*64
+        assert_eq!(snap_up(Proposal::Target(128), 64), Proposal::Target(128)); // already aligned
+        assert_eq!(snap_up(Proposal::Target(7), 1), Proposal::Target(7)); // slice 1 = no-op
+        assert_eq!(snap_up(Proposal::Hold, 64), Proposal::Hold);
+        // saturates rather than overflowing on a GrowToMax target.
+        assert_eq!(snap_up(Proposal::Target(u64::MAX), 64), Proposal::Target(u64::MAX));
+        // end-to-end: the snapped grow still clamps to the ceiling.
+        let d = decide_with(&QuantizedSlice { inner: BandLaw, slice: 7 }, 950 * MI, GI, &c);
+        assert!(matches!(d, Decision::Grow { .. } | Decision::AtCeiling { .. }));
+    }
+
+    #[test]
+    fn throttle_aware_suppresses_shrink_while_throttling_but_not_grow() {
+        let c = cfg();
+        // A low-util sample (would shrink) — but with a live throttle signal,
+        // ThrottleAware holds instead of tightening the cap (anti-flap).
+        let low_util_ws = 100 * MI; // util 0.1 at 1Gi → BandLaw would shrink
+        let shrink = decide_with(&ThrottleAware { inner: BandLaw }, low_util_ws, GI, &c);
+        assert!(matches!(shrink, Decision::Shrink { .. }), "no throttle signal ⇒ inner shrink");
+        let held = decide_with_rate(&ThrottleAware { inner: BandLaw }, low_util_ws, GI, &c, 3);
+        assert_eq!(held, Decision::Hold, "active throttle ⇒ shrink suppressed to Hold");
+        // A grow is NEVER suppressed — relieving throttle is the safe move.
+        let high_util_ws = 950 * MI;
+        let grown = decide_with_rate(&ThrottleAware { inner: BandLaw }, high_util_ws, GI, &c, 9);
+        assert!(matches!(grown, Decision::Grow { .. }), "throttle + high util ⇒ still grows");
     }
 
     #[test]
