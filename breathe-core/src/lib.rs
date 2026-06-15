@@ -76,6 +76,12 @@ pub enum TickReceipt {
     DeferredWouldRestart { from: u64, to: u64, class: DisruptionClass },
     /// An observable, non-mutating outcome (Hold / AtCeiling / NoSafeShrink / NoLimit).
     Observed { decision: Decision },
+    /// The band's label-selected pod group is currently EMPTY — the target is
+    /// DORMANT (an ephemeral runner / Job / scale-to-zero workload with no pod right
+    /// now). A benign resting state, NOT an error: nothing to observe, nothing to
+    /// carve, the band waits for a pod to appear. Reported as `Dormant`, counted as
+    /// at-rest (converged), never as a failure.
+    Dormant,
     /// A typed provider error (transient → fast requeue; permanent → escalate).
     Error { error: ProviderError },
 }
@@ -95,6 +101,7 @@ impl TickReceipt {
             Self::DeferredWouldRestart { .. }
             | Self::DryRunWouldApply { .. }
             | Self::Observed { .. }
+            | Self::Dormant
             | Self::Cooldown
             | Self::Stale { .. }
             | Self::Conflict { .. }
@@ -134,6 +141,9 @@ pub async fn reconcile_one(
     // OBSERVE — read-only projection via the provider.
     let obs = match provider.observe(input.target).await {
         Ok(o) => o,
+        // A label-selected pod group with zero pods is DORMANT (scaled to zero), a
+        // benign resting state — not an error to escalate.
+        Err(ProviderError::NoTargetPods) => return outcome(TickReceipt::Dormant, None),
         Err(error) => return outcome(TickReceipt::Error { error }, None),
     };
     // BREAK-GLASS forceLimit: skip the band law and carve to the pinned value — but
@@ -305,6 +315,33 @@ mod tests {
             other => panic!("expected DryRunWouldApply, got {other:?}"),
         }
         assert!(dry.cluster().applied().is_empty(), "shadow never mutates");
+    }
+
+    /// A label-selected pod group with zero pods (an ARC runner between builds, a
+    /// scaled-to-zero workload) surfaces as `NoTargetPods` from the metric read —
+    /// the loop maps it to the benign `Dormant` receipt (not `Error`), carves
+    /// nothing, and stays on golden rails.
+    #[tokio::test]
+    async fn reconcile_maps_empty_pod_group_to_dormant_not_error() {
+        use breathe_provider::EdgeTier;
+        let cluster = MockCluster::new(0, 0, 0, we_own())
+            .with_read_used_error(ProviderError::NoTargetPods);
+        let prov = provider(cluster);
+        let cfg = BandConfig::default();
+        let t = target();
+        let input = ReconcileInput { target: &t, cfg: &cfg, max_staleness_secs: 60, in_cooldown: false, dry_run: false, policy: DisruptionPolicy::AllowRestart, force: None, predictive: None };
+        let out = reconcile_one(&input, &prov).await;
+        assert_eq!(out.receipt, TickReceipt::Dormant);
+        assert_eq!(out.receipt.edge_tier(), EdgeTier::GoldenPreserving);
+        assert!(out.observed.is_none(), "dormant has no observation");
+        assert!(prov.cluster().applied().is_empty(), "dormant never carves");
+        // a genuine metric outage (pods exist, usage unreadable) is STILL an Error —
+        // only an empty selector group is dormant.
+        let broken = provider(MockCluster::new(0, 0, 0, we_own()).with_read_used_error(ProviderError::MetricsMissing));
+        assert_eq!(
+            reconcile_one(&input, &broken).await.receipt,
+            TickReceipt::Error { error: ProviderError::MetricsMissing }
+        );
     }
 
     /// The golden-edge gate: a CNPG `Cluster` target carves at `ClusterTopLevel`

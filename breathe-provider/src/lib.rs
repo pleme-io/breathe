@@ -403,6 +403,12 @@ pub enum ProviderError {
     TargetNotFound,
     MetricsMissing,
     NoCapacityField,
+    /// A label-selected pod group currently matches ZERO pods — the band's target
+    /// is DORMANT (scaled to zero), not broken. Distinct from `MetricsMissing`
+    /// (pods exist but their usage is unreadable): an ephemeral runner / Job /
+    /// KEDA-to-zero workload legitimately has no pod most of the time, so this is a
+    /// benign resting state the loop reports as `Dormant`, never an error.
+    NoTargetPods,
     ApiTransient(String),
     ApiPermanent(String),
 }
@@ -413,6 +419,7 @@ impl std::fmt::Display for ProviderError {
             Self::TargetNotFound => f.write_str("target not found"),
             Self::MetricsMissing => f.write_str("metrics missing"),
             Self::NoCapacityField => f.write_str("no capacity field (no limit set)"),
+            Self::NoTargetPods => f.write_str("no pods in the label-selected group (dormant)"),
             Self::ApiTransient(m) => write!(f, "transient API error: {m}"),
             Self::ApiPermanent(m) => write!(f, "permanent API error: {m}"),
         }
@@ -912,6 +919,10 @@ pub mod mock {
         /// What `read_resize_restart_free` returns (default false = conservative;
         /// set true to model a `resizePolicy[memory] = NotRequired` pod).
         pub resize_restart_free: bool,
+        /// When set, `read_used` returns this error instead of a sample — models a
+        /// dormant target (`NoTargetPods`) or a metric outage (`MetricsMissing`) so
+        /// the reconcile loop's error/dormant arms are testable.
+        pub read_used_error: Option<ProviderError>,
         applied: Mutex<Vec<SsaPatch>>,
     }
 
@@ -923,6 +934,7 @@ pub mod mock {
                 limit,
                 owners,
                 resize_restart_free: false,
+                read_used_error: None,
                 applied: Mutex::new(Vec::new()),
             }
         }
@@ -930,6 +942,13 @@ pub mod mock {
         #[must_use]
         pub fn with_resize_restart_free(mut self, v: bool) -> Self {
             self.resize_restart_free = v;
+            self
+        }
+        /// Make `read_used` fail with `e` — model a dormant target (`NoTargetPods`)
+        /// or a metric outage (`MetricsMissing`).
+        #[must_use]
+        pub fn with_read_used_error(mut self, e: ProviderError) -> Self {
+            self.read_used_error = Some(e);
             self
         }
         #[must_use]
@@ -941,7 +960,10 @@ pub mod mock {
     #[async_trait]
     impl Cluster for MockCluster {
         async fn read_used(&self, _source: &MetricSource) -> Result<Sample, ProviderError> {
-            Ok(self.used)
+            match &self.read_used_error {
+                Some(e) => Err(e.clone()),
+                None => Ok(self.used),
+            }
         }
         async fn read_limit(
             &self,
