@@ -331,6 +331,14 @@ impl Cluster for KubeCluster {
         resource: &str,
         logical_field: &str,
     ) -> Result<Vec<FieldOwner>, ProviderError> {
+        // In-place resize writes the pods' `resize` subresource, which breathe
+        // owns; cross-writer detection on the subresource (a co-resizing VPA) is a
+        // documented v1 follow-on — for now breathe is the sole resizer. This MUST
+        // short-circuit BEFORE get_owner: a label-selected pod group (ARC runners)
+        // has no gettable owner object, so fetching one would 404/403.
+        if matches!(layout, LimitLayout::PodResize { .. }) {
+            return Ok(Vec::new());
+        }
         let obj = self.get_owner(target).await?;
         let mf = serde_json::to_value(&obj.metadata.managed_fields)
             .map_err(|e| ProviderError::ApiTransient(e.to_string()))?;
@@ -344,9 +352,7 @@ impl Cluster for KubeCluster {
                     None => return Ok(Vec::new()),
                 }
             }
-            // In-place resize writes the pods' `resize` subresource, which breathe
-            // owns; cross-writer detection on the subresource (a co-resizing VPA)
-            // is a documented v1 follow-on — for now breathe is the sole resizer.
+            // Already handled above (kept for exhaustiveness; unreachable).
             LimitLayout::PodResize { .. } => return Ok(Vec::new()),
             LimitLayout::Host(_) => {
                 return Err(ProviderError::ApiPermanent(
