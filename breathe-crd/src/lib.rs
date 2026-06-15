@@ -480,6 +480,114 @@ pub struct NodePoolStatus {
     pub last_seen_epoch: Option<i64>,
 }
 
+// ─────────────────── BreatheCloudPool — node-count Forma enrollment (BU2) ──────
+
+/// **BreatheCloudPool** — the declarative enrollment of a node-count `Forma`
+/// into a breathe band (cluster-scoped). Where a `MemoryBand`/`CpuBand` holds a
+/// workload's LIMIT in band, a `BreatheCloudPool` holds a node POOL's COUNT in
+/// band — the same shape-blind law (`decide`) converges on a node count exactly
+/// as on bytes. It binds a `Forma` (the resource shape, e.g. `node-on-demand`)
+/// to a `Densa`-style envelope (floor/ceiling node counts + optional cost SLA)
+/// and a relief-latency cadence; the controller's node-Forma reconciler (BU1)
+/// watches these and runs `reconcile_forma` per pool.
+///
+/// SHADOW-first (`dryRun`) + a pool-level master `writeEnabled` switch (peer of
+/// `BreatheNodePool`): a pool provisions for real only when BOTH `writeEnabled`
+/// AND `!dryRun` AND the actuator (a magma `Plan`, BU10) is wired. Until then it
+/// is observe-only — it reports what it WOULD provision. `kubectl get bcp`.
+#[derive(CustomResource, Serialize, Deserialize, Clone, Debug, JsonSchema)]
+#[kube(
+    group = "breathe.pleme.io",
+    version = "v1",
+    kind = "BreatheCloudPool",
+    shortname = "bcp",
+    category = "breathe",
+    status = "CloudPoolStatus",
+    printcolumn = r#"{"name":"Forma","type":"string","jsonPath":".spec.forma"}"#,
+    printcolumn = r#"{"name":"Floor","type":"integer","jsonPath":".spec.floor"}"#,
+    printcolumn = r#"{"name":"Ceiling","type":"integer","jsonPath":".spec.ceiling"}"#,
+    printcolumn = r#"{"name":"Used","type":"integer","jsonPath":".status.observedUsed"}"#,
+    printcolumn = r#"{"name":"Capacity","type":"integer","jsonPath":".status.observedCapacity"}"#,
+    printcolumn = r#"{"name":"Phase","type":"string","jsonPath":".status.phase"}"#,
+    printcolumn = r#"{"name":"DryRun","type":"boolean","jsonPath":".spec.dryRun"}"#
+)]
+#[serde(rename_all = "camelCase")]
+pub struct BreatheCloudPoolSpec {
+    /// The resource SHAPE this pool provisions — the `Forma` name (e.g.
+    /// `node-on-demand`). Must match a `breathe_provider::Forma` variant.
+    pub forma: String,
+    /// The node-COUNT floor (the never-swap base — always provisioned).
+    pub floor: u64,
+    /// The node-COUNT ceiling (the L2 wall — the band carves ≤ it).
+    pub ceiling: u64,
+    /// Cost ceiling (cents per accounting period) the pool must stay within.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cost_sla_cents: Option<u64>,
+    /// The provisioning dead-time — how long one `provision(1)` takes to become
+    /// usable capacity. The predictor must forecast ≥ this far ahead or
+    /// provisioning is always late (thesis P8). Seconds.
+    #[serde(default = "d_relief_latency")]
+    pub relief_latency_seconds: u64,
+    #[serde(default = "d_setpoint")]
+    pub setpoint: f64,
+    #[serde(default = "d_grow_above")]
+    pub grow_above: f64,
+    #[serde(default = "d_shrink_below")]
+    pub shrink_below: f64,
+    #[serde(default = "d_grow_factor")]
+    pub grow_factor: f64,
+    #[serde(default = "d_shrink_factor")]
+    pub shrink_factor: f64,
+    #[serde(default = "d_cooldown")]
+    pub cooldown_seconds: u64,
+    /// SHADOW: observe + report what it WOULD provision; never actuate.
+    #[serde(default)]
+    pub dry_run: bool,
+    /// Pool-level MASTER write switch (peer of `BreatheNodePool.writeEnabled`):
+    /// `false` ⇒ the whole pool is in shadow regardless of `dryRun`. Safe default.
+    #[serde(default)]
+    pub write_enabled: bool,
+}
+
+impl BreatheCloudPoolSpec {
+    /// The `BandConfig` this pool carves with — node COUNTS in the unit-blind
+    /// `floor_bytes`/`ceiling_bytes` fields (the band law is shape-blind).
+    #[must_use]
+    pub fn band_config(&self) -> BandConfig {
+        BandConfig {
+            grow_above: self.grow_above,
+            shrink_below: self.shrink_below,
+            setpoint: self.setpoint,
+            grow_factor: self.grow_factor,
+            shrink_factor: self.shrink_factor,
+            floor_bytes: self.floor,
+            ceiling_bytes: self.ceiling,
+        }
+    }
+}
+
+/// `BreatheCloudPool` status — the per-tick node-Forma receipt (observe-only in
+/// shadow; what it WOULD provision surfaced via `would_provision`).
+#[derive(Serialize, Deserialize, Clone, Debug, JsonSchema, Default, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct CloudPoolStatus {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub phase: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub observed_used: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub observed_capacity: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_decision: Option<String>,
+    /// Signed node delta the pool WOULD provision (+) / deprovision (−) this tick.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub would_provision: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effective_dry_run: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_seen_epoch: Option<i64>,
+}
+
 // ─────────────────── BreatheOverview — the fleet dashboard as a k8s object ──────
 
 /// A FLEET-OVERVIEW object (cluster-scoped). The controller keeps its status
@@ -732,6 +840,7 @@ fn d_shrink_factor() -> f64 { 0.90 }
 fn d_cooldown() -> u64 { 600 }
 fn d_max_staleness() -> u64 { 120 }
 fn d_predictive_lookahead() -> u64 { 60 }
+fn d_relief_latency() -> u64 { 180 } // ~3min node boot→Ready (the NodeOnDemand dead-time)
 
 #[cfg(test)]
 mod tests {

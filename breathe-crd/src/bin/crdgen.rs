@@ -2,8 +2,8 @@
 //! hand-authoring. `cargo run -p breathe-crd --bin crdgen > crds/bands.yaml`.
 
 use breathe_crd::{
-    ArcBand, BreatheConfig, BreatheNodePool, BreatheOverview, CgroupBand, CgroupCpuBand, CpuBand, Densa, MemoryBand,
-    StorageBand,
+    ArcBand, BreatheCloudPool, BreatheConfig, BreatheNodePool, BreatheOverview, CgroupBand, CgroupCpuBand, CpuBand,
+    Densa, MemoryBand, StorageBand,
 };
 use kube::CustomResourceExt;
 
@@ -17,6 +17,8 @@ fn main() {
         CgroupBand::crd(),
         CgroupCpuBand::crd(),
         BreatheNodePool::crd(),
+        // BU2 — the node-count Forma enrollment (Forma ⇄ Densa envelope)
+        BreatheCloudPool::crd(),
         // the fleet-overview dashboard object + the fleet config
         BreatheOverview::crd(),
         BreatheConfig::crd(),
