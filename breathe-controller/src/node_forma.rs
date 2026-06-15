@@ -54,6 +54,52 @@ fn forma_from_str(s: &str) -> Option<Forma> {
     }
 }
 
+/// Per-node utilisation SKEW across the Ready nodes — the rebalance SIGNAL.
+/// breathe OBSERVES this (and would emit a rebalance *hint*); the
+/// descheduler/scheduler binds the actual pod moves (owns-vs-yields — breathe
+/// decides node COUNT, never placement). On a single node `spread` is 0 (a lone
+/// node cannot be imbalanced), so it is inert on rio and lights up multi-node.
+#[derive(Debug, Clone, PartialEq)]
+struct NodeImbalance {
+    /// The hottest Ready node's `requested / allocatable`.
+    max_util: f64,
+    /// The coldest Ready node's `requested / allocatable`.
+    min_util: f64,
+    /// `max_util - min_util`. 0 ⇒ perfectly balanced (or a single node); a large
+    /// spread is the cue a rebalance would relieve a hot node onto a cold one.
+    spread: f64,
+    /// The hottest node's name (the rebalance source candidate), if any.
+    hottest: Option<String>,
+}
+
+/// PURE: given each Ready node's `(name, allocatable_milli, requested_milli)`,
+/// compute the utilisation skew. A node with zero allocatable is skipped (it
+/// can't host); an empty input or all-zero-alloc ⇒ a perfectly-balanced zero.
+fn node_imbalance(nodes: &[(String, u64, u64)]) -> NodeImbalance {
+    let mut max_util = 0.0f64;
+    let mut min_util = f64::INFINITY;
+    let mut hottest: Option<String> = None;
+    let mut seen = 0u64;
+    for (name, alloc, req) in nodes {
+        if *alloc == 0 {
+            continue;
+        }
+        seen += 1;
+        let util = *req as f64 / *alloc as f64;
+        if util > max_util {
+            max_util = util;
+            hottest = Some(name.clone());
+        }
+        if util < min_util {
+            min_util = util;
+        }
+    }
+    if seen == 0 {
+        return NodeImbalance { max_util: 0.0, min_util: 0.0, spread: 0.0, hottest: None };
+    }
+    NodeImbalance { max_util, min_util, spread: max_util - min_util, hottest }
+}
+
 /// A minted shadow node — the admission `T`. `allocatable` is the mean per-node
 /// CPU (millicores) observed at provision time; `CapacidadeProof` checks it.
 #[derive(Debug, Clone)]
@@ -117,40 +163,66 @@ impl Provedor for KubeNodeProvedor {
             .list(&ListParams::default())
             .await
             .map_err(|e| ProviderError::ApiTransient(e.to_string()))?;
-        let mut node_count = 0u64;
-        let mut total_alloc_milli = 0u64;
+        // Per-Ready-node allocatable, keyed by name — feeds both the aggregate
+        // sample and the per-node imbalance projection in one pass.
+        let mut node_alloc: std::collections::HashMap<String, u64> = std::collections::HashMap::new();
         for n in &nodes.items {
             if !node_ready(n) {
                 continue;
             }
-            node_count += 1;
-            if let Some(cpu) =
-                n.status.as_ref().and_then(|s| s.allocatable.as_ref()).and_then(|a| a.get("cpu"))
-            {
-                total_alloc_milli += parse_cpu_milli(&cpu.0);
-            }
+            let alloc = n
+                .status
+                .as_ref()
+                .and_then(|s| s.allocatable.as_ref())
+                .and_then(|a| a.get("cpu"))
+                .map_or(0, |cpu| parse_cpu_milli(&cpu.0));
+            node_alloc.insert(n.name_any(), alloc);
         }
+        let node_count = node_alloc.len() as u64;
+        let total_alloc_milli: u64 = node_alloc.values().sum();
 
         let pods = Api::<Pod>::all(self.client.clone())
             .list(&ListParams::default())
             .await
             .map_err(|e| ProviderError::ApiTransient(e.to_string()))?;
         let mut demand_milli = 0u64;
+        // Requested millicores PLACED on each Ready node — the skew numerator.
+        let mut node_req: std::collections::HashMap<String, u64> = std::collections::HashMap::new();
         for p in &pods.items {
             let phase = p.status.as_ref().and_then(|s| s.phase.as_deref()).unwrap_or("");
             if phase != "Running" && phase != "Pending" {
                 continue;
             }
+            let mut pod_req = 0u64;
             if let Some(spec) = &p.spec {
                 for c in &spec.containers {
                     if let Some(cpu) =
                         c.resources.as_ref().and_then(|r| r.requests.as_ref()).and_then(|m| m.get("cpu"))
                     {
-                        demand_milli += parse_cpu_milli(&cpu.0);
+                        pod_req += parse_cpu_milli(&cpu.0);
+                    }
+                }
+                demand_milli += pod_req;
+                // A placed pod (has nodeName, on a Ready node) loads that node.
+                // Unplaced (Pending) pods count as demand but no node's skew.
+                if let Some(node) = spec.node_name.as_ref() {
+                    if node_alloc.contains_key(node) {
+                        *node_req.entry(node.clone()).or_insert(0) += pod_req;
                     }
                 }
             }
         }
+
+        // Per-node imbalance — the rebalance signal (observe-only; the scheduler
+        // binds). Emitted as cluster-level gauges, not a band input.
+        let per_node_vec: Vec<(String, u64, u64)> = node_alloc
+            .iter()
+            .map(|(name, alloc)| (name.clone(), *alloc, node_req.get(name).copied().unwrap_or(0)))
+            .collect();
+        let imb = node_imbalance(&per_node_vec);
+        gauge!("breathe_node_util_ratio_max").set(imb.max_util);
+        gauge!("breathe_node_util_ratio_min").set(imb.min_util);
+        gauge!("breathe_node_imbalance_spread").set(imb.spread);
 
         let per_node = if node_count > 0 { (total_alloc_milli / node_count).max(1) } else { 1 };
         let used = demand_milli.div_ceil(per_node).max(1);
@@ -335,9 +407,42 @@ pub fn error_policy_cloud_pool(_cr: Arc<BreatheCloudPool>, err: &Error, ctx: Arc
 
 #[cfg(test)]
 mod tests {
-    use super::{cloud_pool_status, forma_from_str, outcome_of, parse_cpu_milli};
+    use super::{cloud_pool_status, forma_from_str, node_imbalance, outcome_of, parse_cpu_milli};
     use breathe_provider::Forma;
     use breathe_provision::FormaTick;
+
+    fn n(name: &str, alloc: u64, req: u64) -> (String, u64, u64) {
+        (name.to_string(), alloc, req)
+    }
+
+    #[test]
+    fn imbalance_of_a_single_node_is_zero() {
+        // A lone node cannot be imbalanced, however loaded it is.
+        let i = node_imbalance(&[n("a", 4000, 3800)]);
+        assert_eq!(i.spread, 0.0);
+        assert_eq!(i.hottest.as_deref(), Some("a"));
+    }
+
+    #[test]
+    fn imbalance_spreads_hot_vs_cold_and_names_the_hottest() {
+        // a: 90% loaded, b: 10% — a 0.80 spread, a is the rebalance source.
+        let i = node_imbalance(&[n("a", 1000, 900), n("b", 1000, 100)]);
+        assert!((i.max_util - 0.90).abs() < 1e-9);
+        assert!((i.min_util - 0.10).abs() < 1e-9);
+        assert!((i.spread - 0.80).abs() < 1e-9);
+        assert_eq!(i.hottest.as_deref(), Some("a"));
+    }
+
+    #[test]
+    fn imbalance_skips_zero_allocatable_and_handles_empty() {
+        // zero-alloc nodes can't host → skipped; empty input ⇒ balanced zero.
+        assert_eq!(node_imbalance(&[]).spread, 0.0);
+        let i = node_imbalance(&[n("ghost", 0, 0), n("real", 2000, 1000)]);
+        assert!((i.max_util - 0.5).abs() < 1e-9);
+        assert!((i.min_util - 0.5).abs() < 1e-9, "the ghost node must not pull min to 0");
+        assert_eq!(i.spread, 0.0);
+        assert_eq!(i.hottest.as_deref(), Some("real"));
+    }
 
     #[test]
     fn parses_cpu_quantities_to_millicores() {
