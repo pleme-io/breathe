@@ -152,10 +152,20 @@ impl KubeCluster {
         (!sel.is_empty()).then_some(sel)
     }
 
-    /// List the live pods owned by `target` (matched by its `spec.selector`).
+    /// List the live pods a band manages in `target.namespace`. Two resolution
+    /// modes: a `target.pod_selector` (the **label-selected pod group** — ARC
+    /// ephemeral runners and other owner-less pod sets) lists pods directly by that
+    /// label selector; otherwise the owner is fetched and its
+    /// `spec.selector.matchLabels` drives the list (Deployment/StatefulSet/CNPG).
+    /// Both are scoped to `target.namespace` and return live `Pod` objects to carve.
     async fn owner_pods(&self, target: &Target) -> Result<Vec<DynamicObject>, ProviderError> {
-        let owner = self.get_owner(target).await?;
-        let sel = Self::owner_pod_selector(&owner.data).ok_or(ProviderError::NoCapacityField)?;
+        let sel = match &target.pod_selector {
+            Some(s) => s.clone(),
+            None => {
+                let owner = self.get_owner(target).await?;
+                Self::owner_pod_selector(&owner.data).ok_or(ProviderError::NoCapacityField)?
+            }
+        };
         let gvk = GroupVersionKind::gvk("", "v1", "Pod");
         let ar = ApiResource::from_gvk(&gvk);
         let api: Api<DynamicObject> = Api::namespaced_with(self.client.clone(), &target.namespace, &ar);
@@ -196,25 +206,39 @@ impl KubeCluster {
 
     /// The ALWAYS-ON metric source: read live container usage from metrics-server
     /// (`metrics.k8s.io` PodMetrics) — what `kubectl top` shows. Returns the MAX
-    /// `resource` (memory bytes / cpu millicores) across the owner's pods (those
-    /// whose name starts with `pod_prefix`), so the band holds the hottest
-    /// instance at the setpoint. Independent of any TSDB.
-    async fn pod_metrics_max(&self, resource: &str, pod_prefix: &str) -> Result<Sample, ProviderError> {
+    /// `resource` (memory bytes / cpu millicores) across the band's pod group, so
+    /// the band holds the hottest instance at the setpoint. Independent of any TSDB.
+    /// The group is `selector`-matched (the label-selected carve — PodMetrics mirror
+    /// their pod's labels, so the same selector that resolves the carve resolves the
+    /// metric) when set, else the pods whose name starts with `pod_prefix`.
+    async fn pod_metrics_max(
+        &self,
+        resource: &str,
+        pod_prefix: &str,
+        selector: Option<&str>,
+    ) -> Result<Sample, ProviderError> {
         let gvk = GroupVersionKind::gvk("metrics.k8s.io", "v1beta1", "PodMetrics");
         let ar = ApiResource::from_gvk_with_plural(&gvk, "pods");
-        // metrics-server is cluster-scoped reads; namespace is inferred from the
-        // prefix's pods — query all namespaces' PodMetrics and filter by name.
+        // metrics-server is cluster-scoped reads; a selector filters server-side
+        // (PodMetrics carry the pod labels), a prefix filters client-side by name.
         let api: Api<DynamicObject> = Api::all_with(self.client.clone(), &ar);
+        let lp = match selector {
+            Some(s) => ListParams::default().labels(s),
+            None => ListParams::default(),
+        };
         let list = api
-            .list(&ListParams::default())
+            .list(&lp)
             .await
             .map_err(|e| ProviderError::ApiTransient(e.to_string()))?;
         let mut max: u64 = 0;
         let mut found = false;
         for pm in &list.items {
-            let name = pm.metadata.name.as_deref().unwrap_or("");
-            if !name.starts_with(pod_prefix) {
-                continue;
+            // selector path: the server already filtered; prefix path: match by name.
+            if selector.is_none() {
+                let name = pm.metadata.name.as_deref().unwrap_or("");
+                if !name.starts_with(pod_prefix) {
+                    continue;
+                }
             }
             let Some(containers) = pm.data.pointer("/containers").and_then(Value::as_array) else {
                 continue;
@@ -260,8 +284,8 @@ impl Cluster for KubeCluster {
     async fn read_used(&self, source: &MetricSource) -> Result<Sample, ProviderError> {
         match source {
             MetricSource::Prometheus(promql) => self.prometheus_used(promql).await,
-            MetricSource::PodMetricsMax { resource, pod_prefix } => {
-                self.pod_metrics_max(resource, pod_prefix).await
+            MetricSource::PodMetricsMax { resource, pod_prefix, selector } => {
+                self.pod_metrics_max(resource, pod_prefix, selector.as_deref()).await
             }
             // A host metric can never reach the k8s boundary — the controller
             // routes host dimensions to `HostCluster`. Typed, never silent.

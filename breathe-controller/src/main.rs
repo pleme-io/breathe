@@ -162,6 +162,9 @@ async fn reconcile<B: Band, D: DimensionDescriptor + Default>(
         kind: tr.kind.clone(),
         api_version: tr.api_version.clone().unwrap_or_default(),
         container: tr.container.clone(),
+        // label-selected pod group (ARC ephemeral runners) when set; else the
+        // owner-resolved path. carve + metric both read this selector.
+        pod_selector: tr.pod_selector.clone(),
     };
 
     let cfg = match obj.band_config() {

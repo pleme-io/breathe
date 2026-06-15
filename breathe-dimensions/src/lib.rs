@@ -19,7 +19,15 @@ use breathe_provider::{
 /// CNPG `Cluster`. When `in_place` is set (and the owner is pod-backed, not a
 /// CNPG Cluster), carve the live pods via the resize subresource — no restart
 /// (`LimitLayout::PodResize`) — instead of the template (which rolls).
+///
+/// A `pod_selector` target (a label-selected pod group — ARC ephemeral runners and
+/// other owner-less pod sets) is ALWAYS `PodResize`: there is no owning template to
+/// roll, so the only sensible carve is in-place on the live pods. It overrides the
+/// `in_place` capability flag (a selector group can only be carved this way).
 fn pod_layout(target: &Target, in_place: bool) -> LimitLayout {
+    if target.pod_selector.is_some() {
+        return LimitLayout::PodResize { container: target.container.clone() };
+    }
     match target.kind.as_str() {
         "Cluster" => LimitLayout::ClusterTopLevel,
         _ if in_place => LimitLayout::PodResize { container: target.container.clone() },
@@ -45,7 +53,11 @@ impl DimensionDescriptor for MemoryDescriptor {
     fn semantics(&self) -> ApplySemantics { ApplySemantics::Transactional }
     fn layout(&self, target: &Target) -> LimitLayout { pod_layout(target, self.in_place) }
     fn metric_source(&self, target: &Target) -> MetricSource {
-        MetricSource::PodMetricsMax { resource: "memory".into(), pod_prefix: target.name.clone() }
+        MetricSource::PodMetricsMax {
+            resource: "memory".into(),
+            pod_prefix: target.name.clone(),
+            selector: target.pod_selector.clone(),
+        }
     }
 }
 
@@ -67,7 +79,11 @@ impl DimensionDescriptor for CpuDescriptor {
     fn semantics(&self) -> ApplySemantics { ApplySemantics::PartialProgress }
     fn layout(&self, target: &Target) -> LimitLayout { pod_layout(target, self.in_place) }
     fn metric_source(&self, target: &Target) -> MetricSource {
-        MetricSource::PodMetricsMax { resource: "cpu".into(), pod_prefix: target.name.clone() }
+        MetricSource::PodMetricsMax {
+            resource: "cpu".into(),
+            pod_prefix: target.name.clone(),
+            selector: target.pod_selector.clone(),
+        }
     }
 }
 
@@ -107,10 +123,22 @@ mod tests {
     use super::*;
 
     fn cnpg() -> Target {
-        Target { namespace: "pangea-system".into(), name: "pangea-database".into(), kind: "Cluster".into(), api_version: "postgresql.cnpg.io/v1".into(), container: None }
+        Target { namespace: "pangea-system".into(), name: "pangea-database".into(), kind: "Cluster".into(), api_version: "postgresql.cnpg.io/v1".into(), container: None, pod_selector: None }
     }
     fn deploy() -> Target {
-        Target { namespace: "x".into(), name: "app".into(), kind: "Deployment".into(), api_version: "apps/v1".into(), container: Some("app".into()) }
+        Target { namespace: "x".into(), name: "app".into(), kind: "Deployment".into(), api_version: "apps/v1".into(), container: Some("app".into()), pod_selector: None }
+    }
+    /// An ARC ephemeral-runner pod group: no resolvable owner, name unstable —
+    /// addressed by a label selector. Carved in-place regardless of `in_place`.
+    fn runner() -> Target {
+        Target {
+            namespace: "arc-rio-default".into(),
+            name: "rio-build-01".into(),
+            kind: "EphemeralRunner".into(),
+            api_version: "actions.github.com/v1alpha1".into(),
+            container: Some("runner".into()),
+            pod_selector: Some("actions.github.com/scale-set-name=rio-build-01".into()),
+        }
     }
 
     #[test]
@@ -121,12 +149,39 @@ mod tests {
         assert_eq!(d.layout(&cnpg()), LimitLayout::ClusterTopLevel);
         assert!(matches!(d.layout(&deploy()), LimitLayout::PodTemplate { .. }));
         match d.metric_source(&cnpg()) {
-            MetricSource::PodMetricsMax { resource, pod_prefix } => {
+            MetricSource::PodMetricsMax { resource, pod_prefix, selector } => {
                 assert_eq!(resource, "memory");
                 assert_eq!(pod_prefix, "pangea-database");
+                assert_eq!(selector, None, "owner-resolved target carries no selector");
             }
             other => panic!("memory must read metrics-server, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn ephemeral_runner_carves_in_place_by_selector() {
+        // The label-selected pod-group carve: an ARC runner has no owning template
+        // to roll, so memory/cpu ALWAYS go PodResize (in-place, zero restart) — even
+        // with in_place=false — and the metric reads the SAME label selector.
+        let r = runner();
+        for d in [MemoryDescriptor { in_place: false }, MemoryDescriptor { in_place: true }] {
+            assert!(matches!(d.layout(&r), LimitLayout::PodResize { container: Some(c) } if c == "runner"));
+            match d.metric_source(&r) {
+                MetricSource::PodMetricsMax { resource, pod_prefix, selector } => {
+                    assert_eq!(resource, "memory");
+                    assert_eq!(pod_prefix, "rio-build-01");
+                    assert_eq!(selector.as_deref(), Some("actions.github.com/scale-set-name=rio-build-01"));
+                }
+                other => panic!("runner memory must read metrics-server by selector, got {other:?}"),
+            }
+        }
+        // a selector carve is never RestartRequiring (it cannot force a roll).
+        use breathe_provider::DisruptionClass;
+        assert_ne!(
+            MemoryDescriptor::default().layout(&r).disruption_class(),
+            DisruptionClass::RestartRequiring
+        );
+        assert!(matches!(CpuDescriptor::default().layout(&r), LimitLayout::PodResize { .. }));
     }
 
     #[test]
@@ -185,7 +240,7 @@ mod tests {
         let d = StorageDescriptor;
         assert_eq!(d.directionality(), Directionality::GrowOnly);
         // A raw PVC target carves its own requests.storage, keyed on its exact name.
-        let pvc = Target { namespace: "drive".into(), name: "data-garage-0".into(), kind: "PersistentVolumeClaim".into(), api_version: "v1".into(), container: None };
+        let pvc = Target { namespace: "drive".into(), name: "data-garage-0".into(), kind: "PersistentVolumeClaim".into(), api_version: "v1".into(), container: None, pod_selector: None };
         assert_eq!(d.layout(&pvc), LimitLayout::PvcRequest);
         match d.metric_source(&pvc) {
             MetricSource::Prometheus(q) => {
