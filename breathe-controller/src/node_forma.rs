@@ -122,6 +122,18 @@ fn node_ready(n: &Node) -> bool {
         .unwrap_or(false)
 }
 
+/// A kwok FAKE node (carries the kwok adoption annotation). The real-node
+/// observer ([`KubeNodeProvedor`]) skips these so a `KwokProvedor` bed's fakes
+/// never inflate the REAL node-count capacity signal — the two pools observe
+/// disjoint fleets even though both list `nodes`.
+fn is_kwok_fake(n: &Node) -> bool {
+    n.metadata
+        .annotations
+        .as_ref()
+        .and_then(|a| a.get("kwok.x-k8s.io/node"))
+        .is_some_and(|v| v == "fake")
+}
+
 /// Observes the node-count `Forma`'s `(used, capacity)` from the live apiserver:
 /// `capacity` = count of Ready nodes; `used` = node-EQUIVALENTS of current
 /// demand = ⌈Σ (Running+Pending) pod CPU requests / mean-per-node allocatable⌉.
@@ -141,7 +153,7 @@ impl KubeNodeProvedor {
                 let mut count = 0u64;
                 let mut total = 0u64;
                 for n in &nodes.items {
-                    if !node_ready(n) {
+                    if !node_ready(n) || is_kwok_fake(n) {
                         continue;
                     }
                     count += 1;
@@ -169,7 +181,9 @@ impl Provedor for KubeNodeProvedor {
         // sample and the per-node imbalance projection in one pass.
         let mut node_alloc: std::collections::HashMap<String, u64> = std::collections::HashMap::new();
         for n in &nodes.items {
-            if !node_ready(n) {
+            // Skip kwok FAKE nodes — the real-node pool observes the real fleet
+            // only; a KwokProvedor bed's fakes belong to its own pool.
+            if !node_ready(n) || is_kwok_fake(n) {
                 continue;
             }
             let alloc = n
@@ -714,6 +728,9 @@ mod tests {
         // Explicit allocatable so the scheduler sees room.
         let alloc = node.status.as_ref().unwrap().allocatable.as_ref().unwrap();
         assert_eq!(alloc.get("cpu").map(|q| q.0.as_str()), Some("4000m"));
+        // The real-node observer treats it as a fake (so it never counts it).
+        assert!(super::is_kwok_fake(&node), "a fake node is detectable by the kwok annotation");
+        assert!(!super::is_kwok_fake(&node_with_managed(Some("rio-kwok"))), "a plain node (no kwok annotation) is not fake");
     }
 
     #[test]
