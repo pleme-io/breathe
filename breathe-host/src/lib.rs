@@ -733,6 +733,73 @@ impl DimensionDescriptor for CgroupCpuDescriptor {
     }
 }
 
+/// **HostParam** — the GENERIC, data-driven host-parameter descriptor (PR-2).
+/// Unlike the hand-written [`ArcDescriptor`]/[`CgroupMemoryDescriptor`] (each a
+/// fixed knob), this ONE descriptor carries its `knob` (`Sysctl{key}` /
+/// `ZfsParam{param}`), its `metric` (`MeminfoField`/`ArcKstat`), and its
+/// `directionality` as DATA — so every sysctl / ZFS-param band (`vm.dirty_bytes`,
+/// `zfs_arc_min`, `net.core.rmem_max`, `vm.min_free_kbytes`, …) is an *instance*,
+/// not new code. The value is a bare `u64` read/written straight through the
+/// sysfs/procfs seam (no Unit codec — host params are integers, not k8s
+/// quantities). The realization of the census's "two generic arms collapse the
+/// whole sysctl/ZFS family to data."
+pub struct HostParamDescriptor {
+    pub knob: HostKnob,
+    pub metric: HostMetric,
+    pub dir: Directionality,
+}
+
+impl HostParamDescriptor {
+    /// A bidirectional sysctl band by dotted key + its `/proc/meminfo` `used` field.
+    #[must_use]
+    pub fn sysctl(key: impl Into<String>, meminfo_field: impl Into<String>, dir: Directionality) -> Self {
+        Self {
+            knob: HostKnob::Sysctl { key: key.into() },
+            metric: HostMetric::MeminfoField { field: meminfo_field.into() },
+            dir,
+        }
+    }
+    /// A ZFS-parameter band by param name + its arcstats `used` row.
+    #[must_use]
+    pub fn zfs_param(param: impl Into<String>, arcstats_row: impl Into<String>, dir: Directionality) -> Self {
+        Self {
+            knob: HostKnob::ZfsParam { param: param.into() },
+            metric: HostMetric::ArcKstat { row: arcstats_row.into() },
+            dir,
+        }
+    }
+}
+
+impl DimensionDescriptor for HostParamDescriptor {
+    fn id(&self) -> DimensionId {
+        DimensionId::HostParam
+    }
+    fn directionality(&self) -> Directionality {
+        self.dir
+    }
+    fn field_manager(&self) -> &'static str {
+        // Host levers have no k8s managedFields + each band writes a DISTINCT
+        // file, so a shared manager never creates contention (field_owners is
+        // empty for the host boundary). Disjointness is by file, not by manager.
+        "breathe/host-param"
+    }
+    fn logical_field(&self) -> &'static str {
+        "host.param"
+    }
+    fn resource(&self) -> &'static str {
+        "memory"
+    }
+    fn semantics(&self) -> ApplySemantics {
+        ApplySemantics::ContinuousReconciliation
+    }
+    fn layout(&self, _target: &Target) -> LimitLayout {
+        LimitLayout::Host(self.knob.clone())
+    }
+    fn metric_source(&self, _target: &Target) -> MetricSource {
+        MetricSource::Host(self.metric.clone())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -883,6 +950,33 @@ mod tests {
         assert_eq!(dnode.value, 64 * GI / 1024);
         let dirty = cluster.read_used(&MetricSource::Host(HostMetric::MeminfoField { field: "Dirty".into() })).await.unwrap();
         assert_eq!(dirty.value, 50 * GI / 1024);
+    }
+
+    #[tokio::test]
+    async fn host_param_sysctl_band_observes_and_decides_through_the_generic_descriptor() {
+        // The PR-2 payoff: a vm.dirty_bytes band is ONE generic descriptor
+        // instance (no new code) and breathes through the SAME BandProvider as
+        // memory/arc/cgroup. used = meminfo Dirty, limit = the live sysctl value.
+        let mut env = MockHostEnv::default();
+        env.meminfo.insert("Dirty".into(), 180 * GI / 1024); // 180Mi dirty
+        env.sysfs.lock().unwrap().insert(sysctl_path("vm.dirty_bytes"), 200 * GI / 1024); // limit 200Mi
+        let desc = HostParamDescriptor::sysctl("vm.dirty_bytes", "Dirty", Directionality::Bidirectional);
+        assert_eq!(desc.id(), DimensionId::HostParam);
+        assert_eq!(desc.directionality(), Directionality::Bidirectional);
+        let provider = BandProvider::new(HostCluster::shadow(env, envelopes()), desc);
+        let obs = provider.observe(&node_target()).await.unwrap();
+        assert_eq!(obs.used, 180 * GI / 1024);
+        assert_eq!(obs.capacity, 200 * GI / 1024, "capacity = the live sysctl value");
+        assert!(obs.owners.is_empty(), "host levers have no competing owner");
+    }
+
+    #[tokio::test]
+    async fn host_param_zfs_band_can_restrict_directionality_to_grow_only() {
+        // zfs_arc_min is a PROTECTION floor — GrowOnly: the family is bidirectional,
+        // this instance restricts. Proves per-instance directionality flows as data.
+        let desc = HostParamDescriptor::zfs_param("zfs_arc_min", "arc_meta_min", Directionality::GrowOnly);
+        assert_eq!(desc.directionality(), Directionality::GrowOnly);
+        assert!(matches!(desc.layout(&node_target()), LimitLayout::Host(HostKnob::ZfsParam { .. })));
     }
 
     #[tokio::test]

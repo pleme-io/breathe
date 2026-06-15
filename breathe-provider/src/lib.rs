@@ -27,6 +27,11 @@ pub enum DimensionId {
     /// HOST: a systemd unit's transient cgroup cpu bandwidth cap (`CPUQuota`) —
     /// the host-plane peer of `pod-cpu-resize`, carved live with zero restart.
     CgroupCpu,
+    /// HOST: a GENERIC sysctl / ZFS-parameter band (PR-2). One id for the whole
+    /// family — the specific knob (`vm.dirty_bytes`, `zfs_arc_min`, …) + metric +
+    /// directionality are carried as DATA on the descriptor, so a new sysctl/ZFS
+    /// band is a catalog row + a CR, not a new dimension id. RestartFree.
+    HostParam,
 }
 
 impl DimensionId {
@@ -40,6 +45,7 @@ impl DimensionId {
             Self::Arc => "arc",
             Self::Cgroup => "cgroup",
             Self::CgroupCpu => "cgroup-cpu",
+            Self::HostParam => "host-param",
         }
     }
 
@@ -47,7 +53,7 @@ impl DimensionId {
     /// `HostCluster`) rather than the Kubernetes API (`KubeCluster`).
     #[must_use]
     pub fn is_host(self) -> bool {
-        matches!(self, Self::Arc | Self::Cgroup | Self::CgroupCpu)
+        matches!(self, Self::Arc | Self::Cgroup | Self::CgroupCpu | Self::HostParam)
     }
 }
 
