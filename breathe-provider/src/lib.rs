@@ -230,6 +230,54 @@ pub enum DisruptionPolicy {
     AllowRestart,
 }
 
+/// How a node pool's capacity is FILLED — the node-tier placement posture breathe
+/// SETS and the scheduler binds against (the owns-vs-yields seam: breathe owns
+/// the policy + emits the scoring hint; it never binds a pod). The node-tier peer
+/// of [`Directionality`]/[`DisruptionPolicy`] — a typed choice, never a free knob.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum FillPolicy {
+    /// Bin-pack tight — fill a node to the band before provisioning the next.
+    /// Low node count + cost, higher correlated-failure blast radius. Correct for
+    /// stateless / batch / CI / dev where a node loss reschedules cheaply. The
+    /// efficiency-first default (matches the 80/20 reclaim ethos).
+    #[default]
+    Pack,
+    /// Distribute across failure domains — more nodes, lower per-node util, low
+    /// blast radius. Correct for quorum members / stateful primaries / HA where a
+    /// node or zone loss must not take a majority.
+    Spread,
+}
+
+impl FillPolicy {
+    /// The kube-scheduler `NodeResourcesFit` scoringStrategy this policy implies —
+    /// the hint breathe SURFACES for the scheduler profile. breathe never binds a
+    /// pod; it emits this and the scheduler (configured with the matching profile)
+    /// does the binding. `Pack`→`MostAllocated` (fill tight), `Spread`→`LeastAllocated`.
+    #[must_use]
+    pub fn scheduler_scoring(self) -> &'static str {
+        match self {
+            Self::Pack => "MostAllocated",
+            Self::Spread => "LeastAllocated",
+        }
+    }
+    /// `true` for the default (`Pack`) — used as a serde `skip_serializing_if` so a
+    /// pool at the default omits the field.
+    #[must_use]
+    pub fn is_pack(&self) -> bool {
+        matches!(self, Self::Pack)
+    }
+}
+
+impl std::fmt::Display for FillPolicy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Pack => "pack",
+            Self::Spread => "spread",
+        })
+    }
+}
+
 impl DisruptionPolicy {
     /// The default (golden) policy — used as a serde `skip_serializing_if` so a
     /// band at the default omits the field (keeps the strict typed-gRPC surface
@@ -898,6 +946,19 @@ mod tests {
         assert!(!DisruptionPolicy::AllowConditional.permits(RestartRequiring));
         // AllowRestart: everything.
         assert!(DisruptionPolicy::AllowRestart.permits(RestartRequiring));
+    }
+
+    #[test]
+    fn fill_policy_defaults_pack_and_maps_the_scheduler_hint() {
+        use super::FillPolicy;
+        // Pack is the efficiency-first default; the enum maps to the scheduler
+        // NodeResourcesFit scoringStrategy breathe surfaces (it never binds pods).
+        assert_eq!(FillPolicy::default(), FillPolicy::Pack);
+        assert!(FillPolicy::Pack.is_pack());
+        assert!(!FillPolicy::Spread.is_pack());
+        assert_eq!(FillPolicy::Pack.scheduler_scoring(), "MostAllocated");
+        assert_eq!(FillPolicy::Spread.scheduler_scoring(), "LeastAllocated");
+        assert_eq!(FillPolicy::Spread.to_string(), "spread");
     }
 }
 

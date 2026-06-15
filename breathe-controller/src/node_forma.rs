@@ -273,11 +273,14 @@ pub async fn reconcile_cloud_pool(cr: Arc<BreatheCloudPool>, ctx: Arc<Ctx>) -> R
     .await;
 
     counter!("breathe_forma_ticks_total", "forma" => "node-on-demand", "pool" => name.clone(), "outcome" => outcome_of(&tick)).increment(1);
-    let status = cloud_pool_status(&tick, sample.as_ref().map(|s| s.used), sample.as_ref().map(|s| s.capacity), dry_run);
+    let mut status = cloud_pool_status(&tick, sample.as_ref().map(|s| s.used), sample.as_ref().map(|s| s.capacity), dry_run);
+    // BU(fillPolicy): surface the scheduler scoring hint the pool's fillPolicy
+    // implies — breathe SETS the posture; the scheduler (profile-configured) binds.
+    status.scheduler_scoring = Some(cr.spec.fill_policy.scheduler_scoring().to_string());
     if let Some(w) = status.would_provision {
         gauge!("breathe_forma_would_provision", "forma" => "node-on-demand", "pool" => name.clone()).set(w as f64);
     }
-    info!(pool = %name, forma = ?forma, phase = ?status.phase, decision = ?status.last_decision, dry_run, "node-Forma reconciled");
+    info!(pool = %name, forma = ?forma, fill = %cr.spec.fill_policy, phase = ?status.phase, decision = ?status.last_decision, dry_run, "node-Forma reconciled");
     patch_status(&ctx.client, &name, &status).await;
 
     Ok(Action::requeue(ctx.requeue))

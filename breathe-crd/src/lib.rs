@@ -547,6 +547,12 @@ pub struct BreatheCloudPoolSpec {
     /// `false` ⇒ the whole pool is in shadow regardless of `dryRun`. Safe default.
     #[serde(default)]
     pub write_enabled: bool,
+    /// How the pool is FILLED — `pack` (bin-pack tight, the efficiency-first
+    /// default) or `spread` (distribute across failure domains for HA). breathe
+    /// SETS this posture + surfaces the scheduler scoring hint; the scheduler
+    /// binds. Omitted on serialize at the `pack` default.
+    #[serde(default, skip_serializing_if = "breathe_provider::FillPolicy::is_pack")]
+    pub fill_policy: breathe_provider::FillPolicy,
 }
 
 impl BreatheCloudPoolSpec {
@@ -582,6 +588,11 @@ pub struct CloudPoolStatus {
     /// Signed node delta the pool WOULD provision (+) / deprovision (−) this tick.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub would_provision: Option<i64>,
+    /// The kube-scheduler scoringStrategy hint the pool's `fillPolicy` implies
+    /// (`MostAllocated` for pack / `LeastAllocated` for spread) — surfaced for the
+    /// scheduler profile; breathe never binds a pod.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scheduler_scoring: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub effective_dry_run: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
