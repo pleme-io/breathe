@@ -62,10 +62,20 @@ impl std::fmt::Display for DimensionId {
 pub struct Target {
     pub namespace: String,
     pub name: String,
-    /// `Deployment` | `StatefulSet` | `Cluster` (CNPG) | `PersistentVolumeClaim`.
+    /// `Deployment` | `StatefulSet` | `Cluster` (CNPG) | `PersistentVolumeClaim` |
+    /// `EphemeralRunner` (any owner-less pod group resolved by `pod_selector`).
     pub kind: String,
     pub api_version: String,
     pub container: Option<String>,
+    /// When set, breathe resolves the band's pods DIRECTLY by this k8s label
+    /// selector (`k=v,k2=v2`) instead of via an owner's `spec.selector.matchLabels`
+    /// — the **label-selected pod-group carve**. The path for ephemeral / owner-less
+    /// pod sets whose name is not stable and which have no single resolvable
+    /// workload owner (GitHub ARC `EphemeralRunner`s, bare pods, Job pods). A
+    /// selector ALWAYS carves in-place (`PodResize`) — there is no template to roll —
+    /// scoped to `namespace`; the metric reads the same selector. `None` ⇒ the
+    /// owner-selector path (Deployment/StatefulSet/CNPG), unchanged.
+    pub pod_selector: Option<String>,
 }
 
 /// A writable HOST lever — the address `HostCluster` writes a breathe decision
@@ -360,9 +370,11 @@ pub struct Sample {
 pub enum MetricSource {
     /// Raw PromQL against a Prometheus-compatible endpoint (storage / historical).
     Prometheus(String),
-    /// Max container `resource` (memory bytes / cpu millicores) across the
-    /// owner's pods, read live from metrics-server.
-    PodMetricsMax { resource: String, pod_prefix: String },
+    /// Max container `resource` (memory bytes / cpu millicores) across a pod group,
+    /// read live from metrics-server. When `selector` is set the group is the pods
+    /// matching that label selector (the label-selected carve — ARC runners); else
+    /// it is the pods whose name starts with `pod_prefix` (the owner's pods).
+    PodMetricsMax { resource: String, pod_prefix: String, selector: Option<String> },
     /// HOST: read directly from procfs/sysfs/cgroup via `HostCluster`.
     /// `KubeCluster` rejects this with a typed error.
     Host(HostMetric),

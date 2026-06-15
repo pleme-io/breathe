@@ -169,6 +169,9 @@ async fn reconcile_host<B: Band, D: DimensionDescriptor + Default>(
         kind: tr.kind.clone(),
         api_version: tr.api_version.clone().unwrap_or_default(),
         container: tr.container.clone(),
+        // host dimensions (arc/cgroup) never address a pod group — HostCluster
+        // ignores this; threaded for one Target shape across both agents.
+        pod_selector: tr.pod_selector.clone(),
     };
 
     let cfg = match obj.band_config() {

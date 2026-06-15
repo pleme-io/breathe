@@ -57,6 +57,25 @@ One `DimensionDescriptor` impl (`breathe-dimensions`) + one catalog row
 `band_kind!` line (`breathe-crd`, passing the dimension's `Unit` + default
 floor/ceiling). The controller code never grows. **Never touch `decide`.**
 
+## Pod resolution: owner-selector vs label-selected group
+
+A band resolves the pods it carves two ways, on one seam (`KubeCluster::owner_pods`):
+
+- **owner-selector** (default): GET the `targetRef` owner (Deployment / StatefulSet /
+  CNPG `Cluster`) and list pods by its `spec.selector.matchLabels`.
+- **label-selected group** (`targetRef.podSelector` set): list pods DIRECTLY by that
+  k8s label selector — no owner GET. The path for **ephemeral / owner-less pod sets**
+  whose name is not stable and which have no single resolvable owner: GitHub ARC
+  `EphemeralRunner`s (`actions.github.com/scale-set-name=<set>`), bare pods, Job pods.
+  A `podSelector` band is ALWAYS `PodResize` (in-place, zero restart — there is no
+  template to roll), scoped to the band's namespace; the metric reads the SAME
+  selector (PodMetrics mirror their pod's labels). `targetRef.name` then serves only
+  as the human label. This is how a CI runner is held breathable: a fresh runner pod
+  appears per job under a stable selector, breathe carves its live limit in band.
+
+  RBAC: the controller needs `pods` + `pods/resize` `patch` for any LIVE in-place
+  carve (chart `templates/rbac.yaml`) — granted fleet-wide, not runner-specific.
+
 ## rio go-live status (2026-06-13)
 
 - **memory — LIVE on pangea-database.** breathe owns `Cluster.spec.resources.limits.memory`

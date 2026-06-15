@@ -242,6 +242,7 @@ mod tests {
             kind: "Cluster".into(),
             api_version: "postgresql.cnpg.io/v1".into(),
             container: None,
+            pod_selector: None,
         }
     }
     fn we_own() -> Vec<FieldOwner> {
@@ -356,6 +357,7 @@ mod tests {
             kind: "Deployment".into(),
             api_version: "apps/v1".into(),
             container: Some("app".into()),
+            pod_selector: None,
         }
     }
     /// A resize-capable memory provider (k8s ≥1.33) over a Deployment ⇒ the carve

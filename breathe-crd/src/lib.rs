@@ -37,6 +37,16 @@ pub struct TargetRef {
     pub api_version: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub container: Option<String>,
+    /// When set, breathe resolves the band's pods DIRECTLY by this k8s label
+    /// selector (`k=v,k2=v2`) instead of via an owner's `spec.selector.matchLabels`.
+    /// The path for **ephemeral / owner-less pod groups** whose name is not stable
+    /// and which have no single resolvable workload owner — GitHub ARC
+    /// `EphemeralRunner`s (`actions.github.com/scale-set-name=<set>`), bare pods, Job
+    /// pods. A selector ALWAYS carves in-place (`PodResize`, zero restart) within
+    /// `targetRef`'s namespace; `name` then serves only as the metrics pod-name
+    /// prefix + the human label. Omit it for Deployment/StatefulSet/CNPG owners.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pod_selector: Option<String>,
 }
 
 /// A standard k8s `metav1.Condition` (schemars-derivable — k8s_openapi's own
@@ -777,7 +787,7 @@ mod tests {
     #[test]
     fn three_kinds_share_band_config_parse() {
         // each kind constructs a valid BandConfig from its spec
-        let tr = TargetRef { kind: "Cluster".into(), name: "x".into(), api_version: None, container: None };
+        let tr = TargetRef { kind: "Cluster".into(), name: "x".into(), api_version: None, container: None, pod_selector: None };
         let mem = MemoryBand::new("m", MemoryBandSpec {
             target_ref: tr.clone(), setpoint: 0.80, grow_above: 0.85, shrink_below: 0.70,
             grow_factor: 1.25, shrink_factor: 0.90, floor: "512Mi".into(), ceiling: "4Gi".into(),
@@ -790,7 +800,7 @@ mod tests {
 
     #[test]
     fn cpu_band_parses_floor_ceiling_as_millicores() {
-        let tr = TargetRef { kind: "Cluster".into(), name: "db".into(), api_version: None, container: None };
+        let tr = TargetRef { kind: "Cluster".into(), name: "db".into(), api_version: None, container: None, pod_selector: None };
         let cpu = CpuBand::new("c", CpuBandSpec {
             target_ref: tr, setpoint: 0.80, grow_above: 0.85, shrink_below: 0.70,
             grow_factor: 1.25, shrink_factor: 0.90, floor: "250m".into(), ceiling: "2".into(),
@@ -815,7 +825,7 @@ mod tests {
     #[test]
     fn host_bands_share_the_band_shape_and_parse_bytes() {
         // ArcBand: the target is the node; floor/ceiling are byte quantities.
-        let tr = TargetRef { kind: "Node".into(), name: "rio".into(), api_version: None, container: None };
+        let tr = TargetRef { kind: "Node".into(), name: "rio".into(), api_version: None, container: None, pod_selector: None };
         let arc = ArcBand::new("rio-arc", ArcBandSpec {
             target_ref: tr, setpoint: 0.80, grow_above: 0.85, shrink_below: 0.70,
             grow_factor: 1.25, shrink_factor: 0.90, floor: "1Gi".into(), ceiling: "6Gi".into(),
@@ -828,7 +838,7 @@ mod tests {
 
         // CgroupBand: the target NAME is the systemd unit the agent addresses.
         let g = CgroupBand::new("nix-daemon", CgroupBandSpec {
-            target_ref: TargetRef { kind: "HostUnit".into(), name: "nix-daemon.service".into(), api_version: None, container: None },
+            target_ref: TargetRef { kind: "HostUnit".into(), name: "nix-daemon.service".into(), api_version: None, container: None, pod_selector: None },
             setpoint: 0.80, grow_above: 0.85, shrink_below: 0.70, grow_factor: 1.25, shrink_factor: 0.90,
             floor: "1Gi".into(), ceiling: "12Gi".into(), cooldown_seconds: 600, max_staleness_seconds: 120, dry_run: true, disruption_policy: Default::default(), suspend: false, force_limit: None, force_limit_expiry: None, predictive: false, predictive_lookahead_seconds: 60,
         });

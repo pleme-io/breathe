@@ -752,10 +752,10 @@ mod tests {
     }
 
     fn node_target() -> Target {
-        Target { namespace: String::new(), name: "rio".into(), kind: "Node".into(), api_version: String::new(), container: None }
+        Target { namespace: String::new(), name: "rio".into(), kind: "Node".into(), api_version: String::new(), container: None, pod_selector: None }
     }
     fn unit_target(unit: &str) -> Target {
-        Target { namespace: String::new(), name: unit.into(), kind: "HostUnit".into(), api_version: String::new(), container: None }
+        Target { namespace: String::new(), name: unit.into(), kind: "HostUnit".into(), api_version: String::new(), container: None, pod_selector: None }
     }
 
     #[tokio::test]
@@ -897,7 +897,7 @@ mod tests {
     async fn k8s_source_on_host_cluster_is_a_typed_error() {
         let cluster = HostCluster::shadow(MockHostEnv::default(), envelopes());
         let err = cluster
-            .read_used(&MetricSource::PodMetricsMax { resource: "memory".into(), pod_prefix: "x".into() })
+            .read_used(&MetricSource::PodMetricsMax { resource: "memory".into(), pod_prefix: "x".into(), selector: None })
             .await
             .unwrap_err();
         assert!(matches!(err, ProviderError::ApiPermanent(_)));
