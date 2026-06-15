@@ -13,10 +13,8 @@ breathe-control = { path = "../breathe-control", version = "0.1.0" }
 breathe-provider = { path = "../breathe-provider", version = "0.1.0" }
 breathe-auction = { path = "../breathe-auction", version = "0.1.0" }
 breathe-admission = { path = "../breathe-admission", version = "0.1.0" }
-
-[dev-dependencies]
-# Only the test doubles (MockProvedor) implement the async `Provedor` trait; the
-# loop itself only CALLS it, so async-trait is dev-only.
+# `sim::SimProvedor` is a non-test `Provedor` impl (the node-tier test bed), so
+# async-trait is a regular dependency, not dev-only.
 async-trait = "0.1"
 
 [lints]

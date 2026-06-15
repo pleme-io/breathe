@@ -127,5 +127,7 @@ where
     }
 }
 
+pub mod sim;
+
 #[cfg(test)]
 mod tests;
