@@ -3,7 +3,8 @@
 //! Dimension-agnostic I/O: `query` runs raw PromQL (with sample age),
 //! `read_limit` reads a quantity at a [`LimitLayout`], `field_owners` extracts
 //! ownership of the layout's fieldsV1 path (resolving the container name from
-//! the live object), `apply` performs **true SSA** (`Patch::Apply` + force).
+//! the live object), `apply` performs **true SSA** (`Patch::Apply`, NO force —
+//! yields on a 409 field-conflict rather than clobbering a competitor, BU3′).
 //! The layout interpretation — CNPG `Cluster` top-level, pod-template, PVC — is
 //! the only K8s-specific branching, and it lives here, not in the descriptors.
 
@@ -445,10 +446,25 @@ impl Cluster for KubeCluster {
             "metadata": { "name": target.name, "namespace": target.namespace },
             "spec": spec,
         });
+        // BU3′ — NO `.force()`. A forced SSA apply reclaims a field another
+        // manager owns, silently clobbering a competitor between the single-writer
+        // guard's read and this write — the exact race that makes cooperative-yield
+        // `only-mitigated`. Without force, a conflicting field yields a 409, which
+        // we map to a TRANSIENT error: breathe never clobbers, requeues, and the
+        // pre-write guard then observes the competitor's managedFields and yields
+        // cleanly (TickPlan::Conflict). Blast-radius-bounded — not unrepresentable
+        // (a force-applying PEER can still win the field), per the §I tier-honest
+        // ledger. (Host-tier carves take a different path entirely — sysfs/systemd
+        // have no managedFields; their safety is the L2 ceiling wall + the clamp.)
         self.api_for(target)
-            .patch(&target.name, &PatchParams::apply(&patch.field_manager).force(), &Patch::Apply(&body))
+            .patch(&target.name, &PatchParams::apply(&patch.field_manager), &Patch::Apply(&body))
             .await
-            .map_err(|e| ProviderError::ApiPermanent(e.to_string()))?;
+            .map_err(|e| match e {
+                kube::Error::Api(ae) if ae.code == 409 => ProviderError::ApiTransient(format!(
+                    "SSA field conflict (a competitor owns the field) — yielding, will re-observe: {ae}"
+                )),
+                other => ProviderError::ApiPermanent(other.to_string()),
+            })?;
         Ok(AppliedReceipt { source_hash: [0u8; 16] })
     }
 
