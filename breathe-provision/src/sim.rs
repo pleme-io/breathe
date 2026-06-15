@@ -224,7 +224,7 @@ mod sim_tests {
     use crate::reconcile_forma;
     use crate::tests::{block_on as run, capacidade_gate, open_cfg, NodeRef};
     use breathe_admission::Viveiro;
-    use breathe_auction::{BandLeiloeiro, ReactivePrevisor};
+    use breathe_auction::{BandLeiloeiro, LinearTrendPrevisor, Previsor, ReactivePrevisor};
     use breathe_provider::{Forma, Provedor, ProvisionReceipt};
 
     #[test]
@@ -377,5 +377,49 @@ mod sim_tests {
         sim.set_demand(120); // workload shifts onto this pool
         assert!(settle(&sim, 120.0), "re-converge after the load jump");
         assert!(sim.ready_count() > before, "the pool grew to absorb the shifted load");
+    }
+
+    /// Drive one pool through a demand ramp, return the PEAK utilisation seen.
+    /// Starts comfortably in-band (util ~0.75, a wide Hold zone) and ramps
+    /// GENTLY (+1/tick): reactive Holds for many ticks before util crosses the
+    /// band, so the warmed-up forecaster's earlier Hold→Grow flip leads it by
+    /// ~`horizon` ticks. A steep ramp would pin BOTH in permanent-Grow and tie
+    /// (the band law grows by a fixed factor, not by overshoot magnitude).
+    fn peak_util_on_ramp<P: Previsor>(boot_ticks: u64, previsor: &P) -> f64 {
+        let sim = SimProvedor::new(56, 42, boot_ticks, 0); // 42/56 = 0.75, in-band
+        let leiloeiro = BandLeiloeiro;
+        let cfg = open_cfg();
+        let gates = capacidade_gate(0);
+        let mut demand = 42u64;
+        let mut peak = 0.0f64;
+        for _ in 0..40 {
+            sim.set_demand(demand);
+            let mut viveiro = Viveiro::new();
+            let _ = run(reconcile_forma(
+                Forma::NodeOnDemand, &sim, previsor, &leiloeiro, &cfg, &gates, 3,
+                &mut viveiro, |_id| NodeRef { allocatable: 1 },
+            ));
+            sim.advance();
+            let cap = sim.ready_count().max(1);
+            peak = peak.max(demand as f64 / cap as f64);
+            demand += 1; // gentle ramp
+        }
+        peak
+    }
+
+    #[test]
+    fn forecasting_beats_reactive_under_boot_latency() {
+        // The BU8 keystone: on a gentle demand ramp with a 5-tick boot dead-time,
+        // the reactive previsor flips to Grow only AFTER util crosses the band,
+        // and the new capacity lands 5 ticks late — so util overshoots. The
+        // monotone-safe forecaster projects 5 ticks ahead, flips Grow earlier,
+        // and the capacity lands in time — holding a STRICTLY lower peak util.
+        let boot = 5;
+        let reactive_peak = peak_util_on_ramp(boot, &ReactivePrevisor);
+        let forecast_peak = peak_util_on_ramp(boot, &LinearTrendPrevisor::new(4, boot));
+        assert!(
+            forecast_peak < reactive_peak,
+            "forecaster peak {forecast_peak:.3} must beat reactive peak {reactive_peak:.3} under boot latency"
+        );
     }
 }

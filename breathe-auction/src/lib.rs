@@ -75,6 +75,83 @@ impl Previsor for ReactivePrevisor {
     }
 }
 
+/// A **monotone-safe linear-trend forecaster** — the predictive successor to
+/// [`ReactivePrevisor`], and the answer to §5.3's "horizon ≥ relief-latency".
+///
+/// A reactive previsor echoes the current demand, so the loop only reacts AFTER
+/// demand has already risen — and a node takes `relief_latency` to boot, so a
+/// reactively-grown pool is chronically behind during a demand ramp (util
+/// overshoots the band until the late capacity finally lands). This previsor
+/// keeps a short window of recent `used` samples, estimates the per-tick slope,
+/// and projects demand `horizon_ticks` ahead (set ≥ `relief_latency / interval`),
+/// so the loop provisions BEFORE the spike and the late capacity is already
+/// Ready when demand arrives.
+///
+/// **The one safety invariant (tier-honest):** the forecast is
+/// `max(current, projected)` — it is **never below the current sample**. So this
+/// previsor can only ever make the loop provision EARLIER; it can NEVER cause a
+/// premature shrink. That removes the §5.3 mispredict-asymmetry + cost-thrash
+/// hazard *by construction* (a falling trend collapses to the reactive echo —
+/// it never bets on demand dropping), and it means the band law's safety-clamp
+/// proof still bounds every action (the previsor only ever raises `used`, and
+/// `decide`'s grow path is already proven safe). It is the demand-side peer of
+/// the `PredictiveGrow<BandLaw>` limit-side predictor (memory:
+/// pangea-database `predictive: true`).
+///
+/// Pure in the sense that matters for the convergence proof: deterministic given
+/// the sample sequence, no I/O, no wall clock (it assumes the controller's fixed
+/// tick cadence — `horizon_ticks` is in ticks, not seconds). History lives
+/// behind a `Mutex` for interior mutability under the `&self` trait signature.
+#[derive(Debug)]
+pub struct LinearTrendPrevisor {
+    window: usize,
+    horizon_ticks: u64,
+    history: std::sync::Mutex<std::collections::VecDeque<u64>>,
+}
+
+impl LinearTrendPrevisor {
+    /// `window` = how many recent samples to keep for the slope estimate (≥ 2 to
+    /// forecast at all); `horizon_ticks` = how many ticks ahead to project (set
+    /// ≥ `relief_latency_secs / reconcile_interval_secs` or provisioning is
+    /// always late — §5.3, thesis P8).
+    #[must_use]
+    pub fn new(window: usize, horizon_ticks: u64) -> Self {
+        Self {
+            window: window.max(2),
+            horizon_ticks,
+            history: std::sync::Mutex::new(std::collections::VecDeque::new()),
+        }
+    }
+}
+
+impl Previsor for LinearTrendPrevisor {
+    fn predict(&self, sample_used: u64, sample_capacity: u64) -> Previsao {
+        let mut h = self.history.lock().expect("previsor history poisoned");
+        h.push_back(sample_used);
+        while h.len() > self.window {
+            h.pop_front();
+        }
+        // Need ≥ 2 samples to estimate a slope; until then, echo (reactive).
+        let projected = if h.len() < 2 {
+            sample_used
+        } else {
+            let oldest = *h.front().expect("len ≥ 2");
+            let newest = *h.back().expect("len ≥ 2");
+            let span = (h.len() - 1) as i64; // ticks between oldest and newest
+            #[allow(clippy::cast_possible_wrap)]
+            let slope_num = newest as i64 - oldest as i64; // per-`span`-ticks delta
+            #[allow(clippy::cast_possible_wrap)]
+            let proj = newest as i64 + slope_num * self.horizon_ticks as i64 / span;
+            #[allow(clippy::cast_sign_loss)]
+            let proj = proj.max(0) as u64;
+            // MONOTONE-SAFE: never forecast below the current sample. A falling
+            // trend collapses to the reactive echo — never a premature shrink.
+            proj.max(sample_used)
+        };
+        Previsao { immediate_used: projected, capacity: sample_capacity }
+    }
+}
+
 // ============================================================================
 // Leiloeiro — the auctioneer. Single-forma = SOLVED (the band law lifted).
 // ============================================================================

@@ -98,3 +98,54 @@ fn single_forma_leiloeiro_is_the_band_law_lifted() {
         }
     }
 }
+
+// ============================================================================
+// LinearTrendPrevisor — the monotone-safe forecaster (BU8).
+// ============================================================================
+use super::LinearTrendPrevisor;
+
+#[test]
+fn forecaster_echoes_until_it_has_two_samples() {
+    // First sample: no slope yet ⇒ reactive echo (never guess from one point).
+    let p = LinearTrendPrevisor::new(4, 3);
+    assert_eq!(p.predict(50, 100).immediate_used, 50);
+}
+
+#[test]
+fn forecaster_projects_a_rising_trend_ahead_of_the_horizon() {
+    // demand rising +10/tick; with a 3-tick horizon the forecast leads demand.
+    let p = LinearTrendPrevisor::new(4, 3);
+    p.predict(10, 100);
+    p.predict(20, 100);
+    let f = p.predict(30, 100); // slope +10/tick over 2 ticks; project 3 ahead
+    assert!(f.immediate_used > 30, "must lead the current sample on a rising trend");
+    // newest 30 + slope(10)*horizon(3) = 60.
+    assert_eq!(f.immediate_used, 60);
+}
+
+#[test]
+fn forecaster_is_monotone_safe_a_falling_trend_never_forecasts_below_current() {
+    // demand FALLING: a forecaster that extrapolated down would trigger a
+    // premature shrink (cost-thrash, §5.3). The max(current) floor forbids it.
+    let p = LinearTrendPrevisor::new(4, 3);
+    p.predict(90, 100);
+    p.predict(70, 100);
+    let f = p.predict(50, 100); // slope -20/tick; naive proj = 50 - 60 < 0
+    assert_eq!(f.immediate_used, 50, "falling trend collapses to the reactive echo");
+}
+
+#[test]
+fn forecaster_never_undershoots_the_current_sample_for_any_history() {
+    // The load-bearing invariant: for ANY sequence, immediate_used >= current.
+    let p = LinearTrendPrevisor::new(5, 4);
+    for used in [100, 80, 60, 90, 40, 200, 10] {
+        let f = p.predict(used, 1000);
+        assert!(f.immediate_used >= used, "forecast {} < current {used}", f.immediate_used);
+    }
+}
+
+#[test]
+fn forecaster_capacity_passes_through_untouched() {
+    let p = LinearTrendPrevisor::new(3, 2);
+    assert_eq!(p.predict(10, 777).capacity, 777);
+}
