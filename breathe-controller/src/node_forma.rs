@@ -19,9 +19,11 @@ use breathe_crd::{BreatheCloudPool, CloudPoolStatus};
 use breathe_provider::{Forma, FormaSample, ProviderError, ProvisionReceipt, Provedor};
 use breathe_provision::{reconcile_forma, FormaTick};
 use breathe_runtime::now_secs;
-use k8s_openapi::api::core::v1::{Node, Pod};
+use k8s_openapi::api::core::v1::{Node, NodeSpec, NodeStatus, Pod, Taint};
+use k8s_openapi::apimachinery::pkg::api::resource::Quantity;
+use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
 use kube::{
-    api::{Api, ListParams, Patch, PatchParams},
+    api::{Api, DeleteParams, ListParams, Patch, PatchParams, PostParams},
     runtime::controller::Action,
     Client, ResourceExt,
 };
@@ -238,6 +240,251 @@ impl Provedor for KubeNodeProvedor {
     }
 }
 
+// ============================================================================
+// KwokProvedor — a LIVE node ACTUATOR against kwok FAKE nodes (the multi-node
+// go-live bed). The in-cluster peer of breathe-provision::sim::SimProvedor:
+// SimProvedor proves the loop in memory; KwokProvedor exercises it against the
+// real apiserver, creating/observing/draining Node objects that kwok
+// ("Kubernetes WithOut Kubelet") fakes the kubelet for — zero cloud cost,
+// instant boot — so provision→ready→use→evict runs end-to-end on single-node rio.
+// ============================================================================
+
+/// The label every breathe-created fake node carries — value = the pool name.
+/// It is BOTH the safety boundary (only a node bearing it for THIS pool is a
+/// deletion target — breathe can never delete a real node) AND the observe scope.
+const KWOK_MANAGED_LABEL: &str = "breathe.pleme.io/kwok-managed";
+/// The scheduling label workload pods select on (`nodeSelector`) to land on a
+/// pool's fake fleet — stamped on every fake node so the pool's demand is real.
+const KWOK_POOL_LABEL: &str = "breathe.pleme.io/kwok-pool";
+/// Each fake node's allocatable CPU (millicores). The node-equivalent unit.
+const KWOK_NODE_CPU_MILLI: u64 = 4000;
+
+/// SAFETY PREDICATE (load-bearing, pure, tested): is `node` a fake this pool
+/// owns? True iff it carries `KWOK_MANAGED_LABEL == pool`. The single delete
+/// path filters on this — a real node (no label) or another pool's fake is not
+/// a deletion target, so breathe deleting a real node is unrepresentable here.
+fn is_kwok_managed(node: &Node, pool: &str) -> bool {
+    node.metadata
+        .labels
+        .as_ref()
+        .and_then(|l| l.get(KWOK_MANAGED_LABEL))
+        .is_some_and(|v| v == pool)
+}
+
+/// PURE (tested): build a kwok fake `Node` for `pool` named `name` with
+/// `cpu_milli` allocatable. Carries the kwok adoption annotation + NoSchedule
+/// taint (so real pods never land), the managed + pool labels, and an explicit
+/// capacity/allocatable so the scheduler sees room. kwok marks it `Ready`.
+fn fake_node_object(pool: &str, name: &str, cpu_milli: u64) -> Node {
+    let mut labels = std::collections::BTreeMap::new();
+    labels.insert("type".to_string(), "kwok".to_string());
+    labels.insert(KWOK_MANAGED_LABEL.to_string(), pool.to_string());
+    labels.insert(KWOK_POOL_LABEL.to_string(), pool.to_string());
+    labels.insert("kubernetes.io/hostname".to_string(), name.to_string());
+    labels.insert("kubernetes.io/os".to_string(), "linux".to_string());
+
+    let mut annotations = std::collections::BTreeMap::new();
+    annotations.insert("kwok.x-k8s.io/node".to_string(), "fake".to_string());
+    annotations.insert("node.alpha.kubernetes.io/ttl".to_string(), "0".to_string());
+
+    let mut quantities = std::collections::BTreeMap::new();
+    quantities.insert("cpu".to_string(), Quantity(format!("{cpu_milli}m")));
+    quantities.insert("memory".to_string(), Quantity("16Gi".to_string()));
+    quantities.insert("pods".to_string(), Quantity("110".to_string()));
+
+    Node {
+        metadata: ObjectMeta {
+            name: Some(name.to_string()),
+            labels: Some(labels),
+            annotations: Some(annotations),
+            ..Default::default()
+        },
+        spec: Some(NodeSpec {
+            taints: Some(vec![Taint {
+                key: "kwok.x-k8s.io/node".to_string(),
+                value: Some("fake".to_string()),
+                effect: "NoSchedule".to_string(),
+                ..Default::default()
+            }]),
+            ..Default::default()
+        }),
+        status: Some(NodeStatus {
+            capacity: Some(quantities.clone()),
+            allocatable: Some(quantities),
+            ..Default::default()
+        }),
+    }
+}
+
+/// A LIVE actuator: creates/drains kwok fake nodes for one pool. `observe`
+/// scopes to this pool's fake fleet (capacity = Ready fakes; demand = Σ cpu of
+/// workload pods that `nodeSelector` this pool). All mutation is gated by the
+/// safety predicate [`is_kwok_managed`].
+pub struct KwokProvedor {
+    client: Client,
+    pool: String,
+    /// Shadow gate: when true, `provision`/`deprovision` report what they WOULD
+    /// do (`DryRun`) and mutate NOTHING — `observe` still reads (read-only is
+    /// safe in shadow). So a shadow kwok pool never creates a Node.
+    dry_run: bool,
+}
+
+impl KwokProvedor {
+    pub fn new(client: Client, pool: String, dry_run: bool) -> Self {
+        Self { client, pool, dry_run }
+    }
+
+    /// This pool's fake fleet (nodes carrying `KWOK_MANAGED_LABEL=<pool>`).
+    async fn managed_nodes(&self) -> Result<Vec<Node>, ProviderError> {
+        let lp = ListParams::default().labels(&format!("{KWOK_MANAGED_LABEL}={}", self.pool));
+        Ok(Api::<Node>::all(self.client.clone())
+            .list(&lp)
+            .await
+            .map_err(|e| ProviderError::ApiTransient(e.to_string()))?
+            .items)
+    }
+}
+
+#[async_trait::async_trait]
+impl Provedor for KwokProvedor {
+    async fn observe(&self) -> Result<FormaSample, ProviderError> {
+        let nodes = self.managed_nodes().await?;
+        let capacity = nodes.iter().filter(|n| node_ready(n)).count() as u64;
+
+        // Demand = Σ cpu requests of Running/Pending pods that target THIS pool
+        // via nodeSelector — the workload the fake fleet must absorb.
+        let pods = Api::<Pod>::all(self.client.clone())
+            .list(&ListParams::default())
+            .await
+            .map_err(|e| ProviderError::ApiTransient(e.to_string()))?;
+        let mut demand_milli = 0u64;
+        for p in &pods.items {
+            let phase = p.status.as_ref().and_then(|s| s.phase.as_deref()).unwrap_or("");
+            if phase != "Running" && phase != "Pending" {
+                continue;
+            }
+            let Some(spec) = &p.spec else { continue };
+            let targets_pool = spec
+                .node_selector
+                .as_ref()
+                .and_then(|sel| sel.get(KWOK_POOL_LABEL))
+                .is_some_and(|v| v == &self.pool);
+            if !targets_pool {
+                continue;
+            }
+            for c in &spec.containers {
+                if let Some(cpu) =
+                    c.resources.as_ref().and_then(|r| r.requests.as_ref()).and_then(|m| m.get("cpu"))
+                {
+                    demand_milli += parse_cpu_milli(&cpu.0);
+                }
+            }
+        }
+        let used = demand_milli.div_ceil(KWOK_NODE_CPU_MILLI);
+        Ok(FormaSample { used, capacity })
+    }
+
+    async fn provision(&self, n: u64) -> Result<ProvisionReceipt, ProviderError> {
+        if n == 0 {
+            return Ok(ProvisionReceipt::NoOp);
+        }
+        if self.dry_run {
+            return Ok(ProvisionReceipt::DryRun { would: n as i64 });
+        }
+        let api = Api::<Node>::all(self.client.clone());
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let mut created = 0i64;
+        for i in 0..n {
+            let name = format!("breathe-kwok-{}-{stamp}-{i}", self.pool);
+            let node = fake_node_object(&self.pool, &name, KWOK_NODE_CPU_MILLI);
+            match api.create(&PostParams::default(), &node).await {
+                Ok(_) => created += 1,
+                Err(e) => warn!(pool = %self.pool, node = %name, error = %e, "kwok node create failed (non-fatal; retried next tick)"),
+            }
+        }
+        if created == 0 {
+            return Ok(ProvisionReceipt::NoOp);
+        }
+        Ok(ProvisionReceipt::Applied { delta: created, plan_id: format!("kwok:provision:{stamp}") })
+    }
+
+    async fn deprovision(&self, n: u64) -> Result<ProvisionReceipt, ProviderError> {
+        if n == 0 {
+            return Ok(ProvisionReceipt::NoOp);
+        }
+        if self.dry_run {
+            return Ok(ProvisionReceipt::DryRun { would: -(n as i64) });
+        }
+        let api = Api::<Node>::all(self.client.clone());
+        let mut nodes = self.managed_nodes().await?;
+        // Prefer draining the EMPTIEST nodes first would need per-node load; for
+        // the fake fleet (no real workload migration) deletion order is by name.
+        nodes.sort_by_key(kube::ResourceExt::name_any);
+        let mut released = 0i64;
+        for node in nodes.iter().take(n as usize) {
+            // Defense-in-depth: re-verify the safety predicate before EVERY delete.
+            // A node that isn't this pool's fake is unreachable as a target.
+            if !is_kwok_managed(node, &self.pool) {
+                continue;
+            }
+            let name = node.name_any();
+            match api.delete(&name, &DeleteParams::default()).await {
+                Ok(_) => released += 1,
+                Err(e) => warn!(pool = %self.pool, node = %name, error = %e, "kwok node delete failed (non-fatal)"),
+            }
+        }
+        if released == 0 {
+            return Ok(ProvisionReceipt::NoOp);
+        }
+        Ok(ProvisionReceipt::Applied { delta: -released, plan_id: format!("kwok:deprovision:{}", self.pool) })
+    }
+}
+
+/// The per-pool executor selected by `spec.provider`: typed dispatch (a sum
+/// type, no `dyn`) over the observe-only [`KubeNodeProvedor`] and the actuating
+/// [`KwokProvedor`], so `reconcile_forma` is driven from ONE call site.
+enum PoolProvedor {
+    KubeObserve(KubeNodeProvedor),
+    Kwok(KwokProvedor),
+}
+
+impl PoolProvedor {
+    /// The per-unit allocatable (millicores) used to size a minted `NodeRef` for
+    /// the admission gate. KubeObserve uses the live cluster mean; Kwok uses its
+    /// fixed fake-node size.
+    async fn per_node_alloc_milli(&self) -> u64 {
+        match self {
+            Self::KubeObserve(p) => p.per_node_alloc_milli().await,
+            Self::Kwok(_) => KWOK_NODE_CPU_MILLI,
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl Provedor for PoolProvedor {
+    async fn observe(&self) -> Result<FormaSample, ProviderError> {
+        match self {
+            Self::KubeObserve(p) => p.observe().await,
+            Self::Kwok(p) => p.observe().await,
+        }
+    }
+    async fn provision(&self, n: u64) -> Result<ProvisionReceipt, ProviderError> {
+        match self {
+            Self::KubeObserve(p) => p.provision(n).await,
+            Self::Kwok(p) => p.provision(n).await,
+        }
+    }
+    async fn deprovision(&self, n: u64) -> Result<ProvisionReceipt, ProviderError> {
+        match self {
+            Self::KubeObserve(p) => p.deprovision(n).await,
+            Self::Kwok(p) => p.deprovision(n).await,
+        }
+    }
+}
+
 /// PURE: map a `FormaTick` (+ the observed sample + effective mode) onto the
 /// typed `CloudPoolStatus`. The node-tier peer of `breathe_runtime::status_for`;
 /// unit-tested below, no I/O — so the CR status, the metrics, and the logs can
@@ -317,7 +564,6 @@ impl Previsor for PoolPrevisor {
 /// Observe-only/DryRun: mutates no infrastructure.
 pub async fn reconcile_cloud_pool(cr: Arc<BreatheCloudPool>, ctx: Arc<Ctx>) -> Result<Action, Error> {
     let name = cr.name_any();
-    let provedor = KubeNodeProvedor::new(ctx.client.clone());
 
     let Some(forma) = forma_from_str(&cr.spec.forma) else {
         warn!(pool = %name, forma = %cr.spec.forma, "BreatheCloudPool: unknown Forma — skipping");
@@ -330,9 +576,23 @@ pub async fn reconcile_cloud_pool(cr: Arc<BreatheCloudPool>, ctx: Arc<Ctx>) -> R
         patch_status(&ctx.client, &name, &st).await;
         return Ok(Action::requeue(ctx.requeue));
     };
-    // Effective shadow = per-pool dryRun OR pool master writeEnabled off. (The
-    // actuator is DryRun regardless until BU10, so this is observe-only either way.)
+    // Effective shadow = per-pool dryRun OR pool master writeEnabled off — BOTH
+    // gates. This single value is the actuation switch: it is handed to the
+    // provider so an actuating provider (Kwok) mutates NOTHING unless the pool
+    // is live on both gates. The observe-only KubeObserve provider ignores it
+    // (it is DryRun by construction — it can never mutate).
     let dry_run = cr.spec.dry_run || !cr.spec.write_enabled;
+
+    // Select the executor. Default KubeObserve can never actuate; Kwok actuates
+    // only when `!dry_run` (passed the EFFECTIVE shadow, both gates respected).
+    let provedor = match cr.spec.provider {
+        breathe_crd::ProviderKind::KubeObserve => {
+            PoolProvedor::KubeObserve(KubeNodeProvedor::new(ctx.client.clone()))
+        }
+        breathe_crd::ProviderKind::Kwok => {
+            PoolProvedor::Kwok(KwokProvedor::new(ctx.client.clone(), name.clone(), dry_run))
+        }
+    };
 
     // Observe once for the gauges + status (reconcile_forma observes again).
     let sample = provedor.observe().await.ok();
@@ -407,12 +667,53 @@ pub fn error_policy_cloud_pool(_cr: Arc<BreatheCloudPool>, err: &Error, ctx: Arc
 
 #[cfg(test)]
 mod tests {
-    use super::{cloud_pool_status, forma_from_str, node_imbalance, outcome_of, parse_cpu_milli};
+    use super::{
+        cloud_pool_status, fake_node_object, forma_from_str, is_kwok_managed, node_imbalance,
+        outcome_of, parse_cpu_milli, KWOK_MANAGED_LABEL,
+    };
     use breathe_provider::Forma;
     use breathe_provision::FormaTick;
+    use k8s_openapi::api::core::v1::Node;
+    use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
 
     fn n(name: &str, alloc: u64, req: u64) -> (String, u64, u64) {
         (name.to_string(), alloc, req)
+    }
+
+    fn node_with_managed(label: Option<&str>) -> Node {
+        let labels = label.map(|v| {
+            let mut m = std::collections::BTreeMap::new();
+            m.insert(KWOK_MANAGED_LABEL.to_string(), v.to_string());
+            m
+        });
+        Node { metadata: ObjectMeta { labels, ..Default::default() }, ..Default::default() }
+    }
+
+    #[test]
+    fn kwok_safety_predicate_matches_only_this_pools_fakes() {
+        // The load-bearing safety boundary: breathe deletes ONLY its own fakes.
+        assert!(!is_kwok_managed(&node_with_managed(None), "rio-kwok"), "a real node (no label) is never a target");
+        assert!(!is_kwok_managed(&node_with_managed(Some("other-pool")), "rio-kwok"), "another pool's fake is not a target");
+        assert!(is_kwok_managed(&node_with_managed(Some("rio-kwok")), "rio-kwok"), "this pool's own fake matches");
+    }
+
+    #[test]
+    fn fake_node_is_tainted_labelled_and_sized() {
+        let node = fake_node_object("rio-kwok", "breathe-kwok-rio-kwok-1", 4000);
+        // managed + pool labels present and equal to the pool.
+        assert!(is_kwok_managed(&node, "rio-kwok"));
+        let labels = node.metadata.labels.as_ref().unwrap();
+        assert_eq!(labels.get("breathe.pleme.io/kwok-pool").map(String::as_str), Some("rio-kwok"));
+        // kwok adoption annotation so the fake kubelet takes it over.
+        let ann = node.metadata.annotations.as_ref().unwrap();
+        assert_eq!(ann.get("kwok.x-k8s.io/node").map(String::as_str), Some("fake"));
+        // NoSchedule kwok taint so REAL pods never land on a fake node.
+        let taint = &node.spec.as_ref().unwrap().taints.as_ref().unwrap()[0];
+        assert_eq!(taint.key, "kwok.x-k8s.io/node");
+        assert_eq!(taint.effect, "NoSchedule");
+        // Explicit allocatable so the scheduler sees room.
+        let alloc = node.status.as_ref().unwrap().allocatable.as_ref().unwrap();
+        assert_eq!(alloc.get("cpu").map(|q| q.0.as_str()), Some("4000m"));
     }
 
     #[test]
