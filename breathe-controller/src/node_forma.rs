@@ -14,7 +14,7 @@
 use std::sync::Arc;
 
 use breathe_admission::{Allocatable, CapacidadeProof, Portao, Viveiro};
-use breathe_auction::{BandLeiloeiro, ReactivePrevisor};
+use breathe_auction::{BandLeiloeiro, LinearTrendPrevisor, Previsao, Previsor, ReactivePrevisor};
 use breathe_crd::{BreatheCloudPool, CloudPoolStatus};
 use breathe_provider::{Forma, FormaSample, ProviderError, ProvisionReceipt, Provedor};
 use breathe_provision::{reconcile_forma, FormaTick};
@@ -224,6 +224,23 @@ fn outcome_of(tick: &FormaTick) -> &'static str {
 }
 
 /// Reconcile ONE `BreatheCloudPool` — observe→decide→(would-provision)→admit via
+/// The per-pool demand previsor selected by `spec.predictive`: typed dispatch
+/// (a sum type, no `dyn`) between the reactive echo and the stateful forecaster,
+/// so `reconcile_forma` is driven from ONE call site regardless of posture.
+enum PoolPrevisor {
+    Reactive(ReactivePrevisor),
+    Forecast(Arc<LinearTrendPrevisor>),
+}
+
+impl Previsor for PoolPrevisor {
+    fn predict(&self, used: u64, capacity: u64) -> Previsao {
+        match self {
+            Self::Reactive(p) => p.predict(used, capacity),
+            Self::Forecast(p) => p.predict(used, capacity),
+        }
+    }
+}
+
 /// `reconcile_forma`, map the tick to the CR status, emit metrics, requeue.
 /// Observe-only/DryRun: mutates no infrastructure.
 pub async fn reconcile_cloud_pool(cr: Arc<BreatheCloudPool>, ctx: Arc<Ctx>) -> Result<Action, Error> {
@@ -259,10 +276,20 @@ pub async fn reconcile_cloud_pool(cr: Arc<BreatheCloudPool>, ctx: Arc<Ctx>) -> R
     let alloc = provedor.per_node_alloc_milli().await;
     let gates: Vec<Box<dyn Portao<NodeRef>>> = vec![Box::new(CapacidadeProof { required_floor: 1 })];
     let mut viveiro: Viveiro<NodeRef> = Viveiro::new();
+    // Select the demand previsor: monotone-safe forecaster (provisions ahead of
+    // the boot dead-time) when `spec.predictive`, else the reactive echo. The
+    // forecaster is stateful + per-pool, so it lives in the controller Ctx and
+    // is fed once per reconcile here. Horizon = reliefLatency / requeue, in ticks.
+    let previsor = if cr.spec.predictive {
+        let horizon_ticks = (cr.spec.relief_latency_seconds / ctx.requeue.as_secs().max(1)).max(1);
+        PoolPrevisor::Forecast(ctx.forecaster_for(&name, horizon_ticks))
+    } else {
+        PoolPrevisor::Reactive(ReactivePrevisor)
+    };
     let tick = reconcile_forma(
         forma,
         &provedor,
-        &ReactivePrevisor,
+        &previsor,
         &BandLeiloeiro,
         &cr.spec.band_config(),
         &gates,
@@ -277,6 +304,7 @@ pub async fn reconcile_cloud_pool(cr: Arc<BreatheCloudPool>, ctx: Arc<Ctx>) -> R
     // BU(fillPolicy): surface the scheduler scoring hint the pool's fillPolicy
     // implies — breathe SETS the posture; the scheduler (profile-configured) binds.
     status.scheduler_scoring = Some(cr.spec.fill_policy.scheduler_scoring().to_string());
+    status.predictive_active = Some(cr.spec.predictive);
     if let Some(w) = status.would_provision {
         gauge!("breathe_forma_would_provision", "forma" => "node-on-demand", "pool" => name.clone()).set(w as f64);
     }
