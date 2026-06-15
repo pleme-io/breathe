@@ -76,6 +76,14 @@ A band resolves the pods it carves two ways, on one seam (`KubeCluster::owner_po
   RBAC: the controller needs `pods` + `pods/resize` `patch` for any LIVE in-place
   carve (chart `templates/rbac.yaml`) — granted fleet-wide, not runner-specific.
 
+  **Dormant** (scaled-to-zero): a `podSelector` group with zero matching pods is a
+  benign resting state, NOT an error — an ephemeral runner is absent between builds.
+  The metric read returns `ProviderError::NoTargetPods`, the loop maps it to
+  `TickReceipt::Dormant` (phase `Dormant`, `Ready=True`, `Converged=True`, counted
+  at-rest in the overview, re-checked at the fast cadence). Only an empty SELECTOR
+  group is dormant; an owner (Deployment/CNPG) with no pods is still `MetricsMissing`
+  / `Error` (genuinely abnormal). Generalizes to Job pods + KEDA-to-zero workloads.
+
 ## rio go-live status (2026-06-13)
 
 - **memory — LIVE on pangea-database.** breathe owns `Cluster.spec.resources.limits.memory`
