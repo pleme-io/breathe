@@ -43,6 +43,27 @@ use breathe_provider::{
 pub const ZFS_ARC_MAX_PATH: &str = "/sys/module/zfs/parameters/zfs_arc_max";
 /// `/proc/spl/kstat/zfs/arcstats` — ARC kstats (the `size` row is current bytes).
 pub const ZFS_ARCSTATS_PATH: &str = "/proc/spl/kstat/zfs/arcstats";
+/// `/proc/meminfo` — kernel memory fields (kB), the `used` source for sysctl bands.
+pub const MEMINFO_PATH: &str = "/proc/meminfo";
+/// `/sys/module/zfs/parameters/` — the ZFS module-parameter directory (PR-2 ZfsParam).
+pub const ZFS_PARAM_DIR: &str = "/sys/module/zfs/parameters/";
+
+/// Map a dotted sysctl `key` (`vm.dirty_bytes`) to its procfs path
+/// (`/proc/sys/vm/dirty_bytes`). Pure — the PR-2 `Sysctl` keystone's addressing.
+#[must_use]
+pub fn sysctl_path(key: &str) -> String {
+    let mut p = String::from("/proc/sys/");
+    p.push_str(&key.replace('.', "/"));
+    p
+}
+
+/// Map a ZFS `param` name to its sysfs path. Pure — the PR-2 `ZfsParam` keystone.
+#[must_use]
+pub fn zfs_param_path(param: &str) -> String {
+    let mut p = String::from(ZFS_PARAM_DIR);
+    p.push_str(param);
+    p
+}
 
 // ───────────────────────────── errors ──────────────────────────────
 
@@ -130,6 +151,12 @@ pub trait HostEnvironment: Send + Sync {
         property: &str,
         value: &str,
     ) -> Result<(), HostError>;
+    /// **PR-2:** a named `arcstats` row's data column in bytes (`size`,
+    /// `dnode_size`, …). The generic peer of [`read_arcstats_size`](Self::read_arcstats_size).
+    fn read_arcstats_row(&self, row: &str) -> Result<u64, HostError>;
+    /// **PR-2:** a `/proc/meminfo` field in BYTES (the file prints kB; the impl
+    /// multiplies by 1024). `field` is the label without the colon (`Dirty`).
+    fn read_meminfo_field(&self, field: &str) -> Result<u64, HostError>;
 }
 
 /// The real implementation over std `fs` + `systemctl` (argv, never a shell).
@@ -222,16 +249,36 @@ impl SystemdSysfsEnv {
 
 impl HostEnvironment for SystemdSysfsEnv {
     fn read_arcstats_size(&self) -> Result<u64, HostError> {
+        self.read_arcstats_row("size")
+    }
+
+    fn read_arcstats_row(&self, row: &str) -> Result<u64, HostError> {
         let text = std::fs::read_to_string(self.at(ZFS_ARCSTATS_PATH)).map_err(|e| HostError::Io(e.to_string()))?;
-        // arcstats rows are `name  type  data`; we want the `size` row's data.
+        // arcstats rows are `name  type  data`; return the named row's data column.
         for line in text.lines() {
             let mut it = line.split_whitespace();
-            if it.next() == Some("size") {
-                let raw = it.last().ok_or_else(|| HostError::Parse("arcstats size has no data column".into()))?;
+            if it.next() == Some(row) {
+                let raw = it.last().ok_or_else(|| HostError::Parse("arcstats row has no data column".into()))?;
                 return raw.parse::<u64>().map_err(|e| HostError::Parse(e.to_string()));
             }
         }
-        Err(HostError::Parse("arcstats has no `size` row".into()))
+        Err(HostError::Parse("arcstats has no such row".into()))
+    }
+
+    fn read_meminfo_field(&self, field: &str) -> Result<u64, HostError> {
+        let text = std::fs::read_to_string(self.at(MEMINFO_PATH)).map_err(|e| HostError::Io(e.to_string()))?;
+        // meminfo rows are `Field:  <kB> kB`; return bytes (kB × 1024). A bare
+        // count field (HugePages_Total) has no `kB` suffix and is returned as-is.
+        for line in text.lines() {
+            if let Some(rest) = line.strip_prefix(field).and_then(|r| r.strip_prefix(':')) {
+                let mut it = rest.split_whitespace();
+                let raw = it.next().ok_or_else(|| HostError::Parse("meminfo field has no value".into()))?;
+                let n = raw.parse::<u64>().map_err(|e| HostError::Parse(e.to_string()))?;
+                let is_kb = it.next() == Some("kB");
+                return Ok(if is_kb { n.saturating_mul(1024) } else { n });
+            }
+        }
+        Err(HostError::Parse("meminfo has no such field".into()))
     }
 
     fn read_sysfs_u64(&self, path: &str) -> Result<u64, HostError> {
@@ -323,6 +370,9 @@ impl NodeEnvelopes {
                 .get(unit)
                 .copied()
                 .ok_or_else(|| HostError::NoEnvelope(unit.clone())),
+            // PR-2: host-GLOBAL sysctls/ZFS params are not nodepool-enveloped —
+            // the band's own CRD ceiling is the cap, so there is no extra L2 wall.
+            HostKnob::Sysctl { .. } | HostKnob::ZfsParam { .. } => Ok(u64::MAX),
         }
     }
 }
@@ -434,6 +484,9 @@ impl<H: HostEnvironment> Cluster for HostCluster<H> {
     async fn read_used(&self, source: &MetricSource) -> Result<Sample, ProviderError> {
         let value = match source {
             MetricSource::Host(HostMetric::ArcSize) => self.env.read_arcstats_size()?,
+            // PR-2: generic arcstats row + meminfo field (the `used` for ZFS/sysctl bands).
+            MetricSource::Host(HostMetric::ArcKstat { row }) => self.env.read_arcstats_row(row)?,
+            MetricSource::Host(HostMetric::MeminfoField { field }) => self.env.read_meminfo_field(field)?,
             MetricSource::Host(HostMetric::CgroupMemoryCurrent { unit }) => {
                 self.env.read_cgroup_memory_current(unit)?
             }
@@ -506,6 +559,13 @@ impl<H: HostEnvironment> Cluster for HostCluster<H> {
                     },
                 }
             }
+            // PR-2 keystones: read the single-u64 sysfs/procfs file directly.
+            LimitLayout::Host(HostKnob::Sysctl { key }) => {
+                Ok(self.env.read_sysfs_u64(&sysctl_path(key))?)
+            }
+            LimitLayout::Host(HostKnob::ZfsParam { param }) => {
+                Ok(self.env.read_sysfs_u64(&zfs_param_path(param))?)
+            }
             _ => Err(ProviderError::ApiPermanent(
                 "k8s layout on HostCluster (route k8s dimensions to KubeCluster)".into(),
             )),
@@ -558,6 +618,9 @@ impl<H: HostEnvironment> Cluster for HostCluster<H> {
                 let percent = patch.value / 10;
                 self.env.set_unit_property_str(unit, "CPUQuota", &format!("{percent}%"))?;
             }
+            // PR-2 keystones: write the single-u64 sysfs/procfs file directly.
+            HostKnob::Sysctl { key } => self.env.write_sysfs_u64(&sysctl_path(key), patch.value)?,
+            HostKnob::ZfsParam { param } => self.env.write_sysfs_u64(&zfs_param_path(param), patch.value)?,
         }
         Ok(AppliedReceipt { source_hash: [0u8; 16] })
     }
@@ -694,6 +757,8 @@ mod tests {
         writes: Mutex<Vec<(String, u64)>>,
         cpu_usage_nsec: Mutex<VecDeque<u64>>,
         str_writes: Mutex<Vec<(String, String)>>,
+        arcstats: BTreeMap<String, u64>,
+        meminfo: BTreeMap<String, u64>,
     }
 
     impl MockHostEnv {
@@ -741,6 +806,12 @@ mod tests {
             self.str_writes.lock().unwrap().push((format!("{unit}:{property}"), value.to_string()));
             Ok(())
         }
+        fn read_arcstats_row(&self, row: &str) -> Result<u64, HostError> {
+            self.arcstats.get(row).copied().ok_or_else(|| HostError::Parse("no such arcstats row".into()))
+        }
+        fn read_meminfo_field(&self, field: &str) -> Result<u64, HostError> {
+            self.meminfo.get(field).copied().ok_or_else(|| HostError::Parse("no such meminfo field".into()))
+        }
     }
 
     fn envelopes() -> NodeEnvelopes {
@@ -756,6 +827,62 @@ mod tests {
     }
     fn unit_target(unit: &str) -> Target {
         Target { namespace: String::new(), name: unit.into(), kind: "HostUnit".into(), api_version: String::new(), container: None, pod_selector: None }
+    }
+
+    #[test]
+    fn pr2_path_helpers_map_keys_to_procfs_sysfs() {
+        assert_eq!(sysctl_path("vm.dirty_bytes"), "/proc/sys/vm/dirty_bytes");
+        assert_eq!(sysctl_path("net.core.rmem_max"), "/proc/sys/net/core/rmem_max");
+        assert_eq!(zfs_param_path("zfs_arc_min"), "/sys/module/zfs/parameters/zfs_arc_min");
+    }
+
+    #[tokio::test]
+    async fn pr2_sysctl_and_zfsparam_keystones_read_and_write_via_generic_arms() {
+        use breathe_provider::Cluster;
+        let env = MockHostEnv::default();
+        env.sysfs.lock().unwrap().insert(sysctl_path("vm.dirty_bytes"), 200 * GI / 1024); // 200Mi
+        env.sysfs.lock().unwrap().insert(zfs_param_path("zfs_arc_min"), GI);
+        let cluster = HostCluster::new(env, envelopes(), true); // write-enabled
+
+        // READ a generic sysctl + a generic ZFS param through the one arm.
+        let dirty = cluster
+            .read_limit(&node_target(), &LimitLayout::Host(HostKnob::Sysctl { key: "vm.dirty_bytes".into() }), "memory")
+            .await
+            .unwrap();
+        assert_eq!(dirty, 200 * GI / 1024);
+        let arc_min = cluster
+            .read_limit(&node_target(), &LimitLayout::Host(HostKnob::ZfsParam { param: "zfs_arc_min".into() }), "memory")
+            .await
+            .unwrap();
+        assert_eq!(arc_min, GI);
+
+        // WRITE a generic sysctl — lands at the mapped procfs path (no L2 wall:
+        // host-global params are governed by the band ceiling, ceiling_for=MAX).
+        let patch = SsaPatch {
+            target: node_target(),
+            field_manager: "breathe/sysctl".into(),
+            layout: LimitLayout::Host(HostKnob::Sysctl { key: "vm.dirty_bytes".into() }),
+            resource: "memory".into(),
+            value: 256 * GI / 1024,
+        };
+        cluster.apply(&patch).await.unwrap();
+        assert!(
+            cluster.env().writes().iter().any(|(p, v)| p == &sysctl_path("vm.dirty_bytes") && *v == 256 * GI / 1024),
+            "the generic Sysctl arm wrote the mapped procfs path"
+        );
+    }
+
+    #[tokio::test]
+    async fn pr2_generic_metrics_read_arcstats_rows_and_meminfo_fields() {
+        use breathe_provider::Cluster;
+        let mut env = MockHostEnv::default();
+        env.arcstats.insert("dnode_size".into(), 64 * GI / 1024);
+        env.meminfo.insert("Dirty".into(), 50 * GI / 1024); // mock stores bytes
+        let cluster = HostCluster::shadow(env, envelopes());
+        let dnode = cluster.read_used(&MetricSource::Host(HostMetric::ArcKstat { row: "dnode_size".into() })).await.unwrap();
+        assert_eq!(dnode.value, 64 * GI / 1024);
+        let dirty = cluster.read_used(&MetricSource::Host(HostMetric::MeminfoField { field: "Dirty".into() })).await.unwrap();
+        assert_eq!(dirty.value, 50 * GI / 1024);
     }
 
     #[tokio::test]
