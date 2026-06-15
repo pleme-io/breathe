@@ -170,10 +170,24 @@ pub const CATALOG: &[DimensionSpec] = &[
         upstream_mirror: Some("systemctl set-property --runtime <unit> CPUQuota"),
         depends_on: &[],
     },
+    DimensionSpec {
+        id: DimensionId::HostParam,
+        name: "host-param",
+        authoring_keyword: "defdimension-host-param",
+        maturity: Maturity::Working,
+        // The FAMILY directionality is the general (bidirectional) case; a specific
+        // instance may RESTRICT to GrowOnly (arc_min, min_free_kbytes) via the
+        // descriptor's per-instance directionality data — a restriction, never a widening.
+        directionality: Directionality::Bidirectional,
+        resource_class: ResourceClass::Soft, // a mis-sized sysctl/ZFS param stalls/throttles; rarely an OOM
+        purpose: "hold any sysctl / ZFS module parameter at the band via the generic Host(Sysctl)/Host(ZfsParam) arms (PR-2: one descriptor, data-driven)",
+        upstream_mirror: Some("/proc/sys/* · /sys/module/zfs/parameters/*"),
+        depends_on: &[],
+    },
 ];
 
 /// All dimension ids the substrate knows (the partition the catalog must cover).
-pub const ALL_DIMENSIONS: [DimensionId; 7] = [
+pub const ALL_DIMENSIONS: [DimensionId; 8] = [
     DimensionId::Memory,
     DimensionId::Storage,
     DimensionId::Cpu,
@@ -181,6 +195,7 @@ pub const ALL_DIMENSIONS: [DimensionId; 7] = [
     DimensionId::Arc,
     DimensionId::Cgroup,
     DimensionId::CgroupCpu,
+    DimensionId::HostParam,
 ];
 
 /// Look up a dimension's row.
