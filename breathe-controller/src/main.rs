@@ -77,6 +77,24 @@ struct Ctx {
     /// The k8s Event reporter identity (controller name + pod instance) — every
     /// carve/defer/conflict is published as an Event on the band object.
     reporter: Reporter,
+    /// Per-`BreatheCloudPool` demand forecasters, keyed by pool name. A
+    /// `LinearTrendPrevisor` is stateful (it accumulates a sample window across
+    /// ticks), so it must outlive a single reconcile — it lives here, fetched +
+    /// fed once per reconcile when the pool sets `spec.predictive`.
+    forecasters: std::sync::Mutex<std::collections::HashMap<String, Arc<breathe_auction::LinearTrendPrevisor>>>,
+}
+
+impl Ctx {
+    /// Fetch (or lazily create) the forecaster for a pool. `horizon_ticks` is the
+    /// lookahead in reconcile intervals (`reliefLatency / requeue`); a pool's
+    /// forecaster is created once with the horizon current at first sight — a
+    /// horizon change takes effect on the next controller restart (documented).
+    fn forecaster_for(&self, pool: &str, horizon_ticks: u64) -> Arc<breathe_auction::LinearTrendPrevisor> {
+        let mut map = self.forecasters.lock().expect("forecasters poisoned");
+        map.entry(pool.to_string())
+            .or_insert_with(|| Arc::new(breathe_auction::LinearTrendPrevisor::new(6, horizon_ticks)))
+            .clone()
+    }
 }
 
 /// Publish a k8s Event for this tick onto `obj`, transition-gated so a resting
@@ -372,7 +390,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     metrics::gauge!("breathe_build_info", "binary" => "breathe-controller", "version" => env!("CARGO_PKG_VERSION")).set(1.0);
 
     let reporter = Reporter { controller: "breathe-controller".into(), instance: std::env::var("POD_NAME").ok() };
-    let ctx = Arc::new(Ctx { client: client.clone(), prometheus_url, requeue, resize_capable, cooldowns, reporter });
+    let ctx = Arc::new(Ctx {
+        client: client.clone(),
+        prometheus_url,
+        requeue,
+        resize_capable,
+        cooldowns,
+        reporter,
+        forecasters: std::sync::Mutex::new(std::collections::HashMap::new()),
+    });
 
     info!(
         resize_capable,

@@ -553,6 +553,15 @@ pub struct BreatheCloudPoolSpec {
     /// binds. Omitted on serialize at the `pack` default.
     #[serde(default, skip_serializing_if = "breathe_provider::FillPolicy::is_pack")]
     pub fill_policy: breathe_provider::FillPolicy,
+    /// Forecast demand AHEAD of `reliefLatencySeconds` instead of reacting to
+    /// current util. Node boot is slow, so a reactive pool is always late; the
+    /// `LinearTrendPrevisor` projects the recent slope `reliefLatencySeconds`
+    /// ahead so capacity lands in time. MONOTONE-SAFE: it only ever provisions
+    /// EARLIER, never shrinks prematurely (a falling trend echoes the reactive
+    /// value), so it is strictly safer than reactive. Default off (peer of the
+    /// limit-side `predictive`). Omitted on serialize at the `false` default.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub predictive: bool,
 }
 
 impl BreatheCloudPoolSpec {
@@ -593,6 +602,11 @@ pub struct CloudPoolStatus {
     /// scheduler profile; breathe never binds a pod.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scheduler_scoring: Option<String>,
+    /// Whether the forecasting (`LinearTrendPrevisor`) path drove this tick's
+    /// decision (`spec.predictive` on) vs the reactive echo. Lets an operator
+    /// confirm the predictive posture is live from the status alone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub predictive_active: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub effective_dry_run: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
