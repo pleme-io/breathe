@@ -6,7 +6,7 @@ use breathe_provider::{Forma, FormaSample, ProvisionReceipt, Provedor, ProviderE
 
 /// A minimal no-dependency executor (the loop's awaited futures are immediately
 /// ready in tests — the mocks never block). Keeps the crate runtime-free.
-fn block_on<F: std::future::Future>(fut: F) -> F::Output {
+pub(crate) fn block_on<F: std::future::Future>(fut: F) -> F::Output {
     use std::pin::pin;
     use std::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
     fn clone(_: *const ()) -> RawWaker {
@@ -44,8 +44,8 @@ impl Provedor for MockProvedor {
 }
 
 #[derive(Debug, Clone)]
-struct NodeRef {
-    allocatable: u64,
+pub(crate) struct NodeRef {
+    pub(crate) allocatable: u64,
 }
 impl Allocatable for NodeRef {
     fn allocatable(&self) -> u64 {
@@ -53,7 +53,7 @@ impl Allocatable for NodeRef {
     }
 }
 
-fn open_cfg() -> BandConfig {
+pub(crate) fn open_cfg() -> BandConfig {
     BandConfig {
         grow_above: 0.85,
         shrink_below: 0.70,
@@ -65,7 +65,7 @@ fn open_cfg() -> BandConfig {
     }
 }
 
-fn capacidade_gate(floor: u64) -> Vec<Box<dyn Portao<NodeRef>>> {
+pub(crate) fn capacidade_gate(floor: u64) -> Vec<Box<dyn Portao<NodeRef>>> {
     vec![Box::new(CapacidadeProof { required_floor: floor })]
 }
 
