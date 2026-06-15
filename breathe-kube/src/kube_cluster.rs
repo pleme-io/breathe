@@ -230,6 +230,13 @@ impl KubeCluster {
             .list(&lp)
             .await
             .map_err(|e| ProviderError::ApiTransient(e.to_string()))?;
+        // A label-selected group with ZERO matching pods is DORMANT (the ephemeral
+        // target is scaled to zero — no runner between builds), not an error. The
+        // server already filtered by label, so an empty list IS an empty group.
+        // (The prefix path keeps `MetricsMissing` — an owner with no pods is abnormal.)
+        if selector.is_some() && list.items.is_empty() {
+            return Err(ProviderError::NoTargetPods);
+        }
         let mut max: u64 = 0;
         let mut found = false;
         for pm in &list.items {

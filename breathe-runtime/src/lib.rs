@@ -115,6 +115,7 @@ pub fn event_for(receipt: &TickReceipt) -> Option<(EventKind, &'static str, Stri
             Decision::Hold => return None, // within the deadband — resting, no event
         },
         TickReceipt::Cooldown => return None, // transient post-carve wait — no event
+        TickReceipt::Dormant => return None, // no pods in the group — resting, no event
     })
 }
 
@@ -171,6 +172,7 @@ pub fn conditions_for(outcome: &TickOutcome, prior: &[Condition], generation: Op
     let converged = matches!(
         r,
         TickReceipt::Observed { decision: Decision::Hold | Decision::AtCeiling { .. } | Decision::NoSafeShrink { .. } }
+            | TickReceipt::Dormant // an empty (scaled-to-zero) target is trivially at rest
     );
     let throttled =
         matches!(r, TickReceipt::Cooldown | TickReceipt::DeferredWouldRestart { .. } | TickReceipt::Stale { .. });
@@ -284,6 +286,13 @@ pub fn status_for(
             s.phase = Some(phase.into());
             s.last_decision = Some(note);
         }
+        TickReceipt::Dormant => {
+            // benign resting state: the label-selected pod group is empty (the
+            // ephemeral target is scaled to zero). Nothing to observe or carve; the
+            // band waits. NOT an error — counted at-rest (converged) in the overview.
+            s.phase = Some("Dormant".into());
+            s.last_decision = Some("no pods in the label group — waiting (target scaled to zero)".into());
+        }
         TickReceipt::Error { error } => {
             s.phase = Some("Error".into());
             s.last_decision = Some(error.to_string());
@@ -350,8 +359,12 @@ pub fn status_for(
 pub fn next_requeue(receipt: &TickReceipt, cooldowns: &ClassCooldowns) -> Duration {
     let secs = match receipt {
         // a carve that PASSED the policy gate is golden-cadence under the default;
-        // a shadow likewise looks fast (it is observing the live band).
-        TickReceipt::Applied { .. } | TickReceipt::DryRunWouldApply { .. } => cooldowns.restart_free,
+        // a shadow likewise looks fast (it is observing the live band). A dormant
+        // (empty) target re-checks at the golden cadence too, so a pod that appears
+        // (a runner starting a build) is picked up within one fast tick.
+        TickReceipt::Applied { .. } | TickReceipt::DryRunWouldApply { .. } | TickReceipt::Dormant => {
+            cooldowns.restart_free
+        }
         // a refused crossing: back off by exactly the blocked class.
         TickReceipt::DeferredWouldRestart { class, .. } => cooldowns.for_class(*class),
         // non-mutating / transient: the mid window.
@@ -615,5 +628,28 @@ mod tests {
             next_requeue(&TickReceipt::DeferredWouldRestart { from: 1, to: 2, class: DisruptionClass::RestartRequiring }, &cd),
             Duration::from_secs(cd.restart_requiring)
         );
+    }
+
+    #[test]
+    fn dormant_is_a_benign_at_rest_state_not_an_error() {
+        use breathe_provider::ClassCooldowns;
+        // A scaled-to-zero label group (an ARC runner between builds) is DORMANT:
+        // a first-class resting phase, Ready=True, Converged=True (at rest), no
+        // event, and a fast re-check so a runner that appears is picked up promptly.
+        let s = status_for(&out(TickReceipt::Dormant), None, 0, None);
+        assert_eq!(s.phase.as_deref(), Some("Dormant"));
+        assert!(s.last_decision.as_deref().unwrap().contains("no pods"));
+        let ready = s.conditions.iter().find(|c| c.type_ == "Ready").unwrap();
+        let converged = s.conditions.iter().find(|c| c.type_ == "Converged").unwrap();
+        assert_eq!(ready.status, "True", "a dormant target is healthy, not failed");
+        assert_eq!(converged.status, "True", "an empty target is trivially at rest");
+        // no event spam for a resting state.
+        assert!(event_for(&TickReceipt::Dormant).is_none());
+        // re-checks at the fast cadence (snappy dormant→active transition).
+        let cd = ClassCooldowns::default();
+        assert_eq!(next_requeue(&TickReceipt::Dormant, &cd), Duration::from_secs(cd.restart_free));
+        // never counts as a carve / deferral / conflict.
+        assert_eq!(s.carves_total, Some(0));
+        assert_eq!(s.deferrals_total, Some(0));
     }
 }

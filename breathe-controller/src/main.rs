@@ -272,7 +272,7 @@ async fn reconcile_overview(obj: Arc<BreatheOverview>, ctx: Arc<Ctx>) -> Result<
 
     let count = |ps: &[&str]| bands.iter().filter(|b| b.phase.as_deref().is_some_and(|x| ps.contains(&x))).count() as i64;
     let total = bands.len() as i64;
-    let converged = count(&["Holding", "AtFloor", "AtCeiling"]);
+    let converged = count(&["Holding", "AtFloor", "AtCeiling", "Dormant"]);
     let carving = count(&["Growing", "Shrinking"]);
     let deferred = count(&["DeferredWouldRestart"]);
     let suspended = count(&["Suspended"]);
