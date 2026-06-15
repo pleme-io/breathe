@@ -98,6 +98,18 @@ pub enum HostKnob {
     /// value is MILLICORES (read from `CPUQuotaPerSecUSec`, written as a percentage),
     /// not bytes. Bounded by `nodeBudget`'s cpu territory, never the static cpuset.
     CgroupCpuQuota { unit: String },
+    /// **PR-2 keystone:** a generic single-`u64` sysctl, addressed by its dotted
+    /// `key` (`vm.dirty_bytes`, `net.core.rmem_max`, `fs.file-max`). The actuator
+    /// maps `key` → `/proc/sys/<key with dots→slashes>` and reads/writes one
+    /// integer. This ONE arm collapses the entire `vm.*`/`net.*`/`fs.*` sysctl
+    /// family into catalog DATA — a new sysctl band is one descriptor + one
+    /// catalog row, zero new code.
+    Sysctl { key: String },
+    /// **PR-2 keystone:** a generic ZFS module parameter, addressed by its bare
+    /// `param` name (`zfs_arc_min`, `zfs_arc_dnode_limit`). The actuator maps
+    /// `param` → `/sys/module/zfs/parameters/<param>`. Generalizes
+    /// [`ZfsArcMax`](Self::ZfsArcMax) so every ZFS sysfs param is a catalog row.
+    ZfsParam { param: String },
 }
 
 /// Where a HOST dimension reads its `used` scalar from.
@@ -111,6 +123,14 @@ pub enum HostMetric {
     /// the cumulative `CPUUsageNSec` over a sample window (`HostCluster` computes
     /// the rate; the env exposes the cumulative counter).
     CgroupCpuUsage { unit: String },
+    /// **PR-2:** a named row of `/proc/spl/kstat/zfs/arcstats` (`size`,
+    /// `dnode_size`, `arc_meta_used`, …) in bytes — generalizes
+    /// [`ArcSize`](Self::ArcSize). The `used` signal for any ZFS-param band.
+    ArcKstat { row: String },
+    /// **PR-2:** a field of `/proc/meminfo` (`Dirty`, `Writeback`, `MemFree`, …),
+    /// reported in bytes (meminfo prints kB; the env converts). The `used` signal
+    /// for `vm.dirty_bytes`, `min_free_kbytes`, `rmem/wmem` bands.
+    MeminfoField { field: String },
 }
 
 /// Where a managed quantity lives on a target object — interpreted by the
