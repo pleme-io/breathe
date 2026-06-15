@@ -1,27 +1,34 @@
-//! BU1 — the node-tier shadow loop: wire `breathe_provision::reconcile_forma`
-//! into the running controller so the node-count band actually RECONCILES live
-//! (observe-only). Before this, the whole provisioning tier was library +
-//! self-tests, never instantiated — nothing in the fabric's node rung ran.
+//! The node-tier reconciler: drives `breathe_provision::reconcile_forma` in the
+//! live controller, watching `BreatheCloudPool` CRs (BU2). Each pool binds a
+//! `Forma` to a `Densa`-style envelope; the same shape-blind band law that holds
+//! a pod's memory at 80% holds a node POOL's count at 80%.
 //!
-//! This is OBSERVE-ONLY by construction: the [`KubeNodeProvedor`] reads real
-//! node demand/capacity from the apiserver but its `provision`/`deprovision`
-//! return [`ProvisionReceipt::DryRun`] — it mutates NOTHING. It proves the
-//! observe→predict→decide→(would-provision)→admit pipeline runs on live signal,
-//! and emits the decision as metrics + logs so the shadow is watchable. The
-//! real actuator (a magma `Plan`) is BU10, gated on magma's node path.
+//! OBSERVE-ONLY by construction: the [`KubeNodeProvedor`] reads real node
+//! demand/capacity from the apiserver but its `provision`/`deprovision` return
+//! [`ProvisionReceipt::DryRun`] — it mutates NOTHING. It proves the
+//! observe→predict→decide→(would-provision)→admit pipeline runs on live signal
+//! and reports what it WOULD provision via the CR status + metrics. The real
+//! actuator (a magma `Plan`) is BU10, gated on magma's node path.
 #![allow(clippy::doc_markdown, clippy::integer_division)]
 
-use std::time::Duration;
+use std::sync::Arc;
 
 use breathe_admission::{Allocatable, CapacidadeProof, Portao, Viveiro};
 use breathe_auction::{BandLeiloeiro, ReactivePrevisor};
-use breathe_control::BandConfig;
+use breathe_crd::{BreatheCloudPool, CloudPoolStatus};
 use breathe_provider::{Forma, FormaSample, ProviderError, ProvisionReceipt, Provedor};
 use breathe_provision::{reconcile_forma, FormaTick};
+use breathe_runtime::now_secs;
 use k8s_openapi::api::core::v1::{Node, Pod};
-use kube::{api::ListParams, Api, Client};
+use kube::{
+    api::{Api, ListParams, Patch, PatchParams},
+    runtime::controller::Action,
+    Client, ResourceExt,
+};
 use metrics::{counter, gauge};
 use tracing::{info, warn};
+
+use crate::{Ctx, Error};
 
 /// Parse a Kubernetes CPU quantity into millicores. `"500m"` → 500, `"2"` →
 /// 2000, `"1.5"` → 1500, `"250000000n"` (nanocores) → 250. Unparseable ⇒ 0.
@@ -38,9 +45,17 @@ fn parse_cpu_milli(q: &str) -> u64 {
     }
 }
 
-/// A minted shadow node — the admission `T`. Its `allocatable` is the mean
-/// per-node CPU (millicores) observed at provision time; the `CapacidadeProof`
-/// gate checks it against the band floor.
+/// Map the CR's `forma` string onto a typed [`Forma`]. `None` ⇒ unknown shape
+/// (the reconcile reports it + skips, never guesses).
+fn forma_from_str(s: &str) -> Option<Forma> {
+    match s {
+        "node-on-demand" => Some(Forma::NodeOnDemand),
+        _ => None,
+    }
+}
+
+/// A minted shadow node — the admission `T`. `allocatable` is the mean per-node
+/// CPU (millicores) observed at provision time; `CapacidadeProof` checks it.
 #[derive(Debug, Clone)]
 pub struct NodeRef {
     allocatable: u64,
@@ -49,6 +64,14 @@ impl Allocatable for NodeRef {
     fn allocatable(&self) -> u64 {
         self.allocatable
     }
+}
+
+fn node_ready(n: &Node) -> bool {
+    n.status
+        .as_ref()
+        .and_then(|s| s.conditions.as_ref())
+        .map(|cs| cs.iter().any(|c| c.type_ == "Ready" && c.status == "True"))
+        .unwrap_or(false)
 }
 
 /// Observes the node-count `Forma`'s `(used, capacity)` from the live apiserver:
@@ -63,8 +86,7 @@ impl KubeNodeProvedor {
     pub fn new(client: Client) -> Self {
         Self { client }
     }
-    /// The mean per-node allocatable (millicores) — exposed so the shadow loop
-    /// can mint a `NodeRef` whose size matches a real node.
+    /// The mean per-node allocatable (millicores) — sizes a minted `NodeRef`.
     async fn per_node_alloc_milli(&self) -> u64 {
         match Api::<Node>::all(self.client.clone()).list(&ListParams::default()).await {
             Ok(nodes) => {
@@ -86,14 +108,6 @@ impl KubeNodeProvedor {
             Err(_) => 1,
         }
     }
-}
-
-fn node_ready(n: &Node) -> bool {
-    n.status
-        .as_ref()
-        .and_then(|s| s.conditions.as_ref())
-        .map(|cs| cs.iter().any(|c| c.type_ == "Ready" && c.status == "True"))
-        .unwrap_or(false)
 }
 
 #[async_trait::async_trait]
@@ -139,7 +153,6 @@ impl Provedor for KubeNodeProvedor {
         }
 
         let per_node = if node_count > 0 { (total_alloc_milli / node_count).max(1) } else { 1 };
-        // node-equivalents of demand; never below 1 once any node exists.
         let used = demand_milli.div_ceil(per_node).max(1);
         let capacity = node_count.max(1);
         Ok(FormaSample { used, capacity })
@@ -153,78 +166,192 @@ impl Provedor for KubeNodeProvedor {
     }
 }
 
-/// The shadow node-Forma reconcile loop — runs `reconcile_forma` every
-/// `interval` against the live `KubeNodeProvedor`, observe-only, emitting the
-/// decision as metrics + logs. Perpetual (joined into the controller's main
-/// `tokio::join!`). Mutates nothing: a `Grew` decision only DryRuns the
-/// provision and admits minted shadow `NodeRef`s into a per-tick `Viveiro`.
-pub async fn run_node_forma_shadow(client: Client, cfg: BandConfig, interval: Duration) {
-    let provedor = KubeNodeProvedor::new(client);
-    // CapacidadeProof is the one real admission gate; a shadow node must clear a
-    // 1-millicore floor (everything does) — the gate's bite lands live at BU11.
-    let gates: Vec<Box<dyn Portao<NodeRef>>> = vec![Box::new(CapacidadeProof { required_floor: 1 })];
-    let mut ticker = tokio::time::interval(interval);
-    info!(
-        forma = "node-on-demand",
-        floor = cfg.floor_bytes,
-        ceiling = cfg.ceiling_bytes,
-        "node-Forma SHADOW loop starting (observe-only; provision = DryRun)"
-    );
-    loop {
-        ticker.tick().await;
-
-        // Metric gauges from a standalone observe (cheap) so the shadow is
-        // watchable on the breathe dashboard even on a Held tick.
-        if let Ok(s) = provedor.observe().await {
-            gauge!("breathe_forma_used", "forma" => "node-on-demand").set(s.used as f64);
-            gauge!("breathe_forma_capacity", "forma" => "node-on-demand").set(s.capacity as f64);
-            if s.capacity > 0 {
-                gauge!("breathe_forma_util_ratio", "forma" => "node-on-demand")
-                    .set(s.used as f64 / s.capacity as f64);
-            }
+/// PURE: map a `FormaTick` (+ the observed sample + effective mode) onto the
+/// typed `CloudPoolStatus`. The node-tier peer of `breathe_runtime::status_for`;
+/// unit-tested below, no I/O — so the CR status, the metrics, and the logs can
+/// never disagree about what a tick meant.
+#[must_use]
+pub fn cloud_pool_status(
+    tick: &FormaTick,
+    used: Option<u64>,
+    capacity: Option<u64>,
+    dry_run: bool,
+) -> CloudPoolStatus {
+    let mut s = CloudPoolStatus {
+        observed_used: used.map(|u| u as i64),
+        observed_capacity: capacity.map(|c| c as i64),
+        effective_dry_run: Some(dry_run),
+        last_seen_epoch: Some(now_secs()),
+        ..Default::default()
+    };
+    match tick {
+        FormaTick::Held => {
+            s.phase = Some("Held".into());
+            s.last_decision = Some("in band — held".into());
         }
+        FormaTick::Grew { requested, admitted, rejected, .. } => {
+            s.phase = Some("Growing".into());
+            s.would_provision = Some(*requested as i64);
+            s.last_decision =
+                Some(format!("would provision {requested} (admitted {admitted}, rejected {rejected})"));
+        }
+        FormaTick::Shrank { released, .. } => {
+            s.phase = Some("Shrinking".into());
+            s.would_provision = Some(-(*released as i64));
+            s.last_decision = Some(format!("would deprovision {released}"));
+        }
+        FormaTick::EnvelopeExhausted { shortfall, .. } => {
+            s.phase = Some("EnvelopeExhausted".into());
+            s.last_decision = Some(format!("demand beyond the envelope — short {shortfall} nodes"));
+        }
+        FormaTick::ObserveError(e) => {
+            s.phase = Some("Error".into());
+            s.last_decision = Some(format!("observe failed: {e}"));
+        }
+    }
+    s
+}
 
-        let alloc = provedor.per_node_alloc_milli().await;
-        let mut viveiro: Viveiro<NodeRef> = Viveiro::new(); // shadow: fresh per tick
-        let tick = reconcile_forma(
-            Forma::NodeOnDemand,
-            &provedor,
-            &ReactivePrevisor,
-            &BandLeiloeiro,
-            &cfg,
-            &gates,
-            3,
-            &mut viveiro,
-            |_id| NodeRef { allocatable: alloc },
-        )
-        .await;
-
-        record_tick(&tick);
+/// The outcome label for `breathe_forma_ticks_total`.
+fn outcome_of(tick: &FormaTick) -> &'static str {
+    match tick {
+        FormaTick::Held => "held",
+        FormaTick::Grew { .. } => "grew",
+        FormaTick::Shrank { .. } => "shrank",
+        FormaTick::EnvelopeExhausted { .. } => "envelope_exhausted",
+        FormaTick::ObserveError(_) => "observe_error",
     }
 }
 
-/// Surface a `FormaTick` as a typed metric + an info/warn log line.
-fn record_tick(tick: &FormaTick) {
-    let outcome = match tick {
-        FormaTick::Held => "held",
-        FormaTick::Grew { forma, requested, admitted, rejected } => {
-            gauge!("breathe_forma_would_provision", "forma" => "node-on-demand").set(*requested as f64);
-            info!(?forma, requested, admitted, rejected, "node-Forma SHADOW: would provision (DryRun)");
-            "grew"
-        }
-        FormaTick::Shrank { forma, released } => {
-            gauge!("breathe_forma_would_provision", "forma" => "node-on-demand").set(-(*released as f64));
-            info!(?forma, released, "node-Forma SHADOW: would deprovision (DryRun)");
-            "shrank"
-        }
-        FormaTick::EnvelopeExhausted { forma, shortfall } => {
-            warn!(?forma, shortfall, "node-Forma SHADOW: demand beyond the envelope — would need more nodes than the ceiling allows");
-            "envelope_exhausted"
-        }
-        FormaTick::ObserveError(e) => {
-            warn!(error = %e, "node-Forma SHADOW: observe failed");
-            "observe_error"
-        }
+/// Reconcile ONE `BreatheCloudPool` — observe→decide→(would-provision)→admit via
+/// `reconcile_forma`, map the tick to the CR status, emit metrics, requeue.
+/// Observe-only/DryRun: mutates no infrastructure.
+pub async fn reconcile_cloud_pool(cr: Arc<BreatheCloudPool>, ctx: Arc<Ctx>) -> Result<Action, Error> {
+    let name = cr.name_any();
+    let provedor = KubeNodeProvedor::new(ctx.client.clone());
+
+    let Some(forma) = forma_from_str(&cr.spec.forma) else {
+        warn!(pool = %name, forma = %cr.spec.forma, "BreatheCloudPool: unknown Forma — skipping");
+        let st = CloudPoolStatus {
+            phase: Some("Error".into()),
+            last_decision: Some(format!("unknown forma {:?}", cr.spec.forma)),
+            last_seen_epoch: Some(now_secs()),
+            ..Default::default()
+        };
+        patch_status(&ctx.client, &name, &st).await;
+        return Ok(Action::requeue(ctx.requeue));
     };
-    counter!("breathe_forma_ticks_total", "forma" => "node-on-demand", "outcome" => outcome).increment(1);
+    // Effective shadow = per-pool dryRun OR pool master writeEnabled off. (The
+    // actuator is DryRun regardless until BU10, so this is observe-only either way.)
+    let dry_run = cr.spec.dry_run || !cr.spec.write_enabled;
+
+    // Observe once for the gauges + status (reconcile_forma observes again).
+    let sample = provedor.observe().await.ok();
+    if let Some(s) = &sample {
+        let labels = [("forma", "node-on-demand".to_string()), ("pool", name.clone())];
+        gauge!("breathe_forma_used", &labels).set(s.used as f64);
+        gauge!("breathe_forma_capacity", &labels).set(s.capacity as f64);
+        if s.capacity > 0 {
+            gauge!("breathe_forma_util_ratio", &labels).set(s.used as f64 / s.capacity as f64);
+        }
+    }
+
+    let alloc = provedor.per_node_alloc_milli().await;
+    let gates: Vec<Box<dyn Portao<NodeRef>>> = vec![Box::new(CapacidadeProof { required_floor: 1 })];
+    let mut viveiro: Viveiro<NodeRef> = Viveiro::new();
+    let tick = reconcile_forma(
+        forma,
+        &provedor,
+        &ReactivePrevisor,
+        &BandLeiloeiro,
+        &cr.spec.band_config(),
+        &gates,
+        3,
+        &mut viveiro,
+        |_id| NodeRef { allocatable: alloc },
+    )
+    .await;
+
+    counter!("breathe_forma_ticks_total", "forma" => "node-on-demand", "pool" => name.clone(), "outcome" => outcome_of(&tick)).increment(1);
+    let status = cloud_pool_status(&tick, sample.as_ref().map(|s| s.used), sample.as_ref().map(|s| s.capacity), dry_run);
+    if let Some(w) = status.would_provision {
+        gauge!("breathe_forma_would_provision", "forma" => "node-on-demand", "pool" => name.clone()).set(w as f64);
+    }
+    info!(pool = %name, forma = ?forma, phase = ?status.phase, decision = ?status.last_decision, dry_run, "node-Forma reconciled");
+    patch_status(&ctx.client, &name, &status).await;
+
+    Ok(Action::requeue(ctx.requeue))
+}
+
+/// Patch a `BreatheCloudPool`'s `.status` (cluster-scoped, status subresource).
+/// Non-fatal — a failed patch logs + continues (status is observability).
+async fn patch_status(client: &Client, name: &str, status: &CloudPoolStatus) {
+    let api: Api<BreatheCloudPool> = Api::all(client.clone());
+    let patch = serde_json::json!({ "status": status });
+    if let Err(e) = api
+        .patch_status(name, &PatchParams::default(), &Patch::Merge(&patch))
+        .await
+    {
+        warn!(pool = %name, error = %e, "BreatheCloudPool status patch failed (non-fatal)");
+    }
+}
+
+/// Error policy for the cloud-pool controller — back off + requeue.
+pub fn error_policy_cloud_pool(_cr: Arc<BreatheCloudPool>, err: &Error, ctx: Arc<Ctx>) -> Action {
+    warn!(error = %err, "BreatheCloudPool reconcile error — backing off");
+    Action::requeue(ctx.requeue)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{cloud_pool_status, forma_from_str, outcome_of, parse_cpu_milli};
+    use breathe_provider::Forma;
+    use breathe_provision::FormaTick;
+
+    #[test]
+    fn parses_cpu_quantities_to_millicores() {
+        assert_eq!(parse_cpu_milli("500m"), 500);
+        assert_eq!(parse_cpu_milli("2"), 2000);
+        assert_eq!(parse_cpu_milli("1.5"), 1500);
+        assert_eq!(parse_cpu_milli("250000000n"), 250);
+        assert_eq!(parse_cpu_milli("garbage"), 0);
+    }
+
+    #[test]
+    fn forma_string_maps_to_typed_or_none() {
+        assert_eq!(forma_from_str("node-on-demand"), Some(Forma::NodeOnDemand));
+        assert_eq!(forma_from_str("nonsense"), None);
+    }
+
+    #[test]
+    fn status_maps_grow_to_would_provision_and_records_observed() {
+        let s = cloud_pool_status(
+            &FormaTick::Grew { forma: Forma::NodeOnDemand, requested: 2, admitted: 2, rejected: 0 },
+            Some(5),
+            Some(4),
+            true,
+        );
+        assert_eq!(s.phase.as_deref(), Some("Growing"));
+        assert_eq!(s.would_provision, Some(2));
+        assert_eq!(s.observed_used, Some(5));
+        assert_eq!(s.observed_capacity, Some(4));
+        assert_eq!(s.effective_dry_run, Some(true));
+        assert!(s.last_decision.as_deref().unwrap().contains("would provision 2"));
+    }
+
+    #[test]
+    fn status_maps_held_envelope_and_error() {
+        assert_eq!(cloud_pool_status(&FormaTick::Held, Some(1), Some(2), false).phase.as_deref(), Some("Held"));
+        let env = cloud_pool_status(
+            &FormaTick::EnvelopeExhausted { forma: Forma::NodeOnDemand, shortfall: 3 },
+            None,
+            None,
+            true,
+        );
+        assert_eq!(env.phase.as_deref(), Some("EnvelopeExhausted"));
+        assert!(env.last_decision.as_deref().unwrap().contains("short 3"));
+        let err = cloud_pool_status(&FormaTick::ObserveError("boom".into()), None, None, true);
+        assert_eq!(err.phase.as_deref(), Some("Error"));
+        assert_eq!(outcome_of(&FormaTick::ObserveError("x".into())), "observe_error");
+    }
 }

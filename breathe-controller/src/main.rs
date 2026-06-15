@@ -14,11 +14,10 @@ use std::{sync::Arc, time::Duration};
 
 mod node_forma;
 
-use breathe_control::BandConfig;
 use breathe_core::{reconcile_one, PredictiveInput, ReconcileInput};
 use breathe_crd::{
-    ArcBand, Band, BandSummary, BreatheConfig, BreatheConfigSpec, BreatheOverview, CgroupBand, CgroupCpuBand, CpuBand,
-    Densa, MemoryBand, OverviewStatus, StorageBand,
+    ArcBand, Band, BandSummary, BreatheCloudPool, BreatheConfig, BreatheConfigSpec, BreatheOverview, CgroupBand,
+    CgroupCpuBand, CpuBand, Densa, MemoryBand, OverviewStatus, StorageBand,
 };
 use breathe_dimensions::{CpuDescriptor, MemoryDescriptor, StorageDescriptor};
 use breathe_kube::KubeCluster;
@@ -395,24 +394,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .run(reconcile_overview, overview_error_policy, ctx.clone())
         .for_each(|_| async {});
 
-    // BU1 — the node-tier SHADOW loop: reconcile_forma now runs in the live
-    // controller (observe-only; provision = DryRun). The node-count band's
-    // floor/ceiling are node COUNTS (the unit-blind BandConfig fields), tunable
-    // via env until the BreatheCloudPool CRD lands (BU2). Defaults floor 1 /
-    // ceiling 8 so a single-node cluster reports a real (if capped) signal.
-    let node_floor = std::env::var("BREATHE_NODE_FLOOR").ok().and_then(|s| s.parse().ok()).unwrap_or(1);
-    let node_ceiling = std::env::var("BREATHE_NODE_CEILING").ok().and_then(|s| s.parse().ok()).unwrap_or(8);
-    let node_cfg = BandConfig {
-        grow_above: 0.85,
-        shrink_below: 0.70,
-        setpoint: 0.80,
-        grow_factor: 1.25,
-        shrink_factor: 0.90,
-        floor_bytes: node_floor,
-        ceiling_bytes: node_ceiling,
-    };
-    let node_forma = node_forma::run_node_forma_shadow(client.clone(), node_cfg, requeue);
+    // BU1+BU2 — the node tier: reconcile_forma runs in the live controller,
+    // watching BreatheCloudPool CRs (one node-count Forma band per pool),
+    // observe-only (provision = DryRun). Each pool binds a Forma to a Densa-style
+    // envelope; the shape-blind band law holds the node COUNT at the 80/20 band
+    // exactly as it holds a pod's bytes.
+    let cloud_pools = gen_controller!(Api::<BreatheCloudPool>::all(client.clone()))
+        .run(node_forma::reconcile_cloud_pool, node_forma::error_policy_cloud_pool, ctx.clone())
+        .for_each(|_| async {});
 
-    tokio::join!(mem, cpu, sto, overview, node_forma);
+    tokio::join!(mem, cpu, sto, overview, cloud_pools);
     Ok(())
 }
