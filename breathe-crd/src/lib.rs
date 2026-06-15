@@ -495,6 +495,24 @@ pub struct NodePoolStatus {
 /// `BreatheNodePool`): a pool provisions for real only when BOTH `writeEnabled`
 /// AND `!dryRun` AND the actuator (a magma `Plan`, BU10) is wired. Until then it
 /// is observe-only — it reports what it WOULD provision. `kubectl get bcp`.
+///
+/// Which executor realizes the pool. The default `KubeObserve` can NEVER mutate
+/// (its provision/deprovision are `DryRun` by construction) — a pool is
+/// observe-only unless it EXPLICITLY opts into an actuating provider.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum ProviderKind {
+    /// Read the live node inventory; provision/deprovision are always `DryRun`.
+    /// Observe-only by construction — the safe default.
+    #[default]
+    KubeObserve,
+    /// Create/drain **kwok fake nodes** (the multi-node go-live bed). Actuates
+    /// only when the pool is live (`writeEnabled && !dryRun`); a fake node is
+    /// tainted + labelled so real pods never land and only breathe's own fakes
+    /// are ever deleted. Zero cloud cost.
+    Kwok,
+}
+
 #[derive(CustomResource, Serialize, Deserialize, Clone, Debug, JsonSchema)]
 #[kube(
     group = "breathe.pleme.io",
@@ -562,6 +580,16 @@ pub struct BreatheCloudPoolSpec {
     /// limit-side `predictive`). Omitted on serialize at the `false` default.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub predictive: bool,
+    /// Which executor realizes this pool (default `kubeObserve` = observe-only,
+    /// can never mutate). Set `kwok` for the fake-node go-live bed.
+    #[serde(default, skip_serializing_if = "ProviderKind::is_default")]
+    pub provider: ProviderKind,
+}
+
+impl ProviderKind {
+    fn is_default(&self) -> bool {
+        matches!(self, ProviderKind::KubeObserve)
+    }
 }
 
 impl BreatheCloudPoolSpec {
