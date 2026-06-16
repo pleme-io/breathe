@@ -19,6 +19,13 @@
 use breathe_control::{decide, BandConfig, Decision};
 use breathe_provider::Forma;
 
+/// `quinhão` — the hierarchical, vector-valued, dynamically-rebalancing
+/// even-fair-share allocator (the dual of [`BandLeiloeiro`]: the band law DIVIDES
+/// a fixed pool among N weighted claimants, instead of sizing one limit). See
+/// [`quinhao`] for the full model. Composes the existing band law (the pool's
+/// 80/20 band) — it adds no new safety surface.
+pub mod quinhao;
+
 // ============================================================================
 // DecisaoForma — the auctioneer's typed verdict.
 // ============================================================================

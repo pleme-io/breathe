@@ -14,11 +14,12 @@ use std::{sync::Arc, time::Duration};
 
 mod node_forma;
 mod kube_param;
+mod quinhao;
 
 use breathe_core::{reconcile_one, PredictiveInput, ReconcileInput};
 use breathe_crd::{
     ArcBand, Band, BandSummary, BreatheCloudPool, BreatheConfig, BreatheConfigSpec, BreatheOverview, CgroupBand,
-    CgroupCpuBand, CpuBand, Densa, KubeParamBand, MemoryBand, OverviewStatus, StorageBand,
+    CgroupCpuBand, CpuBand, Densa, KubeParamBand, MemoryBand, OverviewStatus, QuinhaoPool, StorageBand,
 };
 use breathe_dimensions::{CpuDescriptor, MemoryDescriptor, StorageDescriptor};
 use breathe_kube::KubeCluster;
@@ -434,7 +435,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let kube_params = gen_controller!(Api::<KubeParamBand>::all(client.clone()))
         .run(kube_param::reconcile_kube_param, kube_param::error_policy_kube_param, ctx.clone())
         .for_each(|_| async {});
+    // The hierarchical-vector fair-share allocator — watches QuinhaoPool CRs,
+    // divides the band among the claimant forest (groups → users) per dimension,
+    // publishes the grant ledger to status. ADVISORY: status-only, carves nothing
+    // (the pool's StorageBand still holds the 80%). The grant ledger gaveta reads.
+    let quinhao_pools = gen_controller!(Api::<QuinhaoPool>::all(client.clone()))
+        .run(quinhao::reconcile_quinhao_pool, quinhao::error_policy_quinhao_pool, ctx.clone())
+        .for_each(|_| async {});
 
-    tokio::join!(mem, cpu, sto, overview, cloud_pools, kube_params);
+    tokio::join!(mem, cpu, sto, overview, cloud_pools, kube_params, quinhao_pools);
     Ok(())
 }

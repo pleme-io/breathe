@@ -3,7 +3,7 @@
 
 use breathe_crd::{
     ArcBand, BreatheCloudPool, BreatheConfig, BreatheNodePool, BreatheOverview, CgroupBand, CgroupCpuBand, CpuBand,
-    Densa, HostParamBand, KubeParamBand, MemoryBand, StorageBand,
+    Densa, HostParamBand, KubeParamBand, MemoryBand, QuinhaoPool, StorageBand,
 };
 use kube::CustomResourceExt;
 
@@ -28,6 +28,8 @@ fn main() {
         BreatheConfig::crd(),
         // the per-namespace capacity + cost envelope (the L2 wall bands carve within)
         Densa::crd(),
+        // the hierarchical-vector fair-share allocator (groups→users split the band)
+        QuinhaoPool::crd(),
     ];
     for crd in crds {
         print!("---\n{}", serde_yaml::to_string(&crd).expect("serialize CRD"));
