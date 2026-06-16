@@ -220,7 +220,9 @@ mod tests {
     fn catalog_json_has_all_dimensions_with_host_flags() {
         let c = catalog_json();
         let dims = c["dimensions"].as_array().unwrap();
-        assert_eq!(dims.len(), 8);
+        // tracks the canonical count (was a stale literal 8; catalog is now 9) —
+        // see breathe_catalog::ALL_DIMENSIONS so it never goes stale again.
+        assert_eq!(dims.len(), breathe_catalog::ALL_DIMENSIONS.len());
         assert!(dims.iter().any(|d| d["id"] == "arc" && d["isHost"] == true));
         assert!(dims.iter().any(|d| d["id"] == "cgroup-cpu" && d["isHost"] == true));
         assert!(dims.iter().any(|d| d["id"] == "memory" && d["isHost"] == false));
