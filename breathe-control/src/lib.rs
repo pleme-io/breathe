@@ -491,6 +491,137 @@ impl<L: ControlLaw> ControlLaw for ThrottleAware<L> {
     }
 }
 
+/// **PercentileBand** — size the limit DIRECTLY to the setpoint-seat for the
+/// observed working set, when outside the deadband (census: requests, retention
+/// disk%, cache hit-rate, LimitRange — anywhere the metric is already a high
+/// percentile / efficiency signal, so reacting to it once is right). Distinct
+/// from `BandLaw`'s multiplicative deadband steps: it lands util AT the setpoint
+/// in one move (like `ProportionalLaw` gain 1.0, but only outside the deadband).
+/// Funnels through `safety_clamp`, so it inherits the whole safety proof.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct PercentileBand;
+
+impl ControlLaw for PercentileBand {
+    #[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    fn propose(&self, working_set: u64, current_limit: u64, cfg: &BandConfig) -> Proposal {
+        let util = working_set as f64 / current_limit as f64;
+        if util > cfg.grow_above || util < cfg.shrink_below {
+            let setpoint = if cfg.setpoint <= 0.0 { 1.0 } else { cfg.setpoint };
+            Proposal::Target((working_set as f64 / setpoint).ceil() as u64)
+        } else {
+            Proposal::Hold
+        }
+    }
+}
+
+/// **AIMD** — additive-increase / multiplicative-decrease, the TCP-congestion
+/// shape for RATE LIMITERS (samba quotaPct, adaptive concurrency). With no
+/// throttle signal it probes UP by a fixed `increment` (gently discover the
+/// ceiling); on a positive throttle signal (the `rate` channel) it backs OFF
+/// multiplicatively by `decrease_factor`. The proven gate still clamps both
+/// directions, so AIMD can never breach the ceiling or shrink below the safe min.
+#[derive(Debug, Clone, Copy)]
+pub struct Aimd {
+    /// Additive-increase step (base units) applied each clear tick.
+    pub increment: u64,
+    /// Multiplicative-decrease factor (0,1) applied on a throttle tick (e.g. 0.5).
+    pub decrease_factor: f64,
+}
+
+impl ControlLaw for Aimd {
+    fn propose(&self, _working_set: u64, current_limit: u64, _cfg: &BandConfig) -> Proposal {
+        // no throttle info → additive increase (probe up).
+        Proposal::Target(current_limit.saturating_add(self.increment))
+    }
+    #[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    fn propose_with_rate(&self, _working_set: u64, current_limit: u64, _cfg: &BandConfig, rate: i64) -> Proposal {
+        if rate > 0 {
+            // throttle / loss detected → multiplicative back-off.
+            Proposal::Target((current_limit as f64 * self.decrease_factor) as u64)
+        } else {
+            Proposal::Target(current_limit.saturating_add(self.increment))
+        }
+    }
+}
+
+/// **BurstBudget** — token-bucket depth sizing (CFS `cpu.max.burst`). GROW-BIASED:
+/// it sizes UP readily to absorb the observed burst, but gives depth back only
+/// HALF as fast as a normal band (a too-small burst budget throttles a latency-
+/// sensitive workload, so reluctance to shrink is the safe bias). Funnels through
+/// the gate like every law.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct BurstBudget;
+
+impl ControlLaw for BurstBudget {
+    #[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    fn propose(&self, working_set: u64, current_limit: u64, cfg: &BandConfig) -> Proposal {
+        let util = working_set as f64 / current_limit as f64;
+        if util > cfg.grow_above {
+            let setpoint = if cfg.setpoint <= 0.0 { 1.0 } else { cfg.setpoint };
+            Proposal::Target((working_set as f64 / setpoint).ceil() as u64)
+        } else if util < cfg.shrink_below {
+            // grow-bias: shrink at HALF the configured aggression.
+            let gentle = 1.0 - (1.0 - cfg.shrink_factor) / 2.0;
+            Proposal::Target((current_limit as f64 * gentle).floor() as u64)
+        } else {
+            Proposal::Hold
+        }
+    }
+}
+
+/// **SharedBudget** — fair-share under a SUMMED ceiling (NATS account-sum ≤
+/// server-sum, Kafka tenant quotas, app-pool-sum ≤ DB max_connections). This is
+/// breathe's L2 `nodeBudget` never-swap sum lifted to a logical resource pool:
+/// wrap any inner law and CLAMP a grow so this member's new limit can't exceed
+/// `current + available_headroom`, where `available_headroom = budget − Σsiblings`
+/// is computed by the caller each tick. A shrink/hold passes through (giving back
+/// is always safe). The gate still owns floor/ceiling/safe-min.
+#[derive(Debug, Clone, Copy)]
+pub struct SharedBudget<L> {
+    pub inner: L,
+    /// Budget remaining for THIS member's grow (`budget − Σ other members`), this tick.
+    pub available_headroom: u64,
+}
+
+impl<L: ControlLaw> ControlLaw for SharedBudget<L> {
+    fn propose(&self, working_set: u64, current_limit: u64, cfg: &BandConfig) -> Proposal {
+        clamp_grow_to_headroom(self.inner.propose(working_set, current_limit, cfg), current_limit, self.available_headroom)
+    }
+    fn propose_with_rate(&self, working_set: u64, current_limit: u64, cfg: &BandConfig, rate: i64) -> Proposal {
+        clamp_grow_to_headroom(
+            self.inner.propose_with_rate(working_set, current_limit, cfg, rate),
+            current_limit,
+            self.available_headroom,
+        )
+    }
+}
+
+/// Clamp a grow proposal to `current + available_headroom`; pass shrink/hold through.
+#[must_use]
+fn clamp_grow_to_headroom(p: Proposal, current_limit: u64, available_headroom: u64) -> Proposal {
+    match p {
+        Proposal::Target(t) if t > current_limit => {
+            Proposal::Target(t.min(current_limit.saturating_add(available_headroom)))
+        }
+        other => other,
+    }
+}
+
+/// **BurnRateBand** (the COST class — census's only genuinely-new hazard). A cost
+/// budget is a monotone-accumulating integral that resets per billing window, not
+/// a `(used, capacity)` ratio — so it is not CARVED, it VETOES other carves' grows.
+/// This pure forecast is the veto kernel: does the current burn rate breach the
+/// budget before the window closes? The Forma/`Otimizador` layer (Step-14) consumes
+/// it as a Meet-dependency edge into every grow. Pure + dependency-free + testable.
+#[must_use]
+pub fn burn_rate_breaches(spent_cents: u64, budget_cents: u64, burn_rate_cents_per_sec: f64, secs_remaining: u64) -> bool {
+    #[allow(clippy::cast_precision_loss)]
+    let forecast = spent_cents as f64 + burn_rate_cents_per_sec.max(0.0) * secs_remaining as f64;
+    #[allow(clippy::cast_precision_loss)]
+    let breaches = forecast > budget_cents as f64;
+    breaches
+}
+
 /// The memory dimension's owned field path (the first consumer's constant).
 /// Every provider declares the dotted `managedFields` path it owns; the guard
 /// compares against *this exact path*, never a per-object flag.
@@ -1400,6 +1531,13 @@ mod tests {
                     // is suppressed to Hold, a grow still clamps to the ceiling.
                     decide_with_rate(&ThrottleAware { inner: GrowToMax }, ws, limit, &c, 5),
                     decide_with_rate(&ThrottleAware { inner: ShrinkToZero }, ws, limit, &c, 5),
+                    // The Step-5..14 law families — each funnels through the SAME gate.
+                    decide_with(&PercentileBand, ws, limit, &c),
+                    decide_with(&BurstBudget, ws, limit, &c),
+                    decide_with(&Aimd { increment: GI, decrease_factor: 0.5 }, ws, limit, &c),
+                    decide_with_rate(&Aimd { increment: GI, decrease_factor: 0.5 }, ws, limit, &c, 7),
+                    decide_with(&SharedBudget { inner: GrowToMax, available_headroom: GI }, ws, limit, &c),
+                    decide_with(&SharedBudget { inner: ShrinkToZero, available_headroom: GI }, ws, limit, &c),
                 ] {
                     match d {
                         Decision::Grow { from, to } => {
@@ -1502,6 +1640,57 @@ mod tests {
         let high_util_ws = 950 * MI;
         let grown = decide_with_rate(&ThrottleAware { inner: BandLaw }, high_util_ws, GI, &c, 9);
         assert!(matches!(grown, Decision::Grow { .. }), "throttle + high util ⇒ still grows");
+    }
+
+    #[test]
+    fn percentile_band_sizes_directly_to_the_setpoint_outside_the_deadband() {
+        let c = cfg();
+        // util 0.95 at 1Gi → size so the working set sits at the setpoint (0.80).
+        let ws = (0.95 * GI as f64) as u64;
+        match decide_with(&PercentileBand, ws, GI, &c) {
+            Decision::Grow { to, .. } => {
+                let new_util = ws as f64 / to as f64;
+                assert!((new_util - c.setpoint).abs() < 0.02, "lands util at setpoint, got {new_util}");
+            }
+            d => panic!("expected Grow, got {d:?}"),
+        }
+        // in-band → hold.
+        assert_eq!(decide_with(&PercentileBand, (0.78 * GI as f64) as u64, GI, &c), Decision::Hold);
+    }
+
+    #[test]
+    fn aimd_additively_increases_and_multiplicatively_decreases() {
+        let c = cfg();
+        let law = Aimd { increment: 256 * MI, decrease_factor: 0.5 };
+        // no throttle → additive increase by `increment`.
+        match decide_with(&law, 500 * MI, GI, &c) {
+            Decision::Grow { from, to } => { assert_eq!(from, GI); assert_eq!(to, GI + 256 * MI); }
+            d => panic!("expected additive-increase Grow, got {d:?}"),
+        }
+        // throttle (rate>0) → multiplicative decrease to half (clamped to safe-min).
+        let d = decide_with_rate(&law, 100 * MI, 4 * GI, &c, 9);
+        assert!(matches!(d, Decision::Shrink { to, .. } if to <= 2 * GI), "multiplicative back-off, got {d:?}");
+    }
+
+    #[test]
+    fn shared_budget_clamps_a_grow_to_the_available_headroom() {
+        let c = cfg();
+        // GrowToMax wants u64::MAX, but only 512Mi of shared budget is free → cap there.
+        let law = SharedBudget { inner: { struct G; impl ControlLaw for G { fn propose(&self,_:u64,l:u64,_:&BandConfig)->Proposal{Proposal::Target(l*100)} } G }, available_headroom: 512 * MI };
+        match decide_with(&law, 950 * MI, GI, &c) {
+            Decision::Grow { to, .. } => assert_eq!(to, GI + 512 * MI, "grow clamped to current + headroom"),
+            d => panic!("expected headroom-clamped Grow, got {d:?}"),
+        }
+    }
+
+    #[test]
+    fn burn_rate_band_vetoes_only_a_forecast_breach() {
+        // spent $30 of a $50 budget, 100s left, burning 30¢/s → forecast $60 > $50 → breach.
+        assert!(burn_rate_breaches(3000, 5000, 30.0, 100));
+        // same spend, burning 10¢/s → forecast $40 < $50 → no breach.
+        assert!(!burn_rate_breaches(3000, 5000, 10.0, 100));
+        // already over budget regardless of rate.
+        assert!(burn_rate_breaches(6000, 5000, 0.0, 0));
     }
 
     #[test]
