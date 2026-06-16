@@ -27,7 +27,7 @@
 //! Every real Jolokia round-trip lives behind the [`JmxEnv`] trait — the
 //! typed-spec-triplet testability seam — so the [`JmxCluster`] decision path is
 //! fully exercised against a [mock](#tests) with zero network. The real impl
-//! ([`JolokiaCurlEnv`]) drives Jolokia over `curl` argv (a typed `Vec`, never a
+//! ([`JolokiaHttpEnv`]) drives Jolokia over `curl` argv (a typed `Vec`, never a
 //! shell) and is dependency-light by construction; a deployment that needs a
 //! richer protocol than the curl bridge can offer surfaces a *typed*
 //! [`ProviderError::ApiPermanent`] gap, never a panic.
@@ -108,19 +108,18 @@ pub fn split_mbean_command(command: &str) -> Result<(&str, &str), JmxError> {
 /// The JVM app-runtime I/O boundary — every real Jolokia MBean read/write,
 /// behind a trait so the [`JmxCluster`] decision path is fully exercised against
 /// a mock. Symmetric with `breathe_host::HostEnvironment`.
+#[async_trait]
 pub trait JmxEnv: Send + Sync {
     /// Read an MBean attribute as a `u64` (the live `limit` — e.g.
     /// `HikariPool-1` / `maximumPoolSize`). `endpoint` is the Jolokia base URL;
     /// `attribute` is the `ObjectName:attribute` coordinate.
-    fn read_mbean(&self, endpoint: &str, attribute: &str) -> Result<u64, JmxError>;
+    async fn read_mbean(&self, endpoint: &str, attribute: &str) -> Result<u64, JmxError>;
     /// Write a `u64` to an MBean attribute (the carve — the new `limit`).
-    fn write_mbean(&self, endpoint: &str, attribute: &str, value: u64) -> Result<(), JmxError>;
+    async fn write_mbean(&self, endpoint: &str, attribute: &str, value: u64) -> Result<(), JmxError>;
 }
 
-/// The real implementation over Jolokia's HTTP bridge, driven by `curl` argv
-/// (a typed `Vec`, never a shell). Dependency-light by construction: it shells
-/// out to `curl` exactly like `breathe_host::SystemdSysfsEnv` shells out to
-/// `systemctl`.
+/// The real implementation over Jolokia's HTTP bridge, driven by a TYPED Rust
+/// HTTP client (`reqwest`) — no shell, no `curl`.
 ///
 /// Jolokia speaks JSON-over-HTTP: a READ is `GET
 /// <endpoint>/read/<ObjectName>/<attribute>` and a WRITE is `GET
@@ -133,28 +132,17 @@ pub trait JmxEnv: Send + Sync {
 /// method returns a *typed* [`JmxError::NotLinked`] instead of attempting a
 /// round-trip — a typed gap, never a panic. Flip it on with
 /// [`linked`](Self::linked) once the bridge is wired.
-#[derive(Debug, Clone)]
-pub struct JolokiaCurlEnv {
-    curl_bin: String,
+#[derive(Debug, Clone, Default)]
+pub struct JolokiaHttpEnv {
     linked: bool,
 }
 
-impl Default for JolokiaCurlEnv {
-    fn default() -> Self {
-        Self { curl_bin: "curl".into(), linked: false }
-    }
-}
-
-impl JolokiaCurlEnv {
-    /// Read the bridge config from the environment (a DaemonSet/sidecar sets
-    /// these): `BREATHE_JMX_CURL_BIN` (the curl path), `BREATHE_JMX_LINKED=1`
-    /// (enable the live bridge once Jolokia reachability is verified).
+impl JolokiaHttpEnv {
+    /// Read the bridge config from the environment: `BREATHE_JMX_LINKED=1` enables
+    /// the live bridge once Jolokia reachability is verified.
     #[must_use]
     pub fn from_env() -> Self {
-        Self {
-            curl_bin: std::env::var("BREATHE_JMX_CURL_BIN").unwrap_or_else(|_| "curl".into()),
-            linked: std::env::var("BREATHE_JMX_LINKED").is_ok_and(|v| v == "1" || v == "true"),
-        }
+        Self { linked: std::env::var("BREATHE_JMX_LINKED").is_ok_and(|v| v == "1" || v == "true") }
     }
     /// Enable the live Jolokia bridge (once reachability is verified).
     #[must_use]
@@ -163,34 +151,29 @@ impl JolokiaCurlEnv {
         self
     }
 
-    /// Build the typed `curl` argv for a Jolokia request. Pure + testable — no
-    /// shell. `-sf` makes curl silent + fail-on-HTTP-error (so a Jolokia 5xx is
-    /// a non-zero exit we map to a typed error), `-m 5` bounds the round-trip.
-    fn curl_argv(method: &str, endpoint: &str, object_name: &str, attribute: &str, value: Option<u64>) -> Vec<String> {
-        // Jolokia GET path: <endpoint>/<read|write>/<ObjectName>/<attribute>[/<value>].
+    /// Build the Jolokia GET URL. Pure + testable.
+    /// `<endpoint>/<read|write>/<ObjectName>/<attribute>[/<value>]`.
+    #[must_use]
+    pub fn jolokia_url(method: &str, endpoint: &str, object_name: &str, attribute: &str, value: Option<u64>) -> String {
         let base = endpoint.trim_end_matches('/');
         let mut url = format!("{base}/{method}/{object_name}/{attribute}");
         if let Some(v) = value {
             url.push('/');
             url.push_str(&v.to_string());
         }
-        vec!["-sf".into(), "-m".into(), "5".into(), url]
+        url
     }
 
-    /// Run `curl <argv…>` and return trimmed stdout (the Jolokia JSON body).
-    fn curl(&self, argv: &[String]) -> Result<String, JmxError> {
-        let out = std::process::Command::new(&self.curl_bin)
-            .args(argv)
-            .output()
+    /// GET a Jolokia URL (bounded round-trip) and return the JSON body.
+    async fn get(url: &str) -> Result<String, JmxError> {
+        let resp = reqwest::Client::new()
+            .get(url)
+            .timeout(std::time::Duration::from_secs(5))
+            .send()
+            .await
             .map_err(|e| JmxError::Io(e.to_string()))?;
-        if !out.status.success() {
-            return Err(JmxError::Command {
-                argv: format!("{} {}", self.curl_bin, argv.join(" ")),
-                code: out.status.code(),
-                stderr: String::from_utf8_lossy(&out.stderr).trim().to_string(),
-            });
-        }
-        Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+        let resp = resp.error_for_status().map_err(|e| JmxError::Io(e.to_string()))?;
+        resp.text().await.map_err(|e| JmxError::Io(e.to_string()))
     }
 }
 
@@ -218,24 +201,25 @@ pub fn parse_jolokia_value(body: &str) -> Result<u64, JmxError> {
     digits.parse::<u64>().map_err(|e| JmxError::Parse(e.to_string()))
 }
 
-impl JmxEnv for JolokiaCurlEnv {
-    fn read_mbean(&self, endpoint: &str, attribute: &str) -> Result<u64, JmxError> {
+#[async_trait]
+impl JmxEnv for JolokiaHttpEnv {
+    async fn read_mbean(&self, endpoint: &str, attribute: &str) -> Result<u64, JmxError> {
         if !self.linked {
             return Err(JmxError::NotLinked(format!("read {attribute} @ {endpoint}")));
         }
         let (object_name, attr) = split_mbean_command(attribute)?;
-        let argv = Self::curl_argv("read", endpoint, object_name, attr, None);
-        let body = self.curl(&argv)?;
+        let url = Self::jolokia_url("read", endpoint, object_name, attr, None);
+        let body = Self::get(&url).await?;
         parse_jolokia_value(&body)
     }
 
-    fn write_mbean(&self, endpoint: &str, attribute: &str, value: u64) -> Result<(), JmxError> {
+    async fn write_mbean(&self, endpoint: &str, attribute: &str, value: u64) -> Result<(), JmxError> {
         if !self.linked {
             return Err(JmxError::NotLinked(format!("write {attribute}={value} @ {endpoint}")));
         }
         let (object_name, attr) = split_mbean_command(attribute)?;
-        let argv = Self::curl_argv("write", endpoint, object_name, attr, Some(value));
-        self.curl(&argv).map(|_| ())
+        let url = Self::jolokia_url("write", endpoint, object_name, attr, Some(value));
+        Self::get(&url).await.map(|_| ())
     }
 }
 
@@ -289,7 +273,7 @@ impl<E: JmxEnv> Cluster for JmxCluster<E> {
             // The JVM knob lives behind the app-plane ApiCall arm: endpoint = the
             // Jolokia URL, command = the MBean attribute coordinate.
             LimitLayout::ApiCall { endpoint, command } => {
-                Ok(self.env.read_mbean(endpoint, command)?)
+                Ok(self.env.read_mbean(endpoint, command).await?)
             }
             // Any other layout can never legitimately reach the JMX boundary —
             // typed, never silent (mirrors HostCluster's k8s-layout rejection).
@@ -323,7 +307,7 @@ impl<E: JmxEnv> Cluster for JmxCluster<E> {
         if !self.write_enabled {
             return Ok(AppliedReceipt { source_hash: [0u8; 16] });
         }
-        self.env.write_mbean(endpoint, command, patch.value)?;
+        self.env.write_mbean(endpoint, command, patch.value).await?;
         Ok(AppliedReceipt { source_hash: [0u8; 16] })
     }
 }
@@ -355,8 +339,9 @@ mod tests {
         }
     }
 
+    #[async_trait]
     impl JmxEnv for MockJmxEnv {
-        fn read_mbean(&self, endpoint: &str, attribute: &str) -> Result<u64, JmxError> {
+        async fn read_mbean(&self, endpoint: &str, attribute: &str) -> Result<u64, JmxError> {
             self.mbeans
                 .lock()
                 .unwrap()
@@ -364,7 +349,7 @@ mod tests {
                 .copied()
                 .ok_or_else(|| JmxError::Parse("no such MBean attribute".into()))
         }
-        fn write_mbean(&self, endpoint: &str, attribute: &str, value: u64) -> Result<(), JmxError> {
+        async fn write_mbean(&self, endpoint: &str, attribute: &str, value: u64) -> Result<(), JmxError> {
             self.mbeans.lock().unwrap().insert((endpoint.to_string(), attribute.to_string()), value);
             self.writes.lock().unwrap().push((endpoint.to_string(), attribute.to_string(), value));
             Ok(())
@@ -412,14 +397,14 @@ mod tests {
     }
 
     #[test]
-    fn builds_jolokia_curl_argv_without_a_shell() {
-        // READ: GET <endpoint>/read/<ObjectName>/<attribute> — argv, no value.
-        let read = JolokiaCurlEnv::curl_argv("read", JOLOKIA, "HikariPool-1", "maximumPoolSize", None);
-        assert_eq!(read, vec!["-sf", "-m", "5", "http://app:8778/jolokia/read/HikariPool-1/maximumPoolSize"]);
+    fn builds_jolokia_url_without_a_shell() {
+        // READ: GET <endpoint>/read/<ObjectName>/<attribute> — a typed URL, no shell.
+        let read = JolokiaHttpEnv::jolokia_url("read", JOLOKIA, "HikariPool-1", "maximumPoolSize", None);
+        assert_eq!(read, "http://app:8778/jolokia/read/HikariPool-1/maximumPoolSize");
         // WRITE: GET <endpoint>/write/<ObjectName>/<attribute>/<value> (trailing
         // slash on the endpoint is trimmed, not doubled).
-        let write = JolokiaCurlEnv::curl_argv("write", "http://app:8778/jolokia/", "HikariPool-1", "maximumPoolSize", Some(20));
-        assert_eq!(write, vec!["-sf", "-m", "5", "http://app:8778/jolokia/write/HikariPool-1/maximumPoolSize/20"]);
+        let write = JolokiaHttpEnv::jolokia_url("write", "http://app:8778/jolokia/", "HikariPool-1", "maximumPoolSize", Some(20));
+        assert_eq!(write, "http://app:8778/jolokia/write/HikariPool-1/maximumPoolSize/20");
     }
 
     #[tokio::test]
@@ -510,16 +495,16 @@ mod tests {
         assert!(matches!(err, ProviderError::ApiPermanent(_)));
     }
 
-    #[test]
-    fn the_unlinked_real_env_reports_a_typed_gap_never_a_panic() {
-        // The dependency-light real impl defaults to UNLINKED — every method is a
-        // typed ApiPermanent (NotLinked), never a panic/unimplemented/todo, until a
+    #[tokio::test]
+    async fn the_unlinked_real_env_reports_a_typed_gap_never_a_panic() {
+        // The typed real impl defaults to UNLINKED — every method is a typed
+        // ApiPermanent (NotLinked), never a panic/unimplemented/todo, until a
         // deployment verifies Jolokia reachability and flips `linked(true)`.
-        let env = JolokiaCurlEnv::default();
-        let read = env.read_mbean(JOLOKIA, "HikariPool-1:maximumPoolSize").unwrap_err();
+        let env = JolokiaHttpEnv::default();
+        let read = env.read_mbean(JOLOKIA, "HikariPool-1:maximumPoolSize").await.unwrap_err();
         assert!(matches!(read, JmxError::NotLinked(_)));
         assert!(matches!(ProviderError::from(read), ProviderError::ApiPermanent(_)));
-        let write = env.write_mbean(JOLOKIA, "HikariPool-1:maximumPoolSize", 20).unwrap_err();
+        let write = env.write_mbean(JOLOKIA, "HikariPool-1:maximumPoolSize", 20).await.unwrap_err();
         assert!(matches!(write, JmxError::NotLinked(_)));
     }
 }

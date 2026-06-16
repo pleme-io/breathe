@@ -4,35 +4,24 @@
 //! breathe's k8s boundary is `breathe-kube::KubeCluster`; its host peer is
 //! `breathe-host::HostCluster`; this is the third actuator — the one that carves
 //! a parameter exposed only over a service's own protocol API: **Redis `CONFIG
-//! SET maxmemory`** (RestartFree — the value applies live), **Kafka
-//! `AdminClient` config alter**, a **NATS JetStream** edit. It owns the
-//! [`LimitLayout::ApiCall`] arm of `LimitLayout`.
+//! SET maxmemory`** (RestartFree — the value applies live), a **Kafka** config
+//! alter, a **NATS JetStream** edit. It owns the [`LimitLayout::ApiCall`] arm.
 //!
 //! The compounding claim holds unchanged: there is no new control logic here.
 //! [`ApiCallCluster`] is just another `Cluster`, so the *one* generic
 //! `breathe_provider::BandProvider` + the proven `breathe_control::safety_clamp`
 //! gate drive an api-call dimension exactly as they drive k8s + host ones. The
-//! only genuinely new thing is the protocol *I/O*, and even that is abstracted
-//! behind the [`ApiCallEnv`] trait — the typed-spec-triplet testability seam, so
-//! every decision is exercised against a mock with zero real `redis-cli`/`nats`.
+//! only genuinely new thing is the protocol *I/O*, abstracted behind the async
+//! [`ApiCallEnv`] trait — the typed-spec-triplet testability seam, so every
+//! decision is exercised against a mock with zero real I/O.
 //!
-//! ### The two protocol verbs
-//! A band carves ONE scalar parameter, so the env exposes exactly two verbs:
-//! [`ApiCallEnv::get_config`] (read the current value — `CONFIG GET maxmemory`)
-//! and [`ApiCallEnv::set_config`] (write it — `CONFIG SET maxmemory <bytes>`).
-//! `read_limit` is `get_config`; [`ApiCallCluster::apply`] is `set_config` with
-//! `patch.value`. There is no `used` source on this boundary — the *limit* lives
-//! in the data system, but the *working set* is read from k8s metrics-server (a
-//! `PodMetricsMax` source the [`KubeCluster`](breathe_kube) handles); so
-//! `read_used` here returns a TYPED [`ProviderError::ApiPermanent`], never a
-//! silent wrong answer (the band's metric_source must point at the k8s plane).
-//!
-//! ### The real impl is dependency-light by construction
-//! [`CliApiCallEnv`] shells out (argv, never a shell string) to a per-protocol
-//! CLI — `redis-cli`, `nats`, `kafka-configs` — already present on the actuator
-//! image. A protocol with no dependency-light CLI surface returns a typed
-//! [`ProviderError::ApiPermanent`] gap (`"apicall: live <protocol> client not
-//! yet linked"`) so the missing surface is mechanically visible, never a panic.
+//! ### Typed clients, never a shell
+//! [`ProtocolClientEnv`] talks the protocol through a **typed Rust client** (the
+//! `redis` crate's async connection), NOT by shelling out to `redis-cli` — the
+//! stack-only / no-shell law: the actuator stays a self-contained Rust binary, no
+//! CLI in the image. Kafka + NATS return a typed [`ApiCallError::NoClient`] gap
+//! until their typed clients are linked — a mechanically-visible TODO, never a
+//! panic, never a silent wrong answer.
 
 use async_trait::async_trait;
 use breathe_provider::{
@@ -45,14 +34,12 @@ use breathe_provider::{
 /// Typed protocol-I/O error — never a silent wrong answer (TYPED-SPEC discipline).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ApiCallError {
-    /// The CLI process could not be spawned / its I/O failed (transient).
+    /// A connection / command round-trip to the protocol endpoint failed (transient).
     Io(String),
-    /// The CLI returned a value that could not be parsed into the expected scalar.
+    /// The endpoint returned a value that could not be parsed into the expected scalar.
     Parse(String),
-    /// A CLI invocation exited non-zero.
-    Command { argv: String, code: Option<i32>, stderr: String },
-    /// No dependency-light client is linked for the addressed protocol — a typed
-    /// gap (the surface is named so a consumer sees it mechanically), never silent.
+    /// No typed client is linked for the addressed protocol — a typed gap (the
+    /// surface is named so a consumer sees it mechanically), never silent.
     NoClient(String),
     /// The `command` field of the `ApiCall` layout could not be understood (e.g.
     /// it names no recognized protocol verb) — permanent; retry won't fix it.
@@ -64,9 +51,6 @@ impl std::fmt::Display for ApiCallError {
         match self {
             Self::Io(m) => write!(f, "apicall io error: {m}"),
             Self::Parse(m) => write!(f, "apicall parse error: {m}"),
-            Self::Command { argv, code, stderr } => {
-                write!(f, "`{argv}` exited {code:?}: {stderr}")
-            }
             Self::NoClient(p) => write!(f, "apicall: live {p} client not yet linked"),
             Self::BadCommand(c) => write!(f, "apicall: unrecognized command {c:?}"),
         }
@@ -78,12 +62,11 @@ impl std::error::Error for ApiCallError {}
 impl From<ApiCallError> for ProviderError {
     fn from(e: ApiCallError) -> Self {
         match e {
-            // A garbled value is "metrics missing"; a spawn/I/O failure is transient
-            // (the CLI / endpoint may recover); a missing client or a malformed
+            // A garbled value is "metrics missing"; a connection/command failure is
+            // transient (the endpoint may recover); a missing client or a malformed
             // command is permanent (it will not fix itself on retry).
             ApiCallError::Parse(_) => ProviderError::MetricsMissing,
             ApiCallError::Io(m) => ProviderError::ApiTransient(m),
-            cmd @ ApiCallError::Command { .. } => ProviderError::ApiTransient(cmd.to_string()),
             ApiCallError::NoClient(_) | ApiCallError::BadCommand(_) => {
                 ProviderError::ApiPermanent(e.to_string())
             }
@@ -93,33 +76,35 @@ impl From<ApiCallError> for ProviderError {
 
 // ─────────────────────── the side-effect seam ──────────────────────
 
-/// The protocol-API I/O boundary — every real CLI side effect, behind a trait so
-/// the [`ApiCallCluster`] decision path is fully exercised against a mock.
+/// The protocol-API I/O boundary — every real protocol side effect, behind an
+/// async trait so the [`ApiCallCluster`] decision path is fully exercised against
+/// a mock with zero real I/O.
 ///
-/// `endpoint` is the connection coordinate (e.g. `redis://cache.svc:6379`,
-/// `nats://js.svc:4222`); `command` is the layout's verb string (e.g.
-/// `maxmemory`, `CONFIG SET maxmemory`, `nats stream edit ORDERS --max-bytes`).
-/// The impl parses `command` to pick the protocol + the parameter and renders the
-/// argv. The two verbs mirror a band's two needs: read the current value, write a
-/// new one. A protocol with no linked client returns
+/// `endpoint` is the connection coordinate (e.g. `redis://cache.svc:6379`);
+/// `command` is the layout's verb string (e.g. `maxmemory`, `CONFIG SET
+/// maxmemory`). The impl parses `command` to pick the protocol + parameter and
+/// issues the typed client call. The two verbs mirror a band's two needs: read the
+/// current value, write a new one. A protocol with no linked typed client returns
 /// [`ApiCallError::NoClient`] — a typed gap, never a panic.
+#[async_trait]
 pub trait ApiCallEnv: Send + Sync {
     /// Read the current value of the parameter named by `command` at `endpoint`,
     /// as a bare scalar (bytes for `maxmemory`, count for a stream limit, …).
-    fn get_config(&self, endpoint: &str, command: &str) -> Result<u64, ApiCallError>;
+    async fn get_config(&self, endpoint: &str, command: &str) -> Result<u64, ApiCallError>;
     /// Write `value` to the parameter named by `command` at `endpoint`.
-    fn set_config(&self, endpoint: &str, command: &str, value: u64) -> Result<(), ApiCallError>;
+    async fn set_config(&self, endpoint: &str, command: &str, value: u64) -> Result<(), ApiCallError>;
 }
 
 /// Which protocol a `command` string addresses — the typed dispatch the real
-/// [`CliApiCallEnv`] keys its argv off. Parsed once from the layout's `command`.
+/// [`ProtocolClientEnv`] keys its client call off. Parsed once from the layout's
+/// `command`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Protocol {
-    /// Redis — `redis-cli -u <endpoint> CONFIG {GET,SET} <param> [value]`.
+    /// Redis — the typed `redis` crate (`CONFIG {GET,SET} <param>`).
     Redis,
-    /// Kafka — `kafka-configs --bootstrap-server <endpoint> …` (client not yet linked).
+    /// Kafka — typed client not yet linked.
     Kafka,
-    /// NATS JetStream — `nats --server <endpoint> stream edit …` (client not yet linked).
+    /// NATS JetStream — typed client not yet linked.
     Nats,
 }
 
@@ -136,9 +121,9 @@ impl Protocol {
 }
 
 /// Classify a `command` string into `(protocol, parameter)`. Pure + testable — no
-/// I/O, no shell. Recognizes a leading protocol hint (`CONFIG SET maxmemory`,
-/// `nats …`, `kafka …`) and falls back to bare-Redis-parameter (`maxmemory`),
-/// the canonical census case (Redis `CONFIG SET maxmemory`, RestartFree).
+/// I/O. Recognizes a leading protocol hint (`CONFIG SET maxmemory`, `nats …`,
+/// `kafka …`) and falls back to bare-Redis-parameter (`maxmemory`), the canonical
+/// census case (Redis `CONFIG SET maxmemory`, RestartFree).
 ///
 /// # Errors
 /// [`ApiCallError::BadCommand`] when `command` is empty or names no parameter.
@@ -174,89 +159,66 @@ pub fn classify_command(command: &str) -> Result<(Protocol, String), ApiCallErro
     Ok((protocol, param))
 }
 
-/// The real implementation over per-protocol CLIs (argv, never a shell).
-///
-/// `redis_cli` / `kafka_configs` / `nats` carry the binary names (overridable so
-/// the actuator image can pin absolute Nix-store paths). Redis is wired
-/// dependency-light (`redis-cli` is tiny + ubiquitous); Kafka + NATS return a
-/// typed [`ApiCallError::NoClient`] gap until their CLIs are linked into the
-/// image — a mechanically-visible TODO, never a panic.
-#[derive(Debug, Clone)]
-pub struct CliApiCallEnv {
-    redis_cli: String,
-    kafka_configs: String,
-    nats: String,
-}
+/// The real implementation over TYPED Rust protocol clients — no shell, no CLI.
+/// Redis is wired through the `redis` crate's async connection; Kafka + NATS return
+/// a typed [`ApiCallError::NoClient`] gap until their typed clients are linked.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ProtocolClientEnv;
 
-impl Default for CliApiCallEnv {
-    fn default() -> Self {
-        Self {
-            redis_cli: "redis-cli".into(),
-            kafka_configs: "kafka-configs".into(),
-            nats: "nats".into(),
-        }
-    }
-}
-
-impl CliApiCallEnv {
-    /// Read the CLI binary names from the environment (the DaemonSet may set
-    /// absolute Nix-store paths): `BREATHE_REDIS_CLI`, `BREATHE_KAFKA_CONFIGS`,
-    /// `BREATHE_NATS_CLI`.
+impl ProtocolClientEnv {
     #[must_use]
-    pub fn from_env() -> Self {
-        let d = Self::default();
-        Self {
-            redis_cli: std::env::var("BREATHE_REDIS_CLI").unwrap_or(d.redis_cli),
-            kafka_configs: std::env::var("BREATHE_KAFKA_CONFIGS").unwrap_or(d.kafka_configs),
-            nats: std::env::var("BREATHE_NATS_CLI").unwrap_or(d.nats),
-        }
+    pub fn new() -> Self {
+        Self
     }
 
-    /// Run `prog <args…>` and return trimmed stdout. argv is a typed `&[&str]`
-    /// (never a shell line) — the allowed typed-emission surface (`Command::arg`).
-    fn run(prog: &str, args: &[&str]) -> Result<String, ApiCallError> {
-        let out = std::process::Command::new(prog)
-            .args(args)
-            .output()
-            .map_err(|e| ApiCallError::Io(e.to_string()))?;
-        if !out.status.success() {
-            return Err(ApiCallError::Command {
-                argv: format!("{prog} {}", args.join(" ")),
-                code: out.status.code(),
-                stderr: String::from_utf8_lossy(&out.stderr).trim().to_string(),
-            });
-        }
-        Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+    /// Open a multiplexed async Redis connection from a `redis://[:pass@]host:port`
+    /// URL (auth, if any, is carried by the URL — the `redis` crate parses it).
+    async fn redis_conn(endpoint: &str) -> Result<redis::aio::MultiplexedConnection, ApiCallError> {
+        let client = redis::Client::open(endpoint).map_err(|e| ApiCallError::Io(e.to_string()))?;
+        client
+            .get_multiplexed_async_connection()
+            .await
+            .map_err(|e| ApiCallError::Io(e.to_string()))
     }
 }
 
-impl ApiCallEnv for CliApiCallEnv {
-    fn get_config(&self, endpoint: &str, command: &str) -> Result<u64, ApiCallError> {
+#[async_trait]
+impl ApiCallEnv for ProtocolClientEnv {
+    async fn get_config(&self, endpoint: &str, command: &str) -> Result<u64, ApiCallError> {
         let (protocol, param) = classify_command(command)?;
         match protocol {
             Protocol::Redis => {
-                // `redis-cli -u <endpoint> CONFIG GET <param>` prints two lines:
-                // the key, then the value. Take the LAST whitespace-token.
-                let out = Self::run(&self.redis_cli, &["-u", endpoint, "CONFIG", "GET", &param])?;
-                let raw = out
-                    .split_whitespace()
-                    .last()
-                    .ok_or_else(|| ApiCallError::Parse("empty CONFIG GET reply".into()))?;
+                let mut con = Self::redis_conn(endpoint).await?;
+                // CONFIG GET <param> → ["<param>", "<value>"] (a bulk-string array).
+                let reply: Vec<String> = redis::cmd("CONFIG")
+                    .arg("GET")
+                    .arg(&param)
+                    .query_async(&mut con)
+                    .await
+                    .map_err(|e| ApiCallError::Io(e.to_string()))?;
+                let raw = reply
+                    .get(1)
+                    .ok_or_else(|| ApiCallError::Parse(format!("empty CONFIG GET {param} reply")))?;
                 raw.parse::<u64>().map_err(|e| ApiCallError::Parse(format!("{raw:?}: {e}")))
             }
-            // Dependency-heavy clients are a typed gap until linked — never a panic.
             Protocol::Kafka => Err(ApiCallError::NoClient(Protocol::Kafka.as_str().into())),
             Protocol::Nats => Err(ApiCallError::NoClient(Protocol::Nats.as_str().into())),
         }
     }
 
-    fn set_config(&self, endpoint: &str, command: &str, value: u64) -> Result<(), ApiCallError> {
+    async fn set_config(&self, endpoint: &str, command: &str, value: u64) -> Result<(), ApiCallError> {
         let (protocol, param) = classify_command(command)?;
         match protocol {
             Protocol::Redis => {
-                // argv token `<value>` is the typed surface (Command::arg) — no shell.
-                let v = value.to_string();
-                Self::run(&self.redis_cli, &["-u", endpoint, "CONFIG", "SET", &param, &v]).map(|_| ())
+                let mut con = Self::redis_conn(endpoint).await?;
+                redis::cmd("CONFIG")
+                    .arg("SET")
+                    .arg(&param)
+                    .arg(value)
+                    .query_async::<()>(&mut con)
+                    .await
+                    .map_err(|e| ApiCallError::Io(e.to_string()))?;
+                Ok(())
             }
             Protocol::Kafka => Err(ApiCallError::NoClient(Protocol::Kafka.as_str().into())),
             Protocol::Nats => Err(ApiCallError::NoClient(Protocol::Nats.as_str().into())),
@@ -266,10 +228,10 @@ impl ApiCallEnv for CliApiCallEnv {
 
 // ─────────────────────────── ApiCallCluster ────────────────────────
 
-/// The protocol-API `Cluster`. `write_enabled = false` is the SHADOW mode
-/// (M3/M4): it reads + decides + reports `appliedValue` but performs no protocol
-/// mutation, so the full loop can be observed against a live data system before a
-/// single `CONFIG SET` is issued. Mirrors `HostCluster`'s shadow gate exactly.
+/// The protocol-API `Cluster`. `write_enabled = false` is the SHADOW mode: it
+/// reads + decides + reports `appliedValue` but performs no protocol mutation, so
+/// the full loop can be observed against a live data system before a single
+/// `CONFIG SET`. Mirrors `HostCluster`'s shadow gate exactly.
 pub struct ApiCallCluster<E: ApiCallEnv> {
     env: E,
     write_enabled: bool,
@@ -314,7 +276,7 @@ impl<E: ApiCallEnv> Cluster for ApiCallCluster<E> {
                 "non-ApiCall layout on ApiCallCluster (route k8s/host dimensions to their own Cluster)".into(),
             ));
         };
-        Ok(self.env.get_config(endpoint, command)?)
+        Ok(self.env.get_config(endpoint, command).await?)
     }
 
     async fn field_owners(
@@ -341,7 +303,7 @@ impl<E: ApiCallEnv> Cluster for ApiCallCluster<E> {
         if !self.write_enabled {
             return Ok(AppliedReceipt { source_hash: [0u8; 16] });
         }
-        self.env.set_config(endpoint, command, patch.value)?;
+        self.env.set_config(endpoint, command, patch.value).await?;
         Ok(AppliedReceipt { source_hash: [0u8; 16] })
     }
 }
@@ -441,8 +403,9 @@ mod tests {
         }
     }
 
+    #[async_trait]
     impl ApiCallEnv for MockApiCallEnv {
-        fn get_config(&self, endpoint: &str, command: &str) -> Result<u64, ApiCallError> {
+        async fn get_config(&self, endpoint: &str, command: &str) -> Result<u64, ApiCallError> {
             self.values
                 .lock()
                 .unwrap()
@@ -450,7 +413,7 @@ mod tests {
                 .copied()
                 .ok_or_else(|| ApiCallError::Parse("no canned value for this param".into()))
         }
-        fn set_config(&self, endpoint: &str, command: &str, value: u64) -> Result<(), ApiCallError> {
+        async fn set_config(&self, endpoint: &str, command: &str, value: u64) -> Result<(), ApiCallError> {
             self.values
                 .lock()
                 .unwrap()
@@ -525,8 +488,7 @@ mod tests {
     async fn wrong_layout_is_a_typed_permanent_error_not_a_panic() {
         let cluster = ApiCallCluster::new(MockApiCallEnv::default(), true);
         // a host knob can never legitimately reach the api-call actuator.
-        let host_layout =
-            LimitLayout::Host(breathe_provider::HostKnob::ZfsArcMax);
+        let host_layout = LimitLayout::Host(breathe_provider::HostKnob::ZfsArcMax);
         let read_err = cluster.read_limit(&redis_target(), &host_layout, "memory").await.unwrap_err();
         assert!(matches!(read_err, ProviderError::ApiPermanent(_)));
 

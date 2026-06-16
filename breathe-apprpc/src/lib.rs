@@ -103,51 +103,42 @@ impl From<AppRpcError> for ProviderError {
 /// The app-admin I/O boundary — every real admin-endpoint side effect, behind a
 /// trait so the [`AppRpcCluster`] decision path is fully exercised against a mock.
 /// `endpoint` is the app's admin HTTP base URL; `knob` is the command/knob name.
+#[async_trait]
 pub trait AppRpcEnv: Send + Sync {
     /// Read the live integer value of `knob` from the app at `endpoint`
     /// (`GOMEMLIMIT` bytes, the prefetch bound, the concurrency upper bound).
-    fn get_knob(&self, endpoint: &str, knob: &str) -> Result<u64, AppRpcError>;
+    async fn get_knob(&self, endpoint: &str, knob: &str) -> Result<u64, AppRpcError>;
     /// Set `knob` on the app at `endpoint` to `value` — applies LIVE (RestartFree).
-    fn set_knob(&self, endpoint: &str, knob: &str, value: u64) -> Result<(), AppRpcError>;
+    async fn set_knob(&self, endpoint: &str, knob: &str, value: u64) -> Result<(), AppRpcError>;
 }
 
-/// The real implementation over a thin `curl` shell (argv, never a shell string).
+/// The real implementation over a TYPED Rust HTTP client (`reqwest`) — no shell,
+/// no `curl`.
 ///
 /// The common JSON-admin-endpoint shape: `GET <endpoint>/<knob>` returns the
 /// integer value (the body trimmed + parsed); `POST <endpoint>/<knob>` with the
 /// integer body sets it. An app whose admin protocol is not this shape is served
 /// by a future typed client — until then [`get_knob`](Self::get_knob) /
 /// [`set_knob`](Self::set_knob) return a TYPED [`AppRpcError::NotLinked`], never a
-/// panic. `curl_bin` defaults to `curl` and is overridable for a pinned path.
-#[derive(Debug, Clone)]
-pub struct CurlAdminEnv {
-    curl_bin: String,
-    /// When true, the admin protocol is assumed to be the dependency-light
-    /// JSON-over-`curl` shape and reads/writes go over the wire. When false (the
-    /// safe default for an unknown app), every method returns the typed
-    /// `NotLinked` gap so a mis-wired band can never silently no-op a real carve.
+/// panic.
+#[derive(Debug, Clone, Default)]
+pub struct HttpAdminEnv {
+    /// When true, the admin protocol is assumed to be the JSON-over-HTTP integer
+    /// shape and reads/writes go over the wire. When false (the safe default for an
+    /// unknown app), every method returns the typed `NotLinked` gap so a mis-wired
+    /// band can never silently no-op a real carve.
     linked: bool,
 }
 
-impl Default for CurlAdminEnv {
-    fn default() -> Self {
-        Self { curl_bin: "curl".into(), linked: false }
-    }
-}
-
-impl CurlAdminEnv {
-    /// Read the admin-client config from the environment (the DaemonSet / pod sets
-    /// these): `BREATHE_CURL_BIN` (the curl path), `BREATHE_APPRPC_LINKED=1` (opt
-    /// the app into the dependency-light JSON-over-curl client).
+impl HttpAdminEnv {
+    /// Read the admin-client config from the environment:
+    /// `BREATHE_APPRPC_LINKED=1` opts the app into the JSON-over-HTTP client.
     #[must_use]
     pub fn from_env() -> Self {
-        Self {
-            curl_bin: std::env::var("BREATHE_CURL_BIN").unwrap_or_else(|_| "curl".into()),
-            linked: std::env::var("BREATHE_APPRPC_LINKED").ok().as_deref() == Some("1"),
-        }
+        Self { linked: std::env::var("BREATHE_APPRPC_LINKED").ok().as_deref() == Some("1") }
     }
-    /// Opt this env into the dependency-light JSON-over-`curl` admin client (the
-    /// app speaks the `GET/POST <endpoint>/<knob>` integer shape).
+    /// Opt this env into the JSON-over-HTTP admin client (the app speaks the
+    /// `GET/POST <endpoint>/<knob>` integer shape).
     #[must_use]
     pub fn linked(mut self) -> Self {
         self.linked = true;
@@ -155,8 +146,7 @@ impl CurlAdminEnv {
     }
 
     /// The admin URL for a `(endpoint, knob)` — `<endpoint>/<knob>` with at most
-    /// one joining slash. Pure + testable (no `format!` of protocol syntax beyond
-    /// a path join; argv is a typed vector at the call site).
+    /// one joining slash. Pure + testable.
     #[must_use]
     pub fn knob_url(endpoint: &str, knob: &str) -> String {
         let base = endpoint.trim_end_matches('/');
@@ -166,51 +156,35 @@ impl CurlAdminEnv {
         u.push_str(knob.trim_start_matches('/'));
         u
     }
-
-    /// Run `curl <args…>` and return trimmed stdout. argv is a typed `&[&str]` —
-    /// never a shell string (`std::process::Command` exec, no shell).
-    fn curl(&self, args: &[&str]) -> Result<String, AppRpcError> {
-        let out = std::process::Command::new(&self.curl_bin)
-            .args(args)
-            .output()
-            .map_err(|e| AppRpcError::Transport(e.to_string()))?;
-        if !out.status.success() {
-            return Err(AppRpcError::Command {
-                argv: format!("{} {}", self.curl_bin, args.join(" ")),
-                code: out.status.code(),
-                stderr: String::from_utf8_lossy(&out.stderr).trim().to_string(),
-            });
-        }
-        Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
-    }
 }
 
-impl AppRpcEnv for CurlAdminEnv {
-    fn get_knob(&self, endpoint: &str, knob: &str) -> Result<u64, AppRpcError> {
+#[async_trait]
+impl AppRpcEnv for HttpAdminEnv {
+    async fn get_knob(&self, endpoint: &str, knob: &str) -> Result<u64, AppRpcError> {
         if !self.linked {
-            return Err(AppRpcError::NotLinked(
-                "live admin client not yet linked".into(),
-            ));
+            return Err(AppRpcError::NotLinked("live admin client not yet linked".into()));
         }
         let url = Self::knob_url(endpoint, knob);
-        // `curl -fsS <url>` — fail on HTTP error, silent, show errors. The body is
-        // the integer value of the knob.
-        let body = self.curl(&["-fsS", &url])?;
-        body.parse::<u64>()
-            .map_err(|e| AppRpcError::Parse(format!("{knob}={body:?}: {e}")))
+        let resp = reqwest::get(&url).await.map_err(|e| AppRpcError::Transport(e.to_string()))?;
+        let resp = resp.error_for_status().map_err(|e| AppRpcError::Transport(e.to_string()))?;
+        let body = resp.text().await.map_err(|e| AppRpcError::Transport(e.to_string()))?;
+        let body = body.trim();
+        body.parse::<u64>().map_err(|e| AppRpcError::Parse(format!("{knob}={body:?}: {e}")))
     }
 
-    fn set_knob(&self, endpoint: &str, knob: &str, value: u64) -> Result<(), AppRpcError> {
+    async fn set_knob(&self, endpoint: &str, knob: &str, value: u64) -> Result<(), AppRpcError> {
         if !self.linked {
-            return Err(AppRpcError::NotLinked(
-                "live admin client not yet linked".into(),
-            ));
+            return Err(AppRpcError::NotLinked("live admin client not yet linked".into()));
         }
         let url = Self::knob_url(endpoint, knob);
-        // `curl -fsS -X POST --data <value> <url>` — the integer body sets the
-        // knob live. `--data` value + the URL are typed argv tokens.
-        let data = value.to_string();
-        self.curl(&["-fsS", "-X", "POST", "--data", &data, &url]).map(|_| ())
+        let resp = reqwest::Client::new()
+            .post(&url)
+            .body(value.to_string())
+            .send()
+            .await
+            .map_err(|e| AppRpcError::Transport(e.to_string()))?;
+        resp.error_for_status().map_err(|e| AppRpcError::Transport(e.to_string()))?;
+        Ok(())
     }
 }
 
@@ -263,7 +237,7 @@ impl<E: AppRpcEnv> Cluster for AppRpcCluster<E> {
     ) -> Result<u64, ProviderError> {
         match layout {
             LimitLayout::ApiCall { endpoint, command } => {
-                Ok(self.env.get_knob(endpoint, command)?)
+                Ok(self.env.get_knob(endpoint, command).await?)
             }
             // a k8s / host / config-file layout can never legitimately reach the
             // app-RPC boundary — typed, never silent.
@@ -297,7 +271,7 @@ impl<E: AppRpcEnv> Cluster for AppRpcCluster<E> {
         if !self.write_enabled {
             return Ok(AppliedReceipt { source_hash: [0u8; 16] });
         }
-        self.env.set_knob(endpoint, command, patch.value)?;
+        self.env.set_knob(endpoint, command, patch.value).await?;
         Ok(AppliedReceipt { source_hash: [0u8; 16] })
     }
 }
@@ -332,8 +306,9 @@ mod tests {
         }
     }
 
+    #[async_trait]
     impl AppRpcEnv for MockAppRpcEnv {
-        fn get_knob(&self, endpoint: &str, knob: &str) -> Result<u64, AppRpcError> {
+        async fn get_knob(&self, endpoint: &str, knob: &str) -> Result<u64, AppRpcError> {
             self.knobs
                 .lock()
                 .unwrap()
@@ -341,7 +316,7 @@ mod tests {
                 .copied()
                 .ok_or_else(|| AppRpcError::Parse("no such knob".into()))
         }
-        fn set_knob(&self, endpoint: &str, knob: &str, value: u64) -> Result<(), AppRpcError> {
+        async fn set_knob(&self, endpoint: &str, knob: &str, value: u64) -> Result<(), AppRpcError> {
             self.knobs
                 .lock()
                 .unwrap()
@@ -477,11 +452,11 @@ mod tests {
     }
 
     /// The dependency-light real env is honest about its gap: an UNLINKED
-    /// `CurlAdminEnv` returns the typed `NotLinked` → `ApiPermanent`, never a panic.
-    #[test]
-    fn unlinked_curl_env_returns_the_typed_not_linked_gap() {
-        let env = CurlAdminEnv::default(); // not linked
-        let err = env.get_knob(ENDPOINT, "gomemlimit").unwrap_err();
+    /// `HttpAdminEnv` returns the typed `NotLinked` → `ApiPermanent`, never a panic.
+    #[tokio::test]
+    async fn unlinked_http_env_returns_the_typed_not_linked_gap() {
+        let env = HttpAdminEnv::default(); // not linked
+        let err = env.get_knob(ENDPOINT, "gomemlimit").await.unwrap_err();
         assert!(matches!(err, AppRpcError::NotLinked(_)));
         // and it maps to the agreed typed ProviderError surface.
         assert!(matches!(ProviderError::from(err), ProviderError::ApiPermanent(_)));
@@ -490,7 +465,7 @@ mod tests {
     /// The admin URL builder joins endpoint + knob with exactly one slash.
     #[test]
     fn knob_url_joins_with_one_slash() {
-        assert_eq!(CurlAdminEnv::knob_url("http://h:6060", "gomemlimit"), "http://h:6060/gomemlimit");
-        assert_eq!(CurlAdminEnv::knob_url("http://h:6060/", "/prefetch"), "http://h:6060/prefetch");
+        assert_eq!(HttpAdminEnv::knob_url("http://h:6060", "gomemlimit"), "http://h:6060/gomemlimit");
+        assert_eq!(HttpAdminEnv::knob_url("http://h:6060/", "/prefetch"), "http://h:6060/prefetch");
     }
 }
