@@ -36,7 +36,7 @@ use std::{
 use async_trait::async_trait;
 use breathe_provider::{
     AppliedReceipt, ApplySemantics, Cluster, DimensionDescriptor, DimensionId, Directionality,
-    HostKnob, HostMetric, LimitLayout, MetricSource, ProviderError, Sample, SsaPatch, Target,
+    HostKnob, HostMetric, IoMaxField, LimitLayout, MetricSource, ProviderError, Sample, SsaPatch, Target,
 };
 
 /// `/sys/module/zfs/parameters/zfs_arc_max` — the live ARC ceiling (bytes).
@@ -370,9 +370,9 @@ impl NodeEnvelopes {
                 .get(unit)
                 .copied()
                 .ok_or_else(|| HostError::NoEnvelope(unit.clone())),
-            // PR-2: host-GLOBAL sysctls/ZFS params are not nodepool-enveloped —
-            // the band's own CRD ceiling is the cap, so there is no extra L2 wall.
-            HostKnob::Sysctl { .. } | HostKnob::ZfsParam { .. } => Ok(u64::MAX),
+            // PR-2/PR-4: host-GLOBAL sysctls / ZFS params / io.max rate caps are not
+            // nodepool-enveloped — the band's own CRD ceiling is the cap, no L2 wall.
+            HostKnob::Sysctl { .. } | HostKnob::ZfsParam { .. } | HostKnob::CgroupIoMax { .. } => Ok(u64::MAX),
         }
     }
 }
@@ -479,6 +479,31 @@ pub fn cpu_millicores(delta_nsec: u64, window_nsec: u128) -> u64 {
     u64::try_from(milli).unwrap_or(u64::MAX)
 }
 
+/// **PR-4** pure: io RATE (bytes/s or ops/s) from a cumulative-counter `delta`
+/// over a `window_nanos` wall interval. `delta` over `window_nanos` ns is
+/// `delta·1e9/window` per second. `u128` intermediate; `window_nanos == 0` ⇒ 0.
+#[must_use]
+pub fn io_rate_per_sec(delta: u64, window_nanos: u128) -> u64 {
+    if window_nanos == 0 {
+        return 0;
+    }
+    u64::try_from(u128::from(delta) * 1_000_000_000 / window_nanos).unwrap_or(u64::MAX)
+}
+
+/// **PR-4** pure: extract OUR `device`'s cap from a systemd io-property value,
+/// which lists `"<dev1> <val1> <dev2> <val2> …"` pairs. `None` if the device
+/// isn't present (⇒ no cap for us → read_limit treats it as `u64::MAX`).
+#[must_use]
+pub fn parse_io_max_for_device(raw: &str, device: &str) -> Option<u64> {
+    let mut it = raw.split_whitespace();
+    while let (Some(dev), Some(val)) = (it.next(), it.next()) {
+        if dev == device {
+            return val.parse::<u64>().ok();
+        }
+    }
+    None
+}
+
 #[async_trait]
 impl<H: HostEnvironment> Cluster for HostCluster<H> {
     async fn read_used(&self, source: &MetricSource) -> Result<Sample, ProviderError> {
@@ -507,6 +532,28 @@ impl<H: HostEnvironment> Cluster for HostCluster<H> {
                         let delta = nsec_now.saturating_sub(nsec_prev);
                         let window = now.saturating_duration_since(t_prev).as_nanos();
                         cpu_millicores(delta, window)
+                    }
+                    None => return Err(ProviderError::MetricsMissing),
+                }
+            }
+            // PR-4: io RATE — difference the cumulative io-accounting counter
+            // (IOReadBytes/IOWriteOperations/…) against the prior tick → bytes/s or
+            // ops/s. Reuses the rate-sample cache with an io-namespaced key so io and
+            // cpu never collide. First observation per (unit,field) has no prior →
+            // hold transient (next tick differences against this one).
+            MetricSource::Host(HostMetric::CgroupIoStat { unit, field }) => {
+                let counter_now = self.env.read_unit_property_u64(unit, field.counter_property())?.unwrap_or(0);
+                let now = Instant::now();
+                let key = format!("io:{unit}:{}", field.as_str());
+                let mut cache = self
+                    .cpu_samples
+                    .lock()
+                    .map_err(|_| ProviderError::ApiTransient("io sample cache poisoned".into()))?;
+                match cache.insert(key, (counter_now, now)) {
+                    Some((prev, t_prev)) => {
+                        let delta = counter_now.saturating_sub(prev);
+                        let window = now.saturating_duration_since(t_prev).as_nanos();
+                        io_rate_per_sec(delta, window)
                     }
                     None => return Err(ProviderError::MetricsMissing),
                 }
@@ -566,6 +613,15 @@ impl<H: HostEnvironment> Cluster for HostCluster<H> {
             LimitLayout::Host(HostKnob::ZfsParam { param }) => {
                 Ok(self.env.read_sysfs_u64(&zfs_param_path(param))?)
             }
+            // PR-4: read the per-device io.max cap from the systemd property
+            // ("<dev> <val> …" pairs). Unset / no-match for our device → u64::MAX
+            // (no cap) so the band snaps it down to the CRD ceiling on the first tick.
+            LimitLayout::Host(HostKnob::CgroupIoMax { unit, device, field }) => {
+                match self.env.read_unit_property_str(unit, field.cap_property())? {
+                    Some(raw) => Ok(parse_io_max_for_device(&raw, device).unwrap_or(u64::MAX)),
+                    None => Ok(u64::MAX),
+                }
+            }
             _ => Err(ProviderError::ApiPermanent(
                 "k8s layout on HostCluster (route k8s dimensions to KubeCluster)".into(),
             )),
@@ -621,6 +677,11 @@ impl<H: HostEnvironment> Cluster for HostCluster<H> {
             // PR-2 keystones: write the single-u64 sysfs/procfs file directly.
             HostKnob::Sysctl { key } => self.env.write_sysfs_u64(&sysctl_path(key), patch.value)?,
             HostKnob::ZfsParam { param } => self.env.write_sysfs_u64(&zfs_param_path(param), patch.value)?,
+            // PR-4: set the per-device io.max cap — `IOWriteBandwidthMax="<dev> <val>"`
+            // sets just this device's field, leaving the others untouched.
+            HostKnob::CgroupIoMax { unit, device, field } => {
+                self.env.set_unit_property_str(unit, field.cap_property(), &format!("{device} {}", patch.value))?;
+            }
         }
         Ok(AppliedReceipt { source_hash: [0u8; 16] })
     }
@@ -950,6 +1011,53 @@ mod tests {
         assert_eq!(dnode.value, 64 * GI / 1024);
         let dirty = cluster.read_used(&MetricSource::Host(HostMetric::MeminfoField { field: "Dirty".into() })).await.unwrap();
         assert_eq!(dirty.value, 50 * GI / 1024);
+    }
+
+    #[test]
+    fn pr4_io_helpers_parse_per_device_caps_and_compute_rates() {
+        // systemd lists "<dev> <val> <dev> <val>" — pick OUR device.
+        assert_eq!(parse_io_max_for_device("8:0 10000000 259:0 50000000", "259:0"), Some(50_000_000));
+        assert_eq!(parse_io_max_for_device("8:0 10000000", "259:0"), None);
+        // rate = delta·1e9/window_nanos. 100MB over 1s = 100MB/s.
+        assert_eq!(io_rate_per_sec(100_000_000, 1_000_000_000), 100_000_000);
+        assert_eq!(io_rate_per_sec(5, 0), 0); // no window
+        // the four fields map to the right systemd cap + counter properties.
+        assert_eq!(IoMaxField::Wbps.cap_property(), "IOWriteBandwidthMax");
+        assert_eq!(IoMaxField::Wbps.counter_property(), "IOWriteBytes");
+        assert_eq!(IoMaxField::Riops.cap_property(), "IOReadIOPSMax");
+        assert_eq!(IoMaxField::Riops.counter_property(), "IOReadOperations");
+    }
+
+    #[tokio::test]
+    async fn pr4_cgroup_io_max_reads_per_device_cap_and_writes_it() {
+        use breathe_provider::Cluster;
+        // current IOWriteBandwidthMax for two devices; we carve 259:0 (wbps).
+        let mut env = MockHostEnv::default();
+        env.unit_property_str.insert(
+            ("nix-daemon.service".into(), "IOWriteBandwidthMax".into()),
+            "8:0 10000000 259:0 50000000".into(),
+        );
+        let cluster = HostCluster::new(env, envelopes(), true);
+        let knob = HostKnob::CgroupIoMax {
+            unit: "nix-daemon.service".into(),
+            device: "259:0".into(),
+            field: IoMaxField::Wbps,
+        };
+        let v = cluster.read_limit(&unit_target("nix-daemon.service"), &LimitLayout::Host(knob.clone()), "memory").await.unwrap();
+        assert_eq!(v, 50_000_000, "reads OUR device's wbps cap");
+        // apply writes "<device> <value>" via the IOWriteBandwidthMax property.
+        let patch = SsaPatch {
+            target: unit_target("nix-daemon.service"),
+            field_manager: "breathe/io".into(),
+            layout: LimitLayout::Host(knob),
+            resource: "memory".into(),
+            value: 40_000_000,
+        };
+        cluster.apply(&patch).await.unwrap();
+        assert!(
+            cluster.env().str_writes().iter().any(|(p, v)| p == "nix-daemon.service:IOWriteBandwidthMax" && v == "259:0 40000000"),
+            "wrote the per-device wbps cap"
+        );
     }
 
     #[tokio::test]
