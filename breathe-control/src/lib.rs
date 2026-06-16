@@ -707,6 +707,23 @@ pub enum Unit {
     /// IO operations per second — `io.max` iops caps, EBS provisioned IOPS.
     /// Decimal-SI/bare parse; renders bare.
     Iops,
+    /// Requests / queries per second — samba quotaPct, ingress rps, DNS qps,
+    /// client-go QPS. Decimal-SI/bare integer rate; renders bare.
+    Rps,
+    /// Packets / connections per second — tc police, conntrack-establish rate.
+    /// Decimal-SI/bare integer rate; renders bare.
+    Pps,
+    /// A retention / age DURATION in SECONDS — Kafka/NATS/VM/VLogs retention.
+    /// Parses `d`/`h`/`m`/`s` suffixes (or bare seconds); renders bare seconds.
+    Duration,
+    /// A PERCENT (0–100) — HPA setpoint, disk%, PDB. Parses `80%`/`80`; renders bare.
+    Percent,
+    /// A cost in CENTS — Densa.cost_sla, commitments, egress-$. Parses `$5.00`/`500`
+    /// (a `$` prefix is dollars→cents; bare is cents); renders bare cents.
+    Cents,
+    /// CFS burst budget in MICROSECONDS — `cpu.max.burst` token-bucket depth.
+    /// Decimal-SI/bare; renders bare.
+    BurstUsec,
 }
 
 impl Unit {
@@ -732,8 +749,12 @@ impl Unit {
             Self::Count | Self::BitsPerSec => parse_count(q),
             // Byte-rate parses like bytes (binary + decimal SI + bare).
             Self::BytesPerSec => parse_bytes(q),
-            // IOPS is a bare-or-decimal-SI integer rate.
-            Self::Iops => parse_count(q),
+            // Integer rates (decimal-SI / bare).
+            Self::Iops | Self::Rps | Self::Pps | Self::BurstUsec => parse_count(q),
+            // Specialised parses.
+            Self::Duration => parse_duration_secs(q),
+            Self::Percent => parse_percent(q),
+            Self::Cents => parse_cents(q),
         }
     }
 }
@@ -756,10 +777,19 @@ impl std::fmt::Display for Quantity {
         match self.unit {
             Unit::Bytes => write!(f, "{}", self.value),
             Unit::Millicores => write!(f, "{}m", self.value),
-            // Counts + rates render as bare integers — the actuator/k8s reads the
-            // raw scalar (io.max bare bytes-per-sec/iops, a bare bandwidth quantity),
-            // and the bare form round-trips through `parse`.
-            Unit::Count | Unit::BitsPerSec | Unit::BytesPerSec | Unit::Iops => write!(f, "{}", self.value),
+            // Counts + rates + the specialised scalars all render as bare integers —
+            // the actuator/k8s reads the raw scalar, and the bare form round-trips
+            // through `parse` (Duration→seconds, Percent→0-100, Cents→cents).
+            Unit::Count
+            | Unit::BitsPerSec
+            | Unit::BytesPerSec
+            | Unit::Iops
+            | Unit::Rps
+            | Unit::Pps
+            | Unit::Duration
+            | Unit::Percent
+            | Unit::Cents
+            | Unit::BurstUsec => write!(f, "{}", self.value),
         }
     }
 }
@@ -805,6 +835,52 @@ fn parse_count(q: &str) -> Option<u64> {
         _ => return None,
     };
     Some((n * mult) as u64)
+}
+
+/// Parse a retention/age DURATION to SECONDS. Accepts `d`/`h`/`m`/`s` suffixes
+/// (`10d`, `1h`, `30m`, `60s`) or a bare integer (seconds). `None` on malformed.
+#[must_use]
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss, clippy::cast_precision_loss)]
+fn parse_duration_secs(q: &str) -> Option<u64> {
+    let q = q.trim();
+    if q.is_empty() {
+        return None;
+    }
+    if let Ok(n) = q.parse::<u64>() {
+        return Some(n); // bare seconds
+    }
+    let split = q.find(|c: char| !(c.is_ascii_digit() || c == '.')).unwrap_or(q.len());
+    let (num, suffix) = q.split_at(split);
+    let n: f64 = num.parse().ok()?;
+    let mult: f64 = match suffix.trim() {
+        "s" => 1.0,
+        "m" => 60.0,
+        "h" => 3_600.0,
+        "d" => 86_400.0,
+        _ => return None,
+    };
+    Some((n * mult) as u64)
+}
+
+/// Parse a PERCENT (`80%` / `80`) to an integer 0–100+. `None` on malformed.
+#[must_use]
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+fn parse_percent(q: &str) -> Option<u64> {
+    let q = q.trim().strip_suffix('%').unwrap_or(q.trim());
+    q.parse::<f64>().ok().map(|v| v.round() as u64)
+}
+
+/// Parse a COST to CENTS. A `$` prefix is DOLLARS (`$5.00` → 500, `$5` → 500);
+/// otherwise the bare integer IS cents (`500` → 500). `None` on malformed.
+#[must_use]
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+fn parse_cents(q: &str) -> Option<u64> {
+    let q = q.trim();
+    if let Some(dollars) = q.strip_prefix('$') {
+        dollars.parse::<f64>().ok().map(|d| (d * 100.0).round() as u64)
+    } else {
+        q.parse::<u64>().ok()
+    }
 }
 
 /// Parse a k8s byte quantity (binary IEC `Ki/Mi/Gi/Ti/Pi/Ei`, decimal SI
@@ -1369,6 +1445,30 @@ mod tests {
         for u in [Unit::BitsPerSec, Unit::BytesPerSec, Unit::Iops] {
             assert_eq!(Quantity { value: 4096, unit: u }.to_string(), "4096");
             assert_eq!(u.parse("4096"), Some(4096));
+        }
+    }
+
+    #[test]
+    fn the_remaining_carve_units_parse_and_render() {
+        // Rps / Pps / BurstUsec — decimal-SI integer rates.
+        assert_eq!(Unit::Rps.parse("5k"), Some(5000));
+        assert_eq!(Unit::Pps.parse("100000"), Some(100_000));
+        assert_eq!(Unit::BurstUsec.parse("2000"), Some(2000));
+        // Duration → seconds.
+        assert_eq!(Unit::Duration.parse("10d"), Some(864_000));
+        assert_eq!(Unit::Duration.parse("1h"), Some(3600));
+        assert_eq!(Unit::Duration.parse("30m"), Some(1800));
+        assert_eq!(Unit::Duration.parse("90"), Some(90)); // bare seconds
+        // Percent.
+        assert_eq!(Unit::Percent.parse("80%"), Some(80));
+        assert_eq!(Unit::Percent.parse("80"), Some(80));
+        // Cents — $ = dollars→cents, bare = cents.
+        assert_eq!(Unit::Cents.parse("$5.00"), Some(500));
+        assert_eq!(Unit::Cents.parse("$5"), Some(500));
+        assert_eq!(Unit::Cents.parse("500"), Some(500));
+        // all render bare + round-trip through their base scalar.
+        for u in [Unit::Rps, Unit::Pps, Unit::Duration, Unit::Percent, Unit::Cents, Unit::BurstUsec] {
+            assert_eq!(Quantity { value: 42, unit: u }.to_string(), "42");
         }
     }
 
