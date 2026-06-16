@@ -195,6 +195,51 @@ pub enum HostMetric {
     /// sample window into a `BytesPerSec` / `Iops` rate. The `used` signal for an
     /// `io.max` band. (Unit-aggregate today; per-device io.stat is a refinement.)
     CgroupIoStat { unit: String, field: IoMaxField },
+    /// **PR-3:** PRESSURE-STALL INFORMATION — the `avg10` stall percentage (×100,
+    /// so `12.34%` → `1234`) from `/proc/pressure/<resource>`, the throttle signal
+    /// that turns every soft / rate-shaped band [`ThrottleAware`](breathe_control)
+    /// (cpu, io, memory reclaim). The single highest-leverage observe-side upgrade
+    /// of the census: a non-zero stall means the resource is being throttled NOW.
+    Psi { resource: PsiResource, kind: PsiKind },
+}
+
+/// **PR-3:** which `/proc/pressure/<resource>` file a [`HostMetric::Psi`] reads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PsiResource {
+    Cpu,
+    Memory,
+    Io,
+}
+
+impl PsiResource {
+    /// The procfs basename (`cpu`/`memory`/`io`) for this resource's pressure file.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Cpu => "cpu",
+            Self::Memory => "memory",
+            Self::Io => "io",
+        }
+    }
+}
+
+/// **PR-3:** which PSI line a [`HostMetric::Psi`] reads. `some` = at least one task
+/// stalled (latency); `full` = ALL non-idle tasks stalled (throughput collapse).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PsiKind {
+    Some,
+    Full,
+}
+
+impl PsiKind {
+    /// The PSI line prefix (`some`/`full`) this kind reads.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Some => "some",
+            Self::Full => "full",
+        }
+    }
 }
 
 /// Where a managed quantity lives on a target object — interpreted by the

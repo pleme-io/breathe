@@ -38,6 +38,8 @@ use breathe_provider::{
     AppliedReceipt, ApplySemantics, Cluster, DimensionDescriptor, DimensionId, Directionality,
     HostKnob, HostMetric, IoMaxField, LimitLayout, MetricSource, ProviderError, Sample, SsaPatch, Target,
 };
+#[cfg(test)]
+use breathe_provider::{PsiKind, PsiResource};
 
 /// `/sys/module/zfs/parameters/zfs_arc_max` — the live ARC ceiling (bytes).
 pub const ZFS_ARC_MAX_PATH: &str = "/sys/module/zfs/parameters/zfs_arc_max";
@@ -62,6 +64,14 @@ pub fn sysctl_path(key: &str) -> String {
 pub fn zfs_param_path(param: &str) -> String {
     let mut p = String::from(ZFS_PARAM_DIR);
     p.push_str(param);
+    p
+}
+
+/// Map a PSI `resource` (`cpu`/`memory`/`io`) to its pressure file. PR-3.
+#[must_use]
+pub fn psi_path(resource: &str) -> String {
+    let mut p = String::from("/proc/pressure/");
+    p.push_str(resource);
     p
 }
 
@@ -157,6 +167,9 @@ pub trait HostEnvironment: Send + Sync {
     /// **PR-2:** a `/proc/meminfo` field in BYTES (the file prints kB; the impl
     /// multiplies by 1024). `field` is the label without the colon (`Dirty`).
     fn read_meminfo_field(&self, field: &str) -> Result<u64, HostError>;
+    /// **PR-3:** the `avg10` PSI stall percentage ×100 (so `12.34%` → `1234`) from
+    /// `/proc/pressure/<resource>`'s `<kind>` line. The throttle signal for soft bands.
+    fn read_psi_avg10(&self, resource: &str, kind: &str) -> Result<u64, HostError>;
 }
 
 /// The real implementation over std `fs` + `systemctl` (argv, never a shell).
@@ -263,6 +276,24 @@ impl HostEnvironment for SystemdSysfsEnv {
             }
         }
         Err(HostError::Parse("arcstats has no such row".into()))
+    }
+
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss, clippy::cast_precision_loss)]
+    fn read_psi_avg10(&self, resource: &str, kind: &str) -> Result<u64, HostError> {
+        let path = self.at(&psi_path(resource));
+        let text = std::fs::read_to_string(&path).map_err(|e| HostError::Io(e.to_string()))?;
+        // lines: `some avg10=0.12 avg60=… avg300=… total=…` / `full …`.
+        for line in text.lines() {
+            if let Some(rest) = line.strip_prefix(kind).map(str::trim_start) {
+                for tok in rest.split_whitespace() {
+                    if let Some(v) = tok.strip_prefix("avg10=") {
+                        let pct: f64 = v.parse().map_err(|_| HostError::Parse("bad PSI avg10".into()))?;
+                        return Ok((pct * 100.0).round() as u64); // ×100 → integer per-mille-ish
+                    }
+                }
+            }
+        }
+        Err(HostError::Parse("PSI line/avg10 not found".into()))
     }
 
     fn read_meminfo_field(&self, field: &str) -> Result<u64, HostError> {
@@ -557,6 +588,10 @@ impl<H: HostEnvironment> Cluster for HostCluster<H> {
                     }
                     None => return Err(ProviderError::MetricsMissing),
                 }
+            }
+            // PR-3: PSI stall % (×100) — the throttle signal for a ThrottleAware band.
+            MetricSource::Host(HostMetric::Psi { resource, kind }) => {
+                self.env.read_psi_avg10(resource.as_str(), kind.as_str())?
             }
             // a k8s metric can never reach the host boundary — typed, never silent.
             MetricSource::Prometheus(_) | MetricSource::PodMetricsMax { .. } => {
@@ -887,6 +922,7 @@ mod tests {
         str_writes: Mutex<Vec<(String, String)>>,
         arcstats: BTreeMap<String, u64>,
         meminfo: BTreeMap<String, u64>,
+        psi: BTreeMap<(String, String), u64>,
     }
 
     impl MockHostEnv {
@@ -939,6 +975,10 @@ mod tests {
         }
         fn read_meminfo_field(&self, field: &str) -> Result<u64, HostError> {
             self.meminfo.get(field).copied().ok_or_else(|| HostError::Parse("no such meminfo field".into()))
+        }
+        fn read_psi_avg10(&self, resource: &str, kind: &str) -> Result<u64, HostError> {
+            self.psi.get(&(resource.to_string(), kind.to_string())).copied()
+                .ok_or_else(|| HostError::Parse("no such PSI".into()))
         }
     }
 
@@ -1011,6 +1051,23 @@ mod tests {
         assert_eq!(dnode.value, 64 * GI / 1024);
         let dirty = cluster.read_used(&MetricSource::Host(HostMetric::MeminfoField { field: "Dirty".into() })).await.unwrap();
         assert_eq!(dirty.value, 50 * GI / 1024);
+    }
+
+    #[tokio::test]
+    async fn pr3_psi_metric_reads_the_stall_signal() {
+        use breathe_provider::Cluster;
+        let mut env = MockHostEnv::default();
+        env.psi.insert(("io".into(), "some".into()), 1234); // 12.34% stall ×100
+        let cluster = HostCluster::shadow(env, envelopes());
+        let s = cluster
+            .read_used(&MetricSource::Host(HostMetric::Psi { resource: PsiResource::Io, kind: PsiKind::Some }))
+            .await
+            .unwrap();
+        assert_eq!(s.value, 1234, "PSI avg10 ×100 is the throttle signal");
+        // the enums map to the right procfs basenames + line prefixes.
+        assert_eq!(PsiResource::Memory.as_str(), "memory");
+        assert_eq!(PsiKind::Full.as_str(), "full");
+        assert_eq!(super::psi_path("io"), "/proc/pressure/io");
     }
 
     #[test]
