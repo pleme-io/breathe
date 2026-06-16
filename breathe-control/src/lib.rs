@@ -698,6 +698,15 @@ pub enum Unit {
     /// parse (`1k` = 1000, never binary `Ki`); renders as a bare integer. The
     /// band law is shape-blind, so it converges on a count exactly as on bytes.
     Count,
+    /// A rate in BITS per second — network bandwidth (pod egress/ingress, NAT
+    /// egress). Decimal-SI on parse (`50M` = 50_000_000 bits/s); renders bare.
+    BitsPerSec,
+    /// A rate in BYTES per second — `io.max` bandwidth caps, EBS/EFS throughput.
+    /// Byte-quantity parse (binary `Mi` + decimal `M` + bare); renders bare.
+    BytesPerSec,
+    /// IO operations per second — `io.max` iops caps, EBS provisioned IOPS.
+    /// Decimal-SI/bare parse; renders bare.
+    Iops,
 }
 
 impl Unit {
@@ -719,7 +728,12 @@ impl Unit {
         match self {
             Self::Bytes => parse_bytes(q),
             Self::Millicores => parse_millicores(q),
-            Self::Count => parse_count(q),
+            // Count + BitsPerSec share decimal-SI integer semantics (1k = 1000).
+            Self::Count | Self::BitsPerSec => parse_count(q),
+            // Byte-rate parses like bytes (binary + decimal SI + bare).
+            Self::BytesPerSec => parse_bytes(q),
+            // IOPS is a bare-or-decimal-SI integer rate.
+            Self::Iops => parse_count(q),
         }
     }
 }
@@ -742,7 +756,10 @@ impl std::fmt::Display for Quantity {
         match self.unit {
             Unit::Bytes => write!(f, "{}", self.value),
             Unit::Millicores => write!(f, "{}m", self.value),
-            Unit::Count => write!(f, "{}", self.value),
+            // Counts + rates render as bare integers — the actuator/k8s reads the
+            // raw scalar (io.max bare bytes-per-sec/iops, a bare bandwidth quantity),
+            // and the bare form round-trips through `parse`.
+            Unit::Count | Unit::BitsPerSec | Unit::BytesPerSec | Unit::Iops => write!(f, "{}", self.value),
         }
     }
 }
@@ -1335,6 +1352,24 @@ mod tests {
         assert_eq!(Unit::Count.parse(""), None);
         assert_eq!(Unit::Count.parse("garbage"), None);
         assert_eq!(Quantity { value: 110, unit: Unit::Count }.to_string(), "110");
+    }
+
+    #[test]
+    fn io_rate_units_parse_and_render_for_pr4() {
+        // BitsPerSec — decimal-SI bits (50M = 50 megabits/s).
+        assert_eq!(Unit::BitsPerSec.parse("50M"), Some(50_000_000));
+        assert_eq!(Unit::BitsPerSec.parse("1G"), Some(1_000_000_000));
+        // BytesPerSec — byte-quantity (binary + decimal + bare).
+        assert_eq!(Unit::BytesPerSec.parse("100Mi"), Some(100 * 1024 * 1024));
+        assert_eq!(Unit::BytesPerSec.parse("125000000"), Some(125_000_000));
+        // Iops — bare/decimal-SI integer rate.
+        assert_eq!(Unit::Iops.parse("3000"), Some(3000));
+        assert_eq!(Unit::Iops.parse("16k"), Some(16_000));
+        // all render bare + round-trip.
+        for u in [Unit::BitsPerSec, Unit::BytesPerSec, Unit::Iops] {
+            assert_eq!(Quantity { value: 4096, unit: u }.to_string(), "4096");
+            assert_eq!(u.parse("4096"), Some(4096));
+        }
     }
 
     #[test]
