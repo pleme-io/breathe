@@ -1313,6 +1313,409 @@ impl DensaSpec {
     }
 }
 
+// ─────────────────── QuinhaoPool — the hierarchical-vector fair-share allocator ──
+//
+// The k8s wire border for `breathe_auction::quinhao` (BREATHABILITY-FABRIC §III.0
+// — "every part held at the same 80/20 band by the same law, so they all shift
+// together"). Where a `StorageBand` holds the POOL at its 80% band, a
+// `QuinhaoPool` DIVIDES that band among a forest of weighted claimants (groups →
+// users) per dimension, and publishes the computed per-claimant grants in its
+// status — the grant ledger gaveta reads. Additive + advisory: it carves NOTHING
+// (status only); the pool's own StorageBand still holds the 80%.
+//
+// gaveta's drive product: `claims[].kind = Group` = shared-folders/families;
+// `kind = User` (with `parentId` = its group) = members. `weight: 1` everywhere ⇒
+// a strictly even split (4 users → ~20% of the 80% band each). The allocation is
+// a PURE function of the claim list, so a member joining/leaving/going idle is a
+// re-derivation — the "resident flexibility that shifts accordingly".
+
+/// A claimant's role in the fabric tree — purely descriptive (groups parent
+/// users), surfaced for `kubectl` legibility; the allocator keys off `parentId`.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, JsonSchema, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub enum ClaimantKind {
+    /// A top-level claimant that splits the pool band (a gaveta shared-folder).
+    #[default]
+    Group,
+    /// A child claimant that splits its parent's grant (a gaveta member).
+    User,
+}
+
+/// One claimant's bounded, weighted demand on a single fabric dimension — the
+/// wire mirror of `breathe_auction::quinhao::Demand`. Quantities are strings in
+/// the dimension's unit (bytes for storage) so an operator writes `10Gi`, not a
+/// raw byte count; `breathe_auction::Unit` parses them in the controller.
+#[derive(Serialize, Deserialize, Clone, Debug, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct DimDemand {
+    /// The fabric dimension this demand is on (`storage` / `cpu` / `bandwidth` /
+    /// `request-rate`). Storage is the live axis; the others are typed-but-dormant.
+    pub dim: String,
+    /// Relative share weight. `1` (the default) ⇒ an even share; `0` ⇒ idle on
+    /// this axis (claims only its floor). A larger weight buys a larger share.
+    #[serde(default = "d_weight")]
+    pub weight: u32,
+    /// The floor always granted (a reserved quota), a quantity string. Default `0`.
+    #[serde(default = "d_zero_qty")]
+    pub min: String,
+    /// The ceiling never exceeded, a quantity string. Omit ⇒ no cap (the whole
+    /// pool). Empty string is treated as "no cap".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max: Option<String>,
+    /// What the claimant would actually use (a generous share is trimmed to this).
+    /// Omit ⇒ would use the whole pool (the even default).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub demand: Option<String>,
+}
+
+/// One claimant in the fabric forest — the wire mirror of
+/// `breathe_auction::quinhao::Quinhao`. A group is `kind: Group` with no
+/// `parentId`; a user is `kind: User` naming its group as `parentId`.
+#[derive(Serialize, Deserialize, Clone, Debug, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ClaimSpec {
+    /// Stable identity (a gaveta group-id or member-id), unique within the pool.
+    pub id: String,
+    /// `Group` (top-level) or `User` (child).
+    #[serde(default)]
+    pub kind: ClaimantKind,
+    /// The parent claimant's id (a user's group). Omit for a top-level claimant.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_id: Option<String>,
+    /// The per-dimension demand vector — one entry per participating axis. A
+    /// dimension absent from this list is `absent` (granted 0 on that axis). The
+    /// common case is a single `storage` entry with `weight: 1` (the even member).
+    #[serde(default)]
+    pub demands: Vec<DimDemand>,
+}
+
+/// A pool-capacity entry — the total quantity of ONE dimension the band holds.
+/// The allocatable band per dimension is `capacity * setpoint`.
+#[derive(Serialize, Deserialize, Clone, Debug, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PoolCapacityEntry {
+    /// The fabric dimension (`storage` / `cpu` / `bandwidth` / `request-rate`).
+    pub dim: String,
+    /// The total capacity quantity for this dimension, a string in the dim's unit
+    /// (`3.6Ti` for storage). The band the claimants split is this × `setpoint`.
+    pub capacity: String,
+}
+
+#[derive(CustomResource, Serialize, Deserialize, Clone, Debug, JsonSchema)]
+#[kube(
+    group = "breathe.pleme.io",
+    version = "v1",
+    kind = "QuinhaoPool",
+    namespaced,
+    status = "QuinhaoPoolStatus",
+    shortname = "qpool",
+    category = "breathe",
+    printcolumn = r#"{"name":"Setpoint","type":"string","jsonPath":".spec.setpoint"}"#,
+    printcolumn = r#"{"name":"Claims","type":"integer","jsonPath":".status.claimCount"}"#,
+    printcolumn = r#"{"name":"Phase","type":"string","jsonPath":".status.phase"}"#,
+    printcolumn = r#"{"name":"DryRun","type":"boolean","jsonPath":".spec.dryRun"}"#
+)]
+#[serde(rename_all = "camelCase")]
+pub struct QuinhaoPoolSpec {
+    /// The pool's total capacity per dimension. The allocatable band each
+    /// dimension's claimants split is `capacity × setpoint`. A dimension absent
+    /// here has a zero band (every claim on it is granted 0).
+    pub pool_capacity: Vec<PoolCapacityEntry>,
+    /// OPTIONAL: pull the storage capacity from a referenced `StorageBand`'s
+    /// `status.observedCapacity` instead of (or in addition to) an explicit
+    /// `poolCapacity` storage entry — so the divider tracks the band that holds
+    /// the pool. When set AND the band reports a capacity, it OVERRIDES the
+    /// explicit storage entry. (The explicit entry is the shippable default; this
+    /// is the destination coupling.)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub storage_band_ref: Option<StorageBandRef>,
+    /// The utilization setpoint — the fraction of capacity the claimants divide
+    /// (the 80% band). Default `0.80`. Clamped to `(0, 1]` in the allocator.
+    #[serde(default = "d_setpoint")]
+    pub setpoint: f64,
+    /// The claimant forest (groups + users). Even by default (`weight: 1`).
+    #[serde(default)]
+    pub claims: Vec<ClaimSpec>,
+    /// SHADOW: the controller computes + publishes grants but the consumer
+    /// (gaveta) should treat them as advisory. Default true (advisory-first). The
+    /// pool NEVER carves a k8s/host limit regardless — it divides; the StorageBand
+    /// holds the 80%. `dryRun` here marks the GRANT LEDGER advisory vs enforced.
+    #[serde(default = "d_true")]
+    pub dry_run: bool,
+}
+
+/// A reference to a `StorageBand` whose `status.observedCapacity` sources this
+/// pool's storage capacity.
+#[derive(Serialize, Deserialize, Clone, Debug, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct StorageBandRef {
+    /// The `StorageBand` name.
+    pub name: String,
+    /// The `StorageBand` namespace. Omit ⇒ the pool's own namespace.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub namespace: Option<String>,
+}
+
+/// One claimant's computed grant — what gaveta reads. `grants[dim]` is the
+/// quota in that dimension's unit (bytes for storage).
+#[derive(Serialize, Deserialize, Clone, Debug, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ClaimGrant {
+    /// The claimant id (a gaveta group-id or member-id).
+    pub id: String,
+    /// `Group` / `User` (echoed from the spec for ledger legibility).
+    pub kind: ClaimantKind,
+    /// The parent id, if a child (echoed for the consumer's tree walk).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_id: Option<String>,
+    /// The granted quota per dimension, keyed by dim string — raw quantities in
+    /// the dim's unit (bytes for storage). gaveta reads `grants["storage"]` as the
+    /// member's storage quota in bytes.
+    pub grants: BTreeMap<String, i64>,
+}
+
+/// `QuinhaoPool` status — the computed grant ledger + the band summary.
+#[derive(Serialize, Deserialize, Clone, Debug, JsonSchema, Default, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct QuinhaoPoolStatus {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub phase: Option<String>,
+    /// How many claimants carry a grant.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub claim_count: Option<i64>,
+    /// The allocatable band per dimension (`capacity × setpoint`), keyed by dim —
+    /// what the claimants divided. Lets an operator see the band from the status.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub band: BTreeMap<String, i64>,
+    /// The effective pool capacity per dimension the controller resolved (after a
+    /// `storageBandRef` override, if any), keyed by dim.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub observed_capacity: BTreeMap<String, i64>,
+    /// The grant ledger — one entry per claimant. THE surface gaveta consumes.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub grants: Vec<ClaimGrant>,
+    /// A typed refusal when the claim forest is malformed (duplicate id / unknown
+    /// parent / cycle) — the allocation is refused, never half-published.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    /// Whether the published ledger is advisory (`dryRun`) — echoed for the consumer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effective_dry_run: Option<bool>,
+    /// `metadata.generation` the controller last reconciled.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub observed_generation: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_seen_epoch: Option<i64>,
+}
+
+/// Why a [`QuinhaoPoolSpec`] cannot be turned into a typed allocation — the
+/// parse-time refusal (a malformed quantity / unknown dimension). Forest-shape
+/// errors come from the allocator itself ([`breathe_auction::quinhao::FabricError`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum QuinhaoPoolError {
+    /// A quantity string failed to parse in its dimension's unit.
+    BadQuantity { field: String, value: String },
+    /// A `dim` string names no known fabric dimension.
+    UnknownDim { dim: String },
+}
+
+impl std::fmt::Display for QuinhaoPoolError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::BadQuantity { field, value } => write!(f, "{field}: invalid quantity {value:?}"),
+            Self::UnknownDim { dim } => write!(f, "unknown fabric dimension {dim:?}"),
+        }
+    }
+}
+
+impl std::error::Error for QuinhaoPoolError {}
+
+impl QuinhaoPoolSpec {
+    /// The unit a fabric dimension's quantities parse in. Storage is bytes; the
+    /// dormant compute/rate axes are bare counts (millicores / bytes-per-sec /
+    /// req-per-sec are all integer-valued at this border).
+    fn unit_for(dim: breathe_auction::quinhao::Dim) -> Unit {
+        match dim {
+            breathe_auction::quinhao::Dim::Storage => Unit::Bytes,
+            _ => Unit::Count,
+        }
+    }
+
+    /// Parse one [`DimDemand`] into a typed `(Dim, Demand)`. Quantities parse in
+    /// the dimension's unit; an omitted `max`/`demand` ⇒ `u64::MAX` (no cap / would
+    /// use everything), matching `Demand::even`.
+    fn parse_demand(
+        d: &DimDemand,
+    ) -> Result<(breathe_auction::quinhao::Dim, breathe_auction::quinhao::Demand), QuinhaoPoolError> {
+        let dim = breathe_auction::quinhao::Dim::from_str(&d.dim)
+            .ok_or_else(|| QuinhaoPoolError::UnknownDim { dim: d.dim.clone() })?;
+        let unit = Self::unit_for(dim);
+        let parse_q = |field: &str, q: &str| -> Result<u64, QuinhaoPoolError> {
+            unit.parse(q).ok_or_else(|| QuinhaoPoolError::BadQuantity { field: field.into(), value: q.into() })
+        };
+        let parse_opt = |field: &str, q: &Option<String>| -> Result<u64, QuinhaoPoolError> {
+            match q.as_deref().filter(|s| !s.is_empty()) {
+                Some(s) => parse_q(field, s),
+                None => Ok(u64::MAX),
+            }
+        };
+        let min = parse_q("min", &d.min)?;
+        let max = parse_opt("max", &d.max)?;
+        let demand = parse_opt("demand", &d.demand)?;
+        Ok((dim, breathe_auction::quinhao::Demand { weight: d.weight, min, max, demand }))
+    }
+
+    /// Build the typed claimant forest from the spec — the allocator input. A
+    /// claim with no `demands` is treated as an even storage member (`storage_only(even)`)
+    /// so the simplest CR (`{id, kind, parentId}`) is the even default.
+    ///
+    /// # Errors
+    /// A [`QuinhaoPoolError`] for the first malformed quantity / unknown dimension.
+    pub fn to_claimants(&self) -> Result<Vec<breathe_auction::quinhao::Quinhao>, QuinhaoPoolError> {
+        use breathe_auction::quinhao::{Demand, DemandVector, Quinhao};
+        let mut out = Vec::with_capacity(self.claims.len());
+        for c in &self.claims {
+            let demand = if c.demands.is_empty() {
+                DemandVector::storage_only(Demand::even())
+            } else {
+                // Start every axis absent; fill the ones the claim declares.
+                let mut storage = Demand::absent();
+                let mut cpu = Demand::absent();
+                let mut bandwidth = Demand::absent();
+                let mut request_rate = Demand::absent();
+                for dd in &c.demands {
+                    let (dim, dem) = Self::parse_demand(dd)?;
+                    match dim {
+                        breathe_auction::quinhao::Dim::Storage => storage = dem,
+                        breathe_auction::quinhao::Dim::Cpu => cpu = dem,
+                        breathe_auction::quinhao::Dim::Bandwidth => bandwidth = dem,
+                        breathe_auction::quinhao::Dim::RequestRate => request_rate = dem,
+                    }
+                }
+                DemandVector::new(storage, cpu, bandwidth, request_rate)
+            };
+            out.push(Quinhao { id: c.id.clone(), parent: c.parent_id.clone(), demand });
+        }
+        Ok(out)
+    }
+
+    /// Build the typed pool capacity from the spec's `poolCapacity` entries.
+    /// `storage_band_observed` (when `Some`) OVERRIDES the explicit storage entry
+    /// — the destination coupling where the divider tracks the holding band.
+    ///
+    /// # Errors
+    /// A [`QuinhaoPoolError`] for the first malformed quantity / unknown dimension.
+    pub fn to_capacity(
+        &self,
+        storage_band_observed: Option<u64>,
+    ) -> Result<breathe_auction::quinhao::PoolCapacity, QuinhaoPoolError> {
+        let mut storage = 0u64;
+        let mut cpu = 0u64;
+        let mut bandwidth = 0u64;
+        let mut request_rate = 0u64;
+        for e in &self.pool_capacity {
+            let dim = breathe_auction::quinhao::Dim::from_str(&e.dim)
+                .ok_or_else(|| QuinhaoPoolError::UnknownDim { dim: e.dim.clone() })?;
+            let unit = Self::unit_for(dim);
+            let v = unit
+                .parse(&e.capacity)
+                .ok_or_else(|| QuinhaoPoolError::BadQuantity { field: "capacity".into(), value: e.capacity.clone() })?;
+            match dim {
+                breathe_auction::quinhao::Dim::Storage => storage = v,
+                breathe_auction::quinhao::Dim::Cpu => cpu = v,
+                breathe_auction::quinhao::Dim::Bandwidth => bandwidth = v,
+                breathe_auction::quinhao::Dim::RequestRate => request_rate = v,
+            }
+        }
+        if let Some(observed) = storage_band_observed {
+            storage = observed; // the band's observedCapacity wins (destination coupling)
+        }
+        Ok(breathe_auction::quinhao::PoolCapacity::new(storage, cpu, bandwidth, request_rate))
+    }
+
+    /// The full pure allocation: build the forest + capacity, run the allocator,
+    /// fold into the typed [`QuinhaoPoolStatus`] grant ledger. PURE + unit-tested
+    /// — so the CR status, gaveta's read, and the logs can never disagree. The
+    /// controller calls this and patches the result.
+    ///
+    /// A malformed spec (bad quantity / unknown dim) or malformed forest
+    /// (cycle/dup/unknown-parent) folds into `phase: Refused` + `status.reason` so
+    /// the receipt is observable, never a silently-wrong allocation.
+    #[must_use]
+    pub fn allocate(&self, storage_band_observed: Option<u64>) -> QuinhaoPoolStatus {
+        use breathe_auction::quinhao::{allocate_fabric, Dim};
+        let dry_run = self.dry_run;
+        let refused = |reason: String| QuinhaoPoolStatus {
+            phase: Some("Refused".into()),
+            reason: Some(reason),
+            effective_dry_run: Some(dry_run),
+            ..Default::default()
+        };
+        let claimants = match self.to_claimants() {
+            Ok(c) => c,
+            Err(e) => return refused(e.to_string()),
+        };
+        let capacity = match self.to_capacity(storage_band_observed) {
+            Ok(c) => c,
+            Err(e) => return refused(e.to_string()),
+        };
+        let grants = match allocate_fabric(capacity, self.setpoint, &claimants) {
+            Ok(g) => g,
+            Err(e) => return refused(e.to_string()),
+        };
+
+        // Per-dim band + observed-capacity summary (for the status surface).
+        let setpoint = if self.setpoint > 0.0 && self.setpoint <= 1.0 { self.setpoint } else { 1.0 };
+        let mut band = BTreeMap::new();
+        let mut observed_capacity = BTreeMap::new();
+        for dim in Dim::ALL {
+            let cap = capacity.get(dim);
+            if cap > 0 {
+                observed_capacity.insert(dim.as_str().to_string(), cap as i64);
+                #[allow(clippy::cast_precision_loss, clippy::cast_sign_loss, clippy::cast_possible_truncation)]
+                let b = (cap as f64 * setpoint) as u64;
+                band.insert(dim.as_str().to_string(), b as i64);
+            }
+        }
+
+        // The grant ledger — one entry per spec claim (preserves spec order +
+        // echoes kind/parent for the consumer's tree walk).
+        let ledger: Vec<ClaimGrant> = self
+            .claims
+            .iter()
+            .map(|c| {
+                let gv = grants.get(&c.id);
+                let mut per_dim = BTreeMap::new();
+                for dim in Dim::ALL {
+                    let v = gv.get(dim);
+                    // Only surface a dimension the pool actually has a band for —
+                    // keeps the ledger tight (storage-only pools show only storage).
+                    if band.contains_key(dim.as_str()) {
+                        per_dim.insert(dim.as_str().to_string(), v as i64);
+                    }
+                }
+                ClaimGrant { id: c.id.clone(), kind: c.kind, parent_id: c.parent_id.clone(), grants: per_dim }
+            })
+            .collect();
+
+        QuinhaoPoolStatus {
+            phase: Some("Allocated".into()),
+            claim_count: Some(ledger.len() as i64),
+            band,
+            observed_capacity,
+            grants: ledger,
+            reason: None,
+            effective_dry_run: Some(dry_run),
+            observed_generation: None,
+            last_seen_epoch: None,
+        }
+    }
+}
+
+fn d_weight() -> u32 { 1 }
+fn d_zero_qty() -> String { "0".into() }
+fn d_true() -> bool { true }
+
 fn d_floor_bytes() -> String { "256Mi".into() }
 fn d_ceiling_bytes() -> String { "16Gi".into() }
 fn d_floor_milli() -> String { "250m".into() }
@@ -1494,6 +1897,142 @@ mod tests {
         let crd = <BreatheNodePool as kube::CustomResourceExt>::crd();
         assert_eq!(crd.spec.scope, "Cluster", "BreatheNodePool must be cluster-scoped");
         let _ = BreatheNodePool::kind(&());
+    }
+
+    #[test]
+    fn quinhao_pool_crd_generates_namespaced() {
+        let crd = <QuinhaoPool as kube::CustomResourceExt>::crd();
+        assert_eq!(crd.spec.names.kind, "QuinhaoPool");
+        assert_eq!(crd.spec.scope, "Namespaced");
+        assert_eq!(crd.spec.names.short_names.as_ref().unwrap(), &["qpool"]);
+    }
+
+    #[test]
+    fn quinhao_pool_allocates_an_even_storage_split() {
+        // 4 even members (no groups), pool 1000 bytes, setpoint 0.80 → band 800 →
+        // 200 each. The operator's literal ask, through the CRD fold.
+        let spec = QuinhaoPoolSpec {
+            pool_capacity: vec![PoolCapacityEntry { dim: "storage".into(), capacity: "1000".into() }],
+            storage_band_ref: None,
+            setpoint: 0.80,
+            claims: (0..4)
+                .map(|i| ClaimSpec { id: format!("m{i}"), kind: ClaimantKind::User, parent_id: None, demands: vec![] })
+                .collect(),
+            dry_run: true,
+        };
+        let st = spec.allocate(None);
+        assert_eq!(st.phase.as_deref(), Some("Allocated"));
+        assert_eq!(st.claim_count, Some(4));
+        assert_eq!(st.band.get("storage"), Some(&800));
+        assert_eq!(st.observed_capacity.get("storage"), Some(&1000));
+        for g in &st.grants {
+            assert_eq!(g.grants.get("storage"), Some(&200), "{} should get 200", g.id);
+        }
+        assert_eq!(st.effective_dry_run, Some(true));
+    }
+
+    #[test]
+    fn quinhao_pool_allocates_a_group_user_hierarchy() {
+        // 2 groups split 800 → 400 each; group A's 2 users → 200 each; group B's
+        // 1 user → 400. The hierarchy through the CRD.
+        let spec = QuinhaoPoolSpec {
+            pool_capacity: vec![PoolCapacityEntry { dim: "storage".into(), capacity: "1000".into() }],
+            storage_band_ref: None,
+            setpoint: 0.80,
+            claims: vec![
+                ClaimSpec { id: "groupA".into(), kind: ClaimantKind::Group, parent_id: None, demands: vec![] },
+                ClaimSpec { id: "groupB".into(), kind: ClaimantKind::Group, parent_id: None, demands: vec![] },
+                ClaimSpec { id: "a1".into(), kind: ClaimantKind::User, parent_id: Some("groupA".into()), demands: vec![] },
+                ClaimSpec { id: "a2".into(), kind: ClaimantKind::User, parent_id: Some("groupA".into()), demands: vec![] },
+                ClaimSpec { id: "b1".into(), kind: ClaimantKind::User, parent_id: Some("groupB".into()), demands: vec![] },
+            ],
+            dry_run: true,
+        };
+        let st = spec.allocate(None);
+        let grant = |id: &str| st.grants.iter().find(|g| g.id == id).unwrap().grants.get("storage").copied().unwrap();
+        assert_eq!(grant("groupA"), 400);
+        assert_eq!(grant("groupB"), 400);
+        assert_eq!(grant("a1"), 200);
+        assert_eq!(grant("a2"), 200);
+        assert_eq!(grant("b1"), 400);
+    }
+
+    #[test]
+    fn quinhao_pool_storage_band_observed_capacity_overrides_the_explicit_entry() {
+        // a storageBandRef-sourced 2000-byte capacity overrides the explicit 1000.
+        let spec = QuinhaoPoolSpec {
+            pool_capacity: vec![PoolCapacityEntry { dim: "storage".into(), capacity: "1000".into() }],
+            storage_band_ref: Some(StorageBandRef { name: "garage-data".into(), namespace: Some("drive".into()) }),
+            setpoint: 0.80,
+            claims: vec![ClaimSpec { id: "m0".into(), kind: ClaimantKind::User, parent_id: None, demands: vec![] }],
+            dry_run: true,
+        };
+        let st = spec.allocate(Some(2000));
+        assert_eq!(st.observed_capacity.get("storage"), Some(&2000), "the band's capacity wins");
+        assert_eq!(st.band.get("storage"), Some(&1600)); // 2000 * 0.80
+        assert_eq!(st.grants[0].grants.get("storage"), Some(&1600));
+    }
+
+    #[test]
+    fn quinhao_pool_refuses_a_malformed_forest() {
+        // a user naming an unknown parent → Refused, no grants published.
+        let spec = QuinhaoPoolSpec {
+            pool_capacity: vec![PoolCapacityEntry { dim: "storage".into(), capacity: "1000".into() }],
+            storage_band_ref: None,
+            setpoint: 0.80,
+            claims: vec![ClaimSpec { id: "u".into(), kind: ClaimantKind::User, parent_id: Some("ghost".into()), demands: vec![] }],
+            dry_run: true,
+        };
+        let st = spec.allocate(None);
+        assert_eq!(st.phase.as_deref(), Some("Refused"));
+        assert!(st.reason.as_deref().unwrap().contains("ghost"));
+        assert!(st.grants.is_empty());
+    }
+
+    #[test]
+    fn quinhao_pool_parses_quantity_strings_and_bad_quantity_refuses() {
+        // a Gi quantity parses to bytes; a garbage quantity is refused.
+        let ok = QuinhaoPoolSpec {
+            pool_capacity: vec![PoolCapacityEntry { dim: "storage".into(), capacity: "2Gi".into() }],
+            storage_band_ref: None,
+            setpoint: 0.80,
+            claims: vec![ClaimSpec { id: "m0".into(), kind: ClaimantKind::User, parent_id: None, demands: vec![] }],
+            dry_run: true,
+        };
+        let st = ok.allocate(None);
+        assert_eq!(st.observed_capacity.get("storage"), Some(&(2 * (1 << 30))));
+
+        let bad = QuinhaoPoolSpec {
+            pool_capacity: vec![PoolCapacityEntry { dim: "storage".into(), capacity: "not-a-quantity".into() }],
+            storage_band_ref: None,
+            setpoint: 0.80,
+            claims: vec![],
+            dry_run: true,
+        };
+        assert_eq!(bad.allocate(None).phase.as_deref(), Some("Refused"));
+    }
+
+    #[test]
+    fn quinhao_pool_minimal_cr_deserializes_with_even_defaults() {
+        // the simplest CR an operator writes: claims carry only id+kind+parentId,
+        // weight/min default to even, dryRun defaults true.
+        let pool: QuinhaoPool = serde_json::from_value(serde_json::json!({
+            "apiVersion": "breathe.pleme.io/v1", "kind": "QuinhaoPool",
+            "metadata": { "name": "drive", "namespace": "drive" },
+            "spec": {
+                "poolCapacity": [{ "dim": "storage", "capacity": "3.6Ti" }],
+                "claims": [
+                    { "id": "fam-smith", "kind": "group" },
+                    { "id": "alice", "kind": "user", "parentId": "fam-smith" }
+                ]
+            }
+        })).expect("a minimal QuinhaoPool CR must deserialize");
+        assert!(pool.spec.dry_run, "dryRun defaults true (advisory-first)");
+        assert_eq!(pool.spec.setpoint, 0.80);
+        assert_eq!(pool.spec.claims[1].parent_id.as_deref(), Some("fam-smith"));
+        // and it allocates without error.
+        let st = pool.spec.allocate(None);
+        assert_eq!(st.phase.as_deref(), Some("Allocated"));
     }
 
     #[test]
