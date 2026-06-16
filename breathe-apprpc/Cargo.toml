@@ -1,0 +1,21 @@
+[package]
+name = "breathe-apprpc"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "The AppRpcCluster Cluster impl — breathe's APP-ADMIN-ENDPOINT I/O boundary (Go GOMEMLIMIT, Kafka/RabbitMQ queue prefetch, adaptive-concurrency bounds). The hands that read + carve a running app's live runtime knobs via its admin HTTP endpoint. Handles LimitLayout::ApiCall { endpoint, command }; RestartFree by construction (the knob applies live). Side effects abstracted behind the AppRpcEnv trait (the typed-spec-triplet testability seam)."
+
+[dependencies]
+breathe-control = { path = "../breathe-control", version = "0.1.0" }
+breathe-provider = { path = "../breathe-provider", version = "0.1.0" }
+async-trait = "0.1"
+
+[dev-dependencies]
+breathe-provider = { path = "../breathe-provider", version = "0.1.0", features = ["mock"] }
+tokio = { version = "1", features = ["macros", "rt"] }
+
+[lints]
+workspace = true

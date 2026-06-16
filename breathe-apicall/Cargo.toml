@@ -1,0 +1,20 @@
+[package]
+name = "breathe-apicall"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "The ApiCallCluster Cluster impl — breathe's PROTOCOL-API I/O boundary (Redis CONFIG SET, Kafka AdminClient, NATS JetStream edit). The hands that apply a LimitLayout::ApiCall { endpoint, command } decision by reading/writing a live data-system parameter via a CLI (argv, never a shell). Mirrors HostCluster; reuses the one BandProvider. Side effects abstracted behind the ApiCallEnv trait (the typed-spec-triplet testability seam)."
+
+[dependencies]
+breathe-control = { path = "../breathe-control", version = "0.1.0" }
+breathe-provider = { path = "../breathe-provider", version = "0.1.0" }
+async-trait = "0.1"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt"] }
+
+[lints]
+workspace = true
