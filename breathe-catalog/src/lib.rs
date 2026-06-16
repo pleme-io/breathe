@@ -184,10 +184,23 @@ pub const CATALOG: &[DimensionSpec] = &[
         upstream_mirror: Some("/proc/sys/* · /sys/module/zfs/parameters/*"),
         depends_on: &[],
     },
+    DimensionSpec {
+        id: DimensionId::KubeParam,
+        name: "kube-param",
+        authoring_keyword: "defdimension-kube-param",
+        maturity: Maturity::Working,
+        // family directionality is general bidirectional; an instance may restrict
+        // (a retention band is ShrinkBias / a GrowOnly via descriptor data).
+        directionality: Directionality::Bidirectional,
+        resource_class: ResourceClass::Soft, // a mis-sized CR field throttles/queues; rarely an OOM
+        purpose: "hold any k8s-CR field / app-protocol knob at the band via the generic CrField/DestinationRule/NamespaceEnvelope/ControllerSetpoint/ConfigFile/ApiCall layouts (Step-6/8/12: one descriptor, data-driven, KubeCluster SSA)",
+        upstream_mirror: Some("k8s CR spec fields (Istio/CNPG/VM/ResourceQuota/HPA) · config-file/protocol"),
+        depends_on: &[],
+    },
 ];
 
 /// All dimension ids the substrate knows (the partition the catalog must cover).
-pub const ALL_DIMENSIONS: [DimensionId; 8] = [
+pub const ALL_DIMENSIONS: [DimensionId; 9] = [
     DimensionId::Memory,
     DimensionId::Storage,
     DimensionId::Cpu,
@@ -196,6 +209,7 @@ pub const ALL_DIMENSIONS: [DimensionId; 8] = [
     DimensionId::Cgroup,
     DimensionId::CgroupCpu,
     DimensionId::HostParam,
+    DimensionId::KubeParam,
 ];
 
 /// Look up a dimension's row.
