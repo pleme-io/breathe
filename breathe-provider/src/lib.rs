@@ -273,6 +273,68 @@ pub enum LimitLayout {
     ClusterStorage,
     /// HOST: a systemd/sysfs lever — written by `HostCluster`, not the k8s API.
     Host(HostKnob),
+    /// **Step-9/12:** a config-file value edited + reloaded via a signal —
+    /// pgbouncer `RELOAD`, nginx/PostgreSQL `SIGHUP`, or a restart. The
+    /// `ConfigReloadCluster` actuator owns the edit; `reload` sets the restart cost.
+    ConfigFile { path: String, key: String, reload: ConfigReload },
+    /// **Step-9:** a protocol API call — Redis `CONFIG SET`, Kafka `AdminClient`,
+    /// NATS JetStream edit. RestartFree (the value applies live). The
+    /// `ApiCallCluster` actuator owns the connection.
+    ApiCall { endpoint: String, command: String },
+    /// **Step-12:** a field of an operator-owned k8s CR (CNPG/VictoriaMetrics/
+    /// VictoriaLogs/OpenSearch), written via the existing `KubeCluster` SSA.
+    /// `restart_free` distinguishes a live-reconciled field from one that rolls.
+    CrField { api_version: String, kind: String, name: String, field_path: String, restart_free: bool },
+    /// **Step-6:** an Istio `DestinationRule` connection-pool field, written via
+    /// `KubeCluster` SSA — RestartFree (Envoy live-reloads the cluster config).
+    DestinationRuleField { name: String, field_path: String },
+    /// **Step-8:** a namespace `ResourceQuota`/`LimitRange` envelope field — the
+    /// Densa namespace wall. RestartFree (admission-gating, no workload restart).
+    NamespaceEnvelope { namespace: String, kind: NamespaceEnvelopeKind, field_path: String },
+    /// **Step-8:** a controller setpoint — HPA `target.averageUtilization`, PDB
+    /// `minAvailable`. breathe becomes a meta-controller over the autoscaler.
+    /// RestartFree (a setpoint edit; the controller acts).
+    ControllerSetpoint { api_version: String, kind: String, name: String, field_path: String },
+    /// **Step-5:** pod network bandwidth — the `kubernetes.io/{egress,ingress}-
+    /// bandwidth` annotation (rolls) OR a host-tc HTB class (`host_tc=true`,
+    /// RestartFree — the golden path). `direction` selects egress/ingress.
+    PodNetworkBandwidth { direction: NetDirection, host_tc: bool },
+}
+
+/// **Step-9/12:** how a [`LimitLayout::ConfigFile`] value takes effect.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConfigReload {
+    /// `SIGHUP` re-reads the file live (PostgreSQL `work_mem`, nginx) — RestartFree.
+    Sighup,
+    /// A protocol `RELOAD` command (pgbouncer) — RestartFree.
+    Reload,
+    /// Requires a process restart (PostgreSQL `shared_buffers`) — RestartRequiring.
+    Restart,
+}
+
+impl ConfigReload {
+    /// The restart cost this reload mechanism implies.
+    #[must_use]
+    pub fn disruption_class(self) -> DisruptionClass {
+        match self {
+            Self::Sighup | Self::Reload => DisruptionClass::RestartFree,
+            Self::Restart => DisruptionClass::RestartRequiring,
+        }
+    }
+}
+
+/// **Step-8:** which namespace envelope a [`LimitLayout::NamespaceEnvelope`] carves.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NamespaceEnvelopeKind {
+    ResourceQuota,
+    LimitRange,
+}
+
+/// **Step-5:** network carve direction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NetDirection {
+    Egress,
+    Ingress,
 }
 
 /// How a category's `assign` lands (GALHO `ApplySemantics`).
@@ -503,6 +565,19 @@ impl LimitLayout {
             Self::PvcRequest | Self::ClusterStorage | Self::Host(_) => DisruptionClass::RestartFree,
             Self::PodResize { .. } => DisruptionClass::RestartConditional,
             Self::PodTemplate { .. } | Self::ClusterTopLevel => DisruptionClass::RestartRequiring,
+            // App/k8s-plane layouts — restart cost is intrinsic to the mechanism.
+            Self::ConfigFile { reload, .. } => reload.disruption_class(),
+            Self::ApiCall { .. }
+            | Self::DestinationRuleField { .. }
+            | Self::NamespaceEnvelope { .. }
+            | Self::ControllerSetpoint { .. } => DisruptionClass::RestartFree,
+            Self::CrField { restart_free, .. } => {
+                if *restart_free { DisruptionClass::RestartFree } else { DisruptionClass::RestartRequiring }
+            }
+            // host-tc carve never rolls; the pod-annotation fallback re-creates pods.
+            Self::PodNetworkBandwidth { host_tc, .. } => {
+                if *host_tc { DisruptionClass::RestartFree } else { DisruptionClass::RestartRequiring }
+            }
         }
     }
 
@@ -526,6 +601,15 @@ impl LimitLayout {
                 }
             }
             Self::PodTemplate { .. } | Self::ClusterTopLevel => DisruptionClass::RestartRequiring,
+            // The app/k8s-plane layouts have no per-direction restart nuance —
+            // their restart cost is the mechanism's, identical to `disruption_class`.
+            Self::ConfigFile { .. }
+            | Self::ApiCall { .. }
+            | Self::CrField { .. }
+            | Self::DestinationRuleField { .. }
+            | Self::NamespaceEnvelope { .. }
+            | Self::ControllerSetpoint { .. }
+            | Self::PodNetworkBandwidth { .. } => self.disruption_class(),
         }
     }
 }
