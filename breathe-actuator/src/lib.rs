@@ -18,10 +18,10 @@
 //! non-functional for observation; this wrapper makes the band whole.
 
 use async_trait::async_trait;
-use breathe_apicall::{ApiCallCluster, CliApiCallEnv};
-use breathe_apprpc::{AppRpcCluster, CurlAdminEnv};
+use breathe_apicall::{ApiCallCluster, ProtocolClientEnv};
+use breathe_apprpc::{AppRpcCluster, HttpAdminEnv};
 use breathe_configreload::{ConfigReloadCluster, FileSignalEnv};
-use breathe_jmx::{JmxCluster, JolokiaCurlEnv};
+use breathe_jmx::{JmxCluster, JolokiaHttpEnv};
 use breathe_kube::KubeCluster;
 use breathe_provider::{
     AppliedReceipt, Cluster, FieldOwner, LimitLayout, MetricSource, ProviderError, Sample, SsaPatch, Target,
@@ -32,12 +32,13 @@ use breathe_provider::{
 pub enum ActuatorBackend {
     /// A config file + reload mechanism (pgbouncer / nginx / PostgreSQL).
     ConfigReload(ConfigReloadCluster<FileSignalEnv>),
-    /// A protocol `CONFIG SET` (Redis / Kafka / NATS) — the first-shipped arm.
-    ApiCall(ApiCallCluster<CliApiCallEnv>),
+    /// A protocol `CONFIG SET` (Redis / Kafka / NATS) — the first-shipped arm,
+    /// via the typed `redis` client (no shell).
+    ApiCall(ApiCallCluster<ProtocolClientEnv>),
     /// A JVM MBean over Jolokia (HikariCP / Tomcat / Caffeine).
-    Jmx(JmxCluster<JolokiaCurlEnv>),
+    Jmx(JmxCluster<JolokiaHttpEnv>),
     /// An application admin RPC knob (GOMEMLIMIT / prefetch / max-concurrency).
-    AppRpc(AppRpcCluster<CurlAdminEnv>),
+    AppRpc(AppRpcCluster<HttpAdminEnv>),
 }
 
 impl ActuatorBackend {
@@ -47,19 +48,19 @@ impl ActuatorBackend {
     /// band never writes regardless.
     #[must_use]
     pub fn api_call(write_enabled: bool) -> Self {
-        Self::ApiCall(ApiCallCluster::new(CliApiCallEnv::from_env(), write_enabled))
+        Self::ApiCall(ApiCallCluster::new(ProtocolClientEnv::new(), write_enabled))
     }
     /// The JMX/Jolokia actuator (defaults `linked=false` → typed `NotLinked` gap
     /// until reachability is verified via `BREATHE_JMX_LINKED=1`).
     #[must_use]
     pub fn jmx(write_enabled: bool) -> Self {
-        Self::Jmx(JmxCluster::new(JolokiaCurlEnv::from_env(), write_enabled))
+        Self::Jmx(JmxCluster::new(JolokiaHttpEnv::from_env(), write_enabled))
     }
     /// The app-admin-RPC actuator (defaults `linked=false` → typed `NotLinked` gap
     /// until `BREATHE_APPRPC_LINKED=1`).
     #[must_use]
     pub fn app_rpc(write_enabled: bool) -> Self {
-        Self::AppRpc(AppRpcCluster::new(CurlAdminEnv::from_env(), write_enabled))
+        Self::AppRpc(AppRpcCluster::new(HttpAdminEnv::from_env(), write_enabled))
     }
     /// The config-file/reload actuator. `env` carries the pidfile / reload-argv the
     /// `ConfigFile` layout does not (default env ⇒ typed gap until configured).

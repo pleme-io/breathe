@@ -98,6 +98,9 @@
         name = "ghcr.io/pleme-io/breathe-controller";
         bin = "${controller}/bin/breathe-controller";
         user = "65532:65532";
+        # The app-plane actuators reach their backends through TYPED Rust clients
+        # (the `redis` crate, `reqwest`) — NO shelling, NO CLI in the image (the
+        # stack-only / no-shell law). The image stays a pure distroless binary.
         extraContents = [ controller ];
         logTarget = "breathe_controller";
       };

@@ -12,6 +12,8 @@ description = "The AppRpcCluster Cluster impl — breathe's APP-ADMIN-ENDPOINT I
 breathe-control = { path = "../breathe-control", version = "0.1.0" }
 breathe-provider = { path = "../breathe-provider", version = "0.1.0" }
 async-trait = "0.1"
+# Typed Rust HTTP client (rustls, no openssl) — no shelling to curl.
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 
 [dev-dependencies]
 breathe-provider = { path = "../breathe-provider", version = "0.1.0", features = ["mock"] }
