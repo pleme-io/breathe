@@ -961,6 +961,33 @@ pub enum Forma {
     /// `capacity` = the node-pool ceiling (the `Densa` envelope). Provisioned via
     /// a magma `Plan` at M2 — never a direct cloud-API call.
     NodeOnDemand,
+    /// A spot/interruptible node — cheaper, interruption-prone; replaced via
+    /// `Reformar` (spot→on-demand) on interruption (census #101).
+    NodeSpot,
+    /// EBS provisioned IOPS (`ec2 ModifyVolume`) — rate-shaped, modify-cadence-bound (#102).
+    ProvisionedIops,
+    /// EBS/EFS provisioned throughput (bytes/s) — rate-shaped (#103).
+    ProvisionedThroughput,
+    /// DynamoDB RCU/WCU (`UpdateTable`) — exact-fit rate band (#104).
+    DynamoCapacity,
+    /// Reserved/committed capacity (Savings Plans / RIs) — GROW-ONLY (term-locked) (#105).
+    Commitment,
+    /// GPU / accelerator count (GPU node-pool / Karpenter NodeClaim) (#107).
+    Accelerator,
+    /// Lambda provisioned concurrency (`PutProvisionedConcurrencyConfig`) (#113).
+    ServerlessSlot,
+    /// Edge/zone capacity reservation (ODCR `CreateCapacityReservation`) (#114).
+    ZoneCapacity,
+    /// Placement at an edge location (per-zone) (#114).
+    EdgePlacement,
+    /// Load-balancer capacity units (ALB/NLB LCU) — ramp dead-time, PREDICTIVE (#111).
+    LbCapacity,
+    /// NAT egress bandwidth budget (bits/s + cost) (#110).
+    EgressBandwidth,
+    /// JIT builder capacity — ASG 0→N wake (`cordel builder-wake`); TRUE-ZERO floor (#115).
+    JitBuilder,
+    /// Log-ingestion / sampling rate — per-class drop floor (#112).
+    LogIngestion,
 }
 
 impl Forma {
@@ -968,6 +995,19 @@ impl Forma {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::NodeOnDemand => "node-on-demand",
+            Self::NodeSpot => "node-spot",
+            Self::ProvisionedIops => "provisioned-iops",
+            Self::ProvisionedThroughput => "provisioned-throughput",
+            Self::DynamoCapacity => "dynamo-capacity",
+            Self::Commitment => "commitment",
+            Self::Accelerator => "accelerator",
+            Self::ServerlessSlot => "serverless-slot",
+            Self::ZoneCapacity => "zone-capacity",
+            Self::EdgePlacement => "edge-placement",
+            Self::LbCapacity => "lb-capacity",
+            Self::EgressBandwidth => "egress-bandwidth",
+            Self::JitBuilder => "jit-builder",
+            Self::LogIngestion => "log-ingestion",
         }
     }
 }
@@ -990,6 +1030,63 @@ pub trait FormaDescriptor: Send + Sync + 'static {
     fn relief_latency_secs(&self) -> u64;
     /// The unit one `provision(1)` adds (`"node"`, `"gpu"`, `"slot"`).
     fn unit(&self) -> &'static str;
+}
+
+/// **Step-15:** a data-driven `FormaDescriptor` — the abstracting peer of
+/// `HostParamDescriptor`. Instead of one struct per Forma, the whole Forma
+/// universe is the [`FORMA_CATALOG`] table of these; a new cloud shape is a
+/// ROW, not new code. The Provedor (the magma `Plan` actuator) is per-deployment
+/// (`SimProvedor`/`KwokProvedor` for testing, a magma backend for real — T4,
+/// externally gated); this carries only the typed shape + dead-time + unit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FormaSpec {
+    pub forma: Forma,
+    pub directionality: Directionality,
+    pub relief_latency_secs: u64,
+    pub unit: &'static str,
+}
+
+impl FormaDescriptor for FormaSpec {
+    fn forma(&self) -> Forma {
+        self.forma
+    }
+    fn directionality(&self) -> Directionality {
+        self.directionality
+    }
+    fn relief_latency_secs(&self) -> u64 {
+        self.relief_latency_secs
+    }
+    fn unit(&self) -> &'static str {
+        self.unit
+    }
+}
+
+/// **Step-15:** the whole Forma universe as DATA — every cloud carve shape with
+/// its directionality, provisioning dead-time (the predictor's look-ahead floor),
+/// and unit. Bidirectional unless the resource is irreversible (`Commitment` is
+/// term-locked → GrowOnly). A new shape is one row here + a Provedor; the band
+/// law is shape-blind, so it converges on a GPU count or LB unit exactly as a node.
+pub const FORMA_CATALOG: &[FormaSpec] = &[
+    FormaSpec { forma: Forma::NodeOnDemand, directionality: Directionality::Bidirectional, relief_latency_secs: 180, unit: "node" },
+    FormaSpec { forma: Forma::NodeSpot, directionality: Directionality::Bidirectional, relief_latency_secs: 120, unit: "node" },
+    FormaSpec { forma: Forma::ProvisionedIops, directionality: Directionality::Bidirectional, relief_latency_secs: 60, unit: "iops" },
+    FormaSpec { forma: Forma::ProvisionedThroughput, directionality: Directionality::Bidirectional, relief_latency_secs: 60, unit: "bytes-per-sec" },
+    FormaSpec { forma: Forma::DynamoCapacity, directionality: Directionality::Bidirectional, relief_latency_secs: 30, unit: "capacity-unit" },
+    FormaSpec { forma: Forma::Commitment, directionality: Directionality::GrowOnly, relief_latency_secs: 3600, unit: "cents" },
+    FormaSpec { forma: Forma::Accelerator, directionality: Directionality::Bidirectional, relief_latency_secs: 300, unit: "gpu" },
+    FormaSpec { forma: Forma::ServerlessSlot, directionality: Directionality::Bidirectional, relief_latency_secs: 60, unit: "slot" },
+    FormaSpec { forma: Forma::ZoneCapacity, directionality: Directionality::Bidirectional, relief_latency_secs: 120, unit: "instance" },
+    FormaSpec { forma: Forma::EdgePlacement, directionality: Directionality::Bidirectional, relief_latency_secs: 120, unit: "instance" },
+    FormaSpec { forma: Forma::LbCapacity, directionality: Directionality::Bidirectional, relief_latency_secs: 180, unit: "lcu" },
+    FormaSpec { forma: Forma::EgressBandwidth, directionality: Directionality::Bidirectional, relief_latency_secs: 120, unit: "bits-per-sec" },
+    FormaSpec { forma: Forma::JitBuilder, directionality: Directionality::Bidirectional, relief_latency_secs: 120, unit: "builder" },
+    FormaSpec { forma: Forma::LogIngestion, directionality: Directionality::Bidirectional, relief_latency_secs: 30, unit: "percent" },
+];
+
+/// Look up a Forma's spec (its descriptor data) from the catalog.
+#[must_use]
+pub fn forma_spec(forma: Forma) -> Option<&'static FormaSpec> {
+    FORMA_CATALOG.iter().find(|s| s.forma == forma)
 }
 
 /// The shape's current `(used, capacity)` scalars — the band law's two inputs.
@@ -1056,6 +1153,30 @@ impl FormaDescriptor for NodeOnDemandDescriptor {
 #[cfg(test)]
 mod tests {
     use super::{DisruptionClass, DisruptionPolicy, HostKnob, LimitLayout};
+    use super::{forma_spec, Directionality, Forma, FormaDescriptor, FORMA_CATALOG};
+
+    #[test]
+    fn forma_catalog_covers_the_whole_universe_with_no_duplicates() {
+        // every Forma variant resolves to exactly one catalog spec (a bijection),
+        // and the spec's data drives the descriptor (the data-driven FormaSpec).
+        let all = [
+            Forma::NodeOnDemand, Forma::NodeSpot, Forma::ProvisionedIops, Forma::ProvisionedThroughput,
+            Forma::DynamoCapacity, Forma::Commitment, Forma::Accelerator, Forma::ServerlessSlot,
+            Forma::ZoneCapacity, Forma::EdgePlacement, Forma::LbCapacity, Forma::EgressBandwidth,
+            Forma::JitBuilder, Forma::LogIngestion,
+        ];
+        assert_eq!(FORMA_CATALOG.len(), all.len(), "catalog row count == Forma variant count");
+        for f in all {
+            let spec = forma_spec(f).expect("every Forma has a catalog spec");
+            assert_eq!(spec.forma(), f);
+            assert!(spec.relief_latency_secs() > 0, "{f} has a provisioning dead-time");
+            assert!(!spec.unit().is_empty());
+        }
+        // the one irreversible shape is GrowOnly; an on-demand node breathes both ways.
+        assert_eq!(forma_spec(Forma::Commitment).unwrap().directionality(), Directionality::GrowOnly);
+        assert_eq!(forma_spec(Forma::NodeOnDemand).unwrap().directionality(), Directionality::Bidirectional);
+        assert_eq!(Forma::JitBuilder.as_str(), "jit-builder");
+    }
 
     #[test]
     fn layouts_classify_by_restart_cost() {
