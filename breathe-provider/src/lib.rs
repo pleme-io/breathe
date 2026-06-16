@@ -38,6 +38,13 @@ pub enum DimensionId {
     /// directionality are DATA on the descriptor, reconciled via `KubeCluster`'s
     /// generic CR-path SSA (or a routed actuator). A new such band is a CR.
     KubeParam,
+    /// APP-PLANE: a GENERIC application-actuator band (Step-9/13). One id for the
+    /// whole family — the layout (`ConfigFile`/`ApiCall`) + which actuator services
+    /// it (ConfigReload / redis-CLI / JMX-Jolokia / app-admin-RPC) are DATA on the
+    /// CR (`AppLayoutSpec`), dispatched by the `ActuatorCluster` sum type. `used` is
+    /// read from the k8s metrics plane (the actuators have no read path), the limit
+    /// is carved on the app's own knob. A new such band is a CR.
+    AppParam,
 }
 
 impl DimensionId {
@@ -53,6 +60,7 @@ impl DimensionId {
             Self::CgroupCpu => "cgroup-cpu",
             Self::HostParam => "host-param",
             Self::KubeParam => "kube-param",
+            Self::AppParam => "app-param",
         }
     }
 

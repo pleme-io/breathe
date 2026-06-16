@@ -12,13 +12,14 @@
 
 use std::{sync::Arc, time::Duration};
 
+mod app_band;
 mod node_forma;
 mod kube_param;
 
 use breathe_core::{reconcile_one, PredictiveInput, ReconcileInput};
 use breathe_crd::{
-    ArcBand, Band, BandSummary, BreatheCloudPool, BreatheConfig, BreatheConfigSpec, BreatheOverview, CgroupBand,
-    CgroupCpuBand, CpuBand, Densa, KubeParamBand, MemoryBand, OverviewStatus, StorageBand,
+    AppBand, ArcBand, Band, BandSummary, BreatheCloudPool, BreatheConfig, BreatheConfigSpec, BreatheOverview,
+    CgroupBand, CgroupCpuBand, CpuBand, Densa, KubeParamBand, MemoryBand, OverviewStatus, StorageBand,
 };
 use breathe_dimensions::{CpuDescriptor, MemoryDescriptor, StorageDescriptor};
 use breathe_kube::KubeCluster;
@@ -435,6 +436,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .run(kube_param::reconcile_kube_param, kube_param::error_policy_kube_param, ctx.clone())
         .for_each(|_| async {});
 
-    tokio::join!(mem, cpu, sto, overview, cloud_pools, kube_params);
+    // Step-9/13: the generic app-plane actuator band — reconciled via the
+    // ActuatorCluster sum type (ConfigFile/ApiCall → ConfigReload/redis/JMX/app-RPC),
+    // `used` from the metric KubeCluster. Additive; every other reconcile untouched.
+    let app_bands = gen_controller!(Api::<AppBand>::all(client.clone()))
+        .run(app_band::reconcile_app_band, app_band::error_policy_app_band, ctx.clone())
+        .for_each(|_| async {});
+
+    tokio::join!(mem, cpu, sto, overview, cloud_pools, kube_params, app_bands);
     Ok(())
 }
