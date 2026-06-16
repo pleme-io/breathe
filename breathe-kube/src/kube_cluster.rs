@@ -106,6 +106,18 @@ impl KubeCluster {
             LimitLayout::PodResize { .. } => None,
             // No k8s object holds a host lever — handled (rejected) in read_limit.
             LimitLayout::Host(_) => None,
+            // k8s-CR-path layouts (Step-6/8/12): read the scalar at the JSON-pointer
+            // `field_path` on the fetched CR (Istio DestinationRule, ResourceQuota,
+            // HPA, CNPG/VM/VLogs CR).
+            LimitLayout::CrField { field_path, .. }
+            | LimitLayout::DestinationRuleField { field_path, .. }
+            | LimitLayout::NamespaceEnvelope { field_path, .. }
+            | LimitLayout::ControllerSetpoint { field_path, .. } => {
+                data.pointer(field_path).map(json_scalar_to_string)
+            }
+            // external-protocol / network layouts are never read on a k8s object here
+            // (their actuators own the read) — typed None, never a silent wrong value.
+            LimitLayout::ConfigFile { .. } | LimitLayout::ApiCall { .. } | LimitLayout::PodNetworkBandwidth { .. } => None,
         }
     }
 
@@ -275,6 +287,27 @@ impl KubeCluster {
 /// its request DOWN to the new limit only if the old request would now exceed it
 /// (k8s rejects request > limit) — otherwise the request is left untouched.
 /// Pure + unit-tested; the actuator's only QoS-relevant decision lives here.
+/// A JSON scalar rendered to a string — `"10Gi"` stays a string, `100` becomes
+/// `"100"`. Reads a generic CR field's current value regardless of its JSON type.
+fn json_scalar_to_string(v: &Value) -> String {
+    v.as_str().map(String::from).unwrap_or_else(|| v.to_string())
+}
+
+/// Build the SSA `spec` content for a `/spec/...` JSON-pointer `field_path` set to
+/// `value`. `/spec/trafficPolicy/connectionPool/tcp/maxConnections` →
+/// `{"trafficPolicy":{"connectionPool":{"tcp":{"maxConnections": value}}}}` (the
+/// content UNDER /spec, since `apply` wraps it in the object body's `spec`).
+/// Object paths only — an array-index segment (HPA `metrics/0/…`) is not supported.
+fn nested_json_under_spec(field_path: &str, value: Value) -> Value {
+    let trimmed = field_path.trim_start_matches('/');
+    let rel = trimmed.strip_prefix("spec/").unwrap_or(trimmed);
+    let mut node = value;
+    for seg in rel.split('/').filter(|s| !s.is_empty()).collect::<Vec<_>>().into_iter().rev() {
+        node = json!({ seg: node });
+    }
+    node
+}
+
 fn resize_resources_block(qos: &str, resource: &str, value: u64, current_request: Option<&str>) -> Value {
     let unit = Unit::for_resource(resource);
     let qty = Quantity { value, unit }.to_string();
@@ -367,6 +400,16 @@ impl Cluster for KubeCluster {
                     "host layout on KubeCluster (route host dimensions to HostCluster)".into(),
                 ))
             }
+            // generic CR-path + external layouts: no managed-field competitor tracked
+            // here yet — breathe is the writer (a per-field managedFields competitor
+            // check for arbitrary CR paths is a follow-up). Proceed (empty owner set).
+            LimitLayout::CrField { .. }
+            | LimitLayout::DestinationRuleField { .. }
+            | LimitLayout::NamespaceEnvelope { .. }
+            | LimitLayout::ControllerSetpoint { .. }
+            | LimitLayout::ConfigFile { .. }
+            | LimitLayout::ApiCall { .. }
+            | LimitLayout::PodNetworkBandwidth { .. } => return Ok(Vec::new()),
         };
         Ok(field_owners(&mf, &segments, logical_field))
     }
@@ -437,6 +480,22 @@ impl Cluster for KubeCluster {
             LimitLayout::Host(_) => {
                 return Err(ProviderError::ApiPermanent(
                     "host layout on KubeCluster (route host dimensions to HostCluster)".into(),
+                ))
+            }
+            // k8s-CR-path layouts (Step-6/8/12): SSA-write the value at the
+            // `/spec/...` JSON-pointer field_path (a bare number — maxConnections,
+            // retention seconds, quota count, HPA percent). Object paths only;
+            // array-index paths (HPA metrics[]) are a typed follow-up.
+            LimitLayout::CrField { field_path, .. }
+            | LimitLayout::DestinationRuleField { field_path, .. }
+            | LimitLayout::NamespaceEnvelope { field_path, .. }
+            | LimitLayout::ControllerSetpoint { field_path, .. } => {
+                nested_json_under_spec(field_path, json!(patch.value))
+            }
+            // external-protocol / network layouts have dedicated actuators.
+            LimitLayout::ConfigFile { .. } | LimitLayout::ApiCall { .. } | LimitLayout::PodNetworkBandwidth { .. } => {
+                return Err(ProviderError::ApiPermanent(
+                    "config-file/api-call/network layout requires a dedicated actuator (ConfigReload/ApiCall/Host-tc), not KubeCluster".into(),
                 ))
             }
         };
@@ -540,6 +599,20 @@ mod tests {
             resize_resources_block("BestEffort", "memory", GI, None),
             json!({ "limits": { "memory": "1073741824" } })
         );
+    }
+
+    #[test]
+    fn generic_cr_path_builds_the_nested_ssa_spec() {
+        // an Istio DestinationRule connection-pool field (Step-6) → nested spec.
+        assert_eq!(
+            super::nested_json_under_spec("/spec/trafficPolicy/connectionPool/tcp/maxConnections", json!(100)),
+            json!({ "trafficPolicy": { "connectionPool": { "tcp": { "maxConnections": 100 } } } })
+        );
+        // a ResourceQuota field (Step-8).
+        assert_eq!(super::nested_json_under_spec("/spec/hard/limits.cpu", json!(8000)), json!({ "hard": { "limits.cpu": 8000 } }));
+        // reads back string-or-number uniformly.
+        assert_eq!(super::json_scalar_to_string(&json!(100)), "100");
+        assert_eq!(super::json_scalar_to_string(&json!("10Gi")), "10Gi");
     }
 
     #[test]
