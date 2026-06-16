@@ -16,6 +16,10 @@ members = [
   "breathe-crd",       # the MemoryBand CRD (typed enrollment contract)
   "breathe-controller", # the controller binary (watch MemoryBand → reconcile_one)
   "breathe-dimensions", # the concrete DimensionDescriptors (memory/storage/cpu)
+  "breathe-apprpc",    # the AppRpcCluster impl (app admin endpoint — GOMEMLIMIT/prefetch/concurrency)
+  "breathe-configreload", # the ConfigReloadCluster impl (config-file edit + SIGHUP/RELOAD — pgbouncer/nginx/PG)
+  "breathe-apicall",   # the ApiCallCluster impl (protocol CONFIG SET — Redis/Kafka/NATS)
+  "breathe-jmx",       # the JmxCluster impl (JVM MBean over Jolokia — HikariCP/Tomcat/Caffeine)
   "breathe-host",      # the HostCluster Cluster impl — the host I/O boundary (ARC/cgroup)
   "breathe-runtime",   # shared reconcile glue (status mapping + patch) — brain ⟂ hands no-drift
   "breathe-host-agent", # the HANDS binary — DaemonSet host reconcile loop (ArcBand/CgroupBand)

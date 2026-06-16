@@ -1,0 +1,21 @@
+[package]
+name = "breathe-configreload"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "The ConfigReloadCluster Cluster impl — breathe's CONFIG-FILE-RELOAD I/O boundary. The hands that carve a `key = value` config line and trigger the matching reload (pgbouncer RELOAD, nginx/PostgreSQL SIGHUP, or a deferred restart) for a LimitLayout::ConfigFile band. Mirrors HostCluster; reuses the one BandProvider. Side effects abstracted behind the ConfigReloadEnv trait (the typed-spec-triplet testability seam)."
+
+[dependencies]
+breathe-control = { path = "../breathe-control", version = "0.1.0" }
+breathe-provider = { path = "../breathe-provider", version = "0.1.0" }
+async-trait = "0.1"
+
+[dev-dependencies]
+breathe-provider = { path = "../breathe-provider", version = "0.1.0", features = ["mock"] }
+tokio = { version = "1", features = ["macros", "rt"] }
+
+[lints]
+workspace = true
