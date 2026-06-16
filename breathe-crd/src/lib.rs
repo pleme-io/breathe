@@ -626,6 +626,185 @@ impl crate::Band for HostParamBand {
     }
 }
 
+// ───────────── KubeParamBand — the GENERIC k8s-CR / app band (Step-6/8/12) ─────────────
+// The k8s-plane peer of HostParamBand: one CR carves any k8s-CR field (Istio
+// DestinationRule connection pool, ResourceQuota hard limit, CNPG/VM CR field,
+// HPA setpoint) via KubeCluster's generic CR-path SSA. The `used` signal is a
+// PromQL (the metric plane). Every Step-6/8/12 vector is a CR instance of this.
+
+/// Which k8s-CR field a [`KubeParamBand`] carves (serde mirror of the k8s-plane
+/// `breathe_provider::LimitLayout` arms). Maps to a generic SSA path-write.
+#[derive(Serialize, Deserialize, Clone, Debug, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum KubeLayoutSpec {
+    /// A field of any operator CR (CNPG/VictoriaMetrics/OpenSearch) at `fieldPath`.
+    CrField { api_version: String, kind: String, name: String, field_path: String, #[serde(default)] restart_free: bool },
+    /// An Istio DestinationRule connection-pool field (Envoy live-reload).
+    DestinationRuleField { name: String, field_path: String },
+    /// A namespace ResourceQuota / LimitRange envelope field.
+    NamespaceEnvelope { namespace: String, kind: NamespaceEnvelopeKindSpec, field_path: String },
+    /// A controller setpoint — HPA target / PDB minAvailable.
+    ControllerSetpoint { api_version: String, kind: String, name: String, field_path: String },
+}
+
+/// Mirror of `breathe_provider::NamespaceEnvelopeKind` for the CRD.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum NamespaceEnvelopeKindSpec {
+    ResourceQuota,
+    LimitRange,
+}
+
+/// The `used` metric for a [`KubeParamBand`] — a PromQL whose scalar is the
+/// utilization signal (Envoy cx_active, quota status.used, retention disk%).
+#[derive(Serialize, Deserialize, Clone, Debug, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct KubeMetricSpec {
+    pub prometheus: String,
+}
+
+#[derive(CustomResource, Serialize, Deserialize, Clone, Debug, JsonSchema)]
+#[kube(
+    group = "breathe.pleme.io",
+    version = "v1",
+    kind = "KubeParamBand",
+    namespaced,
+    status = "BandStatus",
+    shortname = "kpband",
+    category = "breathe",
+    printcolumn = r#"{"name":"Dir","type":"string","jsonPath":".spec.directionality"}"#,
+    printcolumn = r#"{"name":"Util","type":"string","jsonPath":".status.lastUtil"}"#,
+    printcolumn = r#"{"name":"Limit","type":"string","jsonPath":".status.currentLimit"}"#,
+    printcolumn = r#"{"name":"Last","type":"string","jsonPath":".status.lastDecision"}"#,
+    printcolumn = r#"{"name":"Phase","type":"string","jsonPath":".status.phase"}"#
+)]
+#[serde(rename_all = "camelCase")]
+pub struct KubeParamBandSpec {
+    /// The CR this band carves (`targetRef.kind`/`name`/`apiVersion` = the object;
+    /// the layout's field_path points into its `/spec`).
+    pub target_ref: TargetRef,
+    /// The k8s-CR field to carve.
+    pub layout: KubeLayoutSpec,
+    /// Where to read the `used` signal (a PromQL).
+    pub metric: KubeMetricSpec,
+    #[serde(default)]
+    pub directionality: DirectionalitySpec,
+    #[serde(default = "d_setpoint")]
+    pub setpoint: f64,
+    #[serde(default = "d_grow_above")]
+    pub grow_above: f64,
+    #[serde(default = "d_shrink_below")]
+    pub shrink_below: f64,
+    #[serde(default = "d_grow_factor")]
+    pub grow_factor: f64,
+    #[serde(default = "d_shrink_factor")]
+    pub shrink_factor: f64,
+    #[serde(default = "d_floor_bytes")]
+    pub floor: String,
+    #[serde(default = "d_ceiling_bytes")]
+    pub ceiling: String,
+    #[serde(default = "d_cooldown")]
+    pub cooldown_seconds: u64,
+    #[serde(default = "d_max_staleness")]
+    pub max_staleness_seconds: u64,
+    #[serde(default)]
+    pub dry_run: bool,
+    #[serde(default, skip_serializing_if = "breathe_provider::DisruptionPolicy::is_restart_free_only")]
+    pub disruption_policy: DisruptionPolicy,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub suspend: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub force_limit: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub force_limit_expiry: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub predictive: bool,
+    #[serde(default = "d_predictive_lookahead")]
+    pub predictive_lookahead_seconds: u64,
+}
+
+impl KubeParamBandSpec {
+    /// The provider-typed k8s-plane layout this band carves.
+    #[must_use]
+    pub fn provider_layout(&self) -> breathe_provider::LimitLayout {
+        use breathe_provider::LimitLayout;
+        match &self.layout {
+            KubeLayoutSpec::CrField { api_version, kind, name, field_path, restart_free } => LimitLayout::CrField {
+                api_version: api_version.clone(), kind: kind.clone(), name: name.clone(),
+                field_path: field_path.clone(), restart_free: *restart_free,
+            },
+            KubeLayoutSpec::DestinationRuleField { name, field_path } => {
+                LimitLayout::DestinationRuleField { name: name.clone(), field_path: field_path.clone() }
+            }
+            KubeLayoutSpec::NamespaceEnvelope { namespace, kind, field_path } => LimitLayout::NamespaceEnvelope {
+                namespace: namespace.clone(),
+                kind: match kind {
+                    NamespaceEnvelopeKindSpec::ResourceQuota => breathe_provider::NamespaceEnvelopeKind::ResourceQuota,
+                    NamespaceEnvelopeKindSpec::LimitRange => breathe_provider::NamespaceEnvelopeKind::LimitRange,
+                },
+                field_path: field_path.clone(),
+            },
+            KubeLayoutSpec::ControllerSetpoint { api_version, kind, name, field_path } => LimitLayout::ControllerSetpoint {
+                api_version: api_version.clone(), kind: kind.clone(), name: name.clone(), field_path: field_path.clone(),
+            },
+        }
+    }
+    /// The provider-typed metric source (a PromQL).
+    #[must_use]
+    pub fn provider_metric(&self) -> breathe_provider::MetricSource {
+        breathe_provider::MetricSource::Prometheus(self.metric.prometheus.clone())
+    }
+    /// The provider-typed directionality.
+    #[must_use]
+    pub fn provider_directionality(&self) -> breathe_provider::Directionality {
+        match self.directionality {
+            DirectionalitySpec::Bidirectional => breathe_provider::Directionality::Bidirectional,
+            DirectionalitySpec::GrowOnly => breathe_provider::Directionality::GrowOnly,
+        }
+    }
+}
+
+impl crate::Band for KubeParamBand {
+    fn target_ref(&self) -> &TargetRef {
+        &self.spec.target_ref
+    }
+    fn band_config(&self) -> anyhow::Result<BandConfig> {
+        let s = &self.spec;
+        // k8s-CR fields are bare integers (maxConnections, retention secs, quota counts).
+        crate::band_config_of(s.setpoint, s.grow_above, s.shrink_below, s.grow_factor, s.shrink_factor, &s.floor, &s.ceiling, Unit::Count)
+    }
+    fn max_staleness_seconds(&self) -> u64 {
+        self.spec.max_staleness_seconds
+    }
+    fn cooldown_seconds(&self) -> u64 {
+        self.spec.cooldown_seconds
+    }
+    fn dry_run(&self) -> bool {
+        self.spec.dry_run
+    }
+    fn last_change_epoch(&self) -> Option<i64> {
+        self.status.as_ref().and_then(|s| s.last_change_epoch)
+    }
+    fn disruption_policy(&self) -> DisruptionPolicy {
+        self.spec.disruption_policy
+    }
+    fn suspended(&self) -> bool {
+        self.spec.suspend
+    }
+    fn force_limit_value(&self) -> Option<u64> {
+        self.spec.force_limit.as_deref().and_then(|q| Unit::Count.parse(q))
+    }
+    fn force_limit_expiry(&self) -> Option<&str> {
+        self.spec.force_limit_expiry.as_deref()
+    }
+    fn predictive(&self) -> Option<f64> {
+        self.spec.predictive.then_some(self.spec.predictive_lookahead_seconds as f64)
+    }
+    fn status(&self) -> Option<&BandStatus> {
+        self.status.as_ref()
+    }
+}
+
 // ─────────────────── BreatheNodePool — host enrollment ──────────────────
 
 /// A GiB quantity bounded to a sane node maximum (1 PiB) so that `value * 2^30`

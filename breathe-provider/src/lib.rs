@@ -32,6 +32,12 @@ pub enum DimensionId {
     /// directionality are carried as DATA on the descriptor, so a new sysctl/ZFS
     /// band is a catalog row + a CR, not a new dimension id. RestartFree.
     HostParam,
+    /// K8S-PLANE: a GENERIC k8s-CR / app-protocol band (Step-6/8/12). One id for
+    /// the whole family — the layout (`CrField`/`DestinationRuleField`/
+    /// `NamespaceEnvelope`/`ControllerSetpoint`/`ConfigFile`/`ApiCall`) + metric +
+    /// directionality are DATA on the descriptor, reconciled via `KubeCluster`'s
+    /// generic CR-path SSA (or a routed actuator). A new such band is a CR.
+    KubeParam,
 }
 
 impl DimensionId {
@@ -46,6 +52,7 @@ impl DimensionId {
             Self::Cgroup => "cgroup",
             Self::CgroupCpu => "cgroup-cpu",
             Self::HostParam => "host-param",
+            Self::KubeParam => "kube-param",
         }
     }
 

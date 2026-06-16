@@ -13,11 +13,12 @@
 use std::{sync::Arc, time::Duration};
 
 mod node_forma;
+mod kube_param;
 
 use breathe_core::{reconcile_one, PredictiveInput, ReconcileInput};
 use breathe_crd::{
     ArcBand, Band, BandSummary, BreatheCloudPool, BreatheConfig, BreatheConfigSpec, BreatheOverview, CgroupBand,
-    CgroupCpuBand, CpuBand, Densa, MemoryBand, OverviewStatus, StorageBand,
+    CgroupCpuBand, CpuBand, Densa, KubeParamBand, MemoryBand, OverviewStatus, StorageBand,
 };
 use breathe_dimensions::{CpuDescriptor, MemoryDescriptor, StorageDescriptor};
 use breathe_kube::KubeCluster;
@@ -428,7 +429,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cloud_pools = gen_controller!(Api::<BreatheCloudPool>::all(client.clone()))
         .run(node_forma::reconcile_cloud_pool, node_forma::error_policy_cloud_pool, ctx.clone())
         .for_each(|_| async {});
+    // Step-6/8/12: the generic k8s-CR / app band — reconciled via KubeCluster's
+    // generic CR-path SSA. Additive; the mem/cpu/storage reconcile is untouched.
+    let kube_params = gen_controller!(Api::<KubeParamBand>::all(client.clone()))
+        .run(kube_param::reconcile_kube_param, kube_param::error_policy_kube_param, ctx.clone())
+        .for_each(|_| async {});
 
-    tokio::join!(mem, cpu, sto, overview, cloud_pools);
+    tokio::join!(mem, cpu, sto, overview, cloud_pools, kube_params);
     Ok(())
 }
