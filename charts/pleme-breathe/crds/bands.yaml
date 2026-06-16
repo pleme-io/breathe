@@ -123,6 +123,10 @@ spec:
                     type: string
                   name:
                     type: string
+                  podSelector:
+                    description: When set, breathe resolves the band's pods DIRECTLY by this k8s label selector (`k=v,k2=v2`) instead of via an owner's `spec.selector.matchLabels`. The path for **ephemeral / owner-less pod groups** whose name is not stable and which have no single resolvable workload owner — GitHub ARC `EphemeralRunner`s (`actions.github.com/scale-set-name=<set>`), bare pods, Job pods. A selector ALWAYS carves in-place (`PodResize`, zero restart) within `targetRef`'s namespace; `name` then serves only as the metrics pod-name prefix + the human label. Omit it for Deployment/StatefulSet/CNPG owners.
+                    nullable: true
+                    type: string
                 required:
                 - kind
                 - name
@@ -419,6 +423,10 @@ spec:
                   kind:
                     type: string
                   name:
+                    type: string
+                  podSelector:
+                    description: When set, breathe resolves the band's pods DIRECTLY by this k8s label selector (`k=v,k2=v2`) instead of via an owner's `spec.selector.matchLabels`. The path for **ephemeral / owner-less pod groups** whose name is not stable and which have no single resolvable workload owner — GitHub ARC `EphemeralRunner`s (`actions.github.com/scale-set-name=<set>`), bare pods, Job pods. A selector ALWAYS carves in-place (`PodResize`, zero restart) within `targetRef`'s namespace; `name` then serves only as the metrics pod-name prefix + the human label. Omit it for Deployment/StatefulSet/CNPG owners.
+                    nullable: true
                     type: string
                 required:
                 - kind
@@ -717,6 +725,10 @@ spec:
                     type: string
                   name:
                     type: string
+                  podSelector:
+                    description: When set, breathe resolves the band's pods DIRECTLY by this k8s label selector (`k=v,k2=v2`) instead of via an owner's `spec.selector.matchLabels`. The path for **ephemeral / owner-less pod groups** whose name is not stable and which have no single resolvable workload owner — GitHub ARC `EphemeralRunner`s (`actions.github.com/scale-set-name=<set>`), bare pods, Job pods. A selector ALWAYS carves in-place (`PodResize`, zero restart) within `targetRef`'s namespace; `name` then serves only as the metrics pod-name prefix + the human label. Omit it for Deployment/StatefulSet/CNPG owners.
+                    nullable: true
+                    type: string
                 required:
                 - kind
                 - name
@@ -1013,6 +1025,10 @@ spec:
                   kind:
                     type: string
                   name:
+                    type: string
+                  podSelector:
+                    description: When set, breathe resolves the band's pods DIRECTLY by this k8s label selector (`k=v,k2=v2`) instead of via an owner's `spec.selector.matchLabels`. The path for **ephemeral / owner-less pod groups** whose name is not stable and which have no single resolvable workload owner — GitHub ARC `EphemeralRunner`s (`actions.github.com/scale-set-name=<set>`), bare pods, Job pods. A selector ALWAYS carves in-place (`PodResize`, zero restart) within `targetRef`'s namespace; `name` then serves only as the metrics pod-name prefix + the human label. Omit it for Deployment/StatefulSet/CNPG owners.
+                    nullable: true
                     type: string
                 required:
                 - kind
@@ -1311,6 +1327,10 @@ spec:
                     type: string
                   name:
                     type: string
+                  podSelector:
+                    description: When set, breathe resolves the band's pods DIRECTLY by this k8s label selector (`k=v,k2=v2`) instead of via an owner's `spec.selector.matchLabels`. The path for **ephemeral / owner-less pod groups** whose name is not stable and which have no single resolvable workload owner — GitHub ARC `EphemeralRunner`s (`actions.github.com/scale-set-name=<set>`), bare pods, Job pods. A selector ALWAYS carves in-place (`PodResize`, zero restart) within `targetRef`'s namespace; `name` then serves only as the metrics pod-name prefix + the human label. Omit it for Deployment/StatefulSet/CNPG owners.
+                    nullable: true
+                    type: string
                 required:
                 - kind
                 - name
@@ -1608,6 +1628,10 @@ spec:
                     type: string
                   name:
                     type: string
+                  podSelector:
+                    description: When set, breathe resolves the band's pods DIRECTLY by this k8s label selector (`k=v,k2=v2`) instead of via an owner's `spec.selector.matchLabels`. The path for **ephemeral / owner-less pod groups** whose name is not stable and which have no single resolvable workload owner — GitHub ARC `EphemeralRunner`s (`actions.github.com/scale-set-name=<set>`), bare pods, Job pods. A selector ALWAYS carves in-place (`PodResize`, zero restart) within `targetRef`'s namespace; `name` then serves only as the metrics pod-name prefix + the human label. Omit it for Deployment/StatefulSet/CNPG owners.
+                    nullable: true
+                    type: string
                 required:
                 - kind
                 - name
@@ -1784,6 +1808,807 @@ spec:
 apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
+  name: hostparambands.breathe.pleme.io
+spec:
+  group: breathe.pleme.io
+  names:
+    categories:
+    - breathe
+    kind: HostParamBand
+    plural: hostparambands
+    shortNames:
+    - hpband
+    singular: hostparamband
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.knob
+      name: Knob
+      type: string
+    - jsonPath: .spec.directionality
+      name: Dir
+      type: string
+    - jsonPath: .status.lastUtil
+      name: Util
+      type: string
+    - jsonPath: .status.currentLimit
+      name: Limit
+      type: string
+    - jsonPath: .status.lastDecision
+      name: Last
+      type: string
+    - jsonPath: .status.phase
+      name: Phase
+      type: string
+    name: v1
+    schema:
+      openAPIV3Schema:
+        description: Auto-generated derived type for HostParamBandSpec via `CustomResource`
+        properties:
+          spec:
+            properties:
+              ceiling:
+                default: 16Gi
+                type: string
+              cooldownSeconds:
+                default: 600
+                format: uint64
+                minimum: 0.0
+                type: integer
+              directionality:
+                default: bidirectional
+                description: Carve directionality (default bidirectional; set `growOnly` for protection floors).
+                enum:
+                - bidirectional
+                - growOnly
+                type: string
+              disruptionPolicy:
+                description: The FLAG that makes "without restart" controllable + explicit. Set per band / per node; the actuator refuses any action whose [`DisruptionClass`] the policy does not permit (returning a typed deferral, never a silent roll). The default is the cautious one — never restart a workload unless explicitly allowed.
+                enum:
+                - restartFreeOnly
+                - allowConditional
+                - allowRestart
+                type: string
+              dryRun:
+                default: false
+                type: boolean
+              floor:
+                default: 256Mi
+                type: string
+              forceLimit:
+                nullable: true
+                type: string
+              forceLimitExpiry:
+                nullable: true
+                type: string
+              growAbove:
+                default: 0.85
+                format: double
+                type: number
+              growFactor:
+                default: 1.25
+                format: double
+                type: number
+              knob:
+                description: The host lever to carve.
+                oneOf:
+                - required:
+                  - sysctl
+                - required:
+                  - zfsParam
+                - required:
+                  - cgroupIoMax
+                properties:
+                  cgroupIoMax:
+                    description: A systemd unit's per-device `io.max` cap — Step-4. `field` is one of `rbps`/`wbps`/`riops`/`wiops`; `device` is `<maj>:<min>`.
+                    properties:
+                      device:
+                        type: string
+                      field:
+                        description: Which `io.max` sub-knob a [`HostKnobSpec::CgroupIoMax`] carves (serde mirror of `breathe_provider::IoMaxField`). `bps` fields are bytes/s, `iops` are ops/s.
+                        enum:
+                        - rbps
+                        - wbps
+                        - riops
+                        - wiops
+                        type: string
+                      unit:
+                        type: string
+                    required:
+                    - device
+                    - field
+                    - unit
+                    type: object
+                  sysctl:
+                    description: A dotted sysctl key (`vm.dirty_bytes`) → `/proc/sys/vm/dirty_bytes`.
+                    properties:
+                      key:
+                        type: string
+                    required:
+                    - key
+                    type: object
+                  zfsParam:
+                    description: A ZFS module parameter (`zfs_arc_min`) → `/sys/module/zfs/parameters/zfs_arc_min`.
+                    properties:
+                      param:
+                        type: string
+                    required:
+                    - param
+                    type: object
+                type: object
+              maxStalenessSeconds:
+                default: 120
+                format: uint64
+                minimum: 0.0
+                type: integer
+              metric:
+                description: Where to read the `used` signal.
+                oneOf:
+                - required:
+                  - meminfoField
+                - required:
+                  - arcstatsRow
+                - required:
+                  - cgroupIoStat
+                - required:
+                  - psi
+                properties:
+                  arcstatsRow:
+                    description: A named `/proc/spl/kstat/zfs/arcstats` row (`size`, `dnode_size`).
+                    properties:
+                      row:
+                        type: string
+                    required:
+                    - row
+                    type: object
+                  cgroupIoStat:
+                    description: A systemd unit's io RATE (the cumulative io-accounting counter differenced over the window) — Step-4. `field` selects rbps/wbps/riops/wiops.
+                    properties:
+                      field:
+                        description: Which `io.max` sub-knob a [`HostKnobSpec::CgroupIoMax`] carves (serde mirror of `breathe_provider::IoMaxField`). `bps` fields are bytes/s, `iops` are ops/s.
+                        enum:
+                        - rbps
+                        - wbps
+                        - riops
+                        - wiops
+                        type: string
+                      unit:
+                        type: string
+                    required:
+                    - field
+                    - unit
+                    type: object
+                  meminfoField:
+                    description: A `/proc/meminfo` field in bytes (`Dirty`, `MemFree`, `Writeback`).
+                    properties:
+                      field:
+                        type: string
+                    required:
+                    - field
+                    type: object
+                  psi:
+                    description: PRESSURE-STALL avg10 (×100) from `/proc/pressure/<resource>` — Step-3, the throttle signal for a soft band. `resource` ∈ cpu/memory/io, `kind` ∈ some/full.
+                    properties:
+                      kind:
+                        description: Mirror of `breathe_provider::PsiKind` for the CRD.
+                        enum:
+                        - some
+                        - full
+                        type: string
+                      resource:
+                        description: Mirror of `breathe_provider::PsiResource` for the CRD.
+                        enum:
+                        - cpu
+                        - memory
+                        - io
+                        type: string
+                    required:
+                    - kind
+                    - resource
+                    type: object
+                type: object
+              predictive:
+                type: boolean
+              predictiveLookaheadSeconds:
+                default: 60
+                format: uint64
+                minimum: 0.0
+                type: integer
+              setpoint:
+                default: 0.8
+                format: double
+                type: number
+              shrinkBelow:
+                default: 0.7
+                format: double
+                type: number
+              shrinkFactor:
+                default: 0.9
+                format: double
+                type: number
+              suspend:
+                type: boolean
+              targetRef:
+                description: 'The node this band carves on (`targetRef.name` = node name, `kind: Node`).'
+                properties:
+                  apiVersion:
+                    nullable: true
+                    type: string
+                  container:
+                    nullable: true
+                    type: string
+                  kind:
+                    type: string
+                  name:
+                    type: string
+                  podSelector:
+                    description: When set, breathe resolves the band's pods DIRECTLY by this k8s label selector (`k=v,k2=v2`) instead of via an owner's `spec.selector.matchLabels`. The path for **ephemeral / owner-less pod groups** whose name is not stable and which have no single resolvable workload owner — GitHub ARC `EphemeralRunner`s (`actions.github.com/scale-set-name=<set>`), bare pods, Job pods. A selector ALWAYS carves in-place (`PodResize`, zero restart) within `targetRef`'s namespace; `name` then serves only as the metrics pod-name prefix + the human label. Omit it for Deployment/StatefulSet/CNPG owners.
+                    nullable: true
+                    type: string
+                required:
+                - kind
+                - name
+                type: object
+            required:
+            - knob
+            - metric
+            - targetRef
+            type: object
+          status:
+            description: The per-cycle typed status receipt — shared across all band kinds.
+            nullable: true
+            properties:
+              carvesTotal:
+                description: Cumulative count of carves (Applied) over this controller's lifetime.
+                format: int64
+                nullable: true
+                type: integer
+              conditions:
+                description: Standard conditions (Ready / Converged / Throttled / Stale / Conflict).
+                items:
+                  description: A standard k8s `metav1.Condition` (schemars-derivable — k8s_openapi's own `Condition` is not `JsonSchema`). Enables `kubectl wait --for=condition=…` and Flux/Argo health assessment off breathe bands.
+                  properties:
+                    lastTransitionTime:
+                      description: RFC3339 time the condition last flipped status (stable while status holds).
+                      type: string
+                    message:
+                      description: Human-readable message.
+                      type: string
+                    observedGeneration:
+                      description: The `metadata.generation` the controller observed when setting this.
+                      format: int64
+                      nullable: true
+                      type: integer
+                    reason:
+                      description: Machine-readable PascalCase reason.
+                      type: string
+                    status:
+                      description: '`True` | `False` | `Unknown`.'
+                      type: string
+                    type:
+                      description: Condition type, e.g. `Ready` / `Converged` / `Throttled` / `Stale` / `Conflict`.
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+              conflictManager:
+                nullable: true
+                type: string
+              conflictsTotal:
+                description: Cumulative count of single-writer conflicts (yielded to another manager).
+                format: int64
+                nullable: true
+                type: integer
+              cooldownRemainingSeconds:
+                description: Seconds remaining in the post-carve cooldown (0 = ready to carve).
+                format: int64
+                nullable: true
+                type: integer
+              currentLimit:
+                nullable: true
+                type: string
+              deferralsTotal:
+                description: Cumulative count of deferred ceiling crossings (policy refused a restart).
+                format: int64
+                nullable: true
+                type: integer
+              edgeTier:
+                description: Where the last tick sat on the golden/ceiling line (`GoldenPreserving` / `CeilingCrossing`) — the K4 continuity evidence, surfaced.
+                nullable: true
+                type: string
+              effectiveDryRun:
+                description: 'The effective mode: `true` = SHADOW (observe + attest, never carve).'
+                nullable: true
+                type: boolean
+              effectivePolicy:
+                description: The DisruptionPolicy in effect for this band (`restartFreeOnly` / …).
+                nullable: true
+                type: string
+              freshnessSeconds:
+                description: Age of the driving metric sample, in seconds (the freshness gate input).
+                format: int64
+                nullable: true
+                type: integer
+              history:
+                description: The recent TRAJECTORY (over-time view as a k8s object) — appended on a carve or a phase change, capped to the last N samples.
+                items:
+                  description: A point in a band's recent trajectory — the OVER-TIME view as a k8s object (no Grafana needed). Appended on a carve or a phase change, capped to the last N, so `kubectl get <band> -o yaml` shows how the adjustments have been going inline.
+                  properties:
+                    decision:
+                      description: The decision that produced this sample (carve / transition).
+                      nullable: true
+                      type: string
+                    limit:
+                      description: The limit at this point.
+                      format: int64
+                      nullable: true
+                      type: integer
+                    phase:
+                      description: The phase at this point.
+                      type: string
+                    time:
+                      description: RFC3339 time of this sample.
+                      type: string
+                    util:
+                      description: Observed utilization ratio at this point.
+                      format: double
+                      nullable: true
+                      type: number
+                  required:
+                  - phase
+                  - time
+                  type: object
+                type: array
+              lastActionClass:
+                description: The restart cost of the last carve/decision (`RestartFree` / `RestartConditional` / `RestartRequiring`) — the per-tick attestation evidence, now typed in status.
+                nullable: true
+                type: string
+              lastChangeEpoch:
+                format: int64
+                nullable: true
+                type: integer
+              lastDecision:
+                nullable: true
+                type: string
+              lastUtil:
+                nullable: true
+                type: string
+              observedCapacity:
+                description: The observed `capacity` (the current limit the util is measured against).
+                format: int64
+                nullable: true
+                type: integer
+              observedCostRemainingCents:
+                description: Cost remaining (cents) under the namespace's `Densa` envelope SLA; negative ⇒ over budget. Read from the namespace `Densa`'s status — the Dev-Loop cost-guard surfaced on the band, so `kubectl get <band>` shows the env's budget headroom. Read-only (breathe never writes the Densa from a band).
+                format: int64
+                nullable: true
+                type: integer
+              observedEnvId:
+                description: The `EphemeralEnvId` of the band's namespace, if it carries one (the ephemeral-env binding) — read from the namespace label, never written.
+                nullable: true
+                type: string
+              observedGeneration:
+                description: '`metadata.generation` the controller last reconciled — the "controller has seen my latest spec edit" signal.'
+                format: int64
+                nullable: true
+                type: integer
+              observedUsed:
+                description: The observed `used` scalar (bytes for memory/arc/cgroup; millicores for cpu).
+                format: int64
+                nullable: true
+                type: integer
+              observedUtil:
+                description: The observed utilization that drove this tick, as a ratio (`used/capacity`).
+                format: double
+                nullable: true
+                type: number
+              phase:
+                nullable: true
+                type: string
+            type: object
+        required:
+        - spec
+        title: HostParamBand
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: kubeparambands.breathe.pleme.io
+spec:
+  group: breathe.pleme.io
+  names:
+    categories:
+    - breathe
+    kind: KubeParamBand
+    plural: kubeparambands
+    shortNames:
+    - kpband
+    singular: kubeparamband
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.directionality
+      name: Dir
+      type: string
+    - jsonPath: .status.lastUtil
+      name: Util
+      type: string
+    - jsonPath: .status.currentLimit
+      name: Limit
+      type: string
+    - jsonPath: .status.lastDecision
+      name: Last
+      type: string
+    - jsonPath: .status.phase
+      name: Phase
+      type: string
+    name: v1
+    schema:
+      openAPIV3Schema:
+        description: Auto-generated derived type for KubeParamBandSpec via `CustomResource`
+        properties:
+          spec:
+            properties:
+              ceiling:
+                default: 16Gi
+                type: string
+              cooldownSeconds:
+                default: 600
+                format: uint64
+                minimum: 0.0
+                type: integer
+              directionality:
+                default: bidirectional
+                description: A host-param band's carve directionality (serializable mirror of `breathe_provider::Directionality`; `ObserveOnly` is not a carve).
+                enum:
+                - bidirectional
+                - growOnly
+                type: string
+              disruptionPolicy:
+                description: The FLAG that makes "without restart" controllable + explicit. Set per band / per node; the actuator refuses any action whose [`DisruptionClass`] the policy does not permit (returning a typed deferral, never a silent roll). The default is the cautious one — never restart a workload unless explicitly allowed.
+                enum:
+                - restartFreeOnly
+                - allowConditional
+                - allowRestart
+                type: string
+              dryRun:
+                default: false
+                type: boolean
+              floor:
+                default: 256Mi
+                type: string
+              forceLimit:
+                nullable: true
+                type: string
+              forceLimitExpiry:
+                nullable: true
+                type: string
+              growAbove:
+                default: 0.85
+                format: double
+                type: number
+              growFactor:
+                default: 1.25
+                format: double
+                type: number
+              layout:
+                description: The k8s-CR field to carve.
+                oneOf:
+                - required:
+                  - crField
+                - required:
+                  - destinationRuleField
+                - required:
+                  - namespaceEnvelope
+                - required:
+                  - controllerSetpoint
+                properties:
+                  controllerSetpoint:
+                    description: A controller setpoint — HPA target / PDB minAvailable.
+                    properties:
+                      apiVersion:
+                        type: string
+                      fieldPath:
+                        type: string
+                      kind:
+                        type: string
+                      name:
+                        type: string
+                    required:
+                    - apiVersion
+                    - fieldPath
+                    - kind
+                    - name
+                    type: object
+                  crField:
+                    description: A field of any operator CR (CNPG/VictoriaMetrics/OpenSearch) at `fieldPath`.
+                    properties:
+                      apiVersion:
+                        type: string
+                      fieldPath:
+                        type: string
+                      kind:
+                        type: string
+                      name:
+                        type: string
+                      restartFree:
+                        default: false
+                        type: boolean
+                    required:
+                    - apiVersion
+                    - fieldPath
+                    - kind
+                    - name
+                    type: object
+                  destinationRuleField:
+                    description: An Istio DestinationRule connection-pool field (Envoy live-reload).
+                    properties:
+                      fieldPath:
+                        type: string
+                      name:
+                        type: string
+                    required:
+                    - fieldPath
+                    - name
+                    type: object
+                  namespaceEnvelope:
+                    description: A namespace ResourceQuota / LimitRange envelope field.
+                    properties:
+                      fieldPath:
+                        type: string
+                      kind:
+                        description: Mirror of `breathe_provider::NamespaceEnvelopeKind` for the CRD.
+                        enum:
+                        - resourceQuota
+                        - limitRange
+                        type: string
+                      namespace:
+                        type: string
+                    required:
+                    - fieldPath
+                    - kind
+                    - namespace
+                    type: object
+                type: object
+              maxStalenessSeconds:
+                default: 120
+                format: uint64
+                minimum: 0.0
+                type: integer
+              metric:
+                description: Where to read the `used` signal (a PromQL).
+                properties:
+                  prometheus:
+                    type: string
+                required:
+                - prometheus
+                type: object
+              predictive:
+                type: boolean
+              predictiveLookaheadSeconds:
+                default: 60
+                format: uint64
+                minimum: 0.0
+                type: integer
+              setpoint:
+                default: 0.8
+                format: double
+                type: number
+              shrinkBelow:
+                default: 0.7
+                format: double
+                type: number
+              shrinkFactor:
+                default: 0.9
+                format: double
+                type: number
+              suspend:
+                type: boolean
+              targetRef:
+                description: The CR this band carves (`targetRef.kind`/`name`/`apiVersion` = the object; the layout's `fieldPath` points into its `/spec`).
+                properties:
+                  apiVersion:
+                    nullable: true
+                    type: string
+                  container:
+                    nullable: true
+                    type: string
+                  kind:
+                    type: string
+                  name:
+                    type: string
+                  podSelector:
+                    description: When set, breathe resolves the band's pods DIRECTLY by this k8s label selector (`k=v,k2=v2`) instead of via an owner's `spec.selector.matchLabels`. The path for **ephemeral / owner-less pod groups** whose name is not stable and which have no single resolvable workload owner — GitHub ARC `EphemeralRunner`s (`actions.github.com/scale-set-name=<set>`), bare pods, Job pods. A selector ALWAYS carves in-place (`PodResize`, zero restart) within `targetRef`'s namespace; `name` then serves only as the metrics pod-name prefix + the human label. Omit it for Deployment/StatefulSet/CNPG owners.
+                    nullable: true
+                    type: string
+                required:
+                - kind
+                - name
+                type: object
+            required:
+            - layout
+            - metric
+            - targetRef
+            type: object
+          status:
+            description: The per-cycle typed status receipt — shared across all band kinds.
+            nullable: true
+            properties:
+              carvesTotal:
+                description: Cumulative count of carves (Applied) over this controller's lifetime.
+                format: int64
+                nullable: true
+                type: integer
+              conditions:
+                description: Standard conditions (Ready / Converged / Throttled / Stale / Conflict).
+                items:
+                  description: A standard k8s `metav1.Condition` (schemars-derivable — k8s_openapi's own `Condition` is not `JsonSchema`). Enables `kubectl wait --for=condition=…` and Flux/Argo health assessment off breathe bands.
+                  properties:
+                    lastTransitionTime:
+                      description: RFC3339 time the condition last flipped status (stable while status holds).
+                      type: string
+                    message:
+                      description: Human-readable message.
+                      type: string
+                    observedGeneration:
+                      description: The `metadata.generation` the controller observed when setting this.
+                      format: int64
+                      nullable: true
+                      type: integer
+                    reason:
+                      description: Machine-readable PascalCase reason.
+                      type: string
+                    status:
+                      description: '`True` | `False` | `Unknown`.'
+                      type: string
+                    type:
+                      description: Condition type, e.g. `Ready` / `Converged` / `Throttled` / `Stale` / `Conflict`.
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+              conflictManager:
+                nullable: true
+                type: string
+              conflictsTotal:
+                description: Cumulative count of single-writer conflicts (yielded to another manager).
+                format: int64
+                nullable: true
+                type: integer
+              cooldownRemainingSeconds:
+                description: Seconds remaining in the post-carve cooldown (0 = ready to carve).
+                format: int64
+                nullable: true
+                type: integer
+              currentLimit:
+                nullable: true
+                type: string
+              deferralsTotal:
+                description: Cumulative count of deferred ceiling crossings (policy refused a restart).
+                format: int64
+                nullable: true
+                type: integer
+              edgeTier:
+                description: Where the last tick sat on the golden/ceiling line (`GoldenPreserving` / `CeilingCrossing`) — the K4 continuity evidence, surfaced.
+                nullable: true
+                type: string
+              effectiveDryRun:
+                description: 'The effective mode: `true` = SHADOW (observe + attest, never carve).'
+                nullable: true
+                type: boolean
+              effectivePolicy:
+                description: The DisruptionPolicy in effect for this band (`restartFreeOnly` / …).
+                nullable: true
+                type: string
+              freshnessSeconds:
+                description: Age of the driving metric sample, in seconds (the freshness gate input).
+                format: int64
+                nullable: true
+                type: integer
+              history:
+                description: The recent TRAJECTORY (over-time view as a k8s object) — appended on a carve or a phase change, capped to the last N samples.
+                items:
+                  description: A point in a band's recent trajectory — the OVER-TIME view as a k8s object (no Grafana needed). Appended on a carve or a phase change, capped to the last N, so `kubectl get <band> -o yaml` shows how the adjustments have been going inline.
+                  properties:
+                    decision:
+                      description: The decision that produced this sample (carve / transition).
+                      nullable: true
+                      type: string
+                    limit:
+                      description: The limit at this point.
+                      format: int64
+                      nullable: true
+                      type: integer
+                    phase:
+                      description: The phase at this point.
+                      type: string
+                    time:
+                      description: RFC3339 time of this sample.
+                      type: string
+                    util:
+                      description: Observed utilization ratio at this point.
+                      format: double
+                      nullable: true
+                      type: number
+                  required:
+                  - phase
+                  - time
+                  type: object
+                type: array
+              lastActionClass:
+                description: The restart cost of the last carve/decision (`RestartFree` / `RestartConditional` / `RestartRequiring`) — the per-tick attestation evidence, now typed in status.
+                nullable: true
+                type: string
+              lastChangeEpoch:
+                format: int64
+                nullable: true
+                type: integer
+              lastDecision:
+                nullable: true
+                type: string
+              lastUtil:
+                nullable: true
+                type: string
+              observedCapacity:
+                description: The observed `capacity` (the current limit the util is measured against).
+                format: int64
+                nullable: true
+                type: integer
+              observedCostRemainingCents:
+                description: Cost remaining (cents) under the namespace's `Densa` envelope SLA; negative ⇒ over budget. Read from the namespace `Densa`'s status — the Dev-Loop cost-guard surfaced on the band, so `kubectl get <band>` shows the env's budget headroom. Read-only (breathe never writes the Densa from a band).
+                format: int64
+                nullable: true
+                type: integer
+              observedEnvId:
+                description: The `EphemeralEnvId` of the band's namespace, if it carries one (the ephemeral-env binding) — read from the namespace label, never written.
+                nullable: true
+                type: string
+              observedGeneration:
+                description: '`metadata.generation` the controller last reconciled — the "controller has seen my latest spec edit" signal.'
+                format: int64
+                nullable: true
+                type: integer
+              observedUsed:
+                description: The observed `used` scalar (bytes for memory/arc/cgroup; millicores for cpu).
+                format: int64
+                nullable: true
+                type: integer
+              observedUtil:
+                description: The observed utilization that drove this tick, as a ratio (`used/capacity`).
+                format: double
+                nullable: true
+                type: number
+              phase:
+                nullable: true
+                type: string
+            type: object
+        required:
+        - spec
+        title: KubeParamBand
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
   name: breathenodepools.breathe.pleme.io
 spec:
   group: breathe.pleme.io
@@ -1874,6 +2699,177 @@ spec:
         required:
         - spec
         title: BreatheNodePool
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: breathecloudpools.breathe.pleme.io
+spec:
+  group: breathe.pleme.io
+  names:
+    categories:
+    - breathe
+    kind: BreatheCloudPool
+    plural: breathecloudpools
+    shortNames:
+    - bcp
+    singular: breathecloudpool
+  scope: Cluster
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.forma
+      name: Forma
+      type: string
+    - jsonPath: .spec.floor
+      name: Floor
+      type: integer
+    - jsonPath: .spec.ceiling
+      name: Ceiling
+      type: integer
+    - jsonPath: .status.observedUsed
+      name: Used
+      type: integer
+    - jsonPath: .status.observedCapacity
+      name: Capacity
+      type: integer
+    - jsonPath: .status.phase
+      name: Phase
+      type: string
+    - jsonPath: .spec.dryRun
+      name: DryRun
+      type: boolean
+    name: v1
+    schema:
+      openAPIV3Schema:
+        description: Auto-generated derived type for BreatheCloudPoolSpec via `CustomResource`
+        properties:
+          spec:
+            properties:
+              ceiling:
+                description: The node-COUNT ceiling (the L2 wall — the band carves ≤ it).
+                format: uint64
+                minimum: 0.0
+                type: integer
+              cooldownSeconds:
+                default: 600
+                format: uint64
+                minimum: 0.0
+                type: integer
+              costSlaCents:
+                description: Cost ceiling (cents per accounting period) the pool must stay within.
+                format: uint64
+                minimum: 0.0
+                nullable: true
+                type: integer
+              dryRun:
+                default: false
+                description: 'SHADOW: observe + report what it WOULD provision; never actuate.'
+                type: boolean
+              fillPolicy:
+                description: How the pool is FILLED — `pack` (bin-pack tight, the efficiency-first default) or `spread` (distribute across failure domains for HA). breathe SETS this posture + surfaces the scheduler scoring hint; the scheduler binds. Omitted on serialize at the `pack` default.
+                enum:
+                - pack
+                - spread
+                type: string
+              floor:
+                description: The node-COUNT floor (the never-swap base — always provisioned).
+                format: uint64
+                minimum: 0.0
+                type: integer
+              forma:
+                description: The resource SHAPE this pool provisions — the `Forma` name (e.g. `node-on-demand`). Must match a `breathe_provider::Forma` variant.
+                type: string
+              growAbove:
+                default: 0.85
+                format: double
+                type: number
+              growFactor:
+                default: 1.25
+                format: double
+                type: number
+              predictive:
+                description: 'Forecast demand AHEAD of `reliefLatencySeconds` instead of reacting to current util. Node boot is slow, so a reactive pool is always late; the `LinearTrendPrevisor` projects the recent slope `reliefLatencySeconds` ahead so capacity lands in time. MONOTONE-SAFE: it only ever provisions EARLIER, never shrinks prematurely (a falling trend echoes the reactive value), so it is strictly safer than reactive. Default off (peer of the limit-side `predictive`). Omitted on serialize at the `false` default.'
+                type: boolean
+              provider:
+                description: Which executor realizes this pool (default `kubeObserve` = observe-only, can never mutate). Set `kwok` for the fake-node go-live bed.
+                enum:
+                - kubeObserve
+                - kwok
+                type: string
+              reliefLatencySeconds:
+                default: 180
+                description: The provisioning dead-time — how long one `provision(1)` takes to become usable capacity. The predictor must forecast ≥ this far ahead or provisioning is always late (thesis P8). Seconds.
+                format: uint64
+                minimum: 0.0
+                type: integer
+              setpoint:
+                default: 0.8
+                format: double
+                type: number
+              shrinkBelow:
+                default: 0.7
+                format: double
+                type: number
+              shrinkFactor:
+                default: 0.9
+                format: double
+                type: number
+              writeEnabled:
+                default: false
+                description: 'Pool-level MASTER write switch (peer of `BreatheNodePool.writeEnabled`): `false` ⇒ the whole pool is in shadow regardless of `dryRun`. Safe default.'
+                type: boolean
+            required:
+            - ceiling
+            - floor
+            - forma
+            type: object
+          status:
+            description: '`BreatheCloudPool` status — the per-tick node-Forma receipt (observe-only in shadow; what it WOULD provision surfaced via `would_provision`).'
+            nullable: true
+            properties:
+              effectiveDryRun:
+                nullable: true
+                type: boolean
+              lastDecision:
+                nullable: true
+                type: string
+              lastSeenEpoch:
+                format: int64
+                nullable: true
+                type: integer
+              observedCapacity:
+                format: int64
+                nullable: true
+                type: integer
+              observedUsed:
+                format: int64
+                nullable: true
+                type: integer
+              phase:
+                nullable: true
+                type: string
+              predictiveActive:
+                description: Whether the forecasting (`LinearTrendPrevisor`) path drove this tick's decision (`spec.predictive` on) vs the reactive echo. Lets an operator confirm the predictive posture is live from the status alone.
+                nullable: true
+                type: boolean
+              schedulerScoring:
+                description: The kube-scheduler scoringStrategy hint the pool's `fillPolicy` implies (`MostAllocated` for pack / `LeastAllocated` for spread) — surfaced for the scheduler profile; breathe never binds a pod.
+                nullable: true
+                type: string
+              wouldProvision:
+                description: Signed node delta the pool WOULD provision (+) / deprovision (−) this tick.
+                format: int64
+                nullable: true
+                type: integer
+            type: object
+        required:
+        - spec
+        title: BreatheCloudPool
         type: object
     served: true
     storage: true
@@ -2180,6 +3176,220 @@ spec:
         required:
         - spec
         title: Densa
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: quinhaopools.breathe.pleme.io
+spec:
+  group: breathe.pleme.io
+  names:
+    categories:
+    - breathe
+    kind: QuinhaoPool
+    plural: quinhaopools
+    shortNames:
+    - qpool
+    singular: quinhaopool
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.setpoint
+      name: Setpoint
+      type: string
+    - jsonPath: .status.claimCount
+      name: Claims
+      type: integer
+    - jsonPath: .status.phase
+      name: Phase
+      type: string
+    - jsonPath: .spec.dryRun
+      name: DryRun
+      type: boolean
+    name: v1
+    schema:
+      openAPIV3Schema:
+        description: Auto-generated derived type for QuinhaoPoolSpec via `CustomResource`
+        properties:
+          spec:
+            properties:
+              claims:
+                default: []
+                description: 'The claimant forest (groups + users). Even by default (`weight: 1`).'
+                items:
+                  description: 'One claimant in the fabric forest — the wire mirror of `breathe_auction::quinhao::Quinhao`. A group is `kind: Group` with no `parentId`; a user is `kind: User` naming its group as `parentId`.'
+                  properties:
+                    demands:
+                      default: []
+                      description: 'The per-dimension demand vector — one entry per participating axis. A dimension absent from this list is `absent` (granted 0 on that axis). The common case is a single `storage` entry with `weight: 1` (the even member).'
+                      items:
+                        description: One claimant's bounded, weighted demand on a single fabric dimension — the wire mirror of `breathe_auction::quinhao::Demand`. Quantities are strings in the dimension's unit (bytes for storage) so an operator writes `10Gi`, not a raw byte count; `breathe_auction::Unit` parses them in the controller.
+                        properties:
+                          demand:
+                            description: What the claimant would actually use (a generous share is trimmed to this). Omit ⇒ would use the whole pool (the even default).
+                            nullable: true
+                            type: string
+                          dim:
+                            description: The fabric dimension this demand is on (`storage` / `cpu` / `bandwidth` / `request-rate`). Storage is the live axis; the others are typed-but-dormant.
+                            type: string
+                          max:
+                            description: The ceiling never exceeded, a quantity string. Omit ⇒ no cap (the whole pool). Empty string is treated as "no cap".
+                            nullable: true
+                            type: string
+                          min:
+                            default: '0'
+                            description: The floor always granted (a reserved quota), a quantity string. Default `0`.
+                            type: string
+                          weight:
+                            default: 1
+                            description: Relative share weight. `1` (the default) ⇒ an even share; `0` ⇒ idle on this axis (claims only its floor). A larger weight buys a larger share.
+                            format: uint32
+                            minimum: 0.0
+                            type: integer
+                        required:
+                        - dim
+                        type: object
+                      type: array
+                    id:
+                      description: Stable identity (a gaveta group-id or member-id), unique within the pool.
+                      type: string
+                    kind:
+                      default: group
+                      description: '`Group` (top-level) or `User` (child).'
+                      enum:
+                      - group
+                      - user
+                      type: string
+                    parentId:
+                      description: The parent claimant's id (a user's group). Omit for a top-level claimant.
+                      nullable: true
+                      type: string
+                  required:
+                  - id
+                  type: object
+                type: array
+              dryRun:
+                default: true
+                description: 'SHADOW: the controller computes + publishes grants but the consumer (gaveta) should treat them as advisory. Default true (advisory-first). The pool NEVER carves a k8s/host limit regardless — it divides; the StorageBand holds the 80%. `dryRun` here marks the GRANT LEDGER advisory vs enforced.'
+                type: boolean
+              poolCapacity:
+                description: The pool's total capacity per dimension. The allocatable band each dimension's claimants split is `capacity × setpoint`. A dimension absent here has a zero band (every claim on it is granted 0).
+                items:
+                  description: A pool-capacity entry — the total quantity of ONE dimension the band holds. The allocatable band per dimension is `capacity * setpoint`.
+                  properties:
+                    capacity:
+                      description: The total capacity quantity for this dimension, a string in the dim's unit (`3.6Ti` for storage). The band the claimants split is this × `setpoint`.
+                      type: string
+                    dim:
+                      description: The fabric dimension (`storage` / `cpu` / `bandwidth` / `request-rate`).
+                      type: string
+                  required:
+                  - capacity
+                  - dim
+                  type: object
+                type: array
+              setpoint:
+                default: 0.8
+                description: The utilization setpoint — the fraction of capacity the claimants divide (the 80% band). Default `0.80`. Clamped to `(0, 1]` in the allocator.
+                format: double
+                type: number
+              storageBandRef:
+                description: 'OPTIONAL: pull the storage capacity from a referenced `StorageBand`''s `status.observedCapacity` instead of (or in addition to) an explicit `poolCapacity` storage entry — so the divider tracks the band that holds the pool. When set AND the band reports a capacity, it OVERRIDES the explicit storage entry. (The explicit entry is the shippable default; this is the destination coupling.)'
+                nullable: true
+                properties:
+                  name:
+                    description: The `StorageBand` name.
+                    type: string
+                  namespace:
+                    description: The `StorageBand` namespace. Omit ⇒ the pool's own namespace.
+                    nullable: true
+                    type: string
+                required:
+                - name
+                type: object
+            required:
+            - poolCapacity
+            type: object
+          status:
+            description: '`QuinhaoPool` status — the computed grant ledger + the band summary.'
+            nullable: true
+            properties:
+              band:
+                additionalProperties:
+                  format: int64
+                  type: integer
+                description: The allocatable band per dimension (`capacity × setpoint`), keyed by dim — what the claimants divided. Lets an operator see the band from the status.
+                type: object
+              claimCount:
+                description: How many claimants carry a grant.
+                format: int64
+                nullable: true
+                type: integer
+              effectiveDryRun:
+                description: Whether the published ledger is advisory (`dryRun`) — echoed for the consumer.
+                nullable: true
+                type: boolean
+              grants:
+                description: The grant ledger — one entry per claimant. THE surface gaveta consumes.
+                items:
+                  description: One claimant's computed grant — what gaveta reads. `grants[dim]` is the quota in that dimension's unit (bytes for storage).
+                  properties:
+                    grants:
+                      additionalProperties:
+                        format: int64
+                        type: integer
+                      description: The granted quota per dimension, keyed by dim string — raw quantities in the dim's unit (bytes for storage). gaveta reads `grants["storage"]` as the member's storage quota in bytes.
+                      type: object
+                    id:
+                      description: The claimant id (a gaveta group-id or member-id).
+                      type: string
+                    kind:
+                      description: '`Group` / `User` (echoed from the spec for ledger legibility).'
+                      enum:
+                      - group
+                      - user
+                      type: string
+                    parentId:
+                      description: The parent id, if a child (echoed for the consumer's tree walk).
+                      nullable: true
+                      type: string
+                  required:
+                  - grants
+                  - id
+                  - kind
+                  type: object
+                type: array
+              lastSeenEpoch:
+                format: int64
+                nullable: true
+                type: integer
+              observedCapacity:
+                additionalProperties:
+                  format: int64
+                  type: integer
+                description: The effective pool capacity per dimension the controller resolved (after a `storageBandRef` override, if any), keyed by dim.
+                type: object
+              observedGeneration:
+                description: '`metadata.generation` the controller last reconciled.'
+                format: int64
+                nullable: true
+                type: integer
+              phase:
+                nullable: true
+                type: string
+              reason:
+                description: A typed refusal when the claim forest is malformed (duplicate id / unknown parent / cycle) — the allocation is refused, never half-published.
+                nullable: true
+                type: string
+            type: object
+        required:
+        - spec
+        title: QuinhaoPool
         type: object
     served: true
     storage: true
