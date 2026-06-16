@@ -116,6 +116,59 @@ pub enum HostKnob {
     /// `param` → `/sys/module/zfs/parameters/<param>`. Generalizes
     /// [`ZfsArcMax`](Self::ZfsArcMax) so every ZFS sysfs param is a catalog row.
     ZfsParam { param: String },
+    /// **PR-4:** a systemd unit's PER-DEVICE `io.max` cap — one of the four
+    /// disjoint fields (`rbps`/`wbps`/`riops`/`wiops`) breathe carves
+    /// independently. Set via `IO{Read,Write}{Bandwidth,IOPS}Max="<device>
+    /// <value>"`. RestartFree (a live cgroup io cap never restarts the unit).
+    CgroupIoMax { unit: String, device: String, field: IoMaxField },
+}
+
+/// **PR-4:** which of the four disjoint `io.max` sub-knobs a [`HostKnob::CgroupIoMax`]
+/// carves (and which io-accounting counter its rate metric differences). `bps`
+/// fields are [`Unit::BytesPerSec`]; `iops` fields are [`Unit::Iops`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IoMaxField {
+    /// Read bandwidth (bytes/s).
+    Rbps,
+    /// Write bandwidth (bytes/s).
+    Wbps,
+    /// Read IOPS.
+    Riops,
+    /// Write IOPS.
+    Wiops,
+}
+
+impl IoMaxField {
+    /// The systemd unit property that SETS this per-device cap.
+    #[must_use]
+    pub fn cap_property(self) -> &'static str {
+        match self {
+            Self::Rbps => "IOReadBandwidthMax",
+            Self::Wbps => "IOWriteBandwidthMax",
+            Self::Riops => "IOReadIOPSMax",
+            Self::Wiops => "IOWriteIOPSMax",
+        }
+    }
+    /// The systemd io-accounting CUMULATIVE counter this field's RATE differences.
+    #[must_use]
+    pub fn counter_property(self) -> &'static str {
+        match self {
+            Self::Rbps => "IOReadBytes",
+            Self::Wbps => "IOWriteBytes",
+            Self::Riops => "IOReadOperations",
+            Self::Wiops => "IOWriteOperations",
+        }
+    }
+    /// Short label (`rbps`/`wbps`/`riops`/`wiops`) — the rate-cache key + logging.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Rbps => "rbps",
+            Self::Wbps => "wbps",
+            Self::Riops => "riops",
+            Self::Wiops => "wiops",
+        }
+    }
 }
 
 /// Where a HOST dimension reads its `used` scalar from.
@@ -137,6 +190,11 @@ pub enum HostMetric {
     /// reported in bytes (meminfo prints kB; the env converts). The `used` signal
     /// for `vm.dirty_bytes`, `min_free_kbytes`, `rmem/wmem` bands.
     MeminfoField { field: String },
+    /// **PR-4:** a systemd unit's io RATE — the cumulative io-accounting counter
+    /// (`IOReadBytes`/`IOWriteOperations`/…) the `HostCluster` differences over the
+    /// sample window into a `BytesPerSec` / `Iops` rate. The `used` signal for an
+    /// `io.max` band. (Unit-aggregate today; per-device io.stat is a refinement.)
+    CgroupIoStat { unit: String, field: IoMaxField },
 }
 
 /// Where a managed quantity lives on a target object — interpreted by the
