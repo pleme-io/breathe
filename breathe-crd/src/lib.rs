@@ -1028,6 +1028,217 @@ impl crate::Band for KubeParamBand {
     }
 }
 
+// ───────────── AppBand — the GENERIC app-plane actuator band (Step-9/13) ─────────────
+// The app-plane peer of KubeParamBand: one CR carves any application knob via the
+// ConfigFile/ApiCall layouts, dispatched by the `ActuatorCluster` sum type to the
+// ConfigReload / redis-CLI / JMX-Jolokia / app-admin-RPC actuator. The `used` signal
+// is read from the k8s metrics plane (a PromQL) — the actuators have no read path.
+
+/// How a [`AppBand`] config-file value takes effect (serde mirror of
+/// `breathe_provider::ConfigReload`).
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum AppReloadSpec {
+    /// `SIGHUP` re-reads the file live (PostgreSQL `work_mem`, nginx) — RestartFree.
+    Sighup,
+    /// A protocol `RELOAD` command (pgbouncer) — RestartFree.
+    Reload,
+    /// Requires a process restart (PostgreSQL `shared_buffers`) — RestartRequiring.
+    Restart,
+}
+
+/// Which app-plane actuator + layout a [`AppBand`] carves. The variant TAG selects
+/// the actuator (never sniffed from the command string) — the app-plane peer of
+/// `KubeLayoutSpec`. Per-variant `rename_all` keeps inner fields camelCase on the
+/// wire (the enum-level attr renames only the tag).
+#[derive(Serialize, Deserialize, Clone, Debug, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum AppLayoutSpec {
+    /// A config file `key` at `path`, applied by the ConfigReload actuator + `reload`.
+    #[serde(rename_all = "camelCase")]
+    ConfigFile { path: String, key: String, reload: AppReloadSpec },
+    /// A protocol `CONFIG SET` knob (Redis/Kafka/NATS) via the redis-CLI actuator.
+    /// `command` = the protocol param (e.g. `maxmemory`); `endpoint` = the server URL.
+    #[serde(rename_all = "camelCase")]
+    ApiCall { endpoint: String, command: String },
+    /// A JVM MBean over Jolokia. `endpoint` = the Jolokia base URL; `command` =
+    /// `ObjectName:attribute`.
+    #[serde(rename_all = "camelCase")]
+    Jmx { endpoint: String, command: String },
+    /// An app admin RPC knob (GOMEMLIMIT/prefetch/max-concurrency). `endpoint` = the
+    /// admin base URL; `command` = the knob name.
+    #[serde(rename_all = "camelCase")]
+    AppRpc { endpoint: String, command: String },
+}
+
+/// Which actuator backend services an [`AppBand`] — the controller builds the
+/// matching `ActuatorBackend` from this tag. Decoupled from `AppLayoutSpec` so the
+/// controller need not depend on the layout's data to pick the backend.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AppActuatorKind {
+    ConfigReload,
+    ApiCall,
+    Jmx,
+    AppRpc,
+}
+
+/// The `used` metric for an [`AppBand`] — a PromQL whose scalar is the live
+/// utilization signal (redis used_memory, pool active connections, working set).
+#[derive(Serialize, Deserialize, Clone, Debug, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AppMetricSpec {
+    pub prometheus: String,
+}
+
+#[derive(CustomResource, Serialize, Deserialize, Clone, Debug, JsonSchema)]
+#[kube(
+    group = "breathe.pleme.io",
+    version = "v1",
+    kind = "AppBand",
+    namespaced,
+    status = "BandStatus",
+    shortname = "apband",
+    category = "breathe",
+    printcolumn = r#"{"name":"Dir","type":"string","jsonPath":".spec.directionality"}"#,
+    printcolumn = r#"{"name":"Util","type":"string","jsonPath":".status.lastUtil"}"#,
+    printcolumn = r#"{"name":"Limit","type":"string","jsonPath":".status.currentLimit"}"#,
+    printcolumn = r#"{"name":"Last","type":"string","jsonPath":".status.lastDecision"}"#,
+    printcolumn = r#"{"name":"Phase","type":"string","jsonPath":".status.phase"}"#
+)]
+#[serde(rename_all = "camelCase")]
+pub struct AppBandSpec {
+    /// The workload this band carves (`targetRef.name`/`namespace` locate the app +
+    /// its metric pods; the layout addresses the app's own knob).
+    pub target_ref: TargetRef,
+    /// The app-plane knob to carve (its variant tag selects the actuator).
+    pub layout: AppLayoutSpec,
+    /// Where to read the `used` signal (a PromQL on the metrics plane).
+    pub metric: AppMetricSpec,
+    #[serde(default)]
+    pub directionality: DirectionalitySpec,
+    #[serde(default = "d_setpoint")]
+    pub setpoint: f64,
+    #[serde(default = "d_grow_above")]
+    pub grow_above: f64,
+    #[serde(default = "d_shrink_below")]
+    pub shrink_below: f64,
+    #[serde(default = "d_grow_factor")]
+    pub grow_factor: f64,
+    #[serde(default = "d_shrink_factor")]
+    pub shrink_factor: f64,
+    #[serde(default = "d_floor_bytes")]
+    pub floor: String,
+    #[serde(default = "d_ceiling_bytes")]
+    pub ceiling: String,
+    #[serde(default = "d_cooldown")]
+    pub cooldown_seconds: u64,
+    #[serde(default = "d_max_staleness")]
+    pub max_staleness_seconds: u64,
+    #[serde(default)]
+    pub dry_run: bool,
+    #[serde(default, skip_serializing_if = "breathe_provider::DisruptionPolicy::is_restart_free_only")]
+    pub disruption_policy: DisruptionPolicy,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub suspend: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub force_limit: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub force_limit_expiry: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub predictive: bool,
+    #[serde(default = "d_predictive_lookahead")]
+    pub predictive_lookahead_seconds: u64,
+}
+
+impl AppBandSpec {
+    /// The provider-typed layout this band carves (Jmx/AppRpc share the ApiCall layout;
+    /// the actuator is disambiguated by [`AppBandSpec::actuator_kind`]).
+    #[must_use]
+    pub fn provider_layout(&self) -> breathe_provider::LimitLayout {
+        use breathe_provider::{ConfigReload, LimitLayout};
+        match &self.layout {
+            AppLayoutSpec::ConfigFile { path, key, reload } => LimitLayout::ConfigFile {
+                path: path.clone(),
+                key: key.clone(),
+                reload: match reload {
+                    AppReloadSpec::Sighup => ConfigReload::Sighup,
+                    AppReloadSpec::Reload => ConfigReload::Reload,
+                    AppReloadSpec::Restart => ConfigReload::Restart,
+                },
+            },
+            AppLayoutSpec::ApiCall { endpoint, command }
+            | AppLayoutSpec::Jmx { endpoint, command }
+            | AppLayoutSpec::AppRpc { endpoint, command } => {
+                LimitLayout::ApiCall { endpoint: endpoint.clone(), command: command.clone() }
+            }
+        }
+    }
+    /// Which actuator backend the controller must build for this band's layout.
+    #[must_use]
+    pub fn actuator_kind(&self) -> AppActuatorKind {
+        match &self.layout {
+            AppLayoutSpec::ConfigFile { .. } => AppActuatorKind::ConfigReload,
+            AppLayoutSpec::ApiCall { .. } => AppActuatorKind::ApiCall,
+            AppLayoutSpec::Jmx { .. } => AppActuatorKind::Jmx,
+            AppLayoutSpec::AppRpc { .. } => AppActuatorKind::AppRpc,
+        }
+    }
+    /// The provider-typed metric source (a PromQL).
+    #[must_use]
+    pub fn provider_metric(&self) -> breathe_provider::MetricSource {
+        breathe_provider::MetricSource::Prometheus(self.metric.prometheus.clone())
+    }
+    /// The provider-typed directionality.
+    #[must_use]
+    pub fn provider_directionality(&self) -> breathe_provider::Directionality {
+        match self.directionality {
+            DirectionalitySpec::Bidirectional => breathe_provider::Directionality::Bidirectional,
+            DirectionalitySpec::GrowOnly => breathe_provider::Directionality::GrowOnly,
+        }
+    }
+}
+
+impl crate::Band for AppBand {
+    fn target_ref(&self) -> &TargetRef {
+        &self.spec.target_ref
+    }
+    fn band_config(&self) -> anyhow::Result<BandConfig> {
+        let s = &self.spec;
+        // app knobs are bare integers (maxmemory bytes, max_connections counts, …).
+        crate::band_config_of(s.setpoint, s.grow_above, s.shrink_below, s.grow_factor, s.shrink_factor, &s.floor, &s.ceiling, Unit::Count)
+    }
+    fn max_staleness_seconds(&self) -> u64 {
+        self.spec.max_staleness_seconds
+    }
+    fn cooldown_seconds(&self) -> u64 {
+        self.spec.cooldown_seconds
+    }
+    fn dry_run(&self) -> bool {
+        self.spec.dry_run
+    }
+    fn last_change_epoch(&self) -> Option<i64> {
+        self.status.as_ref().and_then(|s| s.last_change_epoch)
+    }
+    fn disruption_policy(&self) -> DisruptionPolicy {
+        self.spec.disruption_policy
+    }
+    fn suspended(&self) -> bool {
+        self.spec.suspend
+    }
+    fn force_limit_value(&self) -> Option<u64> {
+        self.spec.force_limit.as_deref().and_then(|q| Unit::Count.parse(q))
+    }
+    fn force_limit_expiry(&self) -> Option<&str> {
+        self.spec.force_limit_expiry.as_deref()
+    }
+    fn predictive(&self) -> Option<f64> {
+        self.spec.predictive.then_some(self.spec.predictive_lookahead_seconds as f64)
+    }
+    fn status(&self) -> Option<&BandStatus> {
+        self.status.as_ref()
+    }
+}
+
 // ─────────────────── BreatheNodePool — host enrollment ──────────────────
 
 /// A GiB quantity bounded to a sane node maximum (1 PiB) so that `value * 2^30`
