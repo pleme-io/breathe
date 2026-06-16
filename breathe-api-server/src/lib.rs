@@ -405,7 +405,9 @@ mod tests {
             .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
         let v = body_json(resp).await;
-        assert_eq!(v["dimensions"].as_array().unwrap().len(), 8);
+        // every catalogued dimension is exposed on the REST surface (not a literal —
+        // tracks breathe_catalog::ALL_DIMENSIONS so it never goes stale).
+        assert_eq!(v["dimensions"].as_array().unwrap().len(), breathe_catalog::ALL_DIMENSIONS.len());
     }
 
     #[tokio::test]
@@ -521,7 +523,9 @@ mod tests {
         let svc = grpc::GrpcService { store: Arc::new(MockStore::default()) };
         let resp = svc.catalog_list(tonic::Request::new(grpc::pb::CatalogListRequest {})).await.unwrap();
         let cat = resp.into_inner();
-        assert_eq!(cat.dimensions.len(), 8);
+        // the gRPC bridge preserves every catalogued dimension (tracks the canonical
+        // count, never a literal — see breathe_catalog::ALL_DIMENSIONS).
+        assert_eq!(cat.dimensions.len(), breathe_catalog::ALL_DIMENSIONS.len());
         assert!(cat.dimensions.iter().any(|d| d.id == "arc" && d.is_host));
         assert!(cat.dimensions.iter().any(|d| d.id == "cgroup-cpu" && d.is_host));
         assert!(cat.dimensions.iter().any(|d| d.id == "memory" && !d.is_host));

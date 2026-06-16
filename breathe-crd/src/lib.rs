@@ -637,13 +637,24 @@ impl crate::Band for HostParamBand {
 #[derive(Serialize, Deserialize, Clone, Debug, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub enum KubeLayoutSpec {
+    // NOTE: the enum-level `rename_all = "camelCase"` renames only the variant
+    // TAGS (CrField -> crField); it does NOT cascade to struct-variant inner
+    // fields. Each variant with a multi-word field therefore carries its OWN
+    // `rename_all` so its snake_case Rust fields serialize camelCase
+    // (`fieldPath`/`apiVersion`/`restartFree`) — camelCase like every other field
+    // in the breathe API. Without these, the CRD + the wire CR would be the lone
+    // snake_case island (an idiom leak); the round-trip test below locks it.
     /// A field of any operator CR (CNPG/VictoriaMetrics/OpenSearch) at `fieldPath`.
+    #[serde(rename_all = "camelCase")]
     CrField { api_version: String, kind: String, name: String, field_path: String, #[serde(default)] restart_free: bool },
     /// An Istio DestinationRule connection-pool field (Envoy live-reload).
+    #[serde(rename_all = "camelCase")]
     DestinationRuleField { name: String, field_path: String },
     /// A namespace ResourceQuota / LimitRange envelope field.
+    #[serde(rename_all = "camelCase")]
     NamespaceEnvelope { namespace: String, kind: NamespaceEnvelopeKindSpec, field_path: String },
     /// A controller setpoint — HPA target / PDB minAvailable.
+    #[serde(rename_all = "camelCase")]
     ControllerSetpoint { api_version: String, kind: String, name: String, field_path: String },
 }
 
@@ -681,7 +692,7 @@ pub struct KubeMetricSpec {
 #[serde(rename_all = "camelCase")]
 pub struct KubeParamBandSpec {
     /// The CR this band carves (`targetRef.kind`/`name`/`apiVersion` = the object;
-    /// the layout's field_path points into its `/spec`).
+    /// the layout's `fieldPath` points into its `/spec`).
     pub target_ref: TargetRef,
     /// The k8s-CR field to carve.
     pub layout: KubeLayoutSpec,
@@ -1483,5 +1494,59 @@ mod tests {
         let crd = <BreatheNodePool as kube::CustomResourceExt>::crd();
         assert_eq!(crd.spec.scope, "Cluster", "BreatheNodePool must be cluster-scoped");
         let _ = BreatheNodePool::kind(&());
+    }
+
+    #[test]
+    fn kube_layout_inner_fields_are_camelcase_on_the_wire() {
+        // Regression lock for the idiom leak the deploy-verify pass caught: the
+        // enum-level rename_all does NOT cascade to struct-variant fields, so each
+        // KubeLayoutSpec variant carries its own. crField's inner fields MUST
+        // serialize camelCase (apiVersion/fieldPath/restartFree) — matching the
+        // generated CRD + the rest of the breathe API — or a hand-authored CR is
+        // pruned and rejected by the apiserver on the required snake_case names.
+        let layout = KubeLayoutSpec::CrField {
+            api_version: "postgresql.cnpg.io/v1".into(),
+            kind: "Cluster".into(),
+            name: "pangea-database".into(),
+            field_path: "/spec/postgresql/parameters/max_connections".into(),
+            restart_free: false,
+        };
+        let j = serde_json::to_value(&layout).unwrap();
+        let cr = &j["crField"];
+        assert!(cr.get("apiVersion").is_some(), "crField must serialize apiVersion (camelCase)");
+        assert!(cr.get("fieldPath").is_some(), "crField must serialize fieldPath (camelCase)");
+        assert!(cr.get("restartFree").is_some(), "crField must serialize restartFree (camelCase)");
+        assert!(
+            cr.get("api_version").is_none() && cr.get("field_path").is_none(),
+            "crField must NOT emit snake_case keys (the idiom leak)"
+        );
+
+        // a camelCase CR spec round-trips into the typed band.
+        let band: KubeParamBand = serde_json::from_value(serde_json::json!({
+            "apiVersion": "breathe.pleme.io/v1", "kind": "KubeParamBand",
+            "metadata": { "name": "k", "namespace": "pangea-system" },
+            "spec": {
+                "targetRef": { "kind": "Cluster", "name": "pangea-database", "apiVersion": "postgresql.cnpg.io/v1" },
+                "layout": { "crField": {
+                    "apiVersion": "postgresql.cnpg.io/v1", "kind": "Cluster", "name": "pangea-database",
+                    "fieldPath": "/spec/postgresql/parameters/max_connections", "restartFree": false
+                } },
+                "metric": { "prometheus": "max(cnpg_backends_total)" },
+                "dryRun": true
+            }
+        })).expect("a camelCase crField CR must deserialize");
+        match &band.spec.layout {
+            KubeLayoutSpec::CrField { field_path, .. } => {
+                assert_eq!(field_path, "/spec/postgresql/parameters/max_connections");
+            }
+            other => panic!("expected CrField, got {other:?}"),
+        }
+
+        // the generated CRD schema advertises the camelCase property — what the
+        // apiserver validates a hand-authored CR against.
+        let crd = <KubeParamBand as kube::CustomResourceExt>::crd();
+        let yaml = serde_yaml::to_string(&crd).unwrap();
+        assert!(yaml.contains("fieldPath"), "the KubeParamBand CRD must advertise fieldPath (camelCase)");
+        assert!(!yaml.contains("field_path"), "the CRD must not carry the snake_case field_path");
     }
 }
