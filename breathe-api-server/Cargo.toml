@@ -41,6 +41,10 @@ which = "6"
 async-trait = "0.1"
 tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"
+# The canonical dimension count — the catalog tests assert against ALL_DIMENSIONS
+# so the API-surface count never goes stale when a dimension lands (it bit 7->8
+# and 8->9 as hardcoded literals; now it tracks the source of truth).
+breathe-catalog = { path = "../breathe-catalog", version = "0.1.0" }
 
 [lints]
 workspace = true
