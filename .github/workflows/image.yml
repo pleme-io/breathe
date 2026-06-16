@@ -49,6 +49,11 @@ jobs:
           export CONTAINERS_REGISTRIES_CONF=/tmp/registries.conf
           IMG=ghcr.io/pleme-io/${{ matrix.repo }}
           CREDS="${{ github.actor }}:${{ secrets.GITHUB_TOKEN }}"
-          nix run nixpkgs#skopeo -- copy --dest-creds "$CREDS" docker-archive:result "docker://$IMG:0.1.0"
+          # Tag = the flake `version` (single source of truth) so each release line
+          # gets a distinct, traceable tag; :latest is the moving pointer the rio
+          # HelmRelease pulls (pullPolicy: Always) for in-line iteration.
+          VER=$(nix eval --raw ".#packages.x86_64-linux.image.imageTag" 2>/dev/null || \
+                grep -oP 'version = "\K[0-9.]+' flake.nix | head -1)
+          nix run nixpkgs#skopeo -- copy --dest-creds "$CREDS" docker-archive:result "docker://$IMG:$VER"
           nix run nixpkgs#skopeo -- copy --dest-creds "$CREDS" docker-archive:result "docker://$IMG:latest"
-          echo "pushed $IMG:0.1.0 + :latest (private)"
+          echo "pushed $IMG:$VER + :latest (private)"

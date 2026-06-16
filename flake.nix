@@ -27,7 +27,7 @@
       "aarch64-darwin"
     ] (system: let
       pkgs = import nixpkgs { inherit system; };
-      version = "0.1.0";
+      version = "0.1.2";
 
       rustToolchain = fenix.packages.${system}.stable.toolchain;
       rustPlatform = pkgs.makeRustPlatform { cargo = rustToolchain; rustc = rustToolchain; };
