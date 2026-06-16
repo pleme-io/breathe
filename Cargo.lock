@@ -388,6 +388,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "breathe-actuator"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "breathe-apicall",
+ "breathe-apprpc",
+ "breathe-configreload",
+ "breathe-jmx",
+ "breathe-kube",
+ "breathe-provider",
+]
+
+[[package]]
 name = "breathe-admission"
 version = "0.1.0"
 dependencies = [
@@ -405,6 +418,7 @@ dependencies = [
  "async-graphql-axum",
  "async-trait",
  "axum 0.7.9",
+ "breathe-catalog",
  "breathe-facade",
  "http-body-util",
  "pbjson",
@@ -426,6 +440,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "breathe-apicall"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "breathe-control",
+ "breathe-provider",
+ "tokio",
+]
+
+[[package]]
+name = "breathe-apprpc"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "breathe-control",
+ "breathe-provider",
+ "tokio",
+]
+
+[[package]]
 name = "breathe-auction"
 version = "0.1.0"
 dependencies = [
@@ -441,6 +475,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "breathe-configreload"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "breathe-control",
+ "breathe-provider",
+ "tokio",
+]
+
+[[package]]
 name = "breathe-control"
 version = "0.1.0"
 
@@ -448,12 +492,17 @@ version = "0.1.0"
 name = "breathe-controller"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
+ "breathe-actuator",
+ "breathe-admission",
+ "breathe-auction",
  "breathe-control",
  "breathe-core",
  "breathe-crd",
  "breathe-dimensions",
  "breathe-kube",
  "breathe-provider",
+ "breathe-provision",
  "breathe-runtime",
  "futures",
  "k8s-openapi",
@@ -544,6 +593,16 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "breathe-jmx"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "breathe-control",
+ "breathe-provider",
+ "tokio",
 ]
 
 [[package]]
