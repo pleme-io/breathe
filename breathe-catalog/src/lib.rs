@@ -193,14 +193,27 @@ pub const CATALOG: &[DimensionSpec] = &[
         // (a retention band is ShrinkBias / a GrowOnly via descriptor data).
         directionality: Directionality::Bidirectional,
         resource_class: ResourceClass::Soft, // a mis-sized CR field throttles/queues; rarely an OOM
-        purpose: "hold any k8s-CR field / app-protocol knob at the band via the generic CrField/DestinationRule/NamespaceEnvelope/ControllerSetpoint/ConfigFile/ApiCall layouts (Step-6/8/12: one descriptor, data-driven, KubeCluster SSA)",
-        upstream_mirror: Some("k8s CR spec fields (Istio/CNPG/VM/ResourceQuota/HPA) · config-file/protocol"),
+        purpose: "hold any k8s-CR field at the band via the generic CrField/DestinationRule/NamespaceEnvelope/ControllerSetpoint layouts (Step-6/8/12: one descriptor, data-driven, KubeCluster SSA)",
+        upstream_mirror: Some("k8s CR spec fields (Istio/CNPG/VM/ResourceQuota/HPA)"),
+        depends_on: &[],
+    },
+    DimensionSpec {
+        id: DimensionId::AppParam,
+        name: "app-param",
+        authoring_keyword: "defdimension-app-param",
+        maturity: Maturity::Working,
+        // family directionality is general bidirectional; an instance may restrict
+        // (e.g. a maxmemory band is GrowOnly via descriptor data).
+        directionality: Directionality::Bidirectional,
+        resource_class: ResourceClass::Soft, // a mis-sized app knob throttles/queues/evicts; rarely an OOM
+        purpose: "hold any application-actuator knob at the band via the ConfigFile/ApiCall layouts, dispatched by the ActuatorCluster sum type (ConfigReload/redis-CLI/JMX/app-admin-RPC); used read from the metrics plane (Step-9/13: one descriptor, data-driven)",
+        upstream_mirror: Some("config files · redis/kafka/nats CONFIG · JMX MBeans · app admin RPC"),
         depends_on: &[],
     },
 ];
 
 /// All dimension ids the substrate knows (the partition the catalog must cover).
-pub const ALL_DIMENSIONS: [DimensionId; 9] = [
+pub const ALL_DIMENSIONS: [DimensionId; 10] = [
     DimensionId::Memory,
     DimensionId::Storage,
     DimensionId::Cpu,
@@ -210,6 +223,7 @@ pub const ALL_DIMENSIONS: [DimensionId; 9] = [
     DimensionId::CgroupCpu,
     DimensionId::HostParam,
     DimensionId::KubeParam,
+    DimensionId::AppParam,
 ];
 
 /// Look up a dimension's row.

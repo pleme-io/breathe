@@ -2,8 +2,8 @@
 //! hand-authoring. `cargo run -p breathe-crd --bin crdgen > crds/bands.yaml`.
 
 use breathe_crd::{
-    ArcBand, BreatheCloudPool, BreatheConfig, BreatheNodePool, BreatheOverview, CgroupBand, CgroupCpuBand, CpuBand,
-    Densa, HostParamBand, KubeParamBand, MemoryBand, PodMemoryHigh, QuinhaoPool, StorageBand,
+    AppBand, ArcBand, BreatheCloudPool, BreatheConfig, BreatheNodePool, BreatheOverview, CgroupBand, CgroupCpuBand,
+    CpuBand, Densa, HostParamBand, KubeParamBand, MemoryBand, PodMemoryHigh, QuinhaoPool, StorageBand,
 };
 use kube::CustomResourceExt;
 
@@ -20,6 +20,8 @@ fn main() {
         HostParamBand::crd(),
         // Step-6/8/12 — the generic k8s-CR / app band (Istio/ResourceQuota/CR fields)
         KubeParamBand::crd(),
+        // Step-9/13 — the generic app-plane actuator band (ConfigFile/ApiCall via ActuatorCluster)
+        AppBand::crd(),
         BreatheNodePool::crd(),
         // Part 1 — the SOFT-k8s-carve controller→host-agent dispatch (pod memory.high)
         PodMemoryHigh::crd(),
