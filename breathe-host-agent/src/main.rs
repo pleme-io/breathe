@@ -23,11 +23,11 @@ use std::{sync::Arc, time::Duration};
 
 use breathe_core::{reconcile_one, ReconcileInput};
 use breathe_crd::{
-    ArcBand, Band, BreatheNodePool, CgroupBand, CgroupCpuBand, GiB, NodePoolStatus,
+    ArcBand, Band, BreatheNodePool, CgroupBand, CgroupCpuBand, GiB, HostParamBand, NodePoolStatus,
 };
 use breathe_host::{
     ArcDescriptor, CgroupCpuDescriptor, CgroupMemoryDescriptor, CpuSampleCache, HostCluster,
-    NodeEnvelopes, SystemdSysfsEnv, new_cpu_sample_cache,
+    HostParamDescriptor, NodeEnvelopes, SystemdSysfsEnv, new_cpu_sample_cache,
 };
 use breathe_provider::{BandProvider, ClassCooldowns, DimensionDescriptor, ResourceProvider, Target};
 use breathe_runtime::{
@@ -125,12 +125,15 @@ fn envelopes_from(pool: &BreatheNodePool) -> Result<NodeEnvelopes, String> {
     Ok(NodeEnvelopes { arc_max_bytes, cgroup_max_bytes, cgroup_cpu_max_millicores })
 }
 
-/// The one host reconcile body for every host dimension. `B` is the band kind,
-/// `D` its descriptor. Mirrors the brain's reconcile, but over `HostCluster` and
-/// gated by the node's `BreatheNodePool`.
-async fn reconcile_host<B: Band, D: DimensionDescriptor + Default>(
+/// The one host reconcile body for every host dimension, given an already-built
+/// `descriptor`. `B` is the band kind, `D` its descriptor. Mirrors the brain's
+/// reconcile, but over `HostCluster` and gated by the node's `BreatheNodePool`.
+/// The descriptor is a PARAMETER (not `D::default()`) so a data-driven band kind
+/// (`HostParamBand`) can build its descriptor from the CR spec.
+async fn reconcile_host_with<B: Band, D: DimensionDescriptor>(
     obj: Arc<B>,
     ctx: Arc<Ctx>,
+    descriptor: D,
 ) -> Result<Action, Error> {
     let ns = obj.namespace().unwrap_or_default();
     let name = obj.name_any();
@@ -193,7 +196,7 @@ async fn reconcile_host<B: Band, D: DimensionDescriptor + Default>(
     let provider = BandProvider::new(
         HostCluster::new(SystemdSysfsEnv::from_env(), envelopes, write_enabled)
             .with_cpu_samples(ctx.cpu_samples.clone()),
-        D::default(),
+        descriptor,
     );
     // BREAK-GLASS forceLimit (still bounded by the L2 ceiling in HostCluster::apply).
     let force = obj.force_limit_value().filter(|_| obj.force_limit_expiry().map_or(true, rfc3339_in_future));
@@ -227,6 +230,27 @@ async fn reconcile_host<B: Band, D: DimensionDescriptor + Default>(
     patch_status::<B>(&ctx.client, &ns, &name, &status).await?;
     // host carves are all RestartFree → re-tick at the fast golden cadence.
     Ok(Action::requeue(next_requeue(&outcome.receipt, &ClassCooldowns::default())))
+}
+
+/// The fixed-descriptor host reconcile (arc/cgroup/cgroup-cpu): build the
+/// dimension's `Default` descriptor and delegate to the shared body.
+async fn reconcile_host<B: Band, D: DimensionDescriptor + Default>(
+    obj: Arc<B>,
+    ctx: Arc<Ctx>,
+) -> Result<Action, Error> {
+    reconcile_host_with(obj, ctx, D::default()).await
+}
+
+/// PR-2: the GENERIC host-param reconcile. Builds a `HostParamDescriptor` from
+/// the CR's knob/metric/directionality DATA (not `Default`) and drives the SAME
+/// shared host body — so a `vm.dirty_bytes` band breathes exactly like arc/cgroup.
+async fn reconcile_host_param(obj: Arc<HostParamBand>, ctx: Arc<Ctx>) -> Result<Action, Error> {
+    let descriptor = HostParamDescriptor {
+        knob: obj.spec.provider_knob(),
+        metric: obj.spec.provider_metric(),
+        dir: obj.spec.provider_directionality(),
+    };
+    reconcile_host_with(obj, ctx, descriptor).await
 }
 
 /// Reconcile the node's own enrollment charter — surface it as Active so
@@ -312,7 +336,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         reporter,
     });
 
-    info!(node = %node_name, "breathe-host-agent starting — arc + cgroup-memory + cgroup-cpu host dimensions");
+    info!(node = %node_name, "breathe-host-agent starting — arc + cgroup-memory + cgroup-cpu + host-param (sysctl/zfs) dimensions");
 
     let arc = gen_controller!(Api::<ArcBand>::all(client.clone()))
         .run(reconcile_host::<ArcBand, ArcDescriptor>, error_policy::<ArcBand>, ctx.clone())
@@ -331,11 +355,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             ctx.clone(),
         )
         .for_each(|_| async {});
+    // PR-2: the GENERIC sysctl / ZFS-param band — one controller, every vector a CR.
+    let host_param = gen_controller!(Api::<HostParamBand>::all(client.clone()))
+        .run(reconcile_host_param, error_policy::<HostParamBand>, ctx.clone())
+        .for_each(|_| async {});
     let pool = gen_controller!(Api::<BreatheNodePool>::all(client.clone()))
         .run(reconcile_pool, pool_error_policy, ctx.clone())
         .for_each(|_| async {});
 
-    tokio::join!(arc, cgroup, cgroup_cpu, pool);
+    tokio::join!(arc, cgroup, cgroup_cpu, host_param, pool);
     Ok(())
 }
 

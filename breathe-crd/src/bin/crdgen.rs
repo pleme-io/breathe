@@ -3,7 +3,7 @@
 
 use breathe_crd::{
     ArcBand, BreatheCloudPool, BreatheConfig, BreatheNodePool, BreatheOverview, CgroupBand, CgroupCpuBand, CpuBand,
-    Densa, MemoryBand, StorageBand,
+    Densa, HostParamBand, MemoryBand, StorageBand,
 };
 use kube::CustomResourceExt;
 
@@ -16,6 +16,8 @@ fn main() {
         ArcBand::crd(),
         CgroupBand::crd(),
         CgroupCpuBand::crd(),
+        // PR-2 — the generic sysctl / ZFS-param band (every vector is an instance)
+        HostParamBand::crd(),
         BreatheNodePool::crd(),
         // BU2 — the node-count Forma enrollment (Forma ⇄ Densa envelope)
         BreatheCloudPool::crd(),

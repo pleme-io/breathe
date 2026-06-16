@@ -384,6 +384,179 @@ band_kind!(CgroupBandSpec, CgroupBand, "CgroupBand", "gband", Unit::Bytes, "d_fl
 // HOST cpu band — the unit's transient CPUQuota cap, millicores (like CpuBand).
 band_kind!(CgroupCpuBandSpec, CgroupCpuBand, "CgroupCpuBand", "gcband", Unit::Millicores, "d_floor_milli", "d_ceiling_milli");
 
+// ───────────── HostParamBand — the GENERIC sysctl / ZFS-param band (PR-2) ─────────────
+// Hand-rolled (not band_kind!) because it carries EXTRA spec fields — the knob,
+// the metric, and the per-instance directionality — that `band_kind!`'s fixed
+// shape can't express. Every vm.*/net.*/fs.* sysctl + every ZFS module param is
+// a CR INSTANCE of this ONE kind (PR-2's "collapse the family to data"). Value is
+// a bare u64 straight through the sysfs/procfs seam; floor/ceiling parse as Bytes
+// (which also accepts bare integers for count-valued params like fs.file-max).
+
+/// Which host lever a [`HostParamBand`] carves (the serializable mirror of
+/// `breathe_provider::HostKnob`'s generic arms).
+#[derive(Serialize, Deserialize, Clone, Debug, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum HostKnobSpec {
+    /// A dotted sysctl key (`vm.dirty_bytes`) → `/proc/sys/vm/dirty_bytes`.
+    Sysctl { key: String },
+    /// A ZFS module parameter (`zfs_arc_min`) → `/sys/module/zfs/parameters/zfs_arc_min`.
+    ZfsParam { param: String },
+}
+
+/// Where a [`HostParamBand`] reads its `used` signal (mirror of the generic
+/// `breathe_provider::HostMetric` arms).
+#[derive(Serialize, Deserialize, Clone, Debug, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum HostMetricSpec {
+    /// A `/proc/meminfo` field in bytes (`Dirty`, `MemFree`, `Writeback`).
+    MeminfoField { field: String },
+    /// A named `/proc/spl/kstat/zfs/arcstats` row (`size`, `dnode_size`).
+    ArcstatsRow { row: String },
+}
+
+/// A host-param band's carve directionality (serializable mirror of
+/// `breathe_provider::Directionality`; `ObserveOnly` is not a carve).
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, JsonSchema, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub enum DirectionalitySpec {
+    /// Breathes both ways (`vm.dirty_bytes`, `zfs_arc_dnode_limit`).
+    #[default]
+    Bidirectional,
+    /// Never shrinks — a protection floor (`zfs_arc_min`, `vm.min_free_kbytes`).
+    GrowOnly,
+}
+
+#[derive(CustomResource, Serialize, Deserialize, Clone, Debug, JsonSchema)]
+#[kube(
+    group = "breathe.pleme.io",
+    version = "v1",
+    kind = "HostParamBand",
+    namespaced,
+    status = "BandStatus",
+    shortname = "hpband",
+    category = "breathe",
+    printcolumn = r#"{"name":"Knob","type":"string","jsonPath":".spec.knob"}"#,
+    printcolumn = r#"{"name":"Dir","type":"string","jsonPath":".spec.directionality"}"#,
+    printcolumn = r#"{"name":"Util","type":"string","jsonPath":".status.lastUtil"}"#,
+    printcolumn = r#"{"name":"Limit","type":"string","jsonPath":".status.currentLimit"}"#,
+    printcolumn = r#"{"name":"Last","type":"string","jsonPath":".status.lastDecision"}"#,
+    printcolumn = r#"{"name":"Phase","type":"string","jsonPath":".status.phase"}"#
+)]
+#[serde(rename_all = "camelCase")]
+pub struct HostParamBandSpec {
+    /// The node this band carves on (`targetRef.name` = node name, `kind: Node`).
+    pub target_ref: TargetRef,
+    /// The host lever to carve.
+    pub knob: HostKnobSpec,
+    /// Where to read the `used` signal.
+    pub metric: HostMetricSpec,
+    /// Carve directionality (default bidirectional; set `growOnly` for protection floors).
+    #[serde(default)]
+    pub directionality: DirectionalitySpec,
+    #[serde(default = "d_setpoint")]
+    pub setpoint: f64,
+    #[serde(default = "d_grow_above")]
+    pub grow_above: f64,
+    #[serde(default = "d_shrink_below")]
+    pub shrink_below: f64,
+    #[serde(default = "d_grow_factor")]
+    pub grow_factor: f64,
+    #[serde(default = "d_shrink_factor")]
+    pub shrink_factor: f64,
+    #[serde(default = "d_floor_bytes")]
+    pub floor: String,
+    #[serde(default = "d_ceiling_bytes")]
+    pub ceiling: String,
+    #[serde(default = "d_cooldown")]
+    pub cooldown_seconds: u64,
+    #[serde(default = "d_max_staleness")]
+    pub max_staleness_seconds: u64,
+    #[serde(default)]
+    pub dry_run: bool,
+    #[serde(default, skip_serializing_if = "breathe_provider::DisruptionPolicy::is_restart_free_only")]
+    pub disruption_policy: DisruptionPolicy,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub suspend: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub force_limit: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub force_limit_expiry: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub predictive: bool,
+    #[serde(default = "d_predictive_lookahead")]
+    pub predictive_lookahead_seconds: u64,
+}
+
+impl HostParamBandSpec {
+    /// The provider-typed host knob this band carves.
+    #[must_use]
+    pub fn provider_knob(&self) -> breathe_provider::HostKnob {
+        match &self.knob {
+            HostKnobSpec::Sysctl { key } => breathe_provider::HostKnob::Sysctl { key: key.clone() },
+            HostKnobSpec::ZfsParam { param } => breathe_provider::HostKnob::ZfsParam { param: param.clone() },
+        }
+    }
+    /// The provider-typed metric source this band reads `used` from.
+    #[must_use]
+    pub fn provider_metric(&self) -> breathe_provider::HostMetric {
+        match &self.metric {
+            HostMetricSpec::MeminfoField { field } => breathe_provider::HostMetric::MeminfoField { field: field.clone() },
+            HostMetricSpec::ArcstatsRow { row } => breathe_provider::HostMetric::ArcKstat { row: row.clone() },
+        }
+    }
+    /// The provider-typed directionality (the band law's lower-band gate).
+    #[must_use]
+    pub fn provider_directionality(&self) -> breathe_provider::Directionality {
+        match self.directionality {
+            DirectionalitySpec::Bidirectional => breathe_provider::Directionality::Bidirectional,
+            DirectionalitySpec::GrowOnly => breathe_provider::Directionality::GrowOnly,
+        }
+    }
+}
+
+impl crate::Band for HostParamBand {
+    fn target_ref(&self) -> &TargetRef {
+        &self.spec.target_ref
+    }
+    fn band_config(&self) -> anyhow::Result<BandConfig> {
+        let s = &self.spec;
+        crate::band_config_of(
+            s.setpoint, s.grow_above, s.shrink_below, s.grow_factor, s.shrink_factor,
+            &s.floor, &s.ceiling, Unit::Bytes,
+        )
+    }
+    fn max_staleness_seconds(&self) -> u64 {
+        self.spec.max_staleness_seconds
+    }
+    fn cooldown_seconds(&self) -> u64 {
+        self.spec.cooldown_seconds
+    }
+    fn dry_run(&self) -> bool {
+        self.spec.dry_run
+    }
+    fn last_change_epoch(&self) -> Option<i64> {
+        self.status.as_ref().and_then(|s| s.last_change_epoch)
+    }
+    fn disruption_policy(&self) -> DisruptionPolicy {
+        self.spec.disruption_policy
+    }
+    fn suspended(&self) -> bool {
+        self.spec.suspend
+    }
+    fn force_limit_value(&self) -> Option<u64> {
+        self.spec.force_limit.as_deref().and_then(|q| Unit::Bytes.parse(q))
+    }
+    fn force_limit_expiry(&self) -> Option<&str> {
+        self.spec.force_limit_expiry.as_deref()
+    }
+    fn predictive(&self) -> Option<f64> {
+        self.spec.predictive.then_some(self.spec.predictive_lookahead_seconds as f64)
+    }
+    fn status(&self) -> Option<&BandStatus> {
+        self.status.as_ref()
+    }
+}
+
 // ─────────────────── BreatheNodePool — host enrollment ──────────────────
 
 /// A GiB quantity bounded to a sane node maximum (1 PiB) so that `value * 2^30`

@@ -405,7 +405,7 @@ mod tests {
             .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
         let v = body_json(resp).await;
-        assert_eq!(v["dimensions"].as_array().unwrap().len(), 7);
+        assert_eq!(v["dimensions"].as_array().unwrap().len(), 8);
     }
 
     #[tokio::test]
@@ -521,7 +521,7 @@ mod tests {
         let svc = grpc::GrpcService { store: Arc::new(MockStore::default()) };
         let resp = svc.catalog_list(tonic::Request::new(grpc::pb::CatalogListRequest {})).await.unwrap();
         let cat = resp.into_inner();
-        assert_eq!(cat.dimensions.len(), 7);
+        assert_eq!(cat.dimensions.len(), 8);
         assert!(cat.dimensions.iter().any(|d| d.id == "arc" && d.is_host));
         assert!(cat.dimensions.iter().any(|d| d.id == "cgroup-cpu" && d.is_host));
         assert!(cat.dimensions.iter().any(|d| d.id == "memory" && !d.is_host));
