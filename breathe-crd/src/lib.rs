@@ -401,6 +401,32 @@ pub enum HostKnobSpec {
     Sysctl { key: String },
     /// A ZFS module parameter (`zfs_arc_min`) → `/sys/module/zfs/parameters/zfs_arc_min`.
     ZfsParam { param: String },
+    /// A systemd unit's per-device `io.max` cap — Step-4. `field` is one of
+    /// `rbps`/`wbps`/`riops`/`wiops`; `device` is `<maj>:<min>`.
+    CgroupIoMax { unit: String, device: String, field: IoMaxFieldSpec },
+}
+
+/// Which `io.max` sub-knob a [`HostKnobSpec::CgroupIoMax`] carves (serde mirror of
+/// `breathe_provider::IoMaxField`). `bps` fields are bytes/s, `iops` are ops/s.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum IoMaxFieldSpec {
+    Rbps,
+    Wbps,
+    Riops,
+    Wiops,
+}
+
+impl IoMaxFieldSpec {
+    #[must_use]
+    fn provider(self) -> breathe_provider::IoMaxField {
+        match self {
+            Self::Rbps => breathe_provider::IoMaxField::Rbps,
+            Self::Wbps => breathe_provider::IoMaxField::Wbps,
+            Self::Riops => breathe_provider::IoMaxField::Riops,
+            Self::Wiops => breathe_provider::IoMaxField::Wiops,
+        }
+    }
 }
 
 /// Where a [`HostParamBand`] reads its `used` signal (mirror of the generic
@@ -412,6 +438,29 @@ pub enum HostMetricSpec {
     MeminfoField { field: String },
     /// A named `/proc/spl/kstat/zfs/arcstats` row (`size`, `dnode_size`).
     ArcstatsRow { row: String },
+    /// A systemd unit's io RATE (the cumulative io-accounting counter differenced
+    /// over the window) — Step-4. `field` selects rbps/wbps/riops/wiops.
+    CgroupIoStat { unit: String, field: IoMaxFieldSpec },
+    /// PRESSURE-STALL avg10 (×100) from `/proc/pressure/<resource>` — Step-3, the
+    /// throttle signal for a soft band. `resource` ∈ cpu/memory/io, `kind` ∈ some/full.
+    Psi { resource: PsiResourceSpec, kind: PsiKindSpec },
+}
+
+/// Mirror of `breathe_provider::PsiResource` for the CRD.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum PsiResourceSpec {
+    Cpu,
+    Memory,
+    Io,
+}
+
+/// Mirror of `breathe_provider::PsiKind` for the CRD.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum PsiKindSpec {
+    Some,
+    Full,
 }
 
 /// A host-param band's carve directionality (serializable mirror of
@@ -494,6 +543,11 @@ impl HostParamBandSpec {
         match &self.knob {
             HostKnobSpec::Sysctl { key } => breathe_provider::HostKnob::Sysctl { key: key.clone() },
             HostKnobSpec::ZfsParam { param } => breathe_provider::HostKnob::ZfsParam { param: param.clone() },
+            HostKnobSpec::CgroupIoMax { unit, device, field } => breathe_provider::HostKnob::CgroupIoMax {
+                unit: unit.clone(),
+                device: device.clone(),
+                field: field.provider(),
+            },
         }
     }
     /// The provider-typed metric source this band reads `used` from.
@@ -502,6 +556,21 @@ impl HostParamBandSpec {
         match &self.metric {
             HostMetricSpec::MeminfoField { field } => breathe_provider::HostMetric::MeminfoField { field: field.clone() },
             HostMetricSpec::ArcstatsRow { row } => breathe_provider::HostMetric::ArcKstat { row: row.clone() },
+            HostMetricSpec::CgroupIoStat { unit, field } => breathe_provider::HostMetric::CgroupIoStat {
+                unit: unit.clone(),
+                field: field.provider(),
+            },
+            HostMetricSpec::Psi { resource, kind } => breathe_provider::HostMetric::Psi {
+                resource: match resource {
+                    PsiResourceSpec::Cpu => breathe_provider::PsiResource::Cpu,
+                    PsiResourceSpec::Memory => breathe_provider::PsiResource::Memory,
+                    PsiResourceSpec::Io => breathe_provider::PsiResource::Io,
+                },
+                kind: match kind {
+                    PsiKindSpec::Some => breathe_provider::PsiKind::Some,
+                    PsiKindSpec::Full => breathe_provider::PsiKind::Full,
+                },
+            },
         }
     }
     /// The provider-typed directionality (the band law's lower-band gate).
