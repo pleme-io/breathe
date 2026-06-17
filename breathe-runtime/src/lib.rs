@@ -13,6 +13,13 @@ use breathe_control::{BandConfig, Decision, Observation};
 use breathe_core::{TickOutcome, TickReceipt};
 use breathe_crd::{Band, BandStatus, Condition, TrendSample};
 use breathe_provider::{ClassCooldowns, DisruptionPolicy, EdgeTier};
+
+// The durable-store seam (M0 of the Urdume-microservice refactor;
+// docs/BREATHE-MICROSERVICE.md). `CumulativeCounters` is the single counter
+// fold; `DecisionEntry` is the per-tick classified decision. Re-exported so the
+// controller + agent can name them via `breathe_runtime::…` without a direct
+// breathe-store dependency.
+pub use breathe_store::{CounterClass, CumulativeCounters, DecisionEntry};
 use metrics::{counter, gauge, Label};
 use kube::{
     api::{Api, Patch, PatchParams},
@@ -212,16 +219,20 @@ pub fn conditions_for(outcome: &TickOutcome, prior: &[Condition], generation: Op
 /// the cooldown remaining, and cumulative carve/deferral/conflict counters —
 /// everything `kubectl get/describe` and Grafana need, all from the one TickOutcome.
 ///
-/// `prior` is the band's CURRENT status (read before reconcile) — used to carry the
-/// cumulative counters forward (reconciles are serialized per-object, so a
-/// read-then-increment is race-free) and to compute the cooldown remaining from the
-/// last carve epoch. `cooldown_seconds` is the band's configured cooldown window.
+/// `prior` is the band's CURRENT status (read before reconcile) — used to compute
+/// the cooldown remaining from the last carve epoch and to carry forward history.
+/// `cooldown_seconds` is the band's configured cooldown window. `counters` is the
+/// cumulative carve/deferral/conflict count, sourced from the `DecisionLog` (the
+/// single accumulation point — see [`entry_for`] / [`CumulativeCounters::fold`]);
+/// `status_for` no longer increments counters itself (the dual-source-of-truth the
+/// Urdume-microservice refactor removed).
 #[must_use]
 pub fn status_for(
     outcome: &TickOutcome,
     prior: Option<&BandStatus>,
     cooldown_seconds: u64,
     generation: Option<i64>,
+    counters: CumulativeCounters,
 ) -> BandStatus {
     let mut s = BandStatus::default();
     let receipt = &outcome.receipt;
@@ -334,13 +345,11 @@ pub fn status_for(
         }
     }
 
-    // ── CUMULATIVE COUNTERS — read prior + increment (serialized per object). ─
-    let prior_n = |get: fn(&BandStatus) -> Option<i64>| prior.and_then(get).unwrap_or(0);
-    s.carves_total = Some(prior_n(|p| p.carves_total) + i64::from(matches!(receipt, TickReceipt::Applied { .. })));
-    s.deferrals_total =
-        Some(prior_n(|p| p.deferrals_total) + i64::from(matches!(receipt, TickReceipt::DeferredWouldRestart { .. })));
-    s.conflicts_total =
-        Some(prior_n(|p| p.conflicts_total) + i64::from(matches!(receipt, TickReceipt::Conflict { .. })));
+    // ── CUMULATIVE COUNTERS — the single fold lives in the DecisionLog; this is
+    //    purely a projection of the count the caller already accumulated. ───────
+    s.carves_total = Some(counters.carves);
+    s.deferrals_total = Some(counters.deferrals);
+    s.conflicts_total = Some(counters.conflicts);
 
     // ── COOLDOWN REMAINING — from the last carve epoch (this tick's, or prior's). ─
     let last_carve = s.last_change_epoch.or_else(|| prior.and_then(|p| p.last_change_epoch)).unwrap_or(0);
@@ -407,6 +416,68 @@ pub fn warmup_state(prior: Option<&BandStatus>, observed_capacity: Option<u64>, 
     };
     let observed_for = u64::try_from((now - start).max(0)).unwrap_or(0);
     (observed_for, start)
+}
+
+/// A short, stable tag for a receipt kind — the `decision_log` row's `receipt_kind`.
+fn receipt_kind_str(r: &TickReceipt) -> &'static str {
+    match r {
+        TickReceipt::Conflict { .. } => "Conflict",
+        TickReceipt::MetricUnrepresentable { .. } => "MetricUnrepresentable",
+        TickReceipt::Stale { .. } => "Stale",
+        TickReceipt::Cooldown => "Cooldown",
+        TickReceipt::Applied { .. } => "Applied",
+        TickReceipt::DryRunWouldApply { .. } => "DryRunWouldApply",
+        TickReceipt::DeferredWouldRestart { .. } => "DeferredWouldRestart",
+        TickReceipt::Observed { .. } => "Observed",
+        TickReceipt::Dormant => "Dormant",
+        TickReceipt::Error { .. } => "Error",
+    }
+}
+
+/// Classify a reconcile outcome into a [`DecisionEntry`] — the **4th consumer**
+/// of the `TickOutcome` keystone (alongside [`status_for`], [`event_for`],
+/// [`metrics_for`]), so the counter fold and the append-only decision feed are
+/// driven by the SAME outcome with zero drift. The boolean classifications are
+/// byte-identical to the predicates the old inline counter block used
+/// (`matches!(receipt, Applied/DeferredWouldRestart/Conflict)`), so folding them
+/// reproduces the previous counter sequence exactly.
+#[must_use]
+pub fn entry_for(outcome: &TickOutcome) -> DecisionEntry {
+    let r = &outcome.receipt;
+    let (from_limit, to_limit) = match r {
+        TickReceipt::Applied { from, to, .. }
+        | TickReceipt::DryRunWouldApply { from, to }
+        | TickReceipt::DeferredWouldRestart { from, to, .. } => (Some(*from), Some(*to)),
+        _ => (None, None),
+    };
+    // Exactly the receipt→counter mapping the old inline `matches!` block used —
+    // Applied⇒carve, DeferredWouldRestart⇒deferral, Conflict⇒conflict, else none.
+    let class = match r {
+        TickReceipt::Applied { .. } => CounterClass::Carve,
+        TickReceipt::DeferredWouldRestart { .. } => CounterClass::Deferral,
+        TickReceipt::Conflict { .. } => CounterClass::Conflict,
+        _ => CounterClass::NoCount,
+    };
+    DecisionEntry {
+        receipt_kind: receipt_kind_str(r).to_string(),
+        class,
+        from_limit,
+        to_limit,
+        dry_run: outcome.dry_run,
+    }
+}
+
+/// Read the cumulative counters off a band's prior status — the seed the
+/// in-memory `DecisionLog` folds the new decision onto (the CRD status is the
+/// durability projection in the very-small tier). The M2 Postgres tier reads its
+/// authoritative `band_registry` row instead and treats this as advisory.
+#[must_use]
+pub fn counters_from_status(prior: Option<&BandStatus>) -> CumulativeCounters {
+    CumulativeCounters {
+        carves: prior.and_then(|s| s.carves_total).unwrap_or(0),
+        deferrals: prior.and_then(|s| s.deferrals_total).unwrap_or(0),
+        conflicts: prior.and_then(|s| s.conflicts_total).unwrap_or(0),
+    }
 }
 
 /// The requeue interval for the NEXT tick, keyed on what just happened — the
@@ -623,6 +694,15 @@ mod tests {
         TickOutcome { receipt, observed: None, policy: DisruptionPolicy::RestartFreeOnly, dry_run: false }
     }
 
+    /// Build a status from an outcome with the counters the DecisionLog would
+    /// produce from a zero prior — i.e. `fold(ZERO, entry_for(outcome))`. Keeps
+    /// these per-receipt tests asserting the counter values they always did
+    /// (Applied ⇒ carves 1, Conflict ⇒ conflicts 1, …) now that `status_for`
+    /// consumes the count instead of computing it.
+    fn status_of(o: &TickOutcome) -> BandStatus {
+        status_for(o, None, 0, None, CumulativeCounters::ZERO.fold(&entry_for(o)))
+    }
+
     #[test]
     fn events_are_typed_and_transition_gated() {
         use breathe_provider::DisruptionClass::{RestartFree, RestartRequiring};
@@ -646,17 +726,17 @@ mod tests {
     #[test]
     fn applied_growth_vs_shrink_is_reported_directionally() {
         use breathe_provider::DisruptionClass::RestartFree;
-        let grow = status_for(&out(TickReceipt::Applied { from: 100, to: 200, class: RestartFree }), None, 0, None);
+        let grow = status_of(&out(TickReceipt::Applied { from: 100, to: 200, class: RestartFree }));
         assert_eq!(grow.phase.as_deref(), Some("Growing"));
         assert_eq!(grow.current_limit.as_deref(), Some("200"));
         assert_eq!(grow.carves_total, Some(1));
-        let shrink = status_for(&out(TickReceipt::Applied { from: 200, to: 100, class: RestartFree }), None, 0, None);
+        let shrink = status_of(&out(TickReceipt::Applied { from: 200, to: 100, class: RestartFree }));
         assert_eq!(shrink.phase.as_deref(), Some("Shrinking"));
     }
 
     #[test]
     fn shadow_reports_what_would_have_happened_without_changing_the_limit() {
-        let s = status_for(&out(TickReceipt::DryRunWouldApply { from: 100, to: 250 }), None, 0, None);
+        let s = status_of(&out(TickReceipt::DryRunWouldApply { from: 100, to: 250 }));
         assert_eq!(s.phase.as_deref(), Some("ShadowWouldApply"));
         // the reported current limit is the UNCHANGED value — shadow mutates nothing.
         assert_eq!(s.current_limit.as_deref(), Some("100"));
@@ -665,7 +745,7 @@ mod tests {
 
     #[test]
     fn conflict_records_the_yielded_to_manager() {
-        let s = status_for(&out(TickReceipt::Conflict { manager: "helm".into() }), None, 0, None);
+        let s = status_of(&out(TickReceipt::Conflict { manager: "helm".into() }));
         assert_eq!(s.conflicts_total, Some(1));
         assert_eq!(s.phase.as_deref(), Some("Conflict"));
         assert_eq!(s.conflict_manager.as_deref(), Some("helm"));
@@ -674,7 +754,7 @@ mod tests {
     #[test]
     fn deferred_crossing_maps_to_a_first_class_phase() {
         use breathe_provider::DisruptionClass;
-        let s = status_for(&out(TickReceipt::DeferredWouldRestart { from: 1 << 30, to: 2 << 30, class: DisruptionClass::RestartRequiring }), None, 0, None);
+        let s = status_of(&out(TickReceipt::DeferredWouldRestart { from: 1 << 30, to: 2 << 30, class: DisruptionClass::RestartRequiring }));
         assert_eq!(s.phase.as_deref(), Some("DeferredWouldRestart"));
         // the limit is UNCHANGED — the crossing was refused.
         assert_eq!(s.current_limit.as_deref(), Some((1u64 << 30).to_string().as_str()));
@@ -701,7 +781,7 @@ mod tests {
         // A scaled-to-zero label group (an ARC runner between builds) is DORMANT:
         // a first-class resting phase, Ready=True, Converged=True (at rest), no
         // event, and a fast re-check so a runner that appears is picked up promptly.
-        let s = status_for(&out(TickReceipt::Dormant), None, 0, None);
+        let s = status_of(&out(TickReceipt::Dormant));
         assert_eq!(s.phase.as_deref(), Some("Dormant"));
         assert!(s.last_decision.as_deref().unwrap().contains("no pods"));
         let ready = s.conditions.iter().find(|c| c.type_ == "Ready").unwrap();

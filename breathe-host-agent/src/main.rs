@@ -232,7 +232,12 @@ async fn reconcile_host_with<B: Band, D: DimensionDescriptor>(
 
     let outcome = reconcile_one(&input, &provider).await;
     let prior_phase = obj.status().and_then(|s| s.phase.as_deref()).map(String::from);
-    let status = status_for(&outcome, obj.status(), obj.cooldown_seconds(), obj.generation());
+    // The hands have no durable store wired (the brain/controller is the M2
+    // target); fold the cumulative count from the status seed directly — the same
+    // single fold the controller's DecisionLog uses, byte-identical to the prior
+    // inline accumulation.
+    let counters = breathe_runtime::counters_from_status(obj.status()).fold(&breathe_runtime::entry_for(&outcome));
+    let status = status_for(&outcome, obj.status(), obj.cooldown_seconds(), obj.generation(), counters);
     info!(
         dim = %provider.id(), band = %name, unit = %target.name,
         write_enabled, phase = ?status.phase, "host reconciled"
