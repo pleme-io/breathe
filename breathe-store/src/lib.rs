@@ -143,6 +143,118 @@ pub struct Sample {
     pub at_epoch: i64,
 }
 
+// ── The decision-log BLAKE3 chain (the M2 attestation surface) ──────────────
+//
+// Pure + always-compiled (blake3 is lightweight) so the chain logic is testable
+// without a database; the Postgres tier (pg.rs) consumes it. The M5 upgrade to
+// tameshi's `OutcomeChain` is a backend swap of `PgDecisionLog`, reusing this
+// same canonical hash shape.
+
+/// The genesis prev_hash — the first decision's predecessor (all-zeros), matching
+/// tameshi's `HeartbeatChain` genesis seed.
+pub const GENESIS_HASH: [u8; 32] = [0u8; 32];
+
+impl CounterClass {
+    /// The stable wire tag stored in `decision_log.counter_class`.
+    #[must_use]
+    pub fn tag(self) -> &'static str {
+        match self {
+            CounterClass::Carve => "carve",
+            CounterClass::Deferral => "deferral",
+            CounterClass::Conflict => "conflict",
+            CounterClass::NoCount => "noCount",
+        }
+    }
+
+    /// Parse the wire tag back. An unknown tag maps to `NoCount` — a
+    /// forward-compatible default (a future class added by a newer writer never
+    /// mis-counts on an older reader).
+    #[must_use]
+    pub fn from_tag(tag: &str) -> Self {
+        match tag {
+            "carve" => CounterClass::Carve,
+            "deferral" => CounterClass::Deferral,
+            "conflict" => CounterClass::Conflict,
+            _ => CounterClass::NoCount,
+        }
+    }
+}
+
+/// Compute a decision's content hash from its **raw stored fields** — BLAKE3 over
+/// a canonical, unambiguous byte encoding (LE integers, NUL-delimited strings,
+/// presence-tagged `Option`s so `None` and `Some(0)` never collide, raw
+/// `prev_hash` appended), mirroring tameshi's `HeartbeatChain` shape so the M5
+/// upgrade is a drop-in. Pure + deterministic.
+///
+/// `verify_chain` MUST call this with `class_tag` exactly as stored — never
+/// round-tripped through [`CounterClass::from_tag`]. The round-trip is LOSSY
+/// (every unknown tag collapses to `NoCount`/`"noCount"`), which would (a) let a
+/// tampered `counter_class` on a `noCount` row re-hash to the original and go
+/// undetected, and (b) false-fail a genuine chain written by a newer writer with
+/// an added tag. Binding the raw bytes makes both impossible.
+#[must_use]
+pub fn decision_content_hash_fields(
+    band: &BandRef,
+    seq: i64,
+    receipt_kind: &str,
+    class_tag: &str,
+    from_limit: Option<u64>,
+    to_limit: Option<u64>,
+    dry_run: bool,
+    prev_hash: &[u8; 32],
+) -> [u8; 32] {
+    let mut data = Vec::with_capacity(256);
+    data.extend_from_slice(&seq.to_le_bytes());
+    data.extend_from_slice(band.as_str().as_bytes());
+    data.push(0);
+    data.extend_from_slice(receipt_kind.as_bytes());
+    data.push(0);
+    data.extend_from_slice(class_tag.as_bytes());
+    data.push(0);
+    push_opt_u64(&mut data, from_limit);
+    push_opt_u64(&mut data, to_limit);
+    data.push(u8::from(dry_run));
+    data.extend_from_slice(prev_hash);
+    *blake3::hash(&data).as_bytes()
+}
+
+/// Convenience wrapper hashing a [`DecisionEntry`] (the write path) — emits
+/// `entry.class.tag()` as the raw class tag, so a row written via this hashes the
+/// exact bytes `verify_chain` reads back from `counter_class`.
+#[must_use]
+pub fn decision_content_hash(
+    band: &BandRef,
+    seq: i64,
+    entry: &DecisionEntry,
+    prev_hash: &[u8; 32],
+) -> [u8; 32] {
+    decision_content_hash_fields(
+        band,
+        seq,
+        &entry.receipt_kind,
+        entry.class.tag(),
+        entry.from_limit,
+        entry.to_limit,
+        entry.dry_run,
+        prev_hash,
+    )
+}
+
+fn push_opt_u64(data: &mut Vec<u8>, v: Option<u64>) {
+    match v {
+        Some(x) => {
+            data.push(1);
+            data.extend_from_slice(&x.to_le_bytes());
+        }
+        None => data.push(0),
+    }
+}
+
+#[cfg(feature = "postgres")]
+mod pg;
+#[cfg(feature = "postgres")]
+pub use pg::PgDecisionLog;
+
 /// A store backend error. The in-memory tier never errors; the Postgres/Redis
 /// tier (M2/M3) surfaces backend failures here so callers degrade to the
 /// status-backed fallback rather than mutate on stale state.
@@ -427,6 +539,84 @@ mod tests {
         assert_eq!(
             BandRef::new("MemoryBand", "pangea-system", "db").as_str(),
             "MemoryBand/pangea-system/db"
+        );
+    }
+
+    // ── the decision-log BLAKE3 chain (pure — no database) ─────────────────
+
+    #[test]
+    fn counter_class_tag_round_trips() {
+        for c in [
+            CounterClass::Carve,
+            CounterClass::Deferral,
+            CounterClass::Conflict,
+            CounterClass::NoCount,
+        ] {
+            assert_eq!(CounterClass::from_tag(c.tag()), c);
+        }
+        // unknown tag ⇒ NoCount (forward-compatible).
+        assert_eq!(CounterClass::from_tag("future-class"), CounterClass::NoCount);
+    }
+
+    #[test]
+    fn chain_links_genesis_then_advances_and_is_tamper_evident() {
+        let band = BandRef::new("MemoryBand", "ns", "db");
+        let applied = entry("Applied", CounterClass::Carve);
+        let conflict = entry("Conflict", CounterClass::Conflict);
+
+        let h1 = decision_content_hash(&band, 1, &applied, &GENESIS_HASH);
+        let h2 = decision_content_hash(&band, 2, &conflict, &h1);
+        assert_ne!(h1, GENESIS_HASH, "a real decision never hashes to genesis");
+        assert_ne!(h1, h2, "distinct decisions hash differently");
+
+        // Deterministic: same inputs ⇒ same hash.
+        assert_eq!(h1, decision_content_hash(&band, 1, &applied, &GENESIS_HASH));
+
+        // Tamper-evident on EVERY input: seq, class, prev_hash, band all matter.
+        assert_ne!(h1, decision_content_hash(&band, 1, &conflict, &GENESIS_HASH), "class");
+        assert_ne!(h1, decision_content_hash(&band, 2, &applied, &GENESIS_HASH), "seq");
+        assert_ne!(h1, decision_content_hash(&band, 1, &applied, &h2), "prev_hash");
+        assert_ne!(
+            h1,
+            decision_content_hash(&BandRef::new("MemoryBand", "ns", "other"), 1, &applied, &GENESIS_HASH),
+            "band_ref"
+        );
+    }
+
+    #[test]
+    fn option_limits_are_presence_tagged_so_none_and_some_zero_differ() {
+        let band = BandRef::new("MemoryBand", "ns", "db");
+        let mut none = entry("Observed", CounterClass::NoCount);
+        none.from_limit = None;
+        none.to_limit = None;
+        let mut some_zero = none.clone();
+        some_zero.from_limit = Some(0);
+        assert_ne!(
+            decision_content_hash(&band, 1, &none, &GENESIS_HASH),
+            decision_content_hash(&band, 1, &some_zero, &GENESIS_HASH),
+            "None must not collide with Some(0)"
+        );
+    }
+
+    #[test]
+    fn raw_class_tag_is_bound_so_a_tampered_tag_is_detected() {
+        let band = BandRef::new("MemoryBand", "ns", "db");
+        // A genuine noCount row vs the same row with its stored counter_class
+        // mutated to a non-canonical string — the hash MUST differ (verify_chain
+        // hashes the raw stored tag, never the lossy from_tag round-trip).
+        let genuine =
+            decision_content_hash_fields(&band, 1, "Observed", "noCount", None, None, false, &GENESIS_HASH);
+        for tampered_tag in ["junk", "", "NoCount", "nocount", "noCountX"] {
+            let tampered = decision_content_hash_fields(
+                &band, 1, "Observed", tampered_tag, None, None, false, &GENESIS_HASH,
+            );
+            assert_ne!(genuine, tampered, "mutating counter_class to {tampered_tag:?} must change the hash");
+        }
+        // The wrapper hashes the same bytes the raw fn does for a real entry.
+        let e = entry("Observed", CounterClass::NoCount);
+        assert_eq!(
+            decision_content_hash(&band, 1, &e, &GENESIS_HASH),
+            decision_content_hash_fields(&band, 1, "Observed", "noCount", None, None, false, &GENESIS_HASH),
         );
     }
 }

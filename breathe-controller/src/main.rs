@@ -125,11 +125,20 @@ pub(crate) async fn fold_counters(
 ) -> CumulativeCounters {
     let prior_counters = counters_from_status(prior);
     let entry = entry_for(outcome);
-    let fallback = prior_counters.fold(&entry);
-    ctx.decisions
-        .append(band_ref, prior_counters, entry)
-        .await
-        .unwrap_or(fallback)
+    match ctx.decisions.append(band_ref, prior_counters, entry).await {
+        Ok(counters) => counters,
+        // On a durable-store error (e.g. a transient Postgres outage) HOLD the
+        // count un-advanced rather than advancing it: the carve already happened
+        // (the band law ran — safety preserved), but the decision did NOT durably
+        // record, so the status projection must not claim a count the durable
+        // authority lacks (that was the M2 count-divergence the adversarial pass
+        // found). status stays == the un-advanced durable count; the store resumes
+        // on recovery. The InMem tier never errors, so this path is Postgres-only.
+        Err(e) => {
+            warn!(band = %band_ref, error = %e, "decision-log append failed — holding counters (durable store will resume)");
+            prior_counters
+        }
+    }
 }
 
 /// Publish a k8s Event for this tick onto `obj`, transition-gated so a resting
@@ -521,19 +530,22 @@ enum StartupError {
 }
 
 /// Build the durable-store seam from the typed scale config — the config-driven
-/// backend selection. M1 implements only the VERY-SMALL arms (in-memory store,
-/// no cache, single replica), which is byte-identical to today; every other arm
-/// is a typed fail-fast naming the milestone that ships it, never a silent
-/// downgrade to in-memory.
-fn build_stores(
+/// backend selection. The very-small arms (in-memory store, no cache, single
+/// replica) are byte-identical to today; `store=Postgres` (M2) connects the
+/// durable `PgDecisionLog`. Every still-unimplemented arm is a typed fail-fast
+/// naming the milestone that ships it — never a silent downgrade to in-memory.
+async fn build_stores(
     scale: &ScaleConfig,
-) -> Result<(Arc<dyn DecisionLog>, Arc<dyn SampleCache>), StartupError> {
+) -> Result<(Arc<dyn DecisionLog>, Arc<dyn SampleCache>), Box<dyn std::error::Error>> {
     let decisions: Arc<dyn DecisionLog> = match &scale.store {
         StoreConfig::InMemory => Arc::new(InMemDecisionLog::new()),
-        StoreConfig::Postgres(_) => {
-            return Err(StartupError::UnsupportedScale(
-                "scale.store=postgres — the durable store ships at M2; set `store: inMemory`".into(),
-            ))
+        StoreConfig::Postgres(pg) => {
+            // The DSN is read here (the one place the secret is exposed) to
+            // connect; PgDecisionLog applies its migrations on connect.
+            Arc::new(
+                breathe_store::PgDecisionLog::connect(pg.dsn.expose(), pg.pool_max, pg.pool_min)
+                    .await?,
+            )
         }
     };
     let samples: Arc<dyn SampleCache> = match &scale.cache {
@@ -541,7 +553,8 @@ fn build_stores(
         CacheConfig::Redis(_) => {
             return Err(StartupError::UnsupportedScale(
                 "scale.cache=redis — the cache tier ships at M3; set `cache: none`".into(),
-            ))
+            )
+            .into())
         }
     };
     match &scale.coordination {
@@ -549,12 +562,14 @@ fn build_stores(
         CoordinationConfig::LeaderElection(_) => {
             return Err(StartupError::UnsupportedScale(
                 "scale.coordination=leaderElection — ships at M3; set `coordination: singleReplica`".into(),
-            ))
+            )
+            .into())
         }
         CoordinationConfig::Sharded(_) => {
             return Err(StartupError::UnsupportedScale(
                 "scale.coordination=sharded — ships at M4; set `coordination: singleReplica`".into(),
-            ))
+            )
+            .into())
         }
     }
     Ok((decisions, samples))
@@ -605,7 +620,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         store = ?scale.store, cache = ?scale.cache, coordination = ?scale.coordination,
         window = scale.window, "breathe scale tier resolved"
     );
-    let (decisions, samples) = build_stores(&scale)?;
+    let (decisions, samples) = build_stores(&scale).await?;
 
     // Prometheus /metrics on :9100 — scraped by VictoriaMetrics for the over-time
     // "watch it breathe" view. Non-fatal: a failed install logs + continues.
