@@ -305,15 +305,24 @@ the `:runtime`-slot gap.
   `pending-shikumi:M1`. *Deploy gate:* the image's `Cargo.nix` needs regen for the shikumi git dep
   before M1 ships to rio (parked with the AppBand deploy).
 
-- **M2 — durable backend (PgRedis store half) + migrations.** Decision/attestation/forecaster(pool)/
-  cooldown/cost/node-lifecycle state survives restart + is shareable; opt-in behind
-  `scale.store=Postgres`. Append-only `INSERT` + BLAKE3 `prev_hash` in the **same tx** as the counter
-  bump (`UNIQUE(band_ref,seq)` + `FOR UPDATE` guard — ▲ FIX 9). **▲ DECISION (resolve BEFORE M2):
-  SQLx `query_as!` is the shipped floor; SeaORM is the named destination.** breathe would be the FIRST
-  fleet consumer to make SeaORM the durable SSoT on an RC pin (`sea-orm 2.0.0-rc.30` + lilitu's
-  PG-55P04 one-migration-at-a-time workaround) — ship the chain+counters on SQLx now, cut to SeaORM at
-  2.0 stable via a typed migrator arm. **▲ Add a cross-tier property test: identical observations →
-  identical decisions, InMem vs testcontainers PgRedis.**
+- **M2 — durable backend (Pg store half) + migrations.** **PARTIALLY LANDED 2026-06-17 (commit
+  c44583a) — the decision-chain + counters half.** Shipped: `PgDecisionLog` over schema `breathe`
+  (`band_registry` cumulative counters + chain head; `decision_log` append-only BLAKE3 chain,
+  `UNIQUE(band_ref,seq)`), opt-in behind `scale.store=Postgres`. The append is ONE tx — INSERT ON
+  CONFLICT DO NOTHING → `SELECT … FOR UPDATE` the registry → fold counters → INSERT decision_log →
+  UPDATE registry → commit (▲ FIX 9 satisfied; a half-applied decision is unrepresentable).
+  `verify_chain` re-hashes the RAW stored fields (chain-forgery fix — binds the raw class_tag) +
+  cross-checks the registry head (tail-truncation). 14 tests green (10 pure incl. tamper-evidence +
+  raw-tag regressions; 4 Postgres integration gated by `BREATHE_TEST_PG_URL`: append/restart,
+  concurrent FOR UPDATE, tampered-counter, tail-truncation). **▲ DECISION resolved: SQLx runtime
+  queries are the shipped floor (no `query!` macros → Nix-build-clean); SeaORM stays the named
+  destination** — cut to SeaORM at 2.0 stable via a typed migrator arm (breathe would be the first
+  fleet consumer to make SeaORM the durable SSoT). **Still REMAINING in M2:** the `SampleCache`
+  Postgres tier; forecaster(pool)/cooldown/cost/node-lifecycle persistence; the authoritative-read
+  flip (Postgres becomes the read source, not the CRD-status projection); and the cross-tier property
+  test (identical observations → identical decisions, InMem vs testcontainers Pg — the golden
+  equivalence is proven in-memory today via `fold_matches_old_inline_logic_over_a_sequence` +
+  `inmem_decision_log_reproduces_the_status_backed_sequence`; the testcontainers arm is the gap).
 
 - **M3 — Redis cache + leader-election** (the cheapest scale step → warm-standby HA). Run `replicas>1`
   safely without splitting a cache; drop `replicaCount:1+Recreate`; render replicas/strategy/backend-env
