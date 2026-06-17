@@ -280,13 +280,30 @@ the `:runtime`-slot gap.
   the SampleCache authoritative read are M2, when Postgres is the durable home). No Postgres/Redis/
   sea-orm yet.
 
-- **M1 — `breathe-config` (shikumi) + the scale enum surface.** Variable config COMPLETELY in
-  shikumi; the scale spectrum is typed + hot-reloadable even though only `SingleReplica/InMemory` is
-  wired. `BreatheServiceConfig` root; `prescribed_default=VERY-SMALL`; the `scale.*` enums (+
-  `reconcile_workers`); PG/Redis as `SecretRefShape`; 5-test ladder + Nix trio. **▲ FIX: pin the
-  four-way precedence rule as a written invariant; resolve the `BreatheServiceConfig`-vs-`BreatheConfig`
-  collision** (CRD stays as a thin overlay or is retired — decide). Unimplemented arms → typed error.
-  Clears `pending-shikumi:M1`.
+- **M1 — `breathe-config` (shikumi) + the scale enum surface** — ✅ **LANDED 2026-06-17.** The
+  `breathe-config` crate: `BreatheServiceConfig` (a `shikumi::TieredConfig`) whose typed `scale`
+  section selects the elasticity tier BY CONFIG — `store` (InMemory|Postgres), `cache` (None|Redis),
+  `coordination` (SingleReplica|LeaderElection|Sharded), plus `window`/`reconcile_workers`/`dimensions`.
+  `prescribed_default` = VERY-SMALL (in-memory / no cache / single replica / window 6), byte-identical
+  to today. Enums are **adjacently-tagged** (`type`/`spec` — k8s-idiomatic, serde_yaml-compatible, and
+  `deny_unknown_fields`-preserving on the payloads, verified through the real figment load path);
+  secret fields use a redacting `Secret` newtype (M2 → `shikumi::secret::SecretSource`). The controller
+  reads it once at startup via the one-shot `load` and `build_stores(&scale)` selects the backend —
+  the very-small arms build the in-memory stores (identical to today), every other arm is a typed
+  `StartupError::UnsupportedScale` fail-fast naming its milestone (no silent downgrade). `window`/
+  `reconcile_workers`/`dimensions` are typed at M1, wired at M2/M4. **Decisions resolved:** (1) the
+  `BreatheConfig` CRD (fleet-overview `bcfg` knobs) and `BreatheServiceConfig` (service/scale config)
+  own disjoint concerns and COEXIST — no collision, the CRD stays; (2) precedence is **config-file >
+  `BREATHE_SVC_*` env > prescribed_default**. **▲ Adversarial verification caught + fixed two
+  production-crash bugs before commit:** (a) the env prefix had to be `BREATHE_SVC_`, not `BREATHE_` —
+  the shared prefix collided with the chart's legacy `BREATHE_PROMETHEUS_URL`/`BREATHE_REQUEUE_SECONDS`
+  on the `deny_unknown_fields` root → load reject → crash-loop; (b) `load_and_watch`'s notify watcher
+  errors on an absent path (the chart mounts no ConfigMap) → the controller now uses the one-shot
+  `load` (no watcher; an absent file → prescribed_default, never the os-error-2 loop) and
+  `load_and_watch` degrades to `load` on a missing path. Each fix has a regression test. The Nix
+  HM/NixOS/Darwin trio is N/A for a controller (config is a ConfigMap + env, not an HM module). Clears
+  `pending-shikumi:M1`. *Deploy gate:* the image's `Cargo.nix` needs regen for the shikumi git dep
+  before M1 ships to rio (parked with the AppBand deploy).
 
 - **M2 — durable backend (PgRedis store half) + migrations.** Decision/attestation/forecaster(pool)/
   cooldown/cost/node-lifecycle state survives restart + is shareable; opt-in behind
@@ -362,8 +379,10 @@ the `:runtime`-slot gap.
 
 ## 8. Decisions needed (resolve before the cited milestone)
 
-1. **L1 (before M1):** `BreatheServiceConfig` (shikumi) vs `BreatheConfig` (CRD) — keep the CRD as a
-   thin GitOps overlay, or retire it once shikumi owns config? Pin the four-way precedence rule.
+1. **L1 — ✅ RESOLVED (M1):** the `BreatheConfig` CRD (fleet-overview `bcfg` knobs) and
+   `BreatheServiceConfig` (service/scale config) own disjoint concerns and COEXIST — the CRD stays, no
+   collision. Precedence: **config-file > `BREATHE_SVC_*` env > prescribed_default** (the `BREATHE_SVC_`
+   prefix is distinct from the legacy `BREATHE_*` direct-read knobs — see the M1 crash-bug fix).
 2. **L0 (before M2):** SeaORM (RC `2.0.0-rc.30`) now vs SQLx `query_as!` floor + SeaORM-at-stable cutover.
    Recommend: **SQLx floor now, SeaORM destination** (breathe shouldn't be the first fleet consumer to
    bet the SSoT on an RC).
