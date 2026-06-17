@@ -1,0 +1,20 @@
+[package]
+name = "breathe-store"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "The durable-store seam for breathe — DecisionLog (the single counter-accumulation fold + the append-only decision feed) + SampleCache (the predictive prior sample). An in-memory tier (today, byte-identical to the CRD-status projection) and (M2/M3) a Postgres/Redis tier behind the same `&dyn` seam: one config switch selects the backend; the band law and reconcile loop never change. See docs/BREATHE-MICROSERVICE.md."
+
+[dependencies]
+async-trait = "0.1"
+serde = { version = "1", features = ["derive"] }
+thiserror = "2"
+
+[dev-dependencies]
+tokio = { version = "1.40", features = ["macros", "rt"] }
+
+[lints]
+workspace = true
