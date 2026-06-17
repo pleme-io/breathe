@@ -224,6 +224,10 @@ pub fn status_for(
     s.edge_tier = Some(edge_tier_str(receipt.edge_tier()));
     if let Some(obs) = &outcome.observed {
         s.observed_used = Some(obs.used as i64);
+        // The trailing-window peak that drove this tick's never-OOM shrink floor —
+        // persisted so the next reconcile folds the current sample into it (the
+        // cross-tick peak carry). `reconcile_one` guarantees `peak_used ≥ used`.
+        s.observed_peak_used = Some(obs.peak_used as i64);
         s.observed_capacity = Some(obs.capacity as i64);
         s.freshness_seconds = Some(obs.staleness_secs as i64);
         if let Some(u) = util_of(obs) {

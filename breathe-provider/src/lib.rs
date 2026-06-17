@@ -915,6 +915,11 @@ impl<C: Cluster + 'static, D: DimensionDescriptor> ResourceProvider for BandProv
             .await?;
         Ok(Observation {
             used: used.value,
+            // The provider is HISTORY-FREE: it reports the instantaneous peak (==
+            // the current sample). The reconcile layer (which carries the cross-tick
+            // trailing-window peak from the band status) folds the real demonstrated
+            // peak in before the decision (see `breathe_core::reconcile_one`).
+            peak_used: used.value,
             capacity,
             owners,
             staleness_secs: used.age_secs,
@@ -1420,6 +1425,7 @@ mod forma_seed {
             shrink_factor: 0.90,
             floor_bytes: floor,
             ceiling_bytes: ceiling,
+            request_floor_bytes: 0,
         }
     }
 

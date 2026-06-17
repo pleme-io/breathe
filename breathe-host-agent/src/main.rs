@@ -200,6 +200,13 @@ async fn reconcile_host_with<B: Band, D: DimensionDescriptor>(
     );
     // BREAK-GLASS forceLimit (still bounded by the L2 ceiling in HostCluster::apply).
     let force = obj.force_limit_value().filter(|_| obj.force_limit_expiry().map_or(true, rfc3339_in_future));
+    // NEVER-OOM-FROM-CARVE: carry the decayed trailing-window peak forward (see the
+    // main controller); `reconcile_one` folds in the current `used`.
+    let peak_used = obj
+        .status()
+        .and_then(|s| s.observed_peak_used.or(s.observed_used))
+        .and_then(|p| u64::try_from(p).ok())
+        .map(|prior_peak| ((prior_peak as f64) * obj.peak_decay().clamp(0.0, 0.999)) as u64);
     let input = ReconcileInput {
         target: &target,
         cfg: &cfg,
@@ -211,6 +218,7 @@ async fn reconcile_host_with<B: Band, D: DimensionDescriptor>(
         policy: obj.disruption_policy(),
         force,
         predictive: None,
+        peak_used,
     };
 
     let outcome = reconcile_one(&input, &provider).await;

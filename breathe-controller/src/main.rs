@@ -216,6 +216,20 @@ async fn reconcile<B: Band, D: DimensionDescriptor + Default>(
         let dt_secs = ctx.requeue.as_secs_f64();
         (dt_secs > 0.0).then_some(PredictiveInput { prior_used, dt_secs, lookahead_secs })
     });
+    // NEVER-OOM-FROM-CARVE: carry the trailing-window PEAK working set across ticks.
+    // Pass the DECAYED prior peak as the hint; `reconcile_one` folds in the current
+    // `used` (`max(used, hint)`), so the pair is exactly
+    // `update_peak(prior_peak, used, decay)` — the shrink-safety floor is keyed on
+    // the demonstrated peak, never the instantaneous low-water sample (the
+    // authentik-Celery-worker OOM). `None` on the first tick (no prior peak).
+    let peak_used = obj
+        .status()
+        .and_then(|s| s.observed_peak_used.or(s.observed_used))
+        .and_then(|p| u64::try_from(p).ok())
+        .map(|prior_peak| {
+            let decay = obj.peak_decay().clamp(0.0, 0.999);
+            ((prior_peak as f64) * decay) as u64
+        });
     let input = ReconcileInput {
         target: &target,
         cfg: &cfg,
@@ -230,6 +244,7 @@ async fn reconcile<B: Band, D: DimensionDescriptor + Default>(
         policy: obj.disruption_policy(),
         force,
         predictive,
+        peak_used,
     };
 
     let outcome = reconcile_one(&input, &provider).await;

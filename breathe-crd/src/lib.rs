@@ -117,6 +117,13 @@ pub struct BandStatus {
     /// The observed `used` scalar (bytes for memory/arc/cgroup; millicores for cpu).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub observed_used: Option<i64>,
+    /// The trailing-window PEAK working set (max RSS, with slow decay) — the
+    /// never-OOM shrink floor is keyed on THIS, not the instantaneous `observed_used`
+    /// (the authentik-Celery-worker OOM fix). Carried across ticks: each tick folds
+    /// the current `used` into the prior peak via `breathe_control::update_peak`, so
+    /// a recently-demonstrated spike holds the floor up for a meaningful window.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub observed_peak_used: Option<i64>,
     /// The observed `capacity` (the current limit the util is measured against).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub observed_capacity: Option<i64>,
@@ -303,6 +310,13 @@ pub trait Band:
     /// velocity and feeds `PredictiveGrow` so the limit pre-grows for the burst
     /// the instantaneous reading misses. `None` (default) ⇒ plain reactive carving.
     fn predictive(&self) -> Option<f64>;
+    /// The trailing-window PEAK decay per tick `∈ [0,1)` — the never-OOM shrink
+    /// floor is keyed on the demonstrated peak working set, which decays by this
+    /// each tick so a real spike holds the floor for a meaningful window (the
+    /// authentik-Celery OOM fix). Default 0.98; band kinds override from their spec.
+    fn peak_decay(&self) -> f64 {
+        0.98
+    }
     /// `metadata.generation` — set as `status.observedGeneration` so an operator can
     /// confirm the controller reconciled their latest spec edit.
     fn generation(&self) -> Option<i64> {
@@ -310,6 +324,7 @@ pub trait Band:
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn band_config_of(
     setpoint: f64,
     grow_above: f64,
@@ -318,12 +333,16 @@ fn band_config_of(
     shrink_factor: f64,
     floor: &str,
     ceiling: &str,
+    request_floor: &str,
     unit: Unit,
 ) -> anyhow::Result<BandConfig> {
     let parse = |q: &str| -> anyhow::Result<u64> {
         unit.parse(q)
             .ok_or_else(|| anyhow::anyhow!("invalid {unit:?} quantity {q:?}"))
     };
+    // An empty request_floor ⇒ no declared request floor (0). A malformed one is a
+    // typed parse error (never silently a wrong floor).
+    let request_floor_bytes = if request_floor.is_empty() { 0 } else { parse(request_floor)? };
     Ok(BandConfig {
         grow_above,
         shrink_below,
@@ -332,6 +351,7 @@ fn band_config_of(
         shrink_factor,
         floor_bytes: parse(floor)?,
         ceiling_bytes: parse(ceiling)?,
+        request_floor_bytes,
     })
 }
 
@@ -426,6 +446,23 @@ macro_rules! band_kind {
             /// resources (storage = resize-cooldown × safety factor).
             #[serde(default = "d_predictive_lookahead")]
             pub predictive_lookahead_seconds: u64,
+            /// The operator's declared `requests.<resource>` floor (a quantity
+            /// string in the band's unit, e.g. `512Mi` / `250m`). A shrink can NEVER
+            /// carve the limit below this — requests is the scheduler's guaranteed
+            /// working set, and a limit under the request is both invalid in k8s and
+            /// unsafe. Empty (the default) ⇒ no request floor. Typically mirrors the
+            /// workload's actual `resources.requests.<resource>`.
+            #[serde(default, skip_serializing_if = "String::is_empty")]
+            pub request_floor: String,
+            /// The trailing-window PEAK decay per tick `∈ [0,1)` — the never-OOM
+            /// shrink floor is keyed on the demonstrated PEAK working set (max RSS),
+            /// which decays geometrically by this factor each tick so a real spike
+            /// raises the floor and HOLDS it for a meaningful window rather than
+            /// evaporating on the next low-water sample (the authentik-Celery OOM
+            /// fix). Default 0.98 (a spike holds for ~tens of ticks); `0.0` = pure
+            /// single-tick max (no window memory).
+            #[serde(default = "d_peak_decay")]
+            pub peak_decay: f64,
         }
 
         impl crate::Band for $kind {
@@ -436,8 +473,11 @@ macro_rules! band_kind {
                 let s = &self.spec;
                 crate::band_config_of(
                     s.setpoint, s.grow_above, s.shrink_below, s.grow_factor, s.shrink_factor,
-                    &s.floor, &s.ceiling, $unit,
+                    &s.floor, &s.ceiling, &s.request_floor, $unit,
                 )
+            }
+            fn peak_decay(&self) -> f64 {
+                self.spec.peak_decay
             }
             fn max_staleness_seconds(&self) -> u64 {
                 self.spec.max_staleness_seconds
@@ -700,7 +740,7 @@ impl crate::Band for HostParamBand {
         let s = &self.spec;
         crate::band_config_of(
             s.setpoint, s.grow_above, s.shrink_below, s.grow_factor, s.shrink_factor,
-            &s.floor, &s.ceiling, Unit::Bytes,
+            &s.floor, &s.ceiling, "", Unit::Bytes,
         )
     }
     fn max_staleness_seconds(&self) -> u64 {
@@ -906,7 +946,7 @@ impl crate::Band for KubeParamBand {
     fn band_config(&self) -> anyhow::Result<BandConfig> {
         let s = &self.spec;
         // k8s-CR fields are bare integers (maxConnections, retention secs, quota counts).
-        crate::band_config_of(s.setpoint, s.grow_above, s.shrink_below, s.grow_factor, s.shrink_factor, &s.floor, &s.ceiling, Unit::Count)
+        crate::band_config_of(s.setpoint, s.grow_above, s.shrink_below, s.grow_factor, s.shrink_factor, &s.floor, &s.ceiling, "", Unit::Count)
     }
     fn max_staleness_seconds(&self) -> u64 {
         self.spec.max_staleness_seconds
@@ -1176,6 +1216,8 @@ impl BreatheCloudPoolSpec {
             shrink_factor: self.shrink_factor,
             floor_bytes: self.floor,
             ceiling_bytes: self.ceiling,
+            // node-count bands have no k8s requests.<resource> concept.
+            request_floor_bytes: 0,
         }
     }
 }
@@ -1867,6 +1909,7 @@ fn d_shrink_factor() -> f64 { 0.90 }
 fn d_cooldown() -> u64 { 600 }
 fn d_max_staleness() -> u64 { 120 }
 fn d_predictive_lookahead() -> u64 { 60 }
+fn d_peak_decay() -> f64 { 0.98 } // trailing-window peak holds a spike for ~tens of ticks
 fn d_relief_latency() -> u64 { 180 } // ~3min node boot→Ready (the NodeOnDemand dead-time)
 
 #[cfg(test)]
@@ -1927,7 +1970,7 @@ mod tests {
         let mem = MemoryBand::new("m", MemoryBandSpec {
             target_ref: tr.clone(), setpoint: 0.80, grow_above: 0.85, shrink_below: 0.70,
             grow_factor: 1.25, shrink_factor: 0.90, floor: "512Mi".into(), ceiling: "4Gi".into(),
-            cooldown_seconds: 600, max_staleness_seconds: 120, dry_run: true, disruption_policy: Default::default(), suspend: false, force_limit: None, force_limit_expiry: None, predictive: false, predictive_lookahead_seconds: 60, mode: None, confirm_after_seconds: 1800,
+            cooldown_seconds: 600, max_staleness_seconds: 120, dry_run: true, disruption_policy: Default::default(), suspend: false, force_limit: None, force_limit_expiry: None, predictive: false, predictive_lookahead_seconds: 60, request_floor: String::new(), peak_decay: 0.98, mode: None, confirm_after_seconds: 1800,
         });
         let cfg = Band::band_config(&mem).unwrap();
         assert_eq!(cfg.floor_bytes, 512 * (1 << 20));
@@ -1940,7 +1983,7 @@ mod tests {
         let cpu = CpuBand::new("c", CpuBandSpec {
             target_ref: tr, setpoint: 0.80, grow_above: 0.85, shrink_below: 0.70,
             grow_factor: 1.25, shrink_factor: 0.90, floor: "250m".into(), ceiling: "2".into(),
-            cooldown_seconds: 600, max_staleness_seconds: 120, dry_run: false, disruption_policy: Default::default(), suspend: false, force_limit: None, force_limit_expiry: None, predictive: false, predictive_lookahead_seconds: 60, mode: None, confirm_after_seconds: 1800,
+            cooldown_seconds: 600, max_staleness_seconds: 120, dry_run: false, disruption_policy: Default::default(), suspend: false, force_limit: None, force_limit_expiry: None, predictive: false, predictive_lookahead_seconds: 60, request_floor: String::new(), peak_decay: 0.98, mode: None, confirm_after_seconds: 1800,
         });
         let cfg = Band::band_config(&cpu).unwrap();
         // millicores, NOT bytes: "250m" → 250, "2" cores → 2000m.
@@ -1953,9 +1996,10 @@ mod tests {
         // an omitted floor/ceiling on a CpuBand must default to cpu-valid values
         // (250m / 2), not the byte default 256Mi which can't parse as millicores.
         let cfg = crate::band_config_of(0.80, 0.85, 0.70, 1.25, 0.90,
-            &d_floor_milli(), &d_ceiling_milli(), Unit::Millicores).unwrap();
+            &d_floor_milli(), &d_ceiling_milli(), "", Unit::Millicores).unwrap();
         assert_eq!(cfg.floor_bytes, 250);
         assert_eq!(cfg.ceiling_bytes, 2000);
+        assert_eq!(cfg.request_floor_bytes, 0, "empty request_floor ⇒ no floor");
     }
 
     #[test]
@@ -1965,7 +2009,7 @@ mod tests {
         let arc = ArcBand::new("rio-arc", ArcBandSpec {
             target_ref: tr, setpoint: 0.80, grow_above: 0.85, shrink_below: 0.70,
             grow_factor: 1.25, shrink_factor: 0.90, floor: "1Gi".into(), ceiling: "6Gi".into(),
-            cooldown_seconds: 600, max_staleness_seconds: 120, dry_run: true, disruption_policy: Default::default(), suspend: false, force_limit: None, force_limit_expiry: None, predictive: false, predictive_lookahead_seconds: 60, mode: None, confirm_after_seconds: 1800,
+            cooldown_seconds: 600, max_staleness_seconds: 120, dry_run: true, disruption_policy: Default::default(), suspend: false, force_limit: None, force_limit_expiry: None, predictive: false, predictive_lookahead_seconds: 60, request_floor: String::new(), peak_decay: 0.98, mode: None, confirm_after_seconds: 1800,
         });
         let cfg = Band::band_config(&arc).unwrap();
         assert_eq!(cfg.floor_bytes, 1 << 30);
@@ -1976,7 +2020,7 @@ mod tests {
         let g = CgroupBand::new("nix-daemon", CgroupBandSpec {
             target_ref: TargetRef { kind: "HostUnit".into(), name: "nix-daemon.service".into(), api_version: None, container: None, pod_selector: None },
             setpoint: 0.80, grow_above: 0.85, shrink_below: 0.70, grow_factor: 1.25, shrink_factor: 0.90,
-            floor: "1Gi".into(), ceiling: "12Gi".into(), cooldown_seconds: 600, max_staleness_seconds: 120, dry_run: true, disruption_policy: Default::default(), suspend: false, force_limit: None, force_limit_expiry: None, predictive: false, predictive_lookahead_seconds: 60, mode: None, confirm_after_seconds: 1800,
+            floor: "1Gi".into(), ceiling: "12Gi".into(), cooldown_seconds: 600, max_staleness_seconds: 120, dry_run: true, disruption_policy: Default::default(), suspend: false, force_limit: None, force_limit_expiry: None, predictive: false, predictive_lookahead_seconds: 60, request_floor: String::new(), peak_decay: 0.98, mode: None, confirm_after_seconds: 1800,
         });
         assert_eq!(g.target_ref().name, "nix-daemon.service");
     }

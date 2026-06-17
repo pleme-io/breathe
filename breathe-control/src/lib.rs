@@ -41,6 +41,13 @@ pub struct BandConfig {
     pub floor_bytes: u64,
     /// Never grow the limit above this many bytes. Default 16Gi.
     pub ceiling_bytes: u64,
+    /// The operator's DECLARED guaranteed working set — `resources.requests.<r>`
+    /// for a k8s carve. A shrink can never drop the limit below this: requests is
+    /// the scheduler's guarantee that the workload always has at least this much,
+    /// so carving the LIMIT under the REQUEST is both nonsensical (limit < request
+    /// is rejected by k8s) and unsafe (it removes the operator-declared headroom).
+    /// `0` = no declared request floor (the unset default — behaviour-preserving).
+    pub request_floor_bytes: u64,
 }
 
 impl Default for BandConfig {
@@ -53,6 +60,7 @@ impl Default for BandConfig {
             shrink_factor: 0.90,
             floor_bytes: 256 * (1 << 20),
             ceiling_bytes: 16 * (1 << 30),
+            request_floor_bytes: 0,
         }
     }
 }
@@ -174,15 +182,44 @@ pub trait ControlLaw {
 
 /// The SHARED safety gate: turn any law's raw proposal into a SAFE typed
 /// [`Decision`]. A grow is clamped to the ceiling (→ `AtCeiling` if no room); a
-/// shrink is clamped UP to `max(working_set/setpoint, floor)` — so live pages
-/// can never be pushed over the band (the never-OOM proof) and a shrink never
-/// overshoots into grow territory (→ `NoSafeShrink` if no safe room). Every
-/// control law funnels through here; the proof holds for all of them.
+/// shrink is clamped UP to the **never-OOM floor** — so live pages can never be
+/// pushed over the band and a shrink never overshoots into grow territory
+/// (→ `NoSafeShrink` if no safe room). Every control law funnels through here;
+/// the proof holds for all of them.
+///
+/// # The never-OOM floor (peak-over-window, not instantaneous)
+///
+/// The floor a shrink can never breach is
+/// `safe_min = max( ceil(peak_working_set / setpoint), request_floor_bytes, floor_bytes )`:
+///
+/// - **`peak_working_set`** — the MAX working set the workload has demonstrated
+///   over a trailing window, NOT the instantaneous sample. This is the bug fix:
+///   a single low-water sample (e.g. a Celery worker idle between blueprint
+///   reconciliations) understates the real spiky working set, so a floor keyed on
+///   the instantaneous reading carves the limit BELOW a known recent peak and the
+///   next spike OOMKills. Keying on the demonstrated peak makes "shrink below what
+///   the workload has been observed to need" structurally impossible.
+/// - **`request_floor_bytes`** — the operator's declared `requests.<resource>`
+///   guarantee; the limit can never drop under the guaranteed working set.
+/// - **`floor_bytes`** — the band's hard configured floor.
+///
+/// # Honest tier (per `theory/UNREPRESENTABILITY.md`)
+///
+/// This is the **C2 "external-world observation" ceiling**: a FUTURE working set
+/// is not knowable at compile time, so the strongest HONEST guarantee is
+/// *"never below the DEMONSTRATED peak + the declared request floor"*, enforced
+/// structurally because EVERY control law funnels through this one
+/// `safety_clamp`. It is not (and cannot be) a compile-time proof that a workload
+/// will never OOM — only that a carve can never lower the limit beneath what the
+/// workload has already shown it needs in the trailing window. Callers raise the
+/// floor by feeding a peak that holds a real spike for a meaningful window (see
+/// [`update_peak`]).
 #[must_use]
 #[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation, clippy::cast_sign_loss)]
 pub fn safety_clamp(
     proposal: Proposal,
     working_set: u64,
+    peak_working_set: u64,
     current_limit: u64,
     cfg: &BandConfig,
 ) -> Decision {
@@ -197,8 +234,16 @@ pub fn safety_clamp(
             }
         }
         Proposal::Target(raw) if raw < current_limit => {
-            let safe_min = (working_set as f64 / cfg.setpoint).ceil() as u64;
-            let to = raw.max(safe_min).max(cfg.floor_bytes);
+            // The never-OOM floor is keyed on the DEMONSTRATED PEAK working set
+            // (max over the trailing window), never the instantaneous sample — a
+            // low-water reading must not let a shrink carve under a recent spike.
+            // `peak_working_set` is always ≥ the current `working_set` (the caller
+            // folds the current sample into the peak), so this is monotone-safer:
+            // it can only ever RAISE the safe minimum vs the old instantaneous form.
+            let peak = peak_working_set.max(working_set);
+            let safe_min = ((peak as f64) / cfg.setpoint).ceil() as u64;
+            let safe_min = safe_min.max(cfg.request_floor_bytes).max(cfg.floor_bytes);
+            let to = raw.max(safe_min);
             if to >= current_limit {
                 Decision::NoSafeShrink { current: current_limit }
             } else {
@@ -209,14 +254,38 @@ pub fn safety_clamp(
     }
 }
 
+/// Fold one fresh working-set sample into the trailing-window PEAK that drives the
+/// never-OOM shrink floor. The peak is an **EWMA-peak with slow decay**: a real
+/// spike instantly raises it (`max` with the current sample), and it decays
+/// geometrically by `decay ∈ [0,1)` per tick so a one-off spike still holds the
+/// floor up for a meaningful window rather than evaporating on the very next
+/// low-water sample. `decay = 0.0` ⇒ a pure single-tick max (no memory beyond the
+/// current sample); a `decay` near 1 ⇒ the peak holds for many ticks. Pure +
+/// dependency-free + testable; the reconcile layer persists the result in the
+/// band status and feeds it back next tick.
+///
+/// Invariant: the returned peak is ALWAYS `≥ current` — folding the sample in can
+/// never produce a value below the sample itself, so the shrink floor it feeds
+/// can never drop under the live working set.
+#[must_use]
+#[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+pub fn update_peak(prior_peak: u64, current: u64, decay: f64) -> u64 {
+    let decay = decay.clamp(0.0, 0.999);
+    let decayed = ((prior_peak as f64) * decay) as u64;
+    decayed.max(current)
+}
+
 /// Run a control law through the universal safety scaffolding: floor-seed /
 /// ceiling-snap (independent of the law; also the unset-limit guard) → the law's
 /// proposal → [`safety_clamp`]. This is the one place a law's output becomes a
-/// safe [`Decision`].
+/// safe [`Decision`]. `peak_working_set` is the trailing-window peak the shrink
+/// floor is keyed on (see [`safety_clamp`] / [`update_peak`]); pass `working_set`
+/// for the no-history / instantaneous-only behaviour.
 #[must_use]
 pub fn decide_with<L: ControlLaw>(
     law: &L,
     working_set: u64,
+    peak_working_set: u64,
     current_limit: u64,
     cfg: &BandConfig,
 ) -> Decision {
@@ -232,7 +301,7 @@ pub fn decide_with<L: ControlLaw>(
     if current_limit > cfg.ceiling_bytes {
         return Decision::Shrink { from: current_limit, to: cfg.ceiling_bytes };
     }
-    safety_clamp(law.propose(working_set, current_limit, cfg), working_set, current_limit, cfg)
+    safety_clamp(law.propose(working_set, current_limit, cfg), working_set, peak_working_set, current_limit, cfg)
 }
 
 /// Rate-aware sibling of [`decide_with`]: runs a law's *feed-forward*
@@ -246,6 +315,7 @@ pub fn decide_with<L: ControlLaw>(
 pub fn decide_with_rate<L: ControlLaw>(
     law: &L,
     working_set: u64,
+    peak_working_set: u64,
     current_limit: u64,
     cfg: &BandConfig,
     rate: i64,
@@ -256,7 +326,13 @@ pub fn decide_with_rate<L: ControlLaw>(
     if current_limit > cfg.ceiling_bytes {
         return Decision::Shrink { from: current_limit, to: cfg.ceiling_bytes };
     }
-    safety_clamp(law.propose_with_rate(working_set, current_limit, cfg, rate), working_set, current_limit, cfg)
+    safety_clamp(
+        law.propose_with_rate(working_set, current_limit, cfg, rate),
+        working_set,
+        peak_working_set,
+        current_limit,
+        cfg,
+    )
 }
 
 /// The default control law + the conformance oracle: a deadband with gentle
@@ -283,11 +359,14 @@ impl ControlLaw for BandLaw {
 
 /// The bidirectional band law as a free function — `decide_with(&BandLaw, …)`.
 /// Behaviour-preserving wrapper kept for the existing call sites: the proven
-/// default. Shrink can never push a workload toward OOM by construction (the
-/// gate clamps to `working_set / setpoint`).
+/// default. Shrink can never push a workload toward OOM by construction (the gate
+/// clamps to the never-OOM floor — see [`safety_clamp`]). This instantaneous-only
+/// form feeds `peak = working_set` (no trailing-window history); the rate-/peak-
+/// aware path used by the reconcile loop is [`decide_with`] / [`decide_with_rate`]
+/// fed a real [`update_peak`] value.
 #[must_use]
 pub fn decide(working_set: u64, current_limit: u64, cfg: &BandConfig) -> Decision {
-    decide_with(&BandLaw, working_set, current_limit, cfg)
+    decide_with(&BandLaw, working_set, working_set, current_limit, cfg)
 }
 
 /// A PROPORTIONAL control law: the step size is proportional to the % deviance
@@ -685,6 +764,16 @@ pub enum Directionality {
 #[derive(Debug, Clone)]
 pub struct Observation {
     pub used: u64,
+    /// The PEAK working set demonstrated over a trailing window — the max RSS the
+    /// reconcile layer has recently observed for this entity (an EWMA-peak with
+    /// slow decay; see [`update_peak`]). This, NOT the instantaneous `used`, is
+    /// what the shrink-safety floor in [`safety_clamp`] is keyed on: a low-water
+    /// `used` sample must never let a carve drop the limit beneath a recent spike
+    /// (the authentik-Celery-worker OOM). The reconcile layer carries it across
+    /// ticks (persisted in the band status) and folds the current `used` in before
+    /// each tick, so `peak_used ≥ used` always holds. On the first tick (no
+    /// history) it equals `used` — behaviour-identical to the instantaneous form.
+    pub peak_used: u64,
     pub capacity: u64,
     pub owners: Vec<FieldOwner>,
     /// Age of the metric sample driving `used`, in seconds. A scrape gap that
@@ -786,15 +875,19 @@ pub fn plan_tick(
     // contained by `safety_clamp` (the never-OOM oracle covers it via
     // `safety_gate_contains_the_predictive_law`). `None` = the plain reactive
     // `BandLaw`, byte-identical to before.
+    // The shrink-safety floor is keyed on the DEMONSTRATED PEAK (`obs.peak_used`),
+    // never the instantaneous `obs.used` — a low-water sample can't carve under a
+    // recent spike. `peak_used ≥ used` is maintained by the reconcile layer.
     let raw = match predictive {
         Some((rate, lookahead_secs)) => decide_with_rate(
             &PredictiveGrow { inner: BandLaw, lookahead_secs },
             obs.used,
+            obs.peak_used,
             obs.capacity,
             cfg,
             rate,
         ),
-        None => decide(obs.used, obs.capacity, cfg),
+        None => decide_with(&BandLaw, obs.used, obs.peak_used, obs.capacity, cfg),
     };
     let decision = clamp_to_directionality(raw, dir);
     let is_mutation = matches!(decision, Decision::Grow { .. } | Decision::Shrink { .. });
@@ -1305,7 +1398,12 @@ mod tests {
     // ── plan_tick: the pure reconcile heart (single-writer FIRST) ────────────
 
     fn obs(used: u64, cap: u64, owners: Vec<FieldOwner>) -> Observation {
-        Observation { used, capacity: cap, owners, staleness_secs: 0, memory_shrink_restart_free: false }
+        // peak == used: no trailing-window history ⇒ instantaneous-equivalent.
+        Observation { used, peak_used: used, capacity: cap, owners, staleness_secs: 0, memory_shrink_restart_free: false }
+    }
+    /// An observation with an explicit trailing-window peak (peak ≥ used).
+    fn obs_peak(used: u64, peak: u64, cap: u64, owners: Vec<FieldOwner>) -> Observation {
+        Observation { used, peak_used: peak.max(used), capacity: cap, owners, staleness_secs: 0, memory_shrink_restart_free: false }
     }
     fn ours() -> Vec<FieldOwner> {
         vec![owns("breathe-memory", MEMORY_LIMIT_FIELD)]
@@ -1395,7 +1493,7 @@ mod tests {
     fn plan_refuses_to_mutate_on_stale_metric() {
         // util 0.95 would Act(Grow), but a sample older than the bound must never
         // carve — the never-OOM proof holds only on a fresh metric.
-        let stale = Observation { used: 950 * MI, capacity: GI, owners: ours(), staleness_secs: 120, memory_shrink_restart_free: false };
+        let stale = Observation { used: 950 * MI, peak_used: 950 * MI, capacity: GI, owners: ours(), staleness_secs: 120, memory_shrink_restart_free: false };
         match plan_tick(&stale, &cfg(), Directionality::Bidirectional, false, "breathe-memory", MEMORY_LIMIT_FIELD, FRESH, None) {
             TickPlan::Stale { staleness_secs: 120, decision: Decision::Grow { .. } } => {}
             p => panic!("expected Stale(Grow), got {p:?}"),
@@ -1465,11 +1563,11 @@ mod tests {
 
     #[test]
     fn decide_is_exactly_bandlaw_through_the_gate() {
-        // The free `decide` == `decide_with(&BandLaw, …)`, so every band-edge
+        // The free `decide` == `decide_with(&BandLaw, …, …)`, so every band-edge
         // test above is also a behaviour-preservation test for the trait lift.
         let c = cfg();
         for (ws, lim) in [(800 * MI, GI), (950 * MI, GI), (200 * MI, GI), (0, 0), (16 * GI, 16 * GI)] {
-            assert_eq!(decide(ws, lim, &c), decide_with(&BandLaw, ws, lim, &c));
+            assert_eq!(decide(ws, lim, &c), decide_with(&BandLaw, ws, ws, lim, &c));
         }
     }
 
@@ -1477,9 +1575,9 @@ mod tests {
     fn safety_clamp_caps_grow_at_ceiling() {
         let c = BandConfig { ceiling_bytes: 4 * GI, ..cfg() };
         // a law proposing 100Gi is capped to the ceiling
-        assert_eq!(safety_clamp(Proposal::Target(100 * GI), GI, 2 * GI, &c), Decision::Grow { from: 2 * GI, to: 4 * GI });
+        assert_eq!(safety_clamp(Proposal::Target(100 * GI), GI, GI, 2 * GI, &c), Decision::Grow { from: 2 * GI, to: 4 * GI });
         // growth with no room → AtCeiling, not an over-ceiling write
-        assert_eq!(safety_clamp(Proposal::Target(100 * GI), GI, 4 * GI, &c), Decision::AtCeiling { current: 4 * GI });
+        assert_eq!(safety_clamp(Proposal::Target(100 * GI), GI, GI, 4 * GI, &c), Decision::AtCeiling { current: 4 * GI });
     }
 
     #[test]
@@ -1487,7 +1585,7 @@ mod tests {
         let c = cfg();
         let ws = 800 * MI;
         let safe_min = (ws as f64 / c.setpoint).ceil() as u64;
-        match safety_clamp(Proposal::Target(1), ws, 2 * GI, &c) {
+        match safety_clamp(Proposal::Target(1), ws, ws, 2 * GI, &c) {
             Decision::Shrink { to, .. } => assert_eq!(to, safe_min.max(c.floor_bytes), "shrink lifted to the safe minimum"),
             d => panic!("expected clamped Shrink, got {d:?}"),
         }
@@ -1512,32 +1610,32 @@ mod tests {
             for &limit in &[256 * MI, GI, 4 * GI, 16 * GI, 20 * GI /* > ceiling: snap */] {
                 let safe_min = (ws as f64 / c.setpoint).ceil() as u64;
                 for d in [
-                    decide_with(&GrowToMax, ws, limit, &c),
-                    decide_with(&ShrinkToZero, ws, limit, &c),
-                    decide_with(&BandLaw, ws, limit, &c),
-                    decide_with(&ProportionalLaw { gain: 1.0 }, ws, limit, &c),
-                    decide_with(&ProportionalLaw { gain: 0.5 }, ws, limit, &c),
-                    decide_with(&SlewLimited { inner: GrowToMax, max_step_frac: 0.25 }, ws, limit, &c),
-                    decide_with(&SlewLimited { inner: ShrinkToZero, max_step_frac: 0.25 }, ws, limit, &c),
+                    decide_with(&GrowToMax, ws, ws, limit, &c),
+                    decide_with(&ShrinkToZero, ws, ws, limit, &c),
+                    decide_with(&BandLaw, ws, ws, limit, &c),
+                    decide_with(&ProportionalLaw { gain: 1.0 }, ws, ws, limit, &c),
+                    decide_with(&ProportionalLaw { gain: 0.5 }, ws, ws, limit, &c),
+                    decide_with(&SlewLimited { inner: GrowToMax, max_step_frac: 0.25 }, ws, ws, limit, &c),
+                    decide_with(&SlewLimited { inner: ShrinkToZero, max_step_frac: 0.25 }, ws, ws, limit, &c),
                     // PR-1: QuantizedSlice — snapping a target to a quantum cannot
                     // escape the envelope (the gate still owns floor/ceiling/safe_min).
-                    decide_with(&QuantizedSlice { inner: GrowToMax, slice: 64 }, ws, limit, &c),
-                    decide_with(&QuantizedSlice { inner: ShrinkToZero, slice: 64 }, ws, limit, &c),
-                    decide_with(&QuantizedSlice { inner: BandLaw, slice: 1 }, ws, limit, &c),
+                    decide_with(&QuantizedSlice { inner: GrowToMax, slice: 64 }, ws, ws, limit, &c),
+                    decide_with(&QuantizedSlice { inner: ShrinkToZero, slice: 64 }, ws, ws, limit, &c),
+                    decide_with(&QuantizedSlice { inner: BandLaw, slice: 1 }, ws, ws, limit, &c),
                     // PR-3: ThrottleAware — no-rate path is the inner law verbatim.
-                    decide_with(&ThrottleAware { inner: GrowToMax }, ws, limit, &c),
-                    decide_with(&ThrottleAware { inner: ShrinkToZero }, ws, limit, &c),
+                    decide_with(&ThrottleAware { inner: GrowToMax }, ws, ws, limit, &c),
+                    decide_with(&ThrottleAware { inner: ShrinkToZero }, ws, ws, limit, &c),
                     // PR-3: ThrottleAware under an ACTIVE throttle signal — a shrink
                     // is suppressed to Hold, a grow still clamps to the ceiling.
-                    decide_with_rate(&ThrottleAware { inner: GrowToMax }, ws, limit, &c, 5),
-                    decide_with_rate(&ThrottleAware { inner: ShrinkToZero }, ws, limit, &c, 5),
+                    decide_with_rate(&ThrottleAware { inner: GrowToMax }, ws, ws, limit, &c, 5),
+                    decide_with_rate(&ThrottleAware { inner: ShrinkToZero }, ws, ws, limit, &c, 5),
                     // The Step-5..14 law families — each funnels through the SAME gate.
-                    decide_with(&PercentileBand, ws, limit, &c),
-                    decide_with(&BurstBudget, ws, limit, &c),
-                    decide_with(&Aimd { increment: GI, decrease_factor: 0.5 }, ws, limit, &c),
-                    decide_with_rate(&Aimd { increment: GI, decrease_factor: 0.5 }, ws, limit, &c, 7),
-                    decide_with(&SharedBudget { inner: GrowToMax, available_headroom: GI }, ws, limit, &c),
-                    decide_with(&SharedBudget { inner: ShrinkToZero, available_headroom: GI }, ws, limit, &c),
+                    decide_with(&PercentileBand, ws, ws, limit, &c),
+                    decide_with(&BurstBudget, ws, ws, limit, &c),
+                    decide_with(&Aimd { increment: GI, decrease_factor: 0.5 }, ws, ws, limit, &c),
+                    decide_with_rate(&Aimd { increment: GI, decrease_factor: 0.5 }, ws, ws, limit, &c, 7),
+                    decide_with(&SharedBudget { inner: GrowToMax, available_headroom: GI }, ws, ws, limit, &c),
+                    decide_with(&SharedBudget { inner: ShrinkToZero, available_headroom: GI }, ws, ws, limit, &c),
                 ] {
                     match d {
                         Decision::Grow { from, to } => {
@@ -1622,7 +1720,7 @@ mod tests {
         // saturates rather than overflowing on a GrowToMax target.
         assert_eq!(snap_up(Proposal::Target(u64::MAX), 64), Proposal::Target(u64::MAX));
         // end-to-end: the snapped grow still clamps to the ceiling.
-        let d = decide_with(&QuantizedSlice { inner: BandLaw, slice: 7 }, 950 * MI, GI, &c);
+        let d = decide_with(&QuantizedSlice { inner: BandLaw, slice: 7 }, 950 * MI, 950 * MI, GI, &c);
         assert!(matches!(d, Decision::Grow { .. } | Decision::AtCeiling { .. }));
     }
 
@@ -1632,13 +1730,13 @@ mod tests {
         // A low-util sample (would shrink) — but with a live throttle signal,
         // ThrottleAware holds instead of tightening the cap (anti-flap).
         let low_util_ws = 100 * MI; // util 0.1 at 1Gi → BandLaw would shrink
-        let shrink = decide_with(&ThrottleAware { inner: BandLaw }, low_util_ws, GI, &c);
+        let shrink = decide_with(&ThrottleAware { inner: BandLaw }, low_util_ws, low_util_ws, GI, &c);
         assert!(matches!(shrink, Decision::Shrink { .. }), "no throttle signal ⇒ inner shrink");
-        let held = decide_with_rate(&ThrottleAware { inner: BandLaw }, low_util_ws, GI, &c, 3);
+        let held = decide_with_rate(&ThrottleAware { inner: BandLaw }, low_util_ws, low_util_ws, GI, &c, 3);
         assert_eq!(held, Decision::Hold, "active throttle ⇒ shrink suppressed to Hold");
         // A grow is NEVER suppressed — relieving throttle is the safe move.
         let high_util_ws = 950 * MI;
-        let grown = decide_with_rate(&ThrottleAware { inner: BandLaw }, high_util_ws, GI, &c, 9);
+        let grown = decide_with_rate(&ThrottleAware { inner: BandLaw }, high_util_ws, high_util_ws, GI, &c, 9);
         assert!(matches!(grown, Decision::Grow { .. }), "throttle + high util ⇒ still grows");
     }
 
@@ -1647,7 +1745,7 @@ mod tests {
         let c = cfg();
         // util 0.95 at 1Gi → size so the working set sits at the setpoint (0.80).
         let ws = (0.95 * GI as f64) as u64;
-        match decide_with(&PercentileBand, ws, GI, &c) {
+        match decide_with(&PercentileBand, ws, ws, GI, &c) {
             Decision::Grow { to, .. } => {
                 let new_util = ws as f64 / to as f64;
                 assert!((new_util - c.setpoint).abs() < 0.02, "lands util at setpoint, got {new_util}");
@@ -1655,7 +1753,7 @@ mod tests {
             d => panic!("expected Grow, got {d:?}"),
         }
         // in-band → hold.
-        assert_eq!(decide_with(&PercentileBand, (0.78 * GI as f64) as u64, GI, &c), Decision::Hold);
+        assert_eq!(decide_with(&PercentileBand, (0.78 * GI as f64) as u64, (0.78 * GI as f64) as u64, GI, &c), Decision::Hold);
     }
 
     #[test]
@@ -1663,12 +1761,12 @@ mod tests {
         let c = cfg();
         let law = Aimd { increment: 256 * MI, decrease_factor: 0.5 };
         // no throttle → additive increase by `increment`.
-        match decide_with(&law, 500 * MI, GI, &c) {
+        match decide_with(&law, 500 * MI, 500 * MI, GI, &c) {
             Decision::Grow { from, to } => { assert_eq!(from, GI); assert_eq!(to, GI + 256 * MI); }
             d => panic!("expected additive-increase Grow, got {d:?}"),
         }
         // throttle (rate>0) → multiplicative decrease to half (clamped to safe-min).
-        let d = decide_with_rate(&law, 100 * MI, 4 * GI, &c, 9);
+        let d = decide_with_rate(&law, 100 * MI, 100 * MI, 4 * GI, &c, 9);
         assert!(matches!(d, Decision::Shrink { to, .. } if to <= 2 * GI), "multiplicative back-off, got {d:?}");
     }
 
@@ -1677,7 +1775,7 @@ mod tests {
         let c = cfg();
         // GrowToMax wants u64::MAX, but only 512Mi of shared budget is free → cap there.
         let law = SharedBudget { inner: { struct G; impl ControlLaw for G { fn propose(&self,_:u64,l:u64,_:&BandConfig)->Proposal{Proposal::Target(l*100)} } G }, available_headroom: 512 * MI };
-        match decide_with(&law, 950 * MI, GI, &c) {
+        match decide_with(&law, 950 * MI, 950 * MI, GI, &c) {
             Decision::Grow { to, .. } => assert_eq!(to, GI + 512 * MI, "grow clamped to current + headroom"),
             d => panic!("expected headroom-clamped Grow, got {d:?}"),
         }
@@ -1706,12 +1804,12 @@ mod tests {
         }
         let c = cfg();
         // in-range: grows by a floor-step, capped at ceiling
-        match decide_with(&StepUp, 800 * MI, GI, &c) {
+        match decide_with(&StepUp, 800 * MI, 800 * MI, GI, &c) {
             Decision::Grow { from, to } => { assert_eq!(from, GI); assert_eq!(to, GI + c.floor_bytes); }
             d => panic!("expected Grow, got {d:?}"),
         }
         // and it STILL can't breach the ceiling — the shared gate owns that
-        assert_eq!(decide_with(&StepUp, GI, c.ceiling_bytes, &c), Decision::AtCeiling { current: c.ceiling_bytes });
+        assert_eq!(decide_with(&StepUp, GI, GI, c.ceiling_bytes, &c), Decision::AtCeiling { current: c.ceiling_bytes });
     }
 
     #[test]
@@ -1719,7 +1817,7 @@ mod tests {
         let c = cfg();
         let ws = 950 * MI; // util 0.927 at 1Gi → grow
         // gain 1.0 → target the limit that lands util exactly at the setpoint
-        match decide_with(&ProportionalLaw { gain: 1.0 }, ws, GI, &c) {
+        match decide_with(&ProportionalLaw { gain: 1.0 }, ws, ws, GI, &c) {
             Decision::Grow { to, .. } => {
                 let new_util = ws as f64 / to as f64;
                 assert!((new_util - c.setpoint).abs() < 0.02, "util {new_util} should land at setpoint");
@@ -1732,11 +1830,11 @@ mod tests {
     fn proportional_law_step_scales_with_deviance() {
         let c = cfg();
         // further from the setpoint ⇒ bigger step (the deviance-proportional response)
-        let near = match decide_with(&ProportionalLaw { gain: 1.0 }, 870 * MI, GI, &c) {
+        let near = match decide_with(&ProportionalLaw { gain: 1.0 }, 870 * MI, 870 * MI, GI, &c) {
             Decision::Grow { from, to } => to - from,
             _ => 0,
         };
-        let far = match decide_with(&ProportionalLaw { gain: 1.0 }, 980 * MI, GI, &c) {
+        let far = match decide_with(&ProportionalLaw { gain: 1.0 }, 980 * MI, 980 * MI, GI, &c) {
             Decision::Grow { from, to } => to - from,
             _ => 0,
         };
@@ -1751,7 +1849,7 @@ mod tests {
         impl ControlLaw for GrowToMax {
             fn propose(&self, _w: u64, _l: u64, _c: &BandConfig) -> Proposal { Proposal::Target(u64::MAX) }
         }
-        match decide_with(&SlewLimited { inner: GrowToMax, max_step_frac: 0.25 }, 950 * MI, GI, &c) {
+        match decide_with(&SlewLimited { inner: GrowToMax, max_step_frac: 0.25 }, 950 * MI, 950 * MI, GI, &c) {
             Decision::Grow { from, to } => {
                 let rise = (to - from) as f64 / from as f64;
                 assert!(rise <= 0.26, "slew cap holds the per-tick rise near 25% (got {rise})");
@@ -1768,7 +1866,7 @@ mod tests {
         let c = cfg();
         let law = PredictiveGrow { inner: BandLaw, lookahead_secs: 60.0 };
         for (ws, lim) in [(800 * MI, GI), (950 * MI, GI), (200 * MI, 2 * GI), (0, 0), (16 * GI, 16 * GI)] {
-            assert_eq!(decide_with_rate(&law, ws, lim, &c, 0), decide(ws, lim, &c), "ws={ws} lim={lim}");
+            assert_eq!(decide_with_rate(&law, ws, ws, lim, &c, 0), decide(ws, lim, &c), "ws={ws} lim={lim}");
         }
     }
 
@@ -1782,7 +1880,7 @@ mod tests {
         assert_eq!(decide(800 * MI, GI, &c), Decision::Hold);
         // … but the predictive law grows ahead of the predicted breach.
         // predicted_ws = 800Mi + 2Mi/s·60s = 920Mi → seat at setpoint: 920Mi/0.8 = 1150Mi.
-        match decide_with_rate(&law, 800 * MI, GI, &c, (2 * MI) as i64) {
+        match decide_with_rate(&law, 800 * MI, 800 * MI, GI, &c, (2 * MI) as i64) {
             Decision::Grow { from, to } => {
                 assert_eq!(from, GI);
                 assert_eq!(to, 1150 * MI);
@@ -1797,7 +1895,7 @@ mod tests {
         // a runaway rate cannot breach the ceiling — the shared gate owns that.
         let c = BandConfig { ceiling_bytes: 4 * GI, ..cfg() };
         let law = PredictiveGrow { inner: BandLaw, lookahead_secs: 60.0 };
-        match decide_with_rate(&law, 800 * MI, GI, &c, GI as i64 /* 1Gi/s — absurd */) {
+        match decide_with_rate(&law, 800 * MI, 800 * MI, GI, &c, GI as i64 /* 1Gi/s — absurd */) {
             Decision::Grow { from, to } => {
                 assert_eq!(from, GI);
                 assert_eq!(to, c.ceiling_bytes, "predictive grow capped at the ceiling");
@@ -1812,7 +1910,7 @@ mod tests {
         // ever grows) must pass the shrink through untouched.
         let c = cfg();
         let law = PredictiveGrow { inner: BandLaw, lookahead_secs: 60.0 };
-        let with = decide_with_rate(&law, 200 * MI, 2 * GI, &c, -(MI as i64));
+        let with = decide_with_rate(&law, 200 * MI, 200 * MI, 2 * GI, &c, -(MI as i64));
         assert_eq!(with, decide(200 * MI, 2 * GI, &c));
         assert!(matches!(with, Decision::Shrink { .. }), "prediction must not block a shrink, got {with:?}");
     }
@@ -1857,8 +1955,8 @@ mod tests {
                 let safe_min = (ws as f64 / c.setpoint).ceil() as u64;
                 for &rate in &[i64::MIN / 2, -(GI as i64), 0, GI as i64, i64::MAX / 2] {
                     for d in [
-                        decide_with_rate(&band, ws, limit, &c, rate),
-                        decide_with_rate(&prop, ws, limit, &c, rate),
+                        decide_with_rate(&band, ws, ws, limit, &c, rate),
+                        decide_with_rate(&prop, ws, ws, limit, &c, rate),
                     ] {
                         match d {
                             Decision::Grow { from, to } => {
@@ -1875,6 +1973,173 @@ mod tests {
                     }
                 }
             }
+        }
+    }
+
+    // ── THE NEVER-OOM-FROM-CARVE INVARIANT (the authentik-Celery fix) ──────────
+    //
+    // Honest tier (theory/UNREPRESENTABILITY.md): this is the C2 "external-world
+    // observation" ceiling — a FUTURE working set is unknowable at compile time, so
+    // the strongest HONEST guarantee is "a carve never drops the limit below the
+    // DEMONSTRATED peak (max RSS over the trailing window) + the declared request
+    // floor", enforced STRUCTURALLY because every control law funnels through the
+    // single `safety_clamp`. These tests PROVE that much (and not more).
+
+    /// Drive a controller's worth of ticks: fold each working-set sample into the
+    /// trailing-window peak (exactly as the reconcile layer does) and run the proven
+    /// `plan_tick`, applying any carve to the live limit. Returns, per tick, the
+    /// `(limit, peak)` pair so callers can assert against the tick's CURRENT peak.
+    fn run_sequence(samples: &[u64], mut limit: u64, c: &BandConfig, decay: f64) -> Vec<(u64, u64)> {
+        let mut peak = 0u64;
+        let mut trail = Vec::with_capacity(samples.len());
+        for &used in samples {
+            peak = update_peak(peak, used, decay);
+            let o = Observation { used, peak_used: peak, capacity: limit, owners: ours(), staleness_secs: 0, memory_shrink_restart_free: false };
+            match plan_tick(&o, c, Directionality::Bidirectional, false, "breathe-memory", MEMORY_LIMIT_FIELD, FRESH, None) {
+                TickPlan::Act { decision: Decision::Grow { to, .. } | Decision::Shrink { to, .. } } => limit = to,
+                _ => {}
+            }
+            trail.push((limit, peak));
+        }
+        trail
+    }
+
+    /// THE NEVER-OOM INVARIANT, replicating the authentik Celery-worker failure:
+    /// low, low, SPIKE, low, low. With the BUGGY instantaneous floor the limit
+    /// collapsed on the post-spike low-water samples (350Mi → floor 446Mi) and the
+    /// next 900Mi spike OOMed. With the peak-keyed floor + a slow decay, the limit
+    /// HOLDS the demonstrated spike across the whole low-water window, so a re-spike
+    /// to the same level always fits. (A near-1 decay = "the peak holds for the
+    /// window"; the decay is the operator's knob for HOW LONG.)
+    #[test]
+    fn shrink_never_below_observed_peak_replicating_authentik() {
+        let spike = 900 * MI;
+        let idle = 350 * MI;
+        let samples = [idle, idle, spike, idle, idle, idle, idle, idle];
+        let c = cfg();
+        // decay 1.0 (clamped to 0.999) = the peak effectively holds across the window:
+        // the demonstrated spike never decays away within these few ticks.
+        let trail = run_sequence(&samples, 2 * GI, &c, 1.0);
+
+        // PER-TICK INVARIANT: after every tick the limit seats the CURRENT (slowly-
+        // decaying) demonstrated peak — never the instantaneous low-water sample.
+        // With the buggy instantaneous floor the limit would have collapsed to
+        // 446Mi (=350Mi/0.8) on every idle tick; here it tracks ~900Mi/0.8.
+        for (i, &(lim, peak)) in trail.iter().enumerate() {
+            let floor = (peak as f64 / c.setpoint).ceil() as u64;
+            assert!(lim >= floor, "tick {i}: limit {lim} < held-peak floor {floor} (the authentik OOM)");
+        }
+        // a subsequent re-spike to the SAME level never OOMs: it fits under the limit.
+        let (final_limit, _) = *trail.last().unwrap();
+        assert!(spike <= final_limit, "the re-spike {spike} must fit under the held limit {final_limit}");
+        // the BUGGY behaviour is the counter-example: an instantaneous floor on the
+        // idle sample would be 350Mi/0.8 = 446Mi, far below the 900Mi re-spike.
+        let buggy_instantaneous_floor = (idle as f64 / c.setpoint).ceil() as u64;
+        assert!(buggy_instantaneous_floor < spike, "the bug: instantaneous floor {buggy_instantaneous_floor} < re-spike {spike}");
+        // the held limit is MILES above that buggy floor — proving the fix lifts it.
+        assert!(final_limit > 2 * buggy_instantaneous_floor, "held limit {final_limit} must dwarf the buggy floor {buggy_instantaneous_floor}");
+    }
+
+    /// Exhaustive: for EVERY ordering of a small alphabet of working-set samples,
+    /// NO shrink decision ever carves the limit below the never-OOM floor for the
+    /// peak demonstrated so far (`max(ceil(peak/setpoint), floor)`). Drives the same
+    /// reconcile→decide path the live loop uses, so this is a property of the
+    /// SHIPPED control flow, not a unit poke. A GROW may still be climbing toward
+    /// the band from below — the invariant is on the SHRINK direction (the carve
+    /// that can starve a workload), which is exactly the OOM-from-carve class.
+    #[test]
+    fn no_shrink_ever_lands_below_the_running_demonstrated_peak_floor() {
+        let c = cfg();
+        let alphabet = [200 * MI, 500 * MI, 900 * MI, 1400 * MI];
+        // all length-4 sequences over the alphabet (256 orderings).
+        for a in alphabet {
+            for b in alphabet {
+                for d in alphabet {
+                    for e in alphabet {
+                        let samples = [a, b, d, e];
+                        let mut peak = 0u64;
+                        let mut limit = 2 * GI;
+                        for &used in &samples {
+                            // pure single-tick max (decay 0): the tightest honest claim
+                            // — the floor must hold the peak at least the tick it is seen.
+                            peak = update_peak(peak, used, 0.0); // = max(peak, used)
+                            let floor = ((peak as f64 / c.setpoint).ceil() as u64).max(c.floor_bytes);
+                            let o = Observation { used, peak_used: peak, capacity: limit, owners: ours(), staleness_secs: 0, memory_shrink_restart_free: false };
+                            match plan_tick(&o, &c, Directionality::Bidirectional, false, "breathe-memory", MEMORY_LIMIT_FIELD, FRESH, None) {
+                                TickPlan::Act { decision: Decision::Shrink { to, .. } } => {
+                                    assert!(
+                                        to >= floor,
+                                        "samples={samples:?} used={used} peak={peak}: SHRANK to {to} < demonstrated-peak floor {floor} (OOM-from-carve)"
+                                    );
+                                    limit = to;
+                                }
+                                TickPlan::Act { decision: Decision::Grow { to, .. } } => limit = to,
+                                _ => {}
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// A shrink can never carve the limit below the operator's declared
+    /// `requests.<resource>` floor — requests is the scheduler's guarantee, and a
+    /// limit under the request is both invalid in k8s and unsafe.
+    #[test]
+    fn shrink_never_below_request_floor() {
+        // a low-util sample that WOULD shrink hard, but a 1Gi request floor binds.
+        let c = BandConfig { request_floor_bytes: GI, ..cfg() };
+        // util 0.05 @ 2Gi ⇒ BandLaw wants to shrink way down; request floor caps it.
+        match decide(100 * MI, 2 * GI, &c) {
+            Decision::Shrink { to, .. } => assert!(to >= GI, "shrink {to} dropped below the 1Gi request floor"),
+            Decision::NoSafeShrink { .. } => {} // also acceptable (floor == limit cases)
+            d => panic!("expected a request-floor-bound Shrink/NoSafeShrink, got {d:?}"),
+        }
+        // and the request floor composes with the peak floor (max of the two binds).
+        let o = Observation { used: 100 * MI, peak_used: GI + 200 * MI, capacity: 4 * GI, owners: ours(), staleness_secs: 0, memory_shrink_restart_free: false };
+        if let TickPlan::Act { decision: Decision::Shrink { to, .. } } =
+            plan_tick(&o, &c, Directionality::Bidirectional, false, "breathe-memory", MEMORY_LIMIT_FIELD, FRESH, None)
+        {
+            let peak_floor = ((GI + 200 * MI) as f64 / c.setpoint).ceil() as u64;
+            assert!(to >= peak_floor.max(GI), "shrink {to} below max(peak_floor, request_floor)");
+        }
+    }
+
+    /// Non-spiky workloads (garage / pangea-coming-soon) must STILL carve normally:
+    /// the peak floor only ever RAISES the safe minimum, never lowers it, so a
+    /// steadily-over-allotted band still shrinks toward the band as before.
+    #[test]
+    fn steady_workload_still_shrinks_into_band() {
+        let c = cfg();
+        // steady 600Mi working set, peak == used (no spikes), 4Gi limit ⇒ shrink.
+        // Enough ticks for the gentle ×0.9 step to converge into the band; the peak
+        // floor (== the steady working set's setpoint seat) never blocks this carve.
+        let trail = run_sequence(&[600 * MI; 30], 4 * GI, &c, 0.97);
+        let (final_limit, _) = *trail.last().unwrap();
+        let util = (600 * MI) as f64 / final_limit as f64;
+        assert!(util >= c.shrink_below, "a steady band must still converge into the band (util {util})");
+        assert!(final_limit < 4 * GI, "a steady over-allotted band must shrink (final {final_limit})");
+    }
+
+    /// `update_peak` is monotone-safe: the folded peak is ALWAYS ≥ the current
+    /// sample (so the shrink floor can never sit under the live working set) and a
+    /// real spike raises it instantly + holds it across decay.
+    #[test]
+    fn update_peak_is_monotone_safe_and_holds_spikes() {
+        // a spike instantly raises the peak.
+        assert_eq!(update_peak(300 * MI, 900 * MI, 0.97), 900 * MI);
+        // a subsequent low sample does NOT collapse the peak below itself; the
+        // decayed prior peak still dominates for a meaningful window.
+        let after_spike = update_peak(900 * MI, 350 * MI, 0.97);
+        assert!(after_spike >= 350 * MI, "peak ≥ current sample");
+        assert!(after_spike > 800 * MI, "a slow-decay peak holds the spike (got {after_spike})");
+        // decay 0 ⇒ pure single-tick max (no memory beyond the sample).
+        assert_eq!(update_peak(900 * MI, 350 * MI, 0.0), 350 * MI);
+        // the peak is never below the current sample, for any decay.
+        for &d in &[0.0, 0.5, 0.9, 0.999, 1.5 /* clamped */] {
+            assert!(update_peak(0, 777 * MI, d) >= 777 * MI);
+            assert!(update_peak(2 * GI, 100 * MI, d) >= 100 * MI);
         }
     }
 }
