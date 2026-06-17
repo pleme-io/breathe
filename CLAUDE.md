@@ -20,6 +20,19 @@ descriptors — every enrolled workload held in a typed utilization band
 construction, never-OOM by construction. Architecture of record:
 `docs/BREATHE.md`. Born from the live rio pangea-database OOMKill need.
 
+**Destination (the named long-term shape, Operating Principle #0):** breathe
+becomes ONE Urdume-compliant Rust service binary whose elasticity is a pure
+function of shikumi config — the same image runs *very small* (single pod,
+CRD+RAM, zero external infra, byte-identical to today's rio) and *extreme*
+(N sharded replicas behind a Redis leader-lease + Postgres/SeaORM durable
+decision/attestation state), with no band-law or loop code-path difference
+between them. The full hardened refactor plan (3 storage roles, the
+small↔extreme shikumi scale model, the SeaORM entity set + Redis cache, the
+Urdume L0–L9 mapping, the M0–M5 roadmap, and the adversarially-verified fixes)
+is `docs/BREATHE-MICROSERVICE.md`. Pending markers the M-phase PRs will carry:
+`pending-shikumi:M1`, `pending-caixa:runtime-slot`,
+`skip-urdume-L4: not-a-federated-edge`, `skip-urdume-L7: single-servico`.
+
 **What's actually novel (tier-honest, do not overclaim):** breathe is a novel
 *synthesis*, not a novel *primitive* — its in-place `pods/resize` actuation is
 commodity 2026 k8s (KEP-1287 GA, VPA InPlace, ScaleOps). The defensible claims
