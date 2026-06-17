@@ -32,6 +32,7 @@ use breathe_runtime::{
     BandLabels, CumulativeCounters, EnvContext, EventKind,
 };
 use breathe_store::{BandRef, DecisionLog, InMemDecisionLog, InMemSampleCache, Sample, SampleCache};
+use breathe_config::{CacheConfig, CoordinationConfig, ScaleConfig, StoreConfig};
 use k8s_openapi::api::core::v1::Namespace;
 use futures::StreamExt;
 use kube::{
@@ -510,6 +511,55 @@ async fn load_breathe_config(client: &Client) -> BreatheConfigSpec {
         .map_or_else(BreatheConfigSpec::default, |c| c.spec)
 }
 
+/// A fatal startup misconfiguration: a scale tier selected in config that this
+/// build does not yet implement. Fail-fast — no silent downgrade (★★ MAGMA-NATIVE
+/// "config decides") — naming the milestone that ships the tier.
+#[derive(Debug, thiserror::Error)]
+enum StartupError {
+    #[error("unimplemented scale tier: {0}")]
+    UnsupportedScale(String),
+}
+
+/// Build the durable-store seam from the typed scale config — the config-driven
+/// backend selection. M1 implements only the VERY-SMALL arms (in-memory store,
+/// no cache, single replica), which is byte-identical to today; every other arm
+/// is a typed fail-fast naming the milestone that ships it, never a silent
+/// downgrade to in-memory.
+fn build_stores(
+    scale: &ScaleConfig,
+) -> Result<(Arc<dyn DecisionLog>, Arc<dyn SampleCache>), StartupError> {
+    let decisions: Arc<dyn DecisionLog> = match &scale.store {
+        StoreConfig::InMemory => Arc::new(InMemDecisionLog::new()),
+        StoreConfig::Postgres(_) => {
+            return Err(StartupError::UnsupportedScale(
+                "scale.store=postgres — the durable store ships at M2; set `store: inMemory`".into(),
+            ))
+        }
+    };
+    let samples: Arc<dyn SampleCache> = match &scale.cache {
+        CacheConfig::None => Arc::new(InMemSampleCache::new()),
+        CacheConfig::Redis(_) => {
+            return Err(StartupError::UnsupportedScale(
+                "scale.cache=redis — the cache tier ships at M3; set `cache: none`".into(),
+            ))
+        }
+    };
+    match &scale.coordination {
+        CoordinationConfig::SingleReplica => {}
+        CoordinationConfig::LeaderElection(_) => {
+            return Err(StartupError::UnsupportedScale(
+                "scale.coordination=leaderElection — ships at M3; set `coordination: singleReplica`".into(),
+            ))
+        }
+        CoordinationConfig::Sharded(_) => {
+            return Err(StartupError::UnsupportedScale(
+                "scale.coordination=sharded — ships at M4; set `coordination: singleReplica`".into(),
+            ))
+        }
+    }
+    Ok((decisions, samples))
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt()
@@ -539,6 +589,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         restart_conditional: c.restart_conditional.max(1),
         restart_requiring: c.restart_requiring.max(1),
     });
+
+    // ── M1: the shikumi service config selects the elasticity tier. ─────────
+    // prescribed_default = VERY-SMALL (in-memory / no cache / single replica) =
+    // byte-identical to today, so a controller with no config file runs exactly
+    // as before. A present-but-malformed file fails loud (no silent default).
+    // Read ONCE at startup via the one-shot `load` (no watcher): scale is
+    // restart-required, so there is nothing to hot-reload, AND an absent
+    // ConfigMap can never crash startup (the notify-watch-on-missing-path
+    // os-error-2 class stays gone). A committed scale change takes effect on the
+    // next pod restart, where `build_stores` re-validates it.
+    let config_path = breathe_config::default_config_path();
+    let scale = breathe_config::load(&config_path)?.get().scale.clone();
+    info!(
+        store = ?scale.store, cache = ?scale.cache, coordination = ?scale.coordination,
+        window = scale.window, "breathe scale tier resolved"
+    );
+    let (decisions, samples) = build_stores(&scale)?;
+
     // Prometheus /metrics on :9100 — scraped by VictoriaMetrics for the over-time
     // "watch it breathe" view. Non-fatal: a failed install logs + continues.
     if let Err(e) = metrics_exporter_prometheus::PrometheusBuilder::new()
@@ -558,11 +626,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         cooldowns,
         reporter,
         forecasters: std::sync::Mutex::new(std::collections::HashMap::new()),
-        // VERY-SMALL tier: in-memory, zero external infra, byte-identical to the
-        // CRD-status-backed behavior. `scale.store`/`scale.cache` (M1 shikumi)
-        // selects the Postgres/Redis tier here without touching the loop.
-        decisions: Arc::new(InMemDecisionLog::new()),
-        samples: Arc::new(InMemSampleCache::new()),
+        // The durable-store seam, selected by `scale.{store,cache}` (M1). At the
+        // very-small default these are the in-memory impls (byte-identical to
+        // today); a Postgres/Redis selection is built here at M2/M3 behind the
+        // same `Arc<dyn …>` fields, with no reconcile-loop change.
+        decisions,
+        samples,
     });
 
     info!(
