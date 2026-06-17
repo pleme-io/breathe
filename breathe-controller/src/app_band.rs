@@ -130,7 +130,9 @@ pub async fn reconcile_app_band(obj: Arc<AppBand>, ctx: Arc<Ctx>) -> Result<Acti
     };
 
     let outcome = reconcile_one(&input, &provider).await;
-    let status = status_for(&outcome, obj.status(), obj.cooldown_seconds(), obj.generation());
+    let band_ref = breathe_store::BandRef::new(&<AppBand as kube::Resource>::kind(&()), &ns, &name);
+    let counters = crate::fold_counters(&ctx, &band_ref, obj.status(), &outcome).await;
+    let status = status_for(&outcome, obj.status(), obj.cooldown_seconds(), obj.generation(), counters);
     info!(dim = %provider.id(), band = %name, target = %target.name, phase = ?status.phase, "app-band reconciled");
     metrics_for(
         &BandLabels { dim: provider.id().to_string(), namespace: ns.clone(), name: name.clone() },

@@ -515,6 +515,7 @@ dependencies = [
  "breathe-provider",
  "breathe-provision",
  "breathe-runtime",
+ "breathe-store",
  "futures",
  "k8s-openapi",
  "kube",
@@ -674,10 +675,21 @@ dependencies = [
  "breathe-core",
  "breathe-crd",
  "breathe-provider",
+ "breathe-store",
  "chrono",
  "kube",
  "metrics",
  "serde_json",
+]
+
+[[package]]
+name = "breathe-store"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "serde",
+ "thiserror 2.0.18",
+ "tokio",
 ]
 
 [[package]]

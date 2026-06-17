@@ -263,13 +263,22 @@ the `:runtime`-slot gap.
 
 ## 5. Roadmap (each milestone a shippable increment)
 
-- **M0 — `breathe-store` crate + the three traits + InMem impl** (zero behavior change, zero new
-  infra). The unblock: every later milestone is a new trait impl behind a config arm. Thread
-  `&dyn DecisionLog + &dyn SampleCache` through `reconcile_one` exactly as `&dyn ResourceProvider`.
-  Build `DecisionEntry` from the `TickOutcome` keystone. **▲ FIX: move the counter `+delta` into the
-  InMem DecisionLog fold; route `prior_used`+`in_cooldown` through the store seam (accessor rebind,
-  not glue). ▲ Add a GOLDEN behavior-preservation test: same input sequence → identical TickOutcome/
-  carve decisions, InMem-vs-status-read.** No Postgres/Redis/sea-orm yet.
+- **M0 — `breathe-store` crate + the traits + InMem impl** — ✅ **LANDED 2026-06-16.** The
+  `&dyn`-object-safe `DecisionLog` + `SampleCache` (`#[async_trait]`, mirroring `Cluster`/
+  `ResourceProvider`) + `InMemDecisionLog`/`InMemSampleCache`, zero new infra. The counter `+1` math
+  moved into the single `CumulativeCounters::fold`, consumed by `status_for` instead of computed in
+  it (dual-source-of-truth removed); `entry_for` is the **4th `TickOutcome` consumer**, classifying
+  each receipt into a `CounterClass` enum (Carve/Deferral/Conflict/NoCount — "a tick is both a carve
+  and a conflict" is now *unrepresentable*); the append-only feed is the M2 `decision_log` seed.
+  Wired through all 4 `status_for` callers (controller mem/cpu/storage + app_band + kube_param;
+  host-agent via the pure status-backed fold). `SampleCache` is record-through (predictive read stays
+  on the CRD status; the authoritative-read flip is M2). **GOLDEN proof shipped**
+  (`fold_matches_old_inline_logic_over_a_sequence` + `inmem_decision_log_reproduces_the_status_backed_sequence`).
+  Verified: full workspace green (47/47 test groups), clippy-clean, **3-skeptic adversarial pass
+  could not refute byte-identicality** across all 10 receipt variants / caller-completeness /
+  concurrency. *Interim vs destination:* `in_cooldown` still reads the CRD status (its store rebind +
+  the SampleCache authoritative read are M2, when Postgres is the durable home). No Postgres/Redis/
+  sea-orm yet.
 
 - **M1 — `breathe-config` (shikumi) + the scale enum surface.** Variable config COMPLETELY in
   shikumi; the scale spectrum is typed + hot-reloadable even though only `SingleReplica/InMemory` is
