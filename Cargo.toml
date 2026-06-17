@@ -22,6 +22,7 @@ members = [
   "breathe-jmx",       # the JmxCluster impl (JVM MBean over Jolokia — HikariCP/Tomcat/Caffeine)
   "breathe-actuator",  # the ActuatorCluster sum type — routes AppBand → the 4 app-plane actuators (read_used via metric KubeCluster)
   "breathe-host",      # the HostCluster Cluster impl — the host I/O boundary (ARC/cgroup)
+  "breathe-store",     # the durable-store seam — DecisionLog (single counter fold + append-only feed) + SampleCache; InMem today, Postgres/Redis (M2/M3) behind one config switch
   "breathe-runtime",   # shared reconcile glue (status mapping + patch) — brain ⟂ hands no-drift
   "breathe-host-agent", # the HANDS binary — DaemonSet host reconcile loop (ArcBand/CgroupBand)
   "breathe-facade",    # the typed CRD facade (BreatheStore) — shared by every API surface

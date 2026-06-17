@@ -25,9 +25,11 @@ use breathe_dimensions::{CpuDescriptor, MemoryDescriptor, StorageDescriptor};
 use breathe_kube::KubeCluster;
 use breathe_provider::{BandProvider, ClassCooldowns, DimensionDescriptor, ResourceProvider, Target};
 use breathe_runtime::{
-    apply_env_context, error_status, event_for, metrics_for, next_requeue, now_rfc3339, now_secs, patch_status,
-    rfc3339_in_future, should_emit_event, status_for, suspended_status, BandLabels, EnvContext, EventKind,
+    apply_env_context, counters_from_status, entry_for, error_status, event_for, metrics_for, next_requeue,
+    now_rfc3339, now_secs, patch_status, rfc3339_in_future, should_emit_event, status_for, suspended_status,
+    BandLabels, CumulativeCounters, EnvContext, EventKind,
 };
+use breathe_store::{BandRef, DecisionLog, InMemDecisionLog, InMemSampleCache, Sample, SampleCache};
 use k8s_openapi::api::core::v1::Namespace;
 use futures::StreamExt;
 use kube::{
@@ -84,6 +86,13 @@ struct Ctx {
     /// ticks), so it must outlive a single reconcile — it lives here, fetched +
     /// fed once per reconcile when the pool sets `spec.predictive`.
     forecasters: std::sync::Mutex<std::collections::HashMap<String, Arc<breathe_auction::LinearTrendPrevisor>>>,
+    /// The durable-store seam (M0; docs/BREATHE-MICROSERVICE.md). `decisions` is
+    /// the single counter-accumulation point + the append-only decision feed;
+    /// `samples` is the predictive prior-sample cache. Held behind `&dyn` so the
+    /// VERY-SMALL `InMem*` tier swaps for the Postgres/Redis tier (M2/M3) by
+    /// config with no reconcile-loop change.
+    decisions: Arc<dyn DecisionLog>,
+    samples: Arc<dyn SampleCache>,
 }
 
 impl Ctx {
@@ -97,6 +106,27 @@ impl Ctx {
             .or_insert_with(|| Arc::new(breathe_auction::LinearTrendPrevisor::new(6, horizon_ticks)))
             .clone()
     }
+}
+
+/// Accumulate this tick's decision into the band's cumulative counters via the
+/// `DecisionLog` (the single fold) and return the new count for `status_for`.
+/// Shared by every controller reconcile (generic mem/cpu/storage + app/kube
+/// param) so the counter math lives in exactly one place. On the (in-memory:
+/// impossible) store error, falls back to the status-backed fold so the count is
+/// never worse than the pre-store behavior.
+pub(crate) async fn fold_counters(
+    ctx: &Ctx,
+    band_ref: &BandRef,
+    prior: Option<&breathe_crd::BandStatus>,
+    outcome: &breathe_core::TickOutcome,
+) -> CumulativeCounters {
+    let prior_counters = counters_from_status(prior);
+    let entry = entry_for(outcome);
+    let fallback = prior_counters.fold(&entry);
+    ctx.decisions
+        .append(band_ref, prior_counters, entry)
+        .await
+        .unwrap_or(fallback)
 }
 
 /// Publish a k8s Event for this tick onto `obj`, transition-gated so a resting
@@ -231,7 +261,19 @@ async fn reconcile<B: Band, D: DimensionDescriptor + Default>(
 
     let outcome = reconcile_one(&input, &provider).await;
     let prior_phase = obj.status().and_then(|s| s.phase.as_deref()).map(String::from);
-    let mut status = status_for(&outcome, obj.status(), obj.cooldown_seconds(), obj.generation());
+    let kind = <B as kube::Resource>::kind(&());
+    let band_ref = BandRef::new(&kind, &ns, &name);
+    let counters = fold_counters(&ctx, &band_ref, obj.status(), &outcome).await;
+    // Record this tick's observed sample for the next predictive prior (the
+    // SampleCache write seam; the authoritative read flips to cache-first at M2,
+    // when Postgres — not the CRD status — is the durable home).
+    if let Some(obs) = outcome.observed.as_ref() {
+        let _ = ctx
+            .samples
+            .record(&band_ref, Sample { used: obs.used, at_epoch: now_secs() })
+            .await;
+    }
+    let mut status = status_for(&outcome, obj.status(), obj.cooldown_seconds(), obj.generation(), counters);
     // M3 (Dev Loop): surface the namespace's ephemeral-env cost-guard (EnvId +
     // Densa cost-remaining) on the band status. Read-only; empty (no label / no
     // Densa) ⇒ no change (the rio default).
@@ -400,6 +442,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         cooldowns,
         reporter,
         forecasters: std::sync::Mutex::new(std::collections::HashMap::new()),
+        // VERY-SMALL tier: in-memory, zero external infra, byte-identical to the
+        // CRD-status-backed behavior. `scale.store`/`scale.cache` (M1 shikumi)
+        // selects the Postgres/Redis tier here without touching the loop.
+        decisions: Arc::new(InMemDecisionLog::new()),
+        samples: Arc::new(InMemSampleCache::new()),
     });
 
     info!(

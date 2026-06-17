@@ -13,6 +13,7 @@ breathe-control = { path = "../breathe-control", version = "0.1.0" }
 breathe-core = { path = "../breathe-core", version = "0.1.0" }
 breathe-crd = { path = "../breathe-crd", version = "0.1.0" }
 breathe-provider = { path = "../breathe-provider", version = "0.1.0" }
+breathe-store = { path = "../breathe-store", version = "0.1.0" }
 kube = { version = "0.96", features = ["client", "runtime", "derive"], default-features = false }
 metrics = "0.24"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
