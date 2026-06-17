@@ -22,6 +22,7 @@ breathe-actuator = { path = "../breathe-actuator", version = "0.1.0" }
 breathe-dimensions = { path = "../breathe-dimensions", version = "0.1.0" }
 breathe-runtime = { path = "../breathe-runtime", version = "0.1.0" }
 breathe-store = { path = "../breathe-store", version = "0.1.0" }
+breathe-config = { path = "../breathe-config", version = "0.1.0" }
 # BU1 — node-tier shadow loop (reconcile_forma wired into the running controller)
 breathe-provision = { path = "../breathe-provision", version = "0.1.0" }
 breathe-auction = { path = "../breathe-auction", version = "0.1.0" }
