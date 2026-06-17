@@ -175,6 +175,38 @@ pub struct BandStatus {
     pub observed_cost_remaining_cents: Option<i64>,
 }
 
+/// The band's PROMOTION LIFECYCLE — the typed, configurable state controlling
+/// whether (and when) breathe moves from observing (SHADOW) to carving (EFFECT).
+/// The fleet default is `ShadowConfirmEffect`: no band is parked in permanent
+/// shadow, and none goes live unconfirmed — it shadows until a clean-observation
+/// window proves it's safe, then auto-begins.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum PromotionMode {
+    /// Observe + attest forever; never carve. For deliberate critical-path holds
+    /// (flux/cnpg/etc. — annotated `shadow-hold-critical-path`).
+    Shadow,
+    /// Carve immediately — skip the confirm gate. Explicit, eyes-open go-live.
+    Effect,
+    /// DEFAULT. Shadow until the confirm gate passes, then auto-begin carving.
+    /// Gate = a clean-observation window (Ready ∧ ¬Stale ∧ ¬Conflict held
+    /// continuously for `confirmAfterSeconds`), OR the operator fast-path
+    /// annotation `breathe.pleme.io/confirmed: "true"`. One-way: once live it
+    /// stays live (unless the metric is lost — then it safely re-shadows).
+    #[default]
+    ShadowConfirmEffect,
+    /// Frozen — never carve AND stop deciding (the `suspend` companion).
+    Suspended,
+}
+
+/// The operator fast-path annotation: setting `breathe.pleme.io/confirmed: "true"`
+/// satisfies a `ShadowConfirmEffect` band's confirm gate immediately.
+pub const CONFIRMED_ANNOTATION: &str = "breathe.pleme.io/confirmed";
+
+fn d_confirm_after() -> u64 {
+    1800
+}
+
 /// The dimension-agnostic accessor the generic controller reconciles through.
 /// Implemented by every band kind via the macro — one reconcile body, N kinds.
 pub trait Band:
@@ -192,6 +224,12 @@ pub trait Band:
     fn max_staleness_seconds(&self) -> u64;
     fn cooldown_seconds(&self) -> u64;
     fn dry_run(&self) -> bool;
+    /// The band's explicit `mode`, if authored. `None` ⇒ derive in
+    /// [`Band::promotion_mode`] (legacy `dryRun:true` → Shadow, else the default).
+    fn mode_spec(&self) -> Option<PromotionMode>;
+    /// The clean-observation window (seconds) a `ShadowConfirmEffect` band holds
+    /// Ready-and-healthy before it auto-promotes to carving.
+    fn confirm_after_seconds(&self) -> u64;
     fn last_change_epoch(&self) -> Option<i64>;
     /// The band's restart policy — the golden/ceiling gate (default golden
     /// `RestartFreeOnly`). A carve whose class this forbids is deferred, not rolled.
@@ -205,6 +243,61 @@ pub trait Band:
     /// The band's CURRENT status (read before reconcile) — the `prior` that
     /// `status_for` carries cumulative counters + the cooldown epoch forward from.
     fn status(&self) -> Option<&BandStatus>;
+
+    // ── Promotion lifecycle (default methods; one law for every band kind) ─────
+
+    /// Resolve the effective promotion lifecycle: explicit `mode`, else legacy
+    /// `dryRun:true` → Shadow, else the fleet default (`ShadowConfirmEffect`).
+    fn promotion_mode(&self) -> PromotionMode {
+        match self.mode_spec() {
+            Some(m) => m,
+            None if self.dry_run() => PromotionMode::Shadow,
+            None => PromotionMode::ShadowConfirmEffect,
+        }
+    }
+
+    /// The operator fast-path: `breathe.pleme.io/confirmed: "true"` promotes now.
+    fn operator_confirmed(&self) -> bool {
+        self.meta()
+            .annotations
+            .as_ref()
+            .and_then(|a| a.get(CONFIRMED_ANNOTATION))
+            .is_some_and(|v| v == "true")
+    }
+
+    /// Has the `ShadowConfirmEffect` confirm gate passed? True iff the operator
+    /// confirmed, OR the band has held Ready ∧ ¬Stale ∧ ¬Conflict continuously
+    /// for `confirmAfterSeconds`. Reads the prior status conditions — a band that
+    /// loses its metric (Ready=False) safely falls back to shadow.
+    fn confirm_gate_passed(&self, now_epoch: i64) -> bool {
+        if self.operator_confirmed() {
+            return true;
+        }
+        let Some(st) = self.status() else {
+            return false;
+        };
+        let cond = |t: &str| st.conditions.iter().find(|c| c.type_ == t);
+        let is_true = |t: &str| cond(t).is_some_and(|c| c.status == "True");
+        if is_true("Stale") || is_true("Conflict") {
+            return false;
+        }
+        match cond("Ready") {
+            Some(r) if r.status == "True" => chrono::DateTime::parse_from_rfc3339(&r.last_transition_time)
+                .map(|t| now_epoch - t.timestamp() >= self.confirm_after_seconds() as i64)
+                .unwrap_or(false),
+            _ => false,
+        }
+    }
+
+    /// The EFFECTIVE dry-run for this tick, derived from the promotion lifecycle.
+    /// THIS — not the raw `dryRun` field — is what gates the carve.
+    fn effective_dry_run(&self, now_epoch: i64) -> bool {
+        match self.promotion_mode() {
+            PromotionMode::Effect => false,
+            PromotionMode::Shadow | PromotionMode::Suspended => true,
+            PromotionMode::ShadowConfirmEffect => !self.confirm_gate_passed(now_epoch),
+        }
+    }
     /// M0 PREDICTIVE: `Some(lookahead_secs)` when the band opts into preemptive
     /// carving (`predictive: true`) — the controller measures the working-set
     /// velocity and feeds `PredictiveGrow` so the limit pre-grows for the burst
@@ -289,6 +382,16 @@ macro_rules! band_kind {
             pub max_staleness_seconds: u64,
             #[serde(default)]
             pub dry_run: bool,
+            /// The PROMOTION LIFECYCLE. Unset ⇒ resolved by `promotion_mode()`
+            /// (legacy `dryRun:true` → Shadow, else the fleet default
+            /// `ShadowConfirmEffect`). Set explicitly to pin the state:
+            /// `shadow` | `effect` | `shadowConfirmEffect` | `suspended`.
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            pub mode: Option<PromotionMode>,
+            /// Clean-observation window (seconds) a `ShadowConfirmEffect` band holds
+            /// Ready-and-healthy before it auto-promotes to carving (default 1800).
+            #[serde(default = "d_confirm_after")]
+            pub confirm_after_seconds: u64,
             /// The golden/ceiling gate (default `restartFreeOnly`). Omitted on
             /// serialize when default so the strict typed-gRPC surface stays safe.
             #[serde(default, skip_serializing_if = "breathe_provider::DisruptionPolicy::is_restart_free_only")]
@@ -344,6 +447,12 @@ macro_rules! band_kind {
             }
             fn dry_run(&self) -> bool {
                 self.spec.dry_run
+            }
+            fn mode_spec(&self) -> Option<PromotionMode> {
+                self.spec.mode
+            }
+            fn confirm_after_seconds(&self) -> u64 {
+                self.spec.confirm_after_seconds
             }
             fn last_change_epoch(&self) -> Option<i64> {
                 self.status.as_ref().and_then(|s| s.last_change_epoch)
@@ -603,6 +712,21 @@ impl crate::Band for HostParamBand {
     fn dry_run(&self) -> bool {
         self.spec.dry_run
     }
+    fn mode_spec(&self) -> Option<PromotionMode> {
+        None
+    }
+    fn confirm_after_seconds(&self) -> u64 {
+        d_confirm_after()
+    }
+    /// Host bands keep pure two-state (shadow/effect) semantics until explicitly
+    /// migrated to the promotion lifecycle — they never auto-promote.
+    fn promotion_mode(&self) -> PromotionMode {
+        if self.dry_run() {
+            PromotionMode::Shadow
+        } else {
+            PromotionMode::Effect
+        }
+    }
     fn last_change_epoch(&self) -> Option<i64> {
         self.status.as_ref().and_then(|s| s.last_change_epoch)
     }
@@ -792,6 +916,21 @@ impl crate::Band for KubeParamBand {
     }
     fn dry_run(&self) -> bool {
         self.spec.dry_run
+    }
+    fn mode_spec(&self) -> Option<PromotionMode> {
+        None
+    }
+    fn confirm_after_seconds(&self) -> u64 {
+        d_confirm_after()
+    }
+    /// Host bands keep pure two-state (shadow/effect) semantics until explicitly
+    /// migrated to the promotion lifecycle — they never auto-promote.
+    fn promotion_mode(&self) -> PromotionMode {
+        if self.dry_run() {
+            PromotionMode::Shadow
+        } else {
+            PromotionMode::Effect
+        }
     }
     fn last_change_epoch(&self) -> Option<i64> {
         self.status.as_ref().and_then(|s| s.last_change_epoch)
@@ -1788,7 +1927,7 @@ mod tests {
         let mem = MemoryBand::new("m", MemoryBandSpec {
             target_ref: tr.clone(), setpoint: 0.80, grow_above: 0.85, shrink_below: 0.70,
             grow_factor: 1.25, shrink_factor: 0.90, floor: "512Mi".into(), ceiling: "4Gi".into(),
-            cooldown_seconds: 600, max_staleness_seconds: 120, dry_run: true, disruption_policy: Default::default(), suspend: false, force_limit: None, force_limit_expiry: None, predictive: false, predictive_lookahead_seconds: 60,
+            cooldown_seconds: 600, max_staleness_seconds: 120, dry_run: true, disruption_policy: Default::default(), suspend: false, force_limit: None, force_limit_expiry: None, predictive: false, predictive_lookahead_seconds: 60, mode: None, confirm_after_seconds: 1800,
         });
         let cfg = Band::band_config(&mem).unwrap();
         assert_eq!(cfg.floor_bytes, 512 * (1 << 20));
@@ -1801,7 +1940,7 @@ mod tests {
         let cpu = CpuBand::new("c", CpuBandSpec {
             target_ref: tr, setpoint: 0.80, grow_above: 0.85, shrink_below: 0.70,
             grow_factor: 1.25, shrink_factor: 0.90, floor: "250m".into(), ceiling: "2".into(),
-            cooldown_seconds: 600, max_staleness_seconds: 120, dry_run: false, disruption_policy: Default::default(), suspend: false, force_limit: None, force_limit_expiry: None, predictive: false, predictive_lookahead_seconds: 60,
+            cooldown_seconds: 600, max_staleness_seconds: 120, dry_run: false, disruption_policy: Default::default(), suspend: false, force_limit: None, force_limit_expiry: None, predictive: false, predictive_lookahead_seconds: 60, mode: None, confirm_after_seconds: 1800,
         });
         let cfg = Band::band_config(&cpu).unwrap();
         // millicores, NOT bytes: "250m" → 250, "2" cores → 2000m.
@@ -1826,7 +1965,7 @@ mod tests {
         let arc = ArcBand::new("rio-arc", ArcBandSpec {
             target_ref: tr, setpoint: 0.80, grow_above: 0.85, shrink_below: 0.70,
             grow_factor: 1.25, shrink_factor: 0.90, floor: "1Gi".into(), ceiling: "6Gi".into(),
-            cooldown_seconds: 600, max_staleness_seconds: 120, dry_run: true, disruption_policy: Default::default(), suspend: false, force_limit: None, force_limit_expiry: None, predictive: false, predictive_lookahead_seconds: 60,
+            cooldown_seconds: 600, max_staleness_seconds: 120, dry_run: true, disruption_policy: Default::default(), suspend: false, force_limit: None, force_limit_expiry: None, predictive: false, predictive_lookahead_seconds: 60, mode: None, confirm_after_seconds: 1800,
         });
         let cfg = Band::band_config(&arc).unwrap();
         assert_eq!(cfg.floor_bytes, 1 << 30);
@@ -1837,7 +1976,7 @@ mod tests {
         let g = CgroupBand::new("nix-daemon", CgroupBandSpec {
             target_ref: TargetRef { kind: "HostUnit".into(), name: "nix-daemon.service".into(), api_version: None, container: None, pod_selector: None },
             setpoint: 0.80, grow_above: 0.85, shrink_below: 0.70, grow_factor: 1.25, shrink_factor: 0.90,
-            floor: "1Gi".into(), ceiling: "12Gi".into(), cooldown_seconds: 600, max_staleness_seconds: 120, dry_run: true, disruption_policy: Default::default(), suspend: false, force_limit: None, force_limit_expiry: None, predictive: false, predictive_lookahead_seconds: 60,
+            floor: "1Gi".into(), ceiling: "12Gi".into(), cooldown_seconds: 600, max_staleness_seconds: 120, dry_run: true, disruption_policy: Default::default(), suspend: false, force_limit: None, force_limit_expiry: None, predictive: false, predictive_lookahead_seconds: 60, mode: None, confirm_after_seconds: 1800,
         });
         assert_eq!(g.target_ref().name, "nix-daemon.service");
     }
@@ -2087,5 +2226,99 @@ mod tests {
         let yaml = serde_yaml::to_string(&crd).unwrap();
         assert!(yaml.contains("fieldPath"), "the KubeParamBand CRD must advertise fieldPath (camelCase)");
         assert!(!yaml.contains("field_path"), "the CRD must not carry the snake_case field_path");
+    }
+
+    // ── Promotion lifecycle (ShadowConfirmEffect) gate ────────────────────────
+
+    fn mk_band(
+        spec_extra: serde_json::Value,
+        status: Option<serde_json::Value>,
+        annotations: Option<serde_json::Value>,
+    ) -> MemoryBand {
+        let mut spec = serde_json::json!({
+            "targetRef": { "kind": "Deployment", "name": "d", "apiVersion": "apps/v1" }
+        });
+        spec.as_object_mut()
+            .unwrap()
+            .extend(spec_extra.as_object().unwrap().clone());
+        let mut meta = serde_json::json!({ "name": "x", "namespace": "y" });
+        if let Some(a) = annotations {
+            meta.as_object_mut().unwrap().insert("annotations".into(), a);
+        }
+        let mut obj = serde_json::json!({
+            "apiVersion": "breathe.pleme.io/v1", "kind": "MemoryBand",
+            "metadata": meta, "spec": spec
+        });
+        if let Some(s) = status {
+            obj.as_object_mut().unwrap().insert("status".into(), s);
+        }
+        serde_json::from_value(obj).unwrap()
+    }
+
+    /// `Ready=True` since `ts`, with `extra` conditions appended.
+    fn ready_status(ts: &str, extra: serde_json::Value) -> serde_json::Value {
+        let mut conds = vec![serde_json::json!(
+            { "type": "Ready", "status": "True", "reason": "R", "message": "m", "lastTransitionTime": ts }
+        )];
+        conds.extend(extra.as_array().unwrap().clone());
+        serde_json::json!({ "conditions": conds })
+    }
+
+    const EPOCH_1000: &str = "1970-01-01T00:16:40Z"; // 1000s after the epoch
+
+    #[test]
+    fn shadow_mode_never_carves() {
+        let b = mk_band(serde_json::json!({ "mode": "shadow" }), Some(ready_status(EPOCH_1000, serde_json::json!([]))), None);
+        assert_eq!(b.promotion_mode(), PromotionMode::Shadow);
+        assert!(b.effective_dry_run(i64::MAX / 2), "shadow must never carve, even when the window is long past");
+    }
+
+    #[test]
+    fn effect_mode_always_carves() {
+        let b = mk_band(serde_json::json!({ "mode": "effect" }), None, None);
+        assert!(!b.effective_dry_run(0), "effect mode carves immediately");
+    }
+
+    #[test]
+    fn legacy_dry_run_true_resolves_to_shadow() {
+        let b = mk_band(serde_json::json!({ "dryRun": true }), None, None);
+        assert_eq!(b.promotion_mode(), PromotionMode::Shadow);
+        assert!(b.effective_dry_run(i64::MAX / 2));
+    }
+
+    #[test]
+    fn unset_defaults_to_shadow_confirm_effect() {
+        let b = mk_band(serde_json::json!({}), None, None);
+        assert_eq!(b.promotion_mode(), PromotionMode::ShadowConfirmEffect);
+        // no status yet ⇒ the gate hasn't passed ⇒ still shadow
+        assert!(b.effective_dry_run(0));
+    }
+
+    #[test]
+    fn shadow_confirm_effect_promotes_after_clean_window() {
+        // Ready since epoch 1000, confirm_after default 1800.
+        let b = mk_band(serde_json::json!({}), Some(ready_status(EPOCH_1000, serde_json::json!([]))), None);
+        assert!(b.effective_dry_run(1000 + 100), "still shadow before the window elapses");
+        assert!(!b.effective_dry_run(1000 + 1801), "auto-promotes once the clean window has held");
+    }
+
+    #[test]
+    fn conflict_or_stale_blocks_promotion() {
+        let conflicted = ready_status(
+            EPOCH_1000,
+            serde_json::json!([{ "type": "Conflict", "status": "True", "reason": "C", "message": "m", "lastTransitionTime": EPOCH_1000 }]),
+        );
+        let b = mk_band(serde_json::json!({}), Some(conflicted), None);
+        assert!(b.effective_dry_run(i64::MAX / 2), "a field-owned/Conflict band must NOT auto-promote");
+    }
+
+    #[test]
+    fn operator_annotation_promotes_immediately() {
+        let b = mk_band(
+            serde_json::json!({}),
+            None, // no window elapsed, no Ready condition
+            Some(serde_json::json!({ "breathe.pleme.io/confirmed": "true" })),
+        );
+        assert!(!b.effective_dry_run(0), "the operator fast-path confirms immediately");
     }
 }
