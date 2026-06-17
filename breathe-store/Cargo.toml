@@ -8,13 +8,24 @@ authors.workspace = true
 repository.workspace = true
 description = "The durable-store seam for breathe — DecisionLog (the single counter-accumulation fold + the append-only decision feed) + SampleCache (the predictive prior sample). An in-memory tier (today, byte-identical to the CRD-status projection) and (M2/M3) a Postgres/Redis tier behind the same `&dyn` seam: one config switch selects the backend; the band law and reconcile loop never change. See docs/BREATHE-MICROSERVICE.md."
 
+[features]
+# The Postgres durable tier (M2). Off by default so the very-small (in-memory)
+# build pulls no sqlx; the controller enables it to support `scale.store=Postgres`.
+postgres = ["dep:sqlx"]
+
 [dependencies]
 async-trait = "0.1"
 serde = { version = "1", features = ["derive"] }
 thiserror = "2"
+# blake3 is always on (lightweight) so the decision-log chain logic + its pure
+# tests compile without the Postgres tier. Pin matches engenho-fonte/shigoto.
+blake3 = "1"
+# Runtime sqlx (no compile-time query! macros → Nix-build-clean, the fleet idiom);
+# `migrate` embeds the .sql files at compile time (no build DB). Mirrors magma.
+sqlx = { version = "0.8", default-features = false, features = ["postgres", "runtime-tokio-rustls", "macros", "migrate", "chrono"], optional = true }
 
 [dev-dependencies]
-tokio = { version = "1.40", features = ["macros", "rt"] }
+tokio = { version = "1.40", features = ["macros", "rt", "rt-multi-thread"] }
 
 [lints]
 workspace = true
