@@ -221,7 +221,10 @@ async fn reconcile<B: Band, D: DimensionDescriptor + Default>(
         cfg: &cfg,
         max_staleness_secs: obj.max_staleness_seconds(),
         in_cooldown,
-        dry_run: obj.dry_run(),
+        // The PROMOTION LIFECYCLE gates the carve — not the raw `dryRun` field.
+        // ShadowConfirmEffect (the default) stays shadow until its confirm window
+        // of clean observation passes, then auto-begins. (See Band::effective_dry_run.)
+        dry_run: obj.effective_dry_run(now_secs()),
         // per-band golden/ceiling gate (default RestartFreeOnly) — the band
         // declares its own policy; the fleet env is only a fallback default.
         policy: obj.disruption_policy(),
@@ -271,7 +274,8 @@ async fn summarize<B: Band>(client: &Client, kind: &str, out: &mut Vec<BandSumma
                     phase: st.and_then(|s| s.phase.clone()),
                     current_limit: st.and_then(|s| s.current_limit.clone()),
                     policy: st.and_then(|s| s.effective_policy.clone()),
-                    dry_run: b.dry_run(),
+                    // the EFFECTIVE (lifecycle-gated) dry-run — what's actually happening
+                    dry_run: b.effective_dry_run(now_secs()),
                 });
             }
         }
