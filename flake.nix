@@ -1,25 +1,36 @@
-# breathe-controller image — the resource-homeostasis controller in a distroless OCI.
+# breathe — the resource-homeostasis controller, built the ONE pleme-io way.
 #
-# Build binary: nix build .#breathe-controller
-# Build image:  nix build .#image          (Linux only)
-# Result:       ghcr.io/pleme-io/breathe-controller:<version>
+# Build pattern: the single pleme-io Rust pattern — substrate's gen-driven
+# `lockfile-builder.mkProject` over the committed `Cargo.gen.lock` delta
+# (per-crate buildRustCrate derivations). NO buildRustPackage, NO fenix,
+# NO crate2nix. After any Cargo.lock change run `gen build .` to re-emit
+# the committed `Cargo.gen.lock` (the gitignored `Cargo.build-spec.json`
+# is the derived full spec lockfile-builder consumes).
 #
-# Rust workspace (breathe-control/-provider/-core/-catalog/-kube/-crd +
-# dimension-memory + the controller bin). rustls everywhere → no openssl;
-# cmake/perl are for aws-lc-rs (rustls' default crypto provider).
+# Binaries: nix build .#breathe-controller   (the brain)
+#           nix build .#breathe-host-agent   (the hands — DaemonSet)
+#           nix build .#breathe-mcp          (the model surface)
+#           nix build .#breathe-api-server   (the REST surface)
+# Images:   nix build .#image / .#agent-image / .#api-server-image  (Linux)
+#
+# sqlx (postgres) → sqlx-sqlite → libsqlite3-sys builds clean because the
+# composed `pkgs.defaultCrateOverrides` carries nixpkgs' libsqlite3-sys
+# override (sqlite buildInput + pkg-config → build.rs detects system
+# sqlite → prepare_v3 bindings). The substrate solved this long ago; the
+# only requirement is composing defaultCrateOverrides, which we do.
 {
-  description = "breathe — resource-homeostasis controller";
+  description = "breathe — resource-homeostasis controller (gen/lockfile-builder)";
 
   inputs = {
-    nixpkgs.url = "github:nixos/nixpkgs?ref=nixos-unstable";
+    nixpkgs.url = "github:nixos/nixpkgs?ref=nixos-25.11";
     flake-utils.url = "github:numtide/flake-utils";
-    fenix = {
-      url = "github:nix-community/fenix";
+    substrate = {
+      url = "github:pleme-io/substrate";
       inputs.nixpkgs.follows = "nixpkgs";
     };
   };
 
-  outputs = { self, nixpkgs, flake-utils, fenix }:
+  outputs = { self, nixpkgs, flake-utils, substrate }:
     flake-utils.lib.eachSystem [
       "x86_64-linux"
       "aarch64-linux"
@@ -29,42 +40,46 @@
       pkgs = import nixpkgs { inherit system; };
       version = "0.1.2";
 
-      rustToolchain = fenix.packages.${system}.stable.toolchain;
-      rustPlatform = pkgs.makeRustPlatform { cargo = rustToolchain; rustc = rustToolchain; };
-
-      controller = rustPlatform.buildRustPackage {
-        pname = "breathe-controller";
-        version = version;
-        src = ./.;
-        cargoLock = { lockFile = ./Cargo.lock; };
-        # Build + test the whole workspace; image entrypoint is the bin.
-        cargoBuildFlags = [ "-p" "breathe-controller" ];
-        nativeBuildInputs = with pkgs; [ pkg-config cmake perl protobuf ];
-        doCheck = true;
-        meta = {
-          description = "breathe resource-homeostasis controller (theory/BREATHE.md)";
-          license = pkgs.lib.licenses.mit;
-          mainProgram = "breathe-controller";
+      # The ONE Rust pattern: gen-driven lockfile-builder. Per-crate
+      # buildRustCrate derivations over the committed Cargo.gen.lock delta;
+      # defaultCrateOverrides is composed so nixpkgs' per-crate quirks
+      # (libsqlite3-sys → sqlite, aws-lc-sys → cmake, prost-build → protoc)
+      # AND the fleet plemeCrateOverrides both apply.
+      plemeCrateOverrides = import "${substrate}/lib/build/rust/pleme-crate-overrides.nix";
+      lockfileBuilder = import "${substrate}/lib/build/rust/lockfile-builder.nix" { inherit pkgs; };
+      # Per-member build accommodations for gen's src=workspaceSrc model.
+      memberOverrides = {
+        # breathe-api-server's build.rs compiles proto/breathe.proto via
+        # tonic-build → prost-build, which shells out to `protoc`. The
+        # hermetic sandbox has no protoc, so the proto-compiling member
+        # declares its build-time tool need (the gen-pattern analog of
+        # buildRustPackage's nativeBuildInputs = [ protobuf ]).
+        breathe-api-server = attrs: {
+          nativeBuildInputs = (attrs.nativeBuildInputs or [ ]) ++ [ pkgs.protobuf ];
+          PROTOC = "${pkgs.protobuf}/bin/protoc";
+        };
+        # breathe-store embeds its SQL via sqlx::migrate!("./migrations"),
+        # a COMPILE-TIME macro that canonicalizes the path against the
+        # build root. Under gen the crate builds with src=workspaceSrc, so
+        # the build root is the workspace root and `./migrations` misses
+        # (the files live at breathe-store/migrations). Symlink them at the
+        # root so the macro resolves. No-op under cargo dev (CWD is already
+        # the crate dir, where ./migrations exists).
+        breathe-store = attrs: {
+          prePatch = (attrs.prePatch or "") + ''
+            [ -e migrations ] || ln -s breathe-store/migrations migrations
+          '';
         };
       };
-
-      # The HANDS — the host agent (a privileged DaemonSet). Same workspace src,
-      # different bin. Runs as root (writes /sys; nsenter to host systemd for the
-      # cgroup dimension later). util-linux ships nsenter for that future path.
-      agent = rustPlatform.buildRustPackage {
-        pname = "breathe-host-agent";
-        version = version;
-        src = ./.;
-        cargoLock = { lockFile = ./Cargo.lock; };
-        cargoBuildFlags = [ "-p" "breathe-host-agent" ];
-        nativeBuildInputs = with pkgs; [ pkg-config cmake perl protobuf ];
-        doCheck = false; # the workspace is tested by the controller build above
-        meta = {
-          description = "breathe host agent — the hands (host-dimension reconcile)";
-          license = pkgs.lib.licenses.mit;
-          mainProgram = "breathe-host-agent";
-        };
+      project = lockfileBuilder.mkProject {
+        src = self;
+        defaultCrateOverrides = pkgs.defaultCrateOverrides // plemeCrateOverrides // memberOverrides;
       };
+
+      controller = project.workspaceMembers.breathe-controller.build;
+      agent      = project.workspaceMembers.breathe-host-agent.build;
+      mcp        = project.workspaceMembers.breathe-mcp.build;
+      apiServer  = project.workspaceMembers.breathe-api-server.build;
 
       mkImage = { name, bin, user, extraContents ? [], extraPath ? "", logTarget }:
         if pkgs.stdenv.isLinux then
@@ -98,9 +113,6 @@
         name = "ghcr.io/pleme-io/breathe-controller";
         bin = "${controller}/bin/breathe-controller";
         user = "65532:65532";
-        # The app-plane actuators reach their backends through TYPED Rust clients
-        # (the `redis` crate, `reqwest`) — NO shelling, NO CLI in the image (the
-        # stack-only / no-shell law). The image stays a pure distroless binary.
         extraContents = [ controller ];
         logTarget = "breathe_controller";
       };
@@ -122,39 +134,6 @@
         logTarget = "breathe_api_server";
       };
 
-      # The MCP surface — a model drives breathe over stdio. Run with a kubeconfig
-      # pointing at the target cluster: `KUBECONFIG=… nix run .#breathe-mcp`.
-      mcp = rustPlatform.buildRustPackage {
-        pname = "breathe-mcp";
-        version = version;
-        src = ./.;
-        cargoLock = { lockFile = ./Cargo.lock; };
-        cargoBuildFlags = [ "-p" "breathe-mcp" ];
-        nativeBuildInputs = with pkgs; [ pkg-config cmake perl protobuf ];
-        doCheck = false; # tested by the controller build
-        meta = {
-          description = "breathe MCP surface — drive the homeostasis substrate from a model";
-          license = pkgs.lib.licenses.mit;
-          mainProgram = "breathe-mcp";
-        };
-      };
-
-      # The REST surface (axum) over the same facade. `BREATHE_API_BIND=… nix run .#breathe-api-server`.
-      apiServer = rustPlatform.buildRustPackage {
-        pname = "breathe-api-server";
-        version = version;
-        src = ./.;
-        cargoLock = { lockFile = ./Cargo.lock; };
-        cargoBuildFlags = [ "-p" "breathe-api-server" ];
-        nativeBuildInputs = with pkgs; [ pkg-config cmake perl protobuf ];
-        doCheck = false;
-        meta = {
-          description = "breathe REST API (axum) over the BreatheStore facade";
-          license = pkgs.lib.licenses.mit;
-          mainProgram = "breathe-api-server";
-        };
-      };
-
     in {
       packages = {
         default = controller;
@@ -170,7 +149,7 @@
       apps.breathe-mcp = { type = "app"; program = "${mcp}/bin/breathe-mcp"; };
       apps.breathe-api-server = { type = "app"; program = "${apiServer}/bin/breathe-api-server"; };
       devShells.default = pkgs.mkShellNoCC {
-        buildInputs = with pkgs; [ rustToolchain pkg-config cmake skopeo kubectl helm ];
+        buildInputs = with pkgs; [ cargo rustc pkg-config cmake skopeo kubectl helm ];
       };
     });
 }
