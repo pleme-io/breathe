@@ -34,6 +34,12 @@ rules:
   - apiGroups: ["breathe.pleme.io"]
     resources: ["arcbands", "cgroupbands", "cgroupcpubands"]
     verbs: ["get", "list", "watch"]
+  # Part 1 (SOFT k8s carve): the controller CREATES/updates a PodMemoryHigh dispatch
+  # per managed pod when a MemoryBand efficiency carve routes to memory.high. The
+  # host-agent reconciles + owns the status; the controller writes spec only (SSA).
+  - apiGroups: ["breathe.pleme.io"]
+    resources: ["podmemoryhighs"]
+    verbs: ["get", "list", "watch", "create", "patch", "update"]
   # The fleet-overview object (bov): the controller keeps its status current.
   - apiGroups: ["breathe.pleme.io"]
     resources: ["breatheoverviews", "breatheoverviews/status"]
@@ -121,6 +127,10 @@ rules:
       - "cgroupcpubands/status"
       - "breathenodepools"
       - "breathenodepools/status"
+      # Part 1 (SOFT k8s carve): the agent reconciles the controller's PodMemoryHigh
+      # dispatch — writes the pod's memory.high cgroup file + owns the status.
+      - "podmemoryhighs"
+      - "podmemoryhighs/status"
     verbs: ["get", "list", "watch", "patch", "update"]
   - apiGroups: ["", "events.k8s.io"]   # core + the events.k8s.io/v1 API kube 0.96 Recorder uses
     resources: ["events"]

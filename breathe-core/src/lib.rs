@@ -9,7 +9,7 @@
 //! the one atomic mutation via the provider. The decision math lives entirely in
 //! `breathe-control`; this crate adds only the I/O orchestration + the typed receipt.
 
-use breathe_control::{plan_tick, BandConfig, Decision, Observation, TickPlan};
+use breathe_control::{plan_tick, BandConfig, Decision, Directionality, Observation, TickPlan};
 use breathe_provider::{DisruptionClass, DisruptionPolicy, EdgeTier, ProviderError, ResourceProvider, Target};
 
 /// Everything one tick needs that isn't carried by the provider. The provider
@@ -55,6 +55,16 @@ pub struct ReconcileInput<'a> {
     /// dimensions with no restart concept, and the byte-identical-to-before path for
     /// any band whose `warmup_seconds` is 0).
     pub observed_for_secs: Option<u64>,
+    /// **Part 1 (SOFT k8s carve):** force the HARD-plane (the k8s `limits.memory` /
+    /// `memory.max`, kill ceiling) to be GROW-ONLY for this tick — an efficiency
+    /// shrink of the limit becomes `NoSafeShrink` (never lowered), so the kill ceiling
+    /// only ever rises. The shrink pressure is routed to the SOFT `memory.high` plane
+    /// by the controller's per-pod `PodMemoryHigh` dispatch (`reconcile_memory`),
+    /// NEVER by lowering `memory.max`. `false` (the default) keeps the dimension's own
+    /// directionality byte-identical to before (host/cgroup/cpu/storage paths). Set
+    /// `true` ONLY for a k8s `MemoryBand` whose soft carve is dispatched separately —
+    /// this is the structural pin that makes the k8s plane OOM-impossible.
+    pub hard_plane_grow_only: bool,
 }
 
 /// The prior fresh sample + lookahead used to compute the working-set rate fed to
@@ -228,10 +238,19 @@ pub async fn reconcile_one(
     };
     // PLAN — pure: single-writer guard → band law → directionality → freshness → cooldown.
     let of = provider.owned_field();
+    // HARD-PLANE PIN (Part 1): when the caller routes the efficiency carve to the SOFT
+    // memory.high plane, force the HARD limit (memory.max) GROW-ONLY so an efficiency
+    // shrink can never lower the kill ceiling. A Bidirectional dimension becomes
+    // grow-only for THIS tick; ObserveOnly/GrowOnly are unchanged (already ≤ grow).
+    let directionality = if input.hard_plane_grow_only && provider.directionality() == Directionality::Bidirectional {
+        Directionality::GrowOnly
+    } else {
+        provider.directionality()
+    };
     let plan = plan_tick(
         &obs,
         cfg,
-        provider.directionality(),
+        directionality,
         input.in_cooldown,
         &of.manager,
         &of.path,
@@ -318,7 +337,7 @@ mod tests {
         let prov = provider(cluster);
         let cfg = BandConfig::default();
         let t = target();
-        let input = ReconcileInput { target: &t, cfg: &cfg, max_staleness_secs: 60, in_cooldown: false, dry_run: false, policy: DisruptionPolicy::AllowRestart, force: None, predictive: None, peak_used: None, observed_for_secs: None };
+        let input = ReconcileInput { target: &t, cfg: &cfg, max_staleness_secs: 60, in_cooldown: false, dry_run: false, policy: DisruptionPolicy::AllowRestart, force: None, predictive: None, peak_used: None, observed_for_secs: None, hard_plane_grow_only: false };
 
         match reconcile_one(&input, &prov).await.receipt {
             TickReceipt::Applied { from, to, .. } => {
@@ -341,7 +360,7 @@ mod tests {
         let prov = provider(MockCluster::new(950 * MI, 0, GI, owners));
         let cfg = BandConfig::default();
         let t = target();
-        let input = ReconcileInput { target: &t, cfg: &cfg, max_staleness_secs: 60, in_cooldown: false, dry_run: false, policy: DisruptionPolicy::AllowRestart, force: None, predictive: None, peak_used: None, observed_for_secs: None };
+        let input = ReconcileInput { target: &t, cfg: &cfg, max_staleness_secs: 60, in_cooldown: false, dry_run: false, policy: DisruptionPolicy::AllowRestart, force: None, predictive: None, peak_used: None, observed_for_secs: None, hard_plane_grow_only: false };
         assert_eq!(reconcile_one(&input, &prov).await.receipt, TickReceipt::Conflict { manager: "vpa".into() });
         assert!(prov.cluster().applied().is_empty(), "must not carve under conflict");
     }
@@ -352,13 +371,13 @@ mod tests {
         let t = target();
         // stale sample (120s > 60s bound) → Stale, no carve.
         let stale = provider(MockCluster::new(950 * MI, 120, GI, we_own()));
-        let in_stale = ReconcileInput { target: &t, cfg: &cfg, max_staleness_secs: 60, in_cooldown: false, dry_run: false, policy: DisruptionPolicy::AllowRestart, force: None, predictive: None, peak_used: None, observed_for_secs: None };
+        let in_stale = ReconcileInput { target: &t, cfg: &cfg, max_staleness_secs: 60, in_cooldown: false, dry_run: false, policy: DisruptionPolicy::AllowRestart, force: None, predictive: None, peak_used: None, observed_for_secs: None, hard_plane_grow_only: false };
         assert_eq!(reconcile_one(&in_stale, &stale).await.receipt, TickReceipt::Stale { staleness_secs: 120 });
         assert!(stale.cluster().applied().is_empty());
 
         // dry-run with a real grow signal → DryRunWouldApply, no carve.
         let dry = provider(MockCluster::new(950 * MI, 0, GI, we_own()));
-        let in_dry = ReconcileInput { target: &t, cfg: &cfg, max_staleness_secs: 60, in_cooldown: false, dry_run: true, policy: DisruptionPolicy::AllowRestart, force: None, predictive: None, peak_used: None, observed_for_secs: None };
+        let in_dry = ReconcileInput { target: &t, cfg: &cfg, max_staleness_secs: 60, in_cooldown: false, dry_run: true, policy: DisruptionPolicy::AllowRestart, force: None, predictive: None, peak_used: None, observed_for_secs: None, hard_plane_grow_only: false };
         match reconcile_one(&in_dry, &dry).await.receipt {
             TickReceipt::DryRunWouldApply { .. } => {}
             other => panic!("expected DryRunWouldApply, got {other:?}"),
@@ -378,7 +397,7 @@ mod tests {
         let prov = provider(cluster);
         let cfg = BandConfig::default();
         let t = target();
-        let input = ReconcileInput { target: &t, cfg: &cfg, max_staleness_secs: 60, in_cooldown: false, dry_run: false, policy: DisruptionPolicy::AllowRestart, force: None, predictive: None, peak_used: None, observed_for_secs: None };
+        let input = ReconcileInput { target: &t, cfg: &cfg, max_staleness_secs: 60, in_cooldown: false, dry_run: false, policy: DisruptionPolicy::AllowRestart, force: None, predictive: None, peak_used: None, observed_for_secs: None, hard_plane_grow_only: false };
         let out = reconcile_one(&input, &prov).await;
         assert_eq!(out.receipt, TickReceipt::Dormant);
         assert_eq!(out.receipt.edge_tier(), EdgeTier::GoldenPreserving);
@@ -402,7 +421,7 @@ mod tests {
         let prov = provider(MockCluster::new(950 * MI, 0, GI, we_own())); // real Grow signal
         let cfg = BandConfig::default();
         let t = target(); // kind = Cluster ⇒ ClusterTopLevel ⇒ RestartRequiring
-        let input = ReconcileInput { target: &t, cfg: &cfg, max_staleness_secs: 60, in_cooldown: false, dry_run: false, policy: DisruptionPolicy::RestartFreeOnly, force: None, predictive: None, peak_used: None, observed_for_secs: None };
+        let input = ReconcileInput { target: &t, cfg: &cfg, max_staleness_secs: 60, in_cooldown: false, dry_run: false, policy: DisruptionPolicy::RestartFreeOnly, force: None, predictive: None, peak_used: None, observed_for_secs: None, hard_plane_grow_only: false };
         match reconcile_one(&input, &prov).await.receipt {
             TickReceipt::DeferredWouldRestart { from, to, class } => {
                 assert_eq!(from, GI);
@@ -424,11 +443,11 @@ mod tests {
         let t = target(); // CNPG ClusterTopLevel ⇒ RestartRequiring
         // RestartFreeOnly: the carve is refused → the tick stays golden.
         let prov = provider(MockCluster::new(950 * MI, 0, GI, we_own()));
-        let golden = ReconcileInput { target: &t, cfg: &cfg, max_staleness_secs: 60, in_cooldown: false, dry_run: false, policy: DisruptionPolicy::RestartFreeOnly, force: None, predictive: None, peak_used: None, observed_for_secs: None };
+        let golden = ReconcileInput { target: &t, cfg: &cfg, max_staleness_secs: 60, in_cooldown: false, dry_run: false, policy: DisruptionPolicy::RestartFreeOnly, force: None, predictive: None, peak_used: None, observed_for_secs: None, hard_plane_grow_only: false };
         assert!(reconcile_one(&golden, &prov).await.receipt.edge_tier().is_golden(), "RestartFreeOnly is golden end-to-end");
         // AllowRestart: the same carve is APPLIED as a witnessed ceiling crossing.
         let prov2 = provider(MockCluster::new(950 * MI, 0, GI, we_own()));
-        let allow = ReconcileInput { target: &t, cfg: &cfg, max_staleness_secs: 60, in_cooldown: false, dry_run: false, policy: DisruptionPolicy::AllowRestart, force: None, predictive: None, peak_used: None, observed_for_secs: None };
+        let allow = ReconcileInput { target: &t, cfg: &cfg, max_staleness_secs: 60, in_cooldown: false, dry_run: false, policy: DisruptionPolicy::AllowRestart, force: None, predictive: None, peak_used: None, observed_for_secs: None, hard_plane_grow_only: false };
         let r = reconcile_one(&allow, &prov2).await.receipt;
         assert!(matches!(r, TickReceipt::Applied { class: DisruptionClass::RestartRequiring, .. }));
         assert!(!r.edge_tier().is_golden(), "an AllowRestart roll is a witnessed crossing");
@@ -464,7 +483,7 @@ mod tests {
         let prov = resize_provider(cluster);
         let cfg = BandConfig::default();
         let t = deploy_target();
-        let input = ReconcileInput { target: &t, cfg: &cfg, max_staleness_secs: 60, in_cooldown: false, dry_run: false, policy: DisruptionPolicy::RestartFreeOnly, force: None, predictive: None, peak_used: None, observed_for_secs: None };
+        let input = ReconcileInput { target: &t, cfg: &cfg, max_staleness_secs: 60, in_cooldown: false, dry_run: false, policy: DisruptionPolicy::RestartFreeOnly, force: None, predictive: None, peak_used: None, observed_for_secs: None, hard_plane_grow_only: false };
         match reconcile_one(&input, &prov).await.receipt {
             TickReceipt::Applied { from, to, class } => {
                 assert_eq!(from, 2 * GI);
@@ -486,7 +505,7 @@ mod tests {
         let t = deploy_target();
         // RestartFreeOnly + RestartContainer (flag false) ⇒ DEFER, carve nothing.
         let prov = resize_provider(MockCluster::new(400 * MI, 0, 2 * GI, we_own()));
-        let strict = ReconcileInput { target: &t, cfg: &cfg, max_staleness_secs: 60, in_cooldown: false, dry_run: false, policy: DisruptionPolicy::RestartFreeOnly, force: None, predictive: None, peak_used: None, observed_for_secs: None };
+        let strict = ReconcileInput { target: &t, cfg: &cfg, max_staleness_secs: 60, in_cooldown: false, dry_run: false, policy: DisruptionPolicy::RestartFreeOnly, force: None, predictive: None, peak_used: None, observed_for_secs: None, hard_plane_grow_only: false };
         match reconcile_one(&strict, &prov).await.receipt {
             TickReceipt::DeferredWouldRestart { class, .. } => {
                 assert_eq!(class, DisruptionClass::RestartConditional, "a may-restart shrink under the strict policy");
@@ -496,7 +515,7 @@ mod tests {
         assert!(prov.cluster().applied().is_empty(), "a deferred conditional shrink carves nothing");
         // AllowConditional opts the same RestartConditional shrink in ⇒ Applied.
         let prov2 = resize_provider(MockCluster::new(400 * MI, 0, 2 * GI, we_own()));
-        let allow = ReconcileInput { target: &t, cfg: &cfg, max_staleness_secs: 60, in_cooldown: false, dry_run: false, policy: DisruptionPolicy::AllowConditional, force: None, predictive: None, peak_used: None, observed_for_secs: None };
+        let allow = ReconcileInput { target: &t, cfg: &cfg, max_staleness_secs: 60, in_cooldown: false, dry_run: false, policy: DisruptionPolicy::AllowConditional, force: None, predictive: None, peak_used: None, observed_for_secs: None, hard_plane_grow_only: false };
         assert!(matches!(
             reconcile_one(&allow, &prov2).await.receipt,
             TickReceipt::Applied { class: DisruptionClass::RestartConditional, .. }
@@ -523,7 +542,7 @@ mod tests {
             .with_resize_restart_free(true) // golden in-place shrink so it Acts
             .with_request_floor(GI); // the LIVE pod request the controller must read
         let prov = resize_provider(cluster);
-        let input = ReconcileInput { target: &t, cfg: &cfg, max_staleness_secs: 60, in_cooldown: false, dry_run: false, policy: DisruptionPolicy::RestartFreeOnly, force: None, predictive: None, peak_used: None, observed_for_secs: None };
+        let input = ReconcileInput { target: &t, cfg: &cfg, max_staleness_secs: 60, in_cooldown: false, dry_run: false, policy: DisruptionPolicy::RestartFreeOnly, force: None, predictive: None, peak_used: None, observed_for_secs: None, hard_plane_grow_only: false };
         match reconcile_one(&input, &prov).await.receipt {
             TickReceipt::Applied { to, .. } => {
                 assert!(to >= GI, "the live 1Gi request floor must bind: shrank to {to} < 1Gi");
@@ -544,15 +563,75 @@ mod tests {
         let t = deploy_target();
         // util 0.05 @ 2Gi ⇒ a strong shrink signal, but observed for only 60s.
         let prov = resize_provider(MockCluster::new(100 * MI, 0, 2 * GI, we_own()).with_resize_restart_free(true));
-        let input = ReconcileInput { target: &t, cfg: &cfg, max_staleness_secs: 60, in_cooldown: false, dry_run: false, policy: DisruptionPolicy::RestartFreeOnly, force: None, predictive: None, peak_used: None, observed_for_secs: Some(60) };
+        let input = ReconcileInput { target: &t, cfg: &cfg, max_staleness_secs: 60, in_cooldown: false, dry_run: false, policy: DisruptionPolicy::RestartFreeOnly, force: None, predictive: None, peak_used: None, observed_for_secs: Some(60), hard_plane_grow_only: false };
         let out = reconcile_one(&input, &prov).await;
         assert!(matches!(out.receipt, TickReceipt::Warmup { observed_for: 60, warmup: 600 }), "warming up ⇒ held, got {:?}", out.receipt);
         assert_eq!(out.receipt.edge_tier(), EdgeTier::GoldenPreserving, "a warmup hold keeps the workload golden");
         assert!(prov.cluster().applied().is_empty(), "warmup never carves");
         // past warmup (observed_for 601 > 600), the SAME idle workload carves.
         let prov2 = resize_provider(MockCluster::new(100 * MI, 0, 2 * GI, we_own()).with_resize_restart_free(true));
-        let warm = ReconcileInput { observed_for_secs: Some(601), ..ReconcileInput { target: &t, cfg: &cfg, max_staleness_secs: 60, in_cooldown: false, dry_run: false, policy: DisruptionPolicy::RestartFreeOnly, force: None, predictive: None, peak_used: None, observed_for_secs: None } };
+        let warm = ReconcileInput { observed_for_secs: Some(601), ..ReconcileInput { target: &t, cfg: &cfg, max_staleness_secs: 60, in_cooldown: false, dry_run: false, policy: DisruptionPolicy::RestartFreeOnly, force: None, predictive: None, peak_used: None, observed_for_secs: None, hard_plane_grow_only: false } };
         assert!(matches!(reconcile_one(&warm, &prov2).await.receipt, TickReceipt::Applied { .. }), "past warmup the idle workload carves");
+    }
+
+    // ── PART 1 (k8s plane): the HARD-plane pin — memory.max is never lowered ───
+
+    /// THE PART-1 INTEGRATION PROOF: with `hard_plane_grow_only` set (the MemoryBand
+    /// soft-carve routing), an IDLE in-place memory band NEVER carves the HARD
+    /// `limits.memory` (`memory.max`) down for efficiency — the tick is `NoSafeShrink`
+    /// (the kill ceiling is held), and NOTHING is applied to `limits.memory`. The
+    /// reclaim is routed to the SOFT `memory.high` plane by the controller's per-pod
+    /// dispatch (proven separately in breathe-controller's `pod_memory_high` tests).
+    #[tokio::test]
+    async fn reconcile_hard_plane_pin_never_shrinks_memory_max_for_efficiency() {
+        let cfg = BandConfig::default();
+        let t = deploy_target();
+        // util 0.05 @ 2Gi ⇒ a STRONG idle shrink signal; resizePolicy NotRequired so
+        // it WOULD be a golden in-place shrink — but the hard-plane pin holds it.
+        let prov = resize_provider(MockCluster::new(100 * MI, 0, 2 * GI, we_own()).with_resize_restart_free(true));
+        let pinned = ReconcileInput {
+            target: &t, cfg: &cfg, max_staleness_secs: 60, in_cooldown: false, dry_run: false,
+            policy: DisruptionPolicy::RestartFreeOnly, force: None, predictive: None, peak_used: None,
+            observed_for_secs: None, hard_plane_grow_only: true,
+        };
+        match reconcile_one(&pinned, &prov).await.receipt {
+            // the HARD memory.max efficiency shrink is suppressed to NoSafeShrink.
+            TickReceipt::Observed { decision: Decision::NoSafeShrink { current } } => assert_eq!(current, 2 * GI),
+            other => panic!("the hard plane must NOT shrink memory.max for efficiency, got {other:?}"),
+        }
+        assert!(prov.cluster().applied().is_empty(), "memory.max is never carved down for efficiency");
+
+        // CONTRAST: the SAME idle band WITHOUT the pin (default) DOES carve memory.max
+        // down (the legacy single-limit behaviour) — proving the pin is what holds it.
+        let prov2 = resize_provider(MockCluster::new(100 * MI, 0, 2 * GI, we_own()).with_resize_restart_free(true));
+        let unpinned = ReconcileInput { hard_plane_grow_only: false, ..ReconcileInput {
+            target: &t, cfg: &cfg, max_staleness_secs: 60, in_cooldown: false, dry_run: false,
+            policy: DisruptionPolicy::RestartFreeOnly, force: None, predictive: None, peak_used: None,
+            observed_for_secs: None, hard_plane_grow_only: false,
+        } };
+        assert!(
+            matches!(reconcile_one(&unpinned, &prov2).await.receipt, TickReceipt::Applied { .. }),
+            "without the pin the legacy path DOES shrink the limit — the pin is load-bearing"
+        );
+    }
+
+    /// The HARD-plane pin NEVER blocks a GROW — a memory band under pressure still
+    /// raises `memory.max` (buying kill-ceiling headroom is always the safe direction).
+    #[tokio::test]
+    async fn reconcile_hard_plane_pin_still_grows_memory_max_under_pressure() {
+        let cfg = BandConfig::default();
+        let t = deploy_target();
+        // util 0.93 @ 1Gi ⇒ grow; the pin only suppresses shrinks, never grows.
+        let prov = resize_provider(MockCluster::new(950 * MI, 0, GI, we_own()).with_resize_restart_free(true));
+        let input = ReconcileInput {
+            target: &t, cfg: &cfg, max_staleness_secs: 60, in_cooldown: false, dry_run: false,
+            policy: DisruptionPolicy::RestartFreeOnly, force: None, predictive: None, peak_used: None,
+            observed_for_secs: None, hard_plane_grow_only: true,
+        };
+        assert!(
+            matches!(reconcile_one(&input, &prov).await.receipt, TickReceipt::Applied { from: GI, .. }),
+            "the hard-plane pin must still let memory.max GROW under pressure"
+        );
     }
 
     /// A GROW during warmup STILL acts — refusing headroom at boot would itself OOM.
@@ -562,7 +641,7 @@ mod tests {
         let t = deploy_target();
         // util 0.93 @ 1Gi, restarted 5s ago ⇒ STILL grows (in-place, golden).
         let prov = resize_provider(MockCluster::new(950 * MI, 0, GI, we_own()).with_resize_restart_free(true));
-        let input = ReconcileInput { target: &t, cfg: &cfg, max_staleness_secs: 60, in_cooldown: false, dry_run: false, policy: DisruptionPolicy::RestartFreeOnly, force: None, predictive: None, peak_used: None, observed_for_secs: Some(5) };
+        let input = ReconcileInput { target: &t, cfg: &cfg, max_staleness_secs: 60, in_cooldown: false, dry_run: false, policy: DisruptionPolicy::RestartFreeOnly, force: None, predictive: None, peak_used: None, observed_for_secs: Some(5), hard_plane_grow_only: false };
         assert!(matches!(reconcile_one(&input, &prov).await.receipt, TickReceipt::Applied { from: GI, .. }), "a grow at boot must still act");
     }
 }

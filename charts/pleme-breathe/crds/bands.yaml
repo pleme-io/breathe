@@ -47,6 +47,12 @@ spec:
               ceiling:
                 default: 16Gi
                 type: string
+              confirmAfterSeconds:
+                default: 1800
+                description: Clean-observation window (seconds) a `ShadowConfirmEffect` band holds Ready-and-healthy before it auto-promotes to carving (default 1800).
+                format: uint64
+                minimum: 0.0
+                type: integer
               cooldownSeconds:
                 default: 600
                 format: uint64
@@ -86,6 +92,20 @@ spec:
                 format: uint64
                 minimum: 0.0
                 type: integer
+              mode:
+                description: 'The PROMOTION LIFECYCLE. Unset ⇒ resolved by `promotion_mode()` (legacy `dryRun:true` → Shadow, else the fleet default `ShadowConfirmEffect`). Set explicitly to pin the state: `shadow` | `effect` | `shadowConfirmEffect` | `suspended`.'
+                enum:
+                - shadow
+                - effect
+                - shadowConfirmEffect
+                - suspended
+                nullable: true
+                type: string
+              peakDecay:
+                default: 0.98
+                description: The trailing-window PEAK decay per tick `∈ [0,1)` — the never-OOM shrink floor is keyed on the demonstrated PEAK working set (max RSS), which decays geometrically by this factor each tick so a real spike raises the floor and HOLDS it for a meaningful window rather than evaporating on the next low-water sample (the authentik-Celery OOM fix). Default 0.98 (a spike holds for ~tens of ticks); `0.0` = pure single-tick max (no window memory).
+                format: double
+                type: number
               predictive:
                 description: 'M0 PREDICTIVE (opt-in, default off → behaviour byte-unchanged): when `true`, breathe measures the working-set velocity and pre-grows the limit for the projected burst via the proven `PredictiveGrow<BandLaw>` — asymmetric (only ever raises a grow), still `safety_clamp`-contained (the never-OOM oracle covers it). Shadow-first: observe the predictive grows under `dryRun` before promoting to live.'
                 type: boolean
@@ -95,6 +115,9 @@ spec:
                 format: uint64
                 minimum: 0.0
                 type: integer
+              requestFloor:
+                description: The operator's declared `requests.<resource>` floor (a quantity string in the band's unit, e.g. `512Mi` / `250m`). A shrink can NEVER carve the limit below this — requests is the scheduler's guaranteed working set, and a limit under the request is both invalid in k8s and unsafe. Empty (the default) ⇒ no request floor. Typically mirrors the workload's actual `resources.requests.<resource>`.
+                type: string
               setpoint:
                 default: 0.8
                 format: double
@@ -131,6 +154,12 @@ spec:
                 - kind
                 - name
                 type: object
+              warmupSeconds:
+                default: 600
+                description: 'WARMUP HOLD (seconds) — the minimum time a workload must be OBSERVED since its last (re)start before any SHRINK is permitted. A workload that restarted less than this ago has not demonstrated a full duty cycle, so its idle reading is not yet proof the slack is safe to reclaim: a shrink is HELD (phase `Warmup`) until the window elapses. A grow is never held. This closes the un-observed-boot-spike OOM (the authentik worker''s blueprint-discovery spike happens at boot, before the first scrape, so the demonstrated-peak floor only ever saw idle). Default 600s (10 min); `0` disables the gate.'
+                format: uint64
+                minimum: 0.0
+                type: integer
             required:
             - targetRef
             type: object
@@ -277,6 +306,11 @@ spec:
                 format: int64
                 nullable: true
                 type: integer
+              observedPeakUsed:
+                description: 'The trailing-window PEAK working set (max RSS, with slow decay) — the never-OOM shrink floor is keyed on THIS, not the instantaneous `observed_used` (the authentik-Celery-worker OOM fix). Carried across ticks: each tick folds the current `used` into the prior peak via `breathe_control::update_peak`, so a recently-demonstrated spike holds the floor up for a meaningful window.'
+                format: int64
+                nullable: true
+                type: integer
               observedUsed:
                 description: The observed `used` scalar (bytes for memory/arc/cgroup; millicores for cpu).
                 format: int64
@@ -290,6 +324,11 @@ spec:
               phase:
                 nullable: true
                 type: string
+              warmupStartEpoch:
+                description: The epoch (unix secs) the band's WARMUP window started — the last observed (re)start of the target, or the band's first successful observation. The reconcile layer derives `observed_for_secs = now - warmup_start_epoch` to drive the warmup gate (a shrink is held until this exceeds `warmup_seconds`). Reset to `now` whenever a target restart is detected (the live limit dropped back to the template default / the observed capacity collapsed), so a fresh boot spike is always observed before any carve resumes. `None` until first observed.
+                format: int64
+                nullable: true
+                type: integer
             type: object
         required:
         - spec
@@ -348,6 +387,12 @@ spec:
               ceiling:
                 default: '2'
                 type: string
+              confirmAfterSeconds:
+                default: 1800
+                description: Clean-observation window (seconds) a `ShadowConfirmEffect` band holds Ready-and-healthy before it auto-promotes to carving (default 1800).
+                format: uint64
+                minimum: 0.0
+                type: integer
               cooldownSeconds:
                 default: 600
                 format: uint64
@@ -387,6 +432,20 @@ spec:
                 format: uint64
                 minimum: 0.0
                 type: integer
+              mode:
+                description: 'The PROMOTION LIFECYCLE. Unset ⇒ resolved by `promotion_mode()` (legacy `dryRun:true` → Shadow, else the fleet default `ShadowConfirmEffect`). Set explicitly to pin the state: `shadow` | `effect` | `shadowConfirmEffect` | `suspended`.'
+                enum:
+                - shadow
+                - effect
+                - shadowConfirmEffect
+                - suspended
+                nullable: true
+                type: string
+              peakDecay:
+                default: 0.98
+                description: The trailing-window PEAK decay per tick `∈ [0,1)` — the never-OOM shrink floor is keyed on the demonstrated PEAK working set (max RSS), which decays geometrically by this factor each tick so a real spike raises the floor and HOLDS it for a meaningful window rather than evaporating on the next low-water sample (the authentik-Celery OOM fix). Default 0.98 (a spike holds for ~tens of ticks); `0.0` = pure single-tick max (no window memory).
+                format: double
+                type: number
               predictive:
                 description: 'M0 PREDICTIVE (opt-in, default off → behaviour byte-unchanged): when `true`, breathe measures the working-set velocity and pre-grows the limit for the projected burst via the proven `PredictiveGrow<BandLaw>` — asymmetric (only ever raises a grow), still `safety_clamp`-contained (the never-OOM oracle covers it). Shadow-first: observe the predictive grows under `dryRun` before promoting to live.'
                 type: boolean
@@ -396,6 +455,9 @@ spec:
                 format: uint64
                 minimum: 0.0
                 type: integer
+              requestFloor:
+                description: The operator's declared `requests.<resource>` floor (a quantity string in the band's unit, e.g. `512Mi` / `250m`). A shrink can NEVER carve the limit below this — requests is the scheduler's guaranteed working set, and a limit under the request is both invalid in k8s and unsafe. Empty (the default) ⇒ no request floor. Typically mirrors the workload's actual `resources.requests.<resource>`.
+                type: string
               setpoint:
                 default: 0.8
                 format: double
@@ -432,6 +494,12 @@ spec:
                 - kind
                 - name
                 type: object
+              warmupSeconds:
+                default: 600
+                description: 'WARMUP HOLD (seconds) — the minimum time a workload must be OBSERVED since its last (re)start before any SHRINK is permitted. A workload that restarted less than this ago has not demonstrated a full duty cycle, so its idle reading is not yet proof the slack is safe to reclaim: a shrink is HELD (phase `Warmup`) until the window elapses. A grow is never held. This closes the un-observed-boot-spike OOM (the authentik worker''s blueprint-discovery spike happens at boot, before the first scrape, so the demonstrated-peak floor only ever saw idle). Default 600s (10 min); `0` disables the gate.'
+                format: uint64
+                minimum: 0.0
+                type: integer
             required:
             - targetRef
             type: object
@@ -578,6 +646,11 @@ spec:
                 format: int64
                 nullable: true
                 type: integer
+              observedPeakUsed:
+                description: 'The trailing-window PEAK working set (max RSS, with slow decay) — the never-OOM shrink floor is keyed on THIS, not the instantaneous `observed_used` (the authentik-Celery-worker OOM fix). Carried across ticks: each tick folds the current `used` into the prior peak via `breathe_control::update_peak`, so a recently-demonstrated spike holds the floor up for a meaningful window.'
+                format: int64
+                nullable: true
+                type: integer
               observedUsed:
                 description: The observed `used` scalar (bytes for memory/arc/cgroup; millicores for cpu).
                 format: int64
@@ -591,6 +664,11 @@ spec:
               phase:
                 nullable: true
                 type: string
+              warmupStartEpoch:
+                description: The epoch (unix secs) the band's WARMUP window started — the last observed (re)start of the target, or the band's first successful observation. The reconcile layer derives `observed_for_secs = now - warmup_start_epoch` to drive the warmup gate (a shrink is held until this exceeds `warmup_seconds`). Reset to `now` whenever a target restart is detected (the live limit dropped back to the template default / the observed capacity collapsed), so a fresh boot spike is always observed before any carve resumes. `None` until first observed.
+                format: int64
+                nullable: true
+                type: integer
             type: object
         required:
         - spec
@@ -649,6 +727,12 @@ spec:
               ceiling:
                 default: 16Gi
                 type: string
+              confirmAfterSeconds:
+                default: 1800
+                description: Clean-observation window (seconds) a `ShadowConfirmEffect` band holds Ready-and-healthy before it auto-promotes to carving (default 1800).
+                format: uint64
+                minimum: 0.0
+                type: integer
               cooldownSeconds:
                 default: 600
                 format: uint64
@@ -688,6 +772,20 @@ spec:
                 format: uint64
                 minimum: 0.0
                 type: integer
+              mode:
+                description: 'The PROMOTION LIFECYCLE. Unset ⇒ resolved by `promotion_mode()` (legacy `dryRun:true` → Shadow, else the fleet default `ShadowConfirmEffect`). Set explicitly to pin the state: `shadow` | `effect` | `shadowConfirmEffect` | `suspended`.'
+                enum:
+                - shadow
+                - effect
+                - shadowConfirmEffect
+                - suspended
+                nullable: true
+                type: string
+              peakDecay:
+                default: 0.98
+                description: The trailing-window PEAK decay per tick `∈ [0,1)` — the never-OOM shrink floor is keyed on the demonstrated PEAK working set (max RSS), which decays geometrically by this factor each tick so a real spike raises the floor and HOLDS it for a meaningful window rather than evaporating on the next low-water sample (the authentik-Celery OOM fix). Default 0.98 (a spike holds for ~tens of ticks); `0.0` = pure single-tick max (no window memory).
+                format: double
+                type: number
               predictive:
                 description: 'M0 PREDICTIVE (opt-in, default off → behaviour byte-unchanged): when `true`, breathe measures the working-set velocity and pre-grows the limit for the projected burst via the proven `PredictiveGrow<BandLaw>` — asymmetric (only ever raises a grow), still `safety_clamp`-contained (the never-OOM oracle covers it). Shadow-first: observe the predictive grows under `dryRun` before promoting to live.'
                 type: boolean
@@ -697,6 +795,9 @@ spec:
                 format: uint64
                 minimum: 0.0
                 type: integer
+              requestFloor:
+                description: The operator's declared `requests.<resource>` floor (a quantity string in the band's unit, e.g. `512Mi` / `250m`). A shrink can NEVER carve the limit below this — requests is the scheduler's guaranteed working set, and a limit under the request is both invalid in k8s and unsafe. Empty (the default) ⇒ no request floor. Typically mirrors the workload's actual `resources.requests.<resource>`.
+                type: string
               setpoint:
                 default: 0.8
                 format: double
@@ -733,6 +834,12 @@ spec:
                 - kind
                 - name
                 type: object
+              warmupSeconds:
+                default: 600
+                description: 'WARMUP HOLD (seconds) — the minimum time a workload must be OBSERVED since its last (re)start before any SHRINK is permitted. A workload that restarted less than this ago has not demonstrated a full duty cycle, so its idle reading is not yet proof the slack is safe to reclaim: a shrink is HELD (phase `Warmup`) until the window elapses. A grow is never held. This closes the un-observed-boot-spike OOM (the authentik worker''s blueprint-discovery spike happens at boot, before the first scrape, so the demonstrated-peak floor only ever saw idle). Default 600s (10 min); `0` disables the gate.'
+                format: uint64
+                minimum: 0.0
+                type: integer
             required:
             - targetRef
             type: object
@@ -879,6 +986,11 @@ spec:
                 format: int64
                 nullable: true
                 type: integer
+              observedPeakUsed:
+                description: 'The trailing-window PEAK working set (max RSS, with slow decay) — the never-OOM shrink floor is keyed on THIS, not the instantaneous `observed_used` (the authentik-Celery-worker OOM fix). Carried across ticks: each tick folds the current `used` into the prior peak via `breathe_control::update_peak`, so a recently-demonstrated spike holds the floor up for a meaningful window.'
+                format: int64
+                nullable: true
+                type: integer
               observedUsed:
                 description: The observed `used` scalar (bytes for memory/arc/cgroup; millicores for cpu).
                 format: int64
@@ -892,6 +1004,11 @@ spec:
               phase:
                 nullable: true
                 type: string
+              warmupStartEpoch:
+                description: The epoch (unix secs) the band's WARMUP window started — the last observed (re)start of the target, or the band's first successful observation. The reconcile layer derives `observed_for_secs = now - warmup_start_epoch` to drive the warmup gate (a shrink is held until this exceeds `warmup_seconds`). Reset to `now` whenever a target restart is detected (the live limit dropped back to the template default / the observed capacity collapsed), so a fresh boot spike is always observed before any carve resumes. `None` until first observed.
+                format: int64
+                nullable: true
+                type: integer
             type: object
         required:
         - spec
@@ -950,6 +1067,12 @@ spec:
               ceiling:
                 default: 16Gi
                 type: string
+              confirmAfterSeconds:
+                default: 1800
+                description: Clean-observation window (seconds) a `ShadowConfirmEffect` band holds Ready-and-healthy before it auto-promotes to carving (default 1800).
+                format: uint64
+                minimum: 0.0
+                type: integer
               cooldownSeconds:
                 default: 600
                 format: uint64
@@ -989,6 +1112,20 @@ spec:
                 format: uint64
                 minimum: 0.0
                 type: integer
+              mode:
+                description: 'The PROMOTION LIFECYCLE. Unset ⇒ resolved by `promotion_mode()` (legacy `dryRun:true` → Shadow, else the fleet default `ShadowConfirmEffect`). Set explicitly to pin the state: `shadow` | `effect` | `shadowConfirmEffect` | `suspended`.'
+                enum:
+                - shadow
+                - effect
+                - shadowConfirmEffect
+                - suspended
+                nullable: true
+                type: string
+              peakDecay:
+                default: 0.98
+                description: The trailing-window PEAK decay per tick `∈ [0,1)` — the never-OOM shrink floor is keyed on the demonstrated PEAK working set (max RSS), which decays geometrically by this factor each tick so a real spike raises the floor and HOLDS it for a meaningful window rather than evaporating on the next low-water sample (the authentik-Celery OOM fix). Default 0.98 (a spike holds for ~tens of ticks); `0.0` = pure single-tick max (no window memory).
+                format: double
+                type: number
               predictive:
                 description: 'M0 PREDICTIVE (opt-in, default off → behaviour byte-unchanged): when `true`, breathe measures the working-set velocity and pre-grows the limit for the projected burst via the proven `PredictiveGrow<BandLaw>` — asymmetric (only ever raises a grow), still `safety_clamp`-contained (the never-OOM oracle covers it). Shadow-first: observe the predictive grows under `dryRun` before promoting to live.'
                 type: boolean
@@ -998,6 +1135,9 @@ spec:
                 format: uint64
                 minimum: 0.0
                 type: integer
+              requestFloor:
+                description: The operator's declared `requests.<resource>` floor (a quantity string in the band's unit, e.g. `512Mi` / `250m`). A shrink can NEVER carve the limit below this — requests is the scheduler's guaranteed working set, and a limit under the request is both invalid in k8s and unsafe. Empty (the default) ⇒ no request floor. Typically mirrors the workload's actual `resources.requests.<resource>`.
+                type: string
               setpoint:
                 default: 0.8
                 format: double
@@ -1034,6 +1174,12 @@ spec:
                 - kind
                 - name
                 type: object
+              warmupSeconds:
+                default: 600
+                description: 'WARMUP HOLD (seconds) — the minimum time a workload must be OBSERVED since its last (re)start before any SHRINK is permitted. A workload that restarted less than this ago has not demonstrated a full duty cycle, so its idle reading is not yet proof the slack is safe to reclaim: a shrink is HELD (phase `Warmup`) until the window elapses. A grow is never held. This closes the un-observed-boot-spike OOM (the authentik worker''s blueprint-discovery spike happens at boot, before the first scrape, so the demonstrated-peak floor only ever saw idle). Default 600s (10 min); `0` disables the gate.'
+                format: uint64
+                minimum: 0.0
+                type: integer
             required:
             - targetRef
             type: object
@@ -1180,6 +1326,11 @@ spec:
                 format: int64
                 nullable: true
                 type: integer
+              observedPeakUsed:
+                description: 'The trailing-window PEAK working set (max RSS, with slow decay) — the never-OOM shrink floor is keyed on THIS, not the instantaneous `observed_used` (the authentik-Celery-worker OOM fix). Carried across ticks: each tick folds the current `used` into the prior peak via `breathe_control::update_peak`, so a recently-demonstrated spike holds the floor up for a meaningful window.'
+                format: int64
+                nullable: true
+                type: integer
               observedUsed:
                 description: The observed `used` scalar (bytes for memory/arc/cgroup; millicores for cpu).
                 format: int64
@@ -1193,6 +1344,11 @@ spec:
               phase:
                 nullable: true
                 type: string
+              warmupStartEpoch:
+                description: The epoch (unix secs) the band's WARMUP window started — the last observed (re)start of the target, or the band's first successful observation. The reconcile layer derives `observed_for_secs = now - warmup_start_epoch` to drive the warmup gate (a shrink is held until this exceeds `warmup_seconds`). Reset to `now` whenever a target restart is detected (the live limit dropped back to the template default / the observed capacity collapsed), so a fresh boot spike is always observed before any carve resumes. `None` until first observed.
+                format: int64
+                nullable: true
+                type: integer
             type: object
         required:
         - spec
@@ -1251,6 +1407,12 @@ spec:
               ceiling:
                 default: 16Gi
                 type: string
+              confirmAfterSeconds:
+                default: 1800
+                description: Clean-observation window (seconds) a `ShadowConfirmEffect` band holds Ready-and-healthy before it auto-promotes to carving (default 1800).
+                format: uint64
+                minimum: 0.0
+                type: integer
               cooldownSeconds:
                 default: 600
                 format: uint64
@@ -1290,6 +1452,20 @@ spec:
                 format: uint64
                 minimum: 0.0
                 type: integer
+              mode:
+                description: 'The PROMOTION LIFECYCLE. Unset ⇒ resolved by `promotion_mode()` (legacy `dryRun:true` → Shadow, else the fleet default `ShadowConfirmEffect`). Set explicitly to pin the state: `shadow` | `effect` | `shadowConfirmEffect` | `suspended`.'
+                enum:
+                - shadow
+                - effect
+                - shadowConfirmEffect
+                - suspended
+                nullable: true
+                type: string
+              peakDecay:
+                default: 0.98
+                description: The trailing-window PEAK decay per tick `∈ [0,1)` — the never-OOM shrink floor is keyed on the demonstrated PEAK working set (max RSS), which decays geometrically by this factor each tick so a real spike raises the floor and HOLDS it for a meaningful window rather than evaporating on the next low-water sample (the authentik-Celery OOM fix). Default 0.98 (a spike holds for ~tens of ticks); `0.0` = pure single-tick max (no window memory).
+                format: double
+                type: number
               predictive:
                 description: 'M0 PREDICTIVE (opt-in, default off → behaviour byte-unchanged): when `true`, breathe measures the working-set velocity and pre-grows the limit for the projected burst via the proven `PredictiveGrow<BandLaw>` — asymmetric (only ever raises a grow), still `safety_clamp`-contained (the never-OOM oracle covers it). Shadow-first: observe the predictive grows under `dryRun` before promoting to live.'
                 type: boolean
@@ -1299,6 +1475,9 @@ spec:
                 format: uint64
                 minimum: 0.0
                 type: integer
+              requestFloor:
+                description: The operator's declared `requests.<resource>` floor (a quantity string in the band's unit, e.g. `512Mi` / `250m`). A shrink can NEVER carve the limit below this — requests is the scheduler's guaranteed working set, and a limit under the request is both invalid in k8s and unsafe. Empty (the default) ⇒ no request floor. Typically mirrors the workload's actual `resources.requests.<resource>`.
+                type: string
               setpoint:
                 default: 0.8
                 format: double
@@ -1335,6 +1514,12 @@ spec:
                 - kind
                 - name
                 type: object
+              warmupSeconds:
+                default: 600
+                description: 'WARMUP HOLD (seconds) — the minimum time a workload must be OBSERVED since its last (re)start before any SHRINK is permitted. A workload that restarted less than this ago has not demonstrated a full duty cycle, so its idle reading is not yet proof the slack is safe to reclaim: a shrink is HELD (phase `Warmup`) until the window elapses. A grow is never held. This closes the un-observed-boot-spike OOM (the authentik worker''s blueprint-discovery spike happens at boot, before the first scrape, so the demonstrated-peak floor only ever saw idle). Default 600s (10 min); `0` disables the gate.'
+                format: uint64
+                minimum: 0.0
+                type: integer
             required:
             - targetRef
             type: object
@@ -1481,6 +1666,11 @@ spec:
                 format: int64
                 nullable: true
                 type: integer
+              observedPeakUsed:
+                description: 'The trailing-window PEAK working set (max RSS, with slow decay) — the never-OOM shrink floor is keyed on THIS, not the instantaneous `observed_used` (the authentik-Celery-worker OOM fix). Carried across ticks: each tick folds the current `used` into the prior peak via `breathe_control::update_peak`, so a recently-demonstrated spike holds the floor up for a meaningful window.'
+                format: int64
+                nullable: true
+                type: integer
               observedUsed:
                 description: The observed `used` scalar (bytes for memory/arc/cgroup; millicores for cpu).
                 format: int64
@@ -1494,6 +1684,11 @@ spec:
               phase:
                 nullable: true
                 type: string
+              warmupStartEpoch:
+                description: The epoch (unix secs) the band's WARMUP window started — the last observed (re)start of the target, or the band's first successful observation. The reconcile layer derives `observed_for_secs = now - warmup_start_epoch` to drive the warmup gate (a shrink is held until this exceeds `warmup_seconds`). Reset to `now` whenever a target restart is detected (the live limit dropped back to the template default / the observed capacity collapsed), so a fresh boot spike is always observed before any carve resumes. `None` until first observed.
+                format: int64
+                nullable: true
+                type: integer
             type: object
         required:
         - spec
@@ -1552,6 +1747,12 @@ spec:
               ceiling:
                 default: '2'
                 type: string
+              confirmAfterSeconds:
+                default: 1800
+                description: Clean-observation window (seconds) a `ShadowConfirmEffect` band holds Ready-and-healthy before it auto-promotes to carving (default 1800).
+                format: uint64
+                minimum: 0.0
+                type: integer
               cooldownSeconds:
                 default: 600
                 format: uint64
@@ -1591,6 +1792,20 @@ spec:
                 format: uint64
                 minimum: 0.0
                 type: integer
+              mode:
+                description: 'The PROMOTION LIFECYCLE. Unset ⇒ resolved by `promotion_mode()` (legacy `dryRun:true` → Shadow, else the fleet default `ShadowConfirmEffect`). Set explicitly to pin the state: `shadow` | `effect` | `shadowConfirmEffect` | `suspended`.'
+                enum:
+                - shadow
+                - effect
+                - shadowConfirmEffect
+                - suspended
+                nullable: true
+                type: string
+              peakDecay:
+                default: 0.98
+                description: The trailing-window PEAK decay per tick `∈ [0,1)` — the never-OOM shrink floor is keyed on the demonstrated PEAK working set (max RSS), which decays geometrically by this factor each tick so a real spike raises the floor and HOLDS it for a meaningful window rather than evaporating on the next low-water sample (the authentik-Celery OOM fix). Default 0.98 (a spike holds for ~tens of ticks); `0.0` = pure single-tick max (no window memory).
+                format: double
+                type: number
               predictive:
                 description: 'M0 PREDICTIVE (opt-in, default off → behaviour byte-unchanged): when `true`, breathe measures the working-set velocity and pre-grows the limit for the projected burst via the proven `PredictiveGrow<BandLaw>` — asymmetric (only ever raises a grow), still `safety_clamp`-contained (the never-OOM oracle covers it). Shadow-first: observe the predictive grows under `dryRun` before promoting to live.'
                 type: boolean
@@ -1600,6 +1815,9 @@ spec:
                 format: uint64
                 minimum: 0.0
                 type: integer
+              requestFloor:
+                description: The operator's declared `requests.<resource>` floor (a quantity string in the band's unit, e.g. `512Mi` / `250m`). A shrink can NEVER carve the limit below this — requests is the scheduler's guaranteed working set, and a limit under the request is both invalid in k8s and unsafe. Empty (the default) ⇒ no request floor. Typically mirrors the workload's actual `resources.requests.<resource>`.
+                type: string
               setpoint:
                 default: 0.8
                 format: double
@@ -1636,6 +1854,12 @@ spec:
                 - kind
                 - name
                 type: object
+              warmupSeconds:
+                default: 600
+                description: 'WARMUP HOLD (seconds) — the minimum time a workload must be OBSERVED since its last (re)start before any SHRINK is permitted. A workload that restarted less than this ago has not demonstrated a full duty cycle, so its idle reading is not yet proof the slack is safe to reclaim: a shrink is HELD (phase `Warmup`) until the window elapses. A grow is never held. This closes the un-observed-boot-spike OOM (the authentik worker''s blueprint-discovery spike happens at boot, before the first scrape, so the demonstrated-peak floor only ever saw idle). Default 600s (10 min); `0` disables the gate.'
+                format: uint64
+                minimum: 0.0
+                type: integer
             required:
             - targetRef
             type: object
@@ -1782,6 +2006,11 @@ spec:
                 format: int64
                 nullable: true
                 type: integer
+              observedPeakUsed:
+                description: 'The trailing-window PEAK working set (max RSS, with slow decay) — the never-OOM shrink floor is keyed on THIS, not the instantaneous `observed_used` (the authentik-Celery-worker OOM fix). Carried across ticks: each tick folds the current `used` into the prior peak via `breathe_control::update_peak`, so a recently-demonstrated spike holds the floor up for a meaningful window.'
+                format: int64
+                nullable: true
+                type: integer
               observedUsed:
                 description: The observed `used` scalar (bytes for memory/arc/cgroup; millicores for cpu).
                 format: int64
@@ -1795,6 +2024,11 @@ spec:
               phase:
                 nullable: true
                 type: string
+              warmupStartEpoch:
+                description: The epoch (unix secs) the band's WARMUP window started — the last observed (re)start of the target, or the band's first successful observation. The reconcile layer derives `observed_for_secs = now - warmup_start_epoch` to drive the warmup gate (a shrink is held until this exceeds `warmup_seconds`). Reset to `now` whenever a target restart is detected (the live limit dropped back to the template default / the observed capacity collapsed), so a fresh boot spike is always observed before any carve resumes. `None` until first observed.
+                format: int64
+                nullable: true
+                type: integer
             type: object
         required:
         - spec
@@ -2197,6 +2431,11 @@ spec:
                 format: int64
                 nullable: true
                 type: integer
+              observedPeakUsed:
+                description: 'The trailing-window PEAK working set (max RSS, with slow decay) — the never-OOM shrink floor is keyed on THIS, not the instantaneous `observed_used` (the authentik-Celery-worker OOM fix). Carried across ticks: each tick folds the current `used` into the prior peak via `breathe_control::update_peak`, so a recently-demonstrated spike holds the floor up for a meaningful window.'
+                format: int64
+                nullable: true
+                type: integer
               observedUsed:
                 description: The observed `used` scalar (bytes for memory/arc/cgroup; millicores for cpu).
                 format: int64
@@ -2210,6 +2449,11 @@ spec:
               phase:
                 nullable: true
                 type: string
+              warmupStartEpoch:
+                description: The epoch (unix secs) the band's WARMUP window started — the last observed (re)start of the target, or the band's first successful observation. The reconcile layer derives `observed_for_secs = now - warmup_start_epoch` to drive the warmup gate (a shrink is held until this exceeds `warmup_seconds`). Reset to `now` whenever a target restart is detected (the live limit dropped back to the template default / the observed capacity collapsed), so a fresh boot spike is always observed before any carve resumes. `None` until first observed.
+                format: int64
+                nullable: true
+                type: integer
             type: object
         required:
         - spec
@@ -2583,6 +2827,11 @@ spec:
                 format: int64
                 nullable: true
                 type: integer
+              observedPeakUsed:
+                description: 'The trailing-window PEAK working set (max RSS, with slow decay) — the never-OOM shrink floor is keyed on THIS, not the instantaneous `observed_used` (the authentik-Celery-worker OOM fix). Carried across ticks: each tick folds the current `used` into the prior peak via `breathe_control::update_peak`, so a recently-demonstrated spike holds the floor up for a meaningful window.'
+                format: int64
+                nullable: true
+                type: integer
               observedUsed:
                 description: The observed `used` scalar (bytes for memory/arc/cgroup; millicores for cpu).
                 format: int64
@@ -2596,6 +2845,11 @@ spec:
               phase:
                 nullable: true
                 type: string
+              warmupStartEpoch:
+                description: The epoch (unix secs) the band's WARMUP window started — the last observed (re)start of the target, or the band's first successful observation. The reconcile layer derives `observed_for_secs = now - warmup_start_epoch` to drive the warmup gate (a shrink is held until this exceeds `warmup_seconds`). Reset to `now` whenever a target restart is detected (the live limit dropped back to the template default / the observed capacity collapsed), so a fresh boot spike is always observed before any carve resumes. `None` until first observed.
+                format: int64
+                nullable: true
+                type: integer
             type: object
         required:
         - spec
@@ -2699,6 +2953,117 @@ spec:
         required:
         - spec
         title: BreatheNodePool
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: podmemoryhighs.breathe.pleme.io
+spec:
+  group: breathe.pleme.io
+  names:
+    categories:
+    - breathe
+    kind: PodMemoryHigh
+    plural: podmemoryhighs
+    shortNames:
+    - pmh
+    singular: podmemoryhigh
+  scope: Cluster
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.nodeName
+      name: Node
+      type: string
+    - jsonPath: .spec.qosClass
+      name: QoS
+      type: string
+    - jsonPath: .spec.desiredBytes
+      name: DesiredBytes
+      type: integer
+    - jsonPath: .status.phase
+      name: Phase
+      type: string
+    name: v1
+    schema:
+      openAPIV3Schema:
+        description: Auto-generated derived type for PodMemoryHighSpec via `CustomResource`
+        properties:
+          spec:
+            description: '**PodMemoryHigh** — the controller→host-agent SOFT-carve dispatch (cluster-scoped). The controller resolves the pod''s cgroup coordinates (UID + CRI container id + QoS) and writes the desired `memory.high` bytes here; the host-agent on `nodeName` reconciles it onto the pod''s cgroup file. The HARD `memory.max` (k8s `limits.memory`) is NEVER carved here — it is governed by the never-OOM peak ceiling on the k8s plane.'
+            properties:
+              cgroupDriver:
+                default: systemd
+                description: The kubelet cgroup driver — selects the path layout (default systemd).
+                enum:
+                - systemd
+                - cgroupfs
+                type: string
+              containerRuntimeId:
+                description: The CRI container-runtime id (`containerd://…`/`cri-o://…`) — the per-container cgroup scope/dir; the host-agent path mapper scheme-strips it.
+                type: string
+              desiredBytes:
+                description: The DESIRED `memory.high` value in BYTES the host-agent must write — the controller's efficiency-carve target (SOFT/reclaim). NEVER a `memory.max` value.
+                format: uint64
+                minimum: 0.0
+                type: integer
+              dryRun:
+                default: false
+                description: 'SHADOW: the agent observes + reports the desired write but performs no cgroup mutation. Composes with the node''s `BreatheNodePool.writeEnabled` master switch (either being shadow keeps the agent observe-only).'
+                type: boolean
+              nodeName:
+                description: The node hosting the pod — the host-agent reconciles only the PodMemoryHigh whose `nodeName` equals its own `NODE_NAME` (the BreatheNodePool node-match).
+                type: string
+              ownerBand:
+                description: The owning `MemoryBand` (namespace/name) — provenance for the audit trail + the controller's ownership of this dispatch CR.
+                nullable: true
+                type: string
+              podUid:
+                description: The pod's `metadata.uid` — the per-pod cgroup slice/dir is named for it.
+                type: string
+              qosClass:
+                description: The pod's `status.qosClass` (`Guaranteed`/`Burstable`/`BestEffort`) — which kubepods cgroup subtree the pod's `memory.high` lives under.
+                type: string
+            required:
+            - containerRuntimeId
+            - desiredBytes
+            - nodeName
+            - podUid
+            - qosClass
+            type: object
+          status:
+            description: PodMemoryHigh status — the host-agent's reconcile receipt for the dispatch.
+            nullable: true
+            properties:
+              lastSeenEpoch:
+                format: int64
+                nullable: true
+                type: integer
+              message:
+                description: A typed error message when the write failed.
+                nullable: true
+                type: string
+              observedNode:
+                description: The node that reconciled this dispatch (the host-agent's `NODE_NAME`).
+                nullable: true
+                type: string
+              phase:
+                description: '`Applied` (cgroup written) / `ShadowWouldApply` / `Error` / `Pending`.'
+                nullable: true
+                type: string
+              writtenBytes:
+                description: The `memory.high` value the agent last wrote (or would write in shadow), bytes.
+                format: int64
+                nullable: true
+                type: integer
+            type: object
+        required:
+        - spec
+        title: PodMemoryHigh
         type: object
     served: true
     storage: true

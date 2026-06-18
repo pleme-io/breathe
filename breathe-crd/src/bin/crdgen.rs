@@ -3,7 +3,7 @@
 
 use breathe_crd::{
     ArcBand, BreatheCloudPool, BreatheConfig, BreatheNodePool, BreatheOverview, CgroupBand, CgroupCpuBand, CpuBand,
-    Densa, HostParamBand, KubeParamBand, MemoryBand, QuinhaoPool, StorageBand,
+    Densa, HostParamBand, KubeParamBand, MemoryBand, PodMemoryHigh, QuinhaoPool, StorageBand,
 };
 use kube::CustomResourceExt;
 
@@ -21,6 +21,8 @@ fn main() {
         // Step-6/8/12 — the generic k8s-CR / app band (Istio/ResourceQuota/CR fields)
         KubeParamBand::crd(),
         BreatheNodePool::crd(),
+        // Part 1 — the SOFT-k8s-carve controller→host-agent dispatch (pod memory.high)
+        PodMemoryHigh::crd(),
         // BU2 — the node-count Forma enrollment (Forma ⇄ Densa envelope)
         BreatheCloudPool::crd(),
         // the fleet-overview dashboard object + the fleet config

@@ -8,8 +8,12 @@
 
 pub mod kube_cluster;
 pub mod managed_fields;
+pub mod pod_cgroup;
 
 pub use kube_cluster::KubeCluster;
 pub use managed_fields::{
     cnpg_cluster_limit_segments, field_owners, pod_template_limit_segments, replicas_segments,
+};
+pub use pod_cgroup::{
+    container_id_from_status, node_name_from_pod, pod_coords_from_value, PodCgroupCoords, PodCoordError,
 };

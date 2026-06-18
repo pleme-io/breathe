@@ -189,6 +189,61 @@ impl KubeCluster {
         Ok(pods.items)
     }
 
+    /// **Part 1 (SOFT k8s carve):** resolve the cgroup-path coordinates of EVERY
+    /// live pod a band manages — the apiserver side of routing a `MemoryBand`'s
+    /// efficiency carve to the pod's `memory.high` (SOFT) cgroup file instead of the
+    /// k8s `limits.memory` (`memory.max`, HARD). Lists the band's owner pods (the
+    /// SAME `owner_pods` the in-place resize uses) and resolves each via the pure
+    /// [`pod_coords_from_value`](crate::pod_cgroup::pod_coords_from_value).
+    ///
+    /// Returns one `(PodCgroupCoords, container)` per pod whose managed container is
+    /// running (has a `containerID`); a pod that hasn't started its container yet is
+    /// SKIPPED (a benign "not ready", not an error — it has no cgroup to carve). An
+    /// empty result ⇒ no pod is carveable this tick (the caller holds, exactly like a
+    /// dormant group). The live list is the one impure edge — the coordinate
+    /// extraction itself is the pure, fully-tested `pod_coords_from_value`.
+    ///
+    /// `tier-honest`: this method runs against a LIVE apiserver (`pending-deploy`);
+    /// only the per-pod extraction is library-pure (`parse-time-rejected`).
+    pub async fn resolve_pod_cgroup_coords(
+        &self,
+        target: &Target,
+    ) -> Result<Vec<crate::pod_cgroup::PodCgroupCoords>, ProviderError> {
+        let mut coords = Vec::new();
+        for pod in self.owner_pods(target).await? {
+            // a pod whose managed container isn't running yet has no cgroup to carve —
+            // skip it (typed parse-rejection → skip), never produce a wrong path.
+            if let Ok(c) = crate::pod_cgroup::pod_coords_from_value(&pod.data, &target.container) {
+                coords.push(c);
+            }
+        }
+        Ok(coords)
+    }
+
+    /// **Part 1 (SOFT k8s carve):** resolve `(coords, node_name)` for every live pod
+    /// a band manages — the apiserver inputs the controller needs to build a
+    /// `PodMemoryHigh` dispatch per pod (the coords address the cgroup file; the node
+    /// names the host-agent that owns it). Skips a pod that isn't scheduled yet (no
+    /// node) or whose managed container isn't running (no cgroup); both are benign
+    /// "not ready" states, not errors. `pending-deploy` (live apiserver list); the
+    /// per-pod extraction is the pure, tested `pod_coords_from_value`/`node_name_from_pod`.
+    pub async fn resolve_pod_soft_carve_targets(
+        &self,
+        target: &Target,
+    ) -> Result<Vec<(crate::pod_cgroup::PodCgroupCoords, String)>, ProviderError> {
+        let mut out = Vec::new();
+        for pod in self.owner_pods(target).await? {
+            let (Ok(c), Some(node)) = (
+                crate::pod_cgroup::pod_coords_from_value(&pod.data, &target.container),
+                crate::pod_cgroup::node_name_from_pod(&pod.data),
+            ) else {
+                continue;
+            };
+            out.push((c, node));
+        }
+        Ok(out)
+    }
+
     /// Prometheus instant query → (value, sample age).
     async fn prometheus_used(&self, promql: &str) -> Result<Sample, ProviderError> {
         let url = format!("{}/api/v1/query", self.prometheus_url.trim_end_matches('/'));
