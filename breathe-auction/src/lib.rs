@@ -179,7 +179,10 @@ pub struct BandLeiloeiro;
 impl Leiloeiro for BandLeiloeiro {
     fn decide(&self, forma: Forma, previsao: &Previsao, cfg: &BandConfig) -> DecisaoForma {
         match decide(previsao.immediate_used, previsao.capacity, cfg) {
-            Decision::Hold | Decision::NoSafeShrink { .. } | Decision::NoLimit => DecisaoForma::Manter,
+            // Warmup is unreachable here — the free `decide()` has no warmup gate
+            // (that lives in `plan_tick`); a node Forma has no restart/warmup concept
+            // anyway. Mapped to Manter (hold) for exhaustiveness, never silent.
+            Decision::Hold | Decision::NoSafeShrink { .. } | Decision::NoLimit | Decision::Warmup { .. } => DecisaoForma::Manter,
             Decision::Grow { from, to } => DecisaoForma::Crescer { forma, delta: to.saturating_sub(from) },
             Decision::Shrink { from, to } => {
                 DecisaoForma::Encolher { forma, delta: from.saturating_sub(to), drain: true }

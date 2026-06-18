@@ -127,6 +127,15 @@ pub struct BandStatus {
     /// The observed `capacity` (the current limit the util is measured against).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub observed_capacity: Option<i64>,
+    /// The epoch (unix secs) the band's WARMUP window started — the last observed
+    /// (re)start of the target, or the band's first successful observation. The
+    /// reconcile layer derives `observed_for_secs = now - warmup_start_epoch` to drive
+    /// the warmup gate (a shrink is held until this exceeds `warmup_seconds`). Reset
+    /// to `now` whenever a target restart is detected (the live limit dropped back to
+    /// the template default / the observed capacity collapsed), so a fresh boot spike
+    /// is always observed before any carve resumes. `None` until first observed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub warmup_start_epoch: Option<i64>,
     /// Age of the driving metric sample, in seconds (the freshness gate input).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub freshness_seconds: Option<i64>,
@@ -317,6 +326,14 @@ pub trait Band:
     fn peak_decay(&self) -> f64 {
         0.98
     }
+    /// WARMUP HOLD (seconds) — the minimum observed-since-restart age before a SHRINK
+    /// is permitted (the un-observed-boot-spike gate). `0` disables. Default 600s;
+    /// band kinds override from their spec. Host dimensions (no restart concept)
+    /// keep the default but the reconcile layer feeds `observed_for_secs = u64::MAX`
+    /// so the gate never fires for them.
+    fn warmup_seconds(&self) -> u64 {
+        600
+    }
     /// `metadata.generation` — set as `status.observedGeneration` so an operator can
     /// confirm the controller reconciled their latest spec edit.
     fn generation(&self) -> Option<i64> {
@@ -334,6 +351,7 @@ fn band_config_of(
     floor: &str,
     ceiling: &str,
     request_floor: &str,
+    warmup_seconds: u64,
     unit: Unit,
 ) -> anyhow::Result<BandConfig> {
     let parse = |q: &str| -> anyhow::Result<u64> {
@@ -352,6 +370,7 @@ fn band_config_of(
         floor_bytes: parse(floor)?,
         ceiling_bytes: parse(ceiling)?,
         request_floor_bytes,
+        warmup_seconds,
     })
 }
 
@@ -463,6 +482,17 @@ macro_rules! band_kind {
             /// single-tick max (no window memory).
             #[serde(default = "d_peak_decay")]
             pub peak_decay: f64,
+            /// WARMUP HOLD (seconds) — the minimum time a workload must be OBSERVED
+            /// since its last (re)start before any SHRINK is permitted. A workload
+            /// that restarted less than this ago has not demonstrated a full duty
+            /// cycle, so its idle reading is not yet proof the slack is safe to
+            /// reclaim: a shrink is HELD (phase `Warmup`) until the window elapses. A
+            /// grow is never held. This closes the un-observed-boot-spike OOM (the
+            /// authentik worker's blueprint-discovery spike happens at boot, before
+            /// the first scrape, so the demonstrated-peak floor only ever saw idle).
+            /// Default 600s (10 min); `0` disables the gate.
+            #[serde(default = "d_warmup_seconds")]
+            pub warmup_seconds: u64,
         }
 
         impl crate::Band for $kind {
@@ -473,11 +503,14 @@ macro_rules! band_kind {
                 let s = &self.spec;
                 crate::band_config_of(
                     s.setpoint, s.grow_above, s.shrink_below, s.grow_factor, s.shrink_factor,
-                    &s.floor, &s.ceiling, &s.request_floor, $unit,
+                    &s.floor, &s.ceiling, &s.request_floor, s.warmup_seconds, $unit,
                 )
             }
             fn peak_decay(&self) -> f64 {
                 self.spec.peak_decay
+            }
+            fn warmup_seconds(&self) -> u64 {
+                self.spec.warmup_seconds
             }
             fn max_staleness_seconds(&self) -> u64 {
                 self.spec.max_staleness_seconds
@@ -740,7 +773,7 @@ impl crate::Band for HostParamBand {
         let s = &self.spec;
         crate::band_config_of(
             s.setpoint, s.grow_above, s.shrink_below, s.grow_factor, s.shrink_factor,
-            &s.floor, &s.ceiling, "", Unit::Bytes,
+            &s.floor, &s.ceiling, "", 0, Unit::Bytes,
         )
     }
     fn max_staleness_seconds(&self) -> u64 {
@@ -946,7 +979,7 @@ impl crate::Band for KubeParamBand {
     fn band_config(&self) -> anyhow::Result<BandConfig> {
         let s = &self.spec;
         // k8s-CR fields are bare integers (maxConnections, retention secs, quota counts).
-        crate::band_config_of(s.setpoint, s.grow_above, s.shrink_below, s.grow_factor, s.shrink_factor, &s.floor, &s.ceiling, "", Unit::Count)
+        crate::band_config_of(s.setpoint, s.grow_above, s.shrink_below, s.grow_factor, s.shrink_factor, &s.floor, &s.ceiling, "", 0, Unit::Count)
     }
     fn max_staleness_seconds(&self) -> u64 {
         self.spec.max_staleness_seconds
@@ -1218,6 +1251,8 @@ impl BreatheCloudPoolSpec {
             ceiling_bytes: self.ceiling,
             // node-count bands have no k8s requests.<resource> concept.
             request_floor_bytes: 0,
+            // node Formas have no restart/boot-spike concept ⇒ warmup disabled.
+            warmup_seconds: 0,
         }
     }
 }
@@ -1910,6 +1945,7 @@ fn d_cooldown() -> u64 { 600 }
 fn d_max_staleness() -> u64 { 120 }
 fn d_predictive_lookahead() -> u64 { 60 }
 fn d_peak_decay() -> f64 { 0.98 } // trailing-window peak holds a spike for ~tens of ticks
+fn d_warmup_seconds() -> u64 { 600 } // hold a shrink for 10 min after a (re)start (boot-spike window)
 fn d_relief_latency() -> u64 { 180 } // ~3min node boot→Ready (the NodeOnDemand dead-time)
 
 #[cfg(test)]
@@ -1970,7 +2006,7 @@ mod tests {
         let mem = MemoryBand::new("m", MemoryBandSpec {
             target_ref: tr.clone(), setpoint: 0.80, grow_above: 0.85, shrink_below: 0.70,
             grow_factor: 1.25, shrink_factor: 0.90, floor: "512Mi".into(), ceiling: "4Gi".into(),
-            cooldown_seconds: 600, max_staleness_seconds: 120, dry_run: true, disruption_policy: Default::default(), suspend: false, force_limit: None, force_limit_expiry: None, predictive: false, predictive_lookahead_seconds: 60, request_floor: String::new(), peak_decay: 0.98, mode: None, confirm_after_seconds: 1800,
+            cooldown_seconds: 600, max_staleness_seconds: 120, dry_run: true, disruption_policy: Default::default(), suspend: false, force_limit: None, force_limit_expiry: None, predictive: false, predictive_lookahead_seconds: 60, request_floor: String::new(), peak_decay: 0.98, mode: None, confirm_after_seconds: 1800, warmup_seconds: 600,
         });
         let cfg = Band::band_config(&mem).unwrap();
         assert_eq!(cfg.floor_bytes, 512 * (1 << 20));
@@ -1983,7 +2019,7 @@ mod tests {
         let cpu = CpuBand::new("c", CpuBandSpec {
             target_ref: tr, setpoint: 0.80, grow_above: 0.85, shrink_below: 0.70,
             grow_factor: 1.25, shrink_factor: 0.90, floor: "250m".into(), ceiling: "2".into(),
-            cooldown_seconds: 600, max_staleness_seconds: 120, dry_run: false, disruption_policy: Default::default(), suspend: false, force_limit: None, force_limit_expiry: None, predictive: false, predictive_lookahead_seconds: 60, request_floor: String::new(), peak_decay: 0.98, mode: None, confirm_after_seconds: 1800,
+            cooldown_seconds: 600, max_staleness_seconds: 120, dry_run: false, disruption_policy: Default::default(), suspend: false, force_limit: None, force_limit_expiry: None, predictive: false, predictive_lookahead_seconds: 60, request_floor: String::new(), peak_decay: 0.98, mode: None, confirm_after_seconds: 1800, warmup_seconds: 600,
         });
         let cfg = Band::band_config(&cpu).unwrap();
         // millicores, NOT bytes: "250m" → 250, "2" cores → 2000m.
@@ -1996,7 +2032,7 @@ mod tests {
         // an omitted floor/ceiling on a CpuBand must default to cpu-valid values
         // (250m / 2), not the byte default 256Mi which can't parse as millicores.
         let cfg = crate::band_config_of(0.80, 0.85, 0.70, 1.25, 0.90,
-            &d_floor_milli(), &d_ceiling_milli(), "", Unit::Millicores).unwrap();
+            &d_floor_milli(), &d_ceiling_milli(), "", 0, Unit::Millicores).unwrap();
         assert_eq!(cfg.floor_bytes, 250);
         assert_eq!(cfg.ceiling_bytes, 2000);
         assert_eq!(cfg.request_floor_bytes, 0, "empty request_floor ⇒ no floor");
@@ -2009,7 +2045,7 @@ mod tests {
         let arc = ArcBand::new("rio-arc", ArcBandSpec {
             target_ref: tr, setpoint: 0.80, grow_above: 0.85, shrink_below: 0.70,
             grow_factor: 1.25, shrink_factor: 0.90, floor: "1Gi".into(), ceiling: "6Gi".into(),
-            cooldown_seconds: 600, max_staleness_seconds: 120, dry_run: true, disruption_policy: Default::default(), suspend: false, force_limit: None, force_limit_expiry: None, predictive: false, predictive_lookahead_seconds: 60, request_floor: String::new(), peak_decay: 0.98, mode: None, confirm_after_seconds: 1800,
+            cooldown_seconds: 600, max_staleness_seconds: 120, dry_run: true, disruption_policy: Default::default(), suspend: false, force_limit: None, force_limit_expiry: None, predictive: false, predictive_lookahead_seconds: 60, request_floor: String::new(), peak_decay: 0.98, mode: None, confirm_after_seconds: 1800, warmup_seconds: 600,
         });
         let cfg = Band::band_config(&arc).unwrap();
         assert_eq!(cfg.floor_bytes, 1 << 30);
@@ -2020,7 +2056,7 @@ mod tests {
         let g = CgroupBand::new("nix-daemon", CgroupBandSpec {
             target_ref: TargetRef { kind: "HostUnit".into(), name: "nix-daemon.service".into(), api_version: None, container: None, pod_selector: None },
             setpoint: 0.80, grow_above: 0.85, shrink_below: 0.70, grow_factor: 1.25, shrink_factor: 0.90,
-            floor: "1Gi".into(), ceiling: "12Gi".into(), cooldown_seconds: 600, max_staleness_seconds: 120, dry_run: true, disruption_policy: Default::default(), suspend: false, force_limit: None, force_limit_expiry: None, predictive: false, predictive_lookahead_seconds: 60, request_floor: String::new(), peak_decay: 0.98, mode: None, confirm_after_seconds: 1800,
+            floor: "1Gi".into(), ceiling: "12Gi".into(), cooldown_seconds: 600, max_staleness_seconds: 120, dry_run: true, disruption_policy: Default::default(), suspend: false, force_limit: None, force_limit_expiry: None, predictive: false, predictive_lookahead_seconds: 60, request_floor: String::new(), peak_decay: 0.98, mode: None, confirm_after_seconds: 1800, warmup_seconds: 600,
         });
         assert_eq!(g.target_ref().name, "nix-daemon.service");
     }

@@ -48,6 +48,18 @@ pub struct BandConfig {
     /// is rejected by k8s) and unsafe (it removes the operator-declared headroom).
     /// `0` = no declared request floor (the unset default — behaviour-preserving).
     pub request_floor_bytes: u64,
+    /// WARMUP HOLD — the minimum seconds a workload must be OBSERVED (since its last
+    /// restart) before any SHRINK is permitted. A workload that (re)started less than
+    /// `warmup_seconds` ago has not yet demonstrated a full duty cycle: its idle
+    /// reading is not proof it is safe to carve. So a shrink proposal during warmup
+    /// becomes a HOLD ([`Decision::Warmup`]) regardless of how low the observed
+    /// utilization is. This closes the un-observed-boot-spike hole the demonstrated-
+    /// peak floor alone cannot: the authentik worker's blueprint-discovery spike
+    /// happens at boot, BEFORE the first scrape, so the peak floor only ever saw idle
+    /// and carved to idle. Holding through warmup means the spike is observed (and
+    /// folds into the peak) before any carve. Default `600` (10 min). A grow is NEVER
+    /// held — buying headroom is always safe. `0` = warmup disabled.
+    pub warmup_seconds: u64,
 }
 
 impl Default for BandConfig {
@@ -61,6 +73,7 @@ impl Default for BandConfig {
             floor_bytes: 256 * (1 << 20),
             ceiling_bytes: 16 * (1 << 30),
             request_floor_bytes: 0,
+            warmup_seconds: 600,
         }
     }
 }
@@ -123,7 +136,7 @@ impl BandConfig {
 /// The outcome of one band evaluation for one target. Every non-`Hold` variant
 /// is observable (the watcher emits a typed event) so a tick's behaviour is
 /// fully legible in the logs.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Decision {
     /// Inside the deadband — do nothing.
     Hold,
@@ -138,6 +151,13 @@ pub enum Decision {
     /// Container declares no memory limit — the controller refuses to reason
     /// about utilization without a denominator. Skip + surface.
     NoLimit,
+    /// Would shrink, but the workload is still in its WARMUP window (it (re)started
+    /// less than `warmup_seconds` ago and has not demonstrated a full duty cycle).
+    /// A shrink is HELD — the idle reading is not yet proof the slack is safe to take
+    /// (the un-observed-boot-spike hole). `current` is the held limit; `observed_for`
+    /// the seconds the workload has been observed; `warmup` the configured window. A
+    /// grow is never held (raising the limit is always safe).
+    Warmup { current: u64, observed_for: u64, warmup: u64 },
 }
 
 /// A control law's RAW proposal for one tick — the target limit it wants,
@@ -148,6 +168,158 @@ pub enum Decision {
 pub enum Proposal {
     Hold,
     Target(u64),
+}
+
+/// Which CGROUP LIMIT a carve targets — the typed soft/hard distinction that makes
+/// a carve-induced OOM impossible by construction.
+///
+/// A k8s `resources.limits.memory` IS the cgroup `memory.max` — a **HARD** limit;
+/// exceeding it is an instant OOM-kill, with no warning and no chance for the
+/// kernel to reclaim. By contrast cgroup v2 `memory.high` is a **SOFT** limit:
+/// crossing it triggers reclaim + throttling, *never* a kill. So an efficiency
+/// carve — "this workload is idle, take its slack back" — must target `memory.high`
+/// (`Soft`): if a transient, un-observed spike then exceeds the soft target, the
+/// kernel reclaims and throttles rather than OOM-killing. The HARD ceiling
+/// (`memory.max` / the k8s limit) is governed by the peak-floor never-OOM ceiling
+/// ONLY (see [`safe_min`]); it is never lowered for efficiency.
+///
+/// This is the structural fix for the authentik-worker OOM (2026-06): the worker
+/// was carved toward its 40%-idle reading, but blueprint discovery is a transient
+/// ~600 MB boot spike that OOM-killed the pod DURING the spike — before
+/// metrics-server ever scraped it, so the demonstrated-peak floor only ever saw
+/// idle. Had the efficiency carve targeted `memory.high` (reclaim) instead of
+/// `memory.max` (kill), the spike would have throttled, not died.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CarveSemantics {
+    /// `memory.high` (cgroup v2) — exceeding it RECLAIMS + THROTTLES, never kills.
+    /// The efficiency-carve target. A `Soft` shrink can safely sit at the *working
+    /// set* seat (it can only throttle a spike, never kill it), so its floor is the
+    /// gentler [`soft_min`] (request/config floor), not the peak-over-window ceiling.
+    Soft,
+    /// `memory.max` (cgroup v2) == the k8s `resources.limits.memory` — a HARD cap;
+    /// exceeding it OOM-KILLS. Only ever set to the never-OOM ceiling ([`safe_min`],
+    /// keyed on the demonstrated peak + the declared request floor) and NEVER carved
+    /// beneath it for efficiency. A grow always targets `Hard` (raising the kill
+    /// ceiling buys headroom — always safe).
+    Hard,
+}
+
+impl CarveSemantics {
+    /// `true` iff exceeding this target can OOM-kill the workload (the `Hard`
+    /// `memory.max` / k8s limit). A `Soft` target only ever reclaims + throttles.
+    #[must_use]
+    pub fn can_oom(self) -> bool {
+        matches!(self, Self::Hard)
+    }
+}
+
+/// The never-OOM HARD floor: the lowest `memory.max` (k8s limit) a carve may ever
+/// set, keyed on the DEMONSTRATED peak working set (max over the trailing window) +
+/// the declared request floor + the configured floor. Exceeding `memory.max` kills,
+/// so this floor can never drop beneath what the workload has been observed to need:
+/// `max( ceil(peak / setpoint), request_floor_bytes, floor_bytes )`. Pure; the
+/// single source of truth for the hard floor both [`safety_clamp`] and the dual
+/// soft/hard planner consume.
+#[must_use]
+#[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+pub fn safe_min(peak_working_set: u64, working_set: u64, cfg: &BandConfig) -> u64 {
+    let peak = peak_working_set.max(working_set);
+    let setpoint = if cfg.setpoint <= 0.0 { 1.0 } else { cfg.setpoint };
+    let from_peak = ((peak as f64) / setpoint).ceil() as u64;
+    from_peak.max(cfg.request_floor_bytes).max(cfg.floor_bytes)
+}
+
+/// The SOFT floor: the lowest `memory.high` an efficiency carve may set. Because a
+/// soft target only RECLAIMS + THROTTLES (never kills), it does NOT need the
+/// peak-over-window ceiling — it may safely seat the soft limit at the live
+/// working set's setpoint, throttling (not killing) a spike that exceeds it. It is
+/// still bounded below by the operator's declared `request_floor_bytes` and the
+/// configured `floor_bytes` (never push reclaim below the guaranteed working set).
+/// The soft floor is therefore always `≤` the [`safe_min`] hard floor, which is the
+/// whole point: `memory.high` can sit tighter than `memory.max`, so efficiency is
+/// reclaimed without ever lowering the kill ceiling.
+#[must_use]
+#[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+pub fn soft_min(working_set: u64, cfg: &BandConfig) -> u64 {
+    let setpoint = if cfg.setpoint <= 0.0 { 1.0 } else { cfg.setpoint };
+    let from_ws = ((working_set as f64) / setpoint).ceil() as u64;
+    from_ws.max(cfg.request_floor_bytes).max(cfg.floor_bytes)
+}
+
+/// The typed two-target plan for ONE memory tick under the soft/hard split — the
+/// OOM-impossible-by-construction shape. An efficiency shrink writes a SOFT target
+/// (`memory.high`, reclaim) while the HARD ceiling (`memory.max` / the k8s limit)
+/// is held at the never-OOM [`safe_min`] and NEVER lowered. Both halves funnel
+/// through [`safety_clamp`] (via [`plan_dual_carve`]), so the proof is unforked.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DualCarve {
+    /// What to do to the HARD `memory.max` / k8s limit. A grow raises it (more
+    /// headroom — safe); a shrink only ever clamps it UP to/holds it at
+    /// [`safe_min`] (the kill ceiling never drops below the demonstrated peak).
+    pub hard: Decision,
+    /// What to do to the SOFT `memory.high` (reclaim) limit — the efficiency-carve
+    /// target. `None` ⇒ the dimension has no soft plane (the soft target is not
+    /// applicable, e.g. a non-memory dimension); the carve is hard-only, as before.
+    pub soft: Option<Decision>,
+}
+
+/// Plan a memory tick as a SOFT/HARD split (the OOM-impossible-by-construction
+/// shape). The single inner [`safety_clamp`] is reused for BOTH planes — the proof
+/// is proven once, not forked:
+///
+/// - **Hard plane (`memory.max` / k8s limit):** the law's proposal is clamped by
+///   [`safety_clamp`], but a SHRINK is additionally pinned to NEVER drop below
+///   [`safe_min`] (already `safety_clamp`'s floor) — and, crucially, an efficiency
+///   shrink does NOT lower the hard limit at all: the hard target only ever
+///   *grows* (to cover a demonstrated peak) or *holds*. So the kill ceiling is
+///   monotone-non-decreasing under efficiency pressure.
+/// - **Soft plane (`memory.high`):** the efficiency carve lands here. A shrink
+///   seats the soft limit at the working-set setpoint (down to [`soft_min`]); a
+///   grow raises it; in-band holds. Exceeding it reclaims + throttles, never kills.
+///
+/// `hard_current` is the live `memory.max` (the k8s limit) and `soft_current` is
+/// the live `memory.high` (or `None` when the dimension has no soft plane — then
+/// the result is hard-only, byte-identical to the legacy single-limit path).
+#[must_use]
+pub fn plan_dual_carve<L: ControlLaw>(
+    law: &L,
+    working_set: u64,
+    peak_working_set: u64,
+    hard_current: u64,
+    soft_current: Option<u64>,
+    cfg: &BandConfig,
+) -> DualCarve {
+    // HARD plane: the kill ceiling. Grows when the demonstrated peak needs it; an
+    // efficiency shrink NEVER lowers it (we suppress a hard shrink to NoSafeShrink
+    // so the only way memory.max moves is UP). This is the load-bearing invariant:
+    // the hard limit is governed by the peak-floor ceiling only.
+    let raw_hard = decide_with(law, working_set, peak_working_set, hard_current, cfg);
+    let hard = match raw_hard {
+        // an efficiency (or any) shrink of the HARD limit is refused — memory.max is
+        // never lowered for efficiency; it only rises to cover a peak (the grow arm)
+        // or snaps down a genuinely over-ceiling limit (handled inside decide_with as
+        // the hard-ceiling snap, which arrives here as a Shrink with from > ceiling).
+        Decision::Shrink { from, to } if from <= cfg.ceiling_bytes => {
+            // a normal efficiency shrink: hold the kill ceiling, never lower it.
+            let _ = to;
+            Decision::NoSafeShrink { current: from }
+        }
+        other => other,
+    };
+    // SOFT plane: the efficiency-carve target. Only present for a dimension that has
+    // a memory.high lever. The soft floor is the gentler `soft_min` (reclaim is safe
+    // below the peak), so the soft limit can sit tighter than the hard limit.
+    let soft = soft_current.map(|sc| {
+        let soft_cfg = BandConfig { floor_bytes: soft_min(working_set, cfg), ..cfg.clone() };
+        // The soft plane uses the SAME law + the SAME safety_clamp, but with the
+        // gentler soft floor: `safety_clamp`'s shrink floor becomes `soft_min`, so a
+        // soft shrink can reclaim down toward the working set (never below the request
+        // floor) without being pinned to the demonstrated-peak ceiling. A soft grow /
+        // hold is unchanged. peak == working_set on the soft plane: reclaim is keyed on
+        // the live working set, not the spike history (a spike throttles, not kills).
+        decide_with(law, working_set, working_set, sc, &soft_cfg)
+    });
+    DualCarve { hard, soft }
 }
 
 /// A pluggable control law: the swap-in decision core of a breathe dimension.
@@ -240,9 +412,10 @@ pub fn safety_clamp(
             // `peak_working_set` is always ≥ the current `working_set` (the caller
             // folds the current sample into the peak), so this is monotone-safer:
             // it can only ever RAISE the safe minimum vs the old instantaneous form.
-            let peak = peak_working_set.max(working_set);
-            let safe_min = ((peak as f64) / cfg.setpoint).ceil() as u64;
-            let safe_min = safe_min.max(cfg.request_floor_bytes).max(cfg.floor_bytes);
+            // SINGLE SOURCE OF TRUTH: the hard floor lives in `safe_min` (consumed
+            // by the soft/hard dual-carve planner too) so both planes prove never-OOM
+            // through ONE computation.
+            let safe_min = safe_min(peak_working_set, working_set, cfg);
             let to = raw.max(safe_min);
             if to >= current_limit {
                 Decision::NoSafeShrink { current: current_limit }
@@ -780,6 +953,16 @@ pub struct Observation {
     /// returns a stale/zero `used` is indistinguishable from a real reading
     /// without this — so the loop refuses to mutate when it exceeds the bound.
     pub staleness_secs: u64,
+    /// How many seconds the workload has been OBSERVED since its last (re)start —
+    /// the warmup-gate input. The reconcile layer computes it from the target's pod
+    /// `status.startTime` (or the band's first-observed epoch as a fallback). A
+    /// workload observed for fewer than the band's `warmup_seconds` is still warming
+    /// up, so a shrink is HELD ([`clamp_to_warmup`]) — its idle reading is not yet
+    /// proof the slack is safe to reclaim (the un-observed-boot-spike OOM). `u64::MAX`
+    /// = "no restart history / warmup not applicable" ⇒ always past warmup (the
+    /// behaviour-preserving default for dimensions with no restart concept, e.g. host
+    /// cgroup/ARC, and the first-tick fallback before a start time is known).
+    pub observed_for_secs: u64,
     /// Restart-cost refinement for a memory in-place SHRINK: `true` iff the target
     /// is a pod whose `resizePolicy[<resource>]` is `NotRequired`, so the kubelet
     /// resizes it without restarting the container. Only meaningful for a memory
@@ -788,6 +971,36 @@ pub struct Observation {
     /// is `RestartConditional`. This is what lets a `NotRequired` workload breathe
     /// DOWN on golden rails (Phase 2 of RIO-GOLDEN-UPDATE).
     pub memory_shrink_restart_free: bool,
+    /// The target's LIVE declared `resources.requests.<resource>` (max across the pod
+    /// group), in the band's base unit — the inviolable request floor a shrink can
+    /// never carve beneath (requests is the scheduler's guaranteed working set; a
+    /// limit below the request is invalid in k8s AND unsafe). The reconcile layer
+    /// folds `max(cfg.request_floor_bytes, this)` into the effective `BandConfig`, so
+    /// the DECLARED request is honored even when the operator omitted `requestFloor`
+    /// from the band CR. `0` = no request declared / not applicable (host/node).
+    pub request_floor: u64,
+}
+
+/// The WARMUP GATE: hold a SHRINK while the workload is still warming up. A
+/// workload observed for fewer than `warmup_seconds` since its last (re)start has
+/// not demonstrated a full duty cycle, so its low utilization is not yet proof the
+/// slack is safe to reclaim — a shrink becomes a typed [`Decision::Warmup`] hold.
+/// A GROW (and every non-shrink outcome) passes through untouched: buying headroom
+/// is always safe, and refusing to grow during warmup would itself risk an OOM.
+/// `warmup_seconds == 0` disables the gate (behaviour-preserving). Pure + testable.
+#[must_use]
+pub fn clamp_to_warmup(d: Decision, observed_for_secs: u64, warmup_seconds: u64) -> Decision {
+    if warmup_seconds == 0 || observed_for_secs >= warmup_seconds {
+        return d;
+    }
+    match d {
+        Decision::Shrink { from, .. } => Decision::Warmup {
+            current: from,
+            observed_for: observed_for_secs,
+            warmup: warmup_seconds,
+        },
+        other => other,
+    }
 }
 
 /// Refuse an out-of-policy direction *before* it reaches the provider.
@@ -825,6 +1038,12 @@ pub enum TickPlan {
     /// (storage), where `used ≤ capacity` is an invariant a real gauge always honours
     /// (reserved blocks keep even a 100%-full filesystem strictly below capacity).
     Unrepresentable { used: u64, capacity: u64 },
+    /// A SHRINK is warranted but the workload is still in its warmup window — held
+    /// + surfaced. The idle reading is not yet proof the slack is safe to reclaim
+    /// (the un-observed-boot-spike OOM); the band waits until a full duty cycle has
+    /// been observed (so a boot spike folds into the demonstrated peak) before any
+    /// carve. A grow during warmup still acts (buying headroom is always safe).
+    Warmup { observed_for: u64, warmup: u64, current: u64 },
     /// A mutation is warranted but the driving sample is too old to trust —
     /// hold + surface (the never-OOM proof requires a fresh metric).
     Stale { staleness_secs: u64, decision: Decision },
@@ -890,6 +1109,16 @@ pub fn plan_tick(
         None => decide_with(&BandLaw, obs.used, obs.peak_used, obs.capacity, cfg),
     };
     let decision = clamp_to_directionality(raw, dir);
+    // WARMUP GATE: a SHRINK is held while the workload is still warming up (observed
+    // for fewer than `warmup_seconds` since its last restart) — its idle reading is
+    // not yet proof the slack is safe to reclaim (the un-observed-boot-spike OOM).
+    // Runs AFTER directionality (so it only ever sees a real, in-policy shrink) and
+    // BEFORE freshness/cooldown (a warmup hold is the strongest non-mutating reason).
+    // A grow passes through untouched — buying headroom is always safe, even at boot.
+    let decision = clamp_to_warmup(decision, obs.observed_for_secs, cfg.warmup_seconds);
+    if let Decision::Warmup { observed_for, warmup, current } = decision {
+        return TickPlan::Warmup { observed_for, warmup, current };
+    }
     let is_mutation = matches!(decision, Decision::Grow { .. } | Decision::Shrink { .. });
     if !is_mutation {
         return TickPlan::Observe { decision };
@@ -1399,11 +1628,13 @@ mod tests {
 
     fn obs(used: u64, cap: u64, owners: Vec<FieldOwner>) -> Observation {
         // peak == used: no trailing-window history ⇒ instantaneous-equivalent.
-        Observation { used, peak_used: used, capacity: cap, owners, staleness_secs: 0, memory_shrink_restart_free: false }
+        // observed_for u64::MAX ⇒ past warmup (warmup is exercised in its own tests).
+        Observation { used, peak_used: used, capacity: cap, owners, staleness_secs: 0, memory_shrink_restart_free: false, observed_for_secs: u64::MAX, request_floor: 0 }
     }
     /// An observation with an explicit trailing-window peak (peak ≥ used).
+    #[allow(dead_code)] // a shared test helper retained for peak-keyed observations.
     fn obs_peak(used: u64, peak: u64, cap: u64, owners: Vec<FieldOwner>) -> Observation {
-        Observation { used, peak_used: peak.max(used), capacity: cap, owners, staleness_secs: 0, memory_shrink_restart_free: false }
+        Observation { used, peak_used: peak.max(used), capacity: cap, owners, staleness_secs: 0, memory_shrink_restart_free: false, observed_for_secs: u64::MAX, request_floor: 0 }
     }
     fn ours() -> Vec<FieldOwner> {
         vec![owns("breathe-memory", MEMORY_LIMIT_FIELD)]
@@ -1493,7 +1724,7 @@ mod tests {
     fn plan_refuses_to_mutate_on_stale_metric() {
         // util 0.95 would Act(Grow), but a sample older than the bound must never
         // carve — the never-OOM proof holds only on a fresh metric.
-        let stale = Observation { used: 950 * MI, peak_used: 950 * MI, capacity: GI, owners: ours(), staleness_secs: 120, memory_shrink_restart_free: false };
+        let stale = Observation { used: 950 * MI, peak_used: 950 * MI, capacity: GI, owners: ours(), staleness_secs: 120, memory_shrink_restart_free: false, observed_for_secs: u64::MAX, request_floor: 0 };
         match plan_tick(&stale, &cfg(), Directionality::Bidirectional, false, "breathe-memory", MEMORY_LIMIT_FIELD, FRESH, None) {
             TickPlan::Stale { staleness_secs: 120, decision: Decision::Grow { .. } } => {}
             p => panic!("expected Stale(Grow), got {p:?}"),
@@ -1994,7 +2225,7 @@ mod tests {
         let mut trail = Vec::with_capacity(samples.len());
         for &used in samples {
             peak = update_peak(peak, used, decay);
-            let o = Observation { used, peak_used: peak, capacity: limit, owners: ours(), staleness_secs: 0, memory_shrink_restart_free: false };
+            let o = Observation { used, peak_used: peak, capacity: limit, owners: ours(), staleness_secs: 0, memory_shrink_restart_free: false, observed_for_secs: u64::MAX, request_floor: 0 };
             match plan_tick(&o, c, Directionality::Bidirectional, false, "breathe-memory", MEMORY_LIMIT_FIELD, FRESH, None) {
                 TickPlan::Act { decision: Decision::Grow { to, .. } | Decision::Shrink { to, .. } } => limit = to,
                 _ => {}
@@ -2064,7 +2295,7 @@ mod tests {
                             // — the floor must hold the peak at least the tick it is seen.
                             peak = update_peak(peak, used, 0.0); // = max(peak, used)
                             let floor = ((peak as f64 / c.setpoint).ceil() as u64).max(c.floor_bytes);
-                            let o = Observation { used, peak_used: peak, capacity: limit, owners: ours(), staleness_secs: 0, memory_shrink_restart_free: false };
+                            let o = Observation { used, peak_used: peak, capacity: limit, owners: ours(), staleness_secs: 0, memory_shrink_restart_free: false, observed_for_secs: u64::MAX, request_floor: 0 };
                             match plan_tick(&o, &c, Directionality::Bidirectional, false, "breathe-memory", MEMORY_LIMIT_FIELD, FRESH, None) {
                                 TickPlan::Act { decision: Decision::Shrink { to, .. } } => {
                                     assert!(
@@ -2097,7 +2328,7 @@ mod tests {
             d => panic!("expected a request-floor-bound Shrink/NoSafeShrink, got {d:?}"),
         }
         // and the request floor composes with the peak floor (max of the two binds).
-        let o = Observation { used: 100 * MI, peak_used: GI + 200 * MI, capacity: 4 * GI, owners: ours(), staleness_secs: 0, memory_shrink_restart_free: false };
+        let o = Observation { used: 100 * MI, peak_used: GI + 200 * MI, capacity: 4 * GI, owners: ours(), staleness_secs: 0, memory_shrink_restart_free: false, observed_for_secs: u64::MAX, request_floor: 0 };
         if let TickPlan::Act { decision: Decision::Shrink { to, .. } } =
             plan_tick(&o, &c, Directionality::Bidirectional, false, "breathe-memory", MEMORY_LIMIT_FIELD, FRESH, None)
         {
@@ -2141,5 +2372,256 @@ mod tests {
             assert!(update_peak(0, 777 * MI, d) >= 777 * MI);
             assert!(update_peak(2 * GI, 100 * MI, d) >= 100 * MI);
         }
+    }
+
+    // ── PART 1: soft (memory.high) / hard (memory.max) carve semantics ─────────
+    //
+    // The OOM-impossible-by-construction shape: an efficiency shrink targets the
+    // SOFT limit (memory.high → reclaim + throttle, never kill); the HARD limit
+    // (memory.max == the k8s limit) is governed by the never-OOM peak floor ONLY
+    // and is NEVER lowered for efficiency.
+
+    /// `can_oom` is the bright line: only the HARD `memory.max` target can OOM-kill.
+    #[test]
+    fn carve_semantics_only_hard_can_oom() {
+        assert!(CarveSemantics::Hard.can_oom());
+        assert!(!CarveSemantics::Soft.can_oom());
+    }
+
+    /// The soft floor is ALWAYS ≤ the hard floor: a soft (reclaim) target may sit at
+    /// the working-set setpoint, while the hard (kill) ceiling is pinned to the
+    /// demonstrated PEAK setpoint. So memory.high can carve tighter than memory.max.
+    #[test]
+    fn soft_min_is_never_above_the_hard_safe_min() {
+        let c = cfg();
+        for &ws in &[100 * MI, 600 * MI, 2 * GI] {
+            for &peak in &[ws, ws + 300 * MI, 4 * GI] {
+                let soft = soft_min(ws, &c);
+                let hard = safe_min(peak.max(ws), ws, &c);
+                assert!(soft <= hard, "soft_min {soft} > hard safe_min {hard} (ws={ws} peak={peak})");
+            }
+        }
+    }
+
+    /// THE PART-1 INVARIANT: an efficiency shrink NEVER lowers the HARD memory.max
+    /// (kill) limit — it only ever holds it (NoSafeShrink) or grows it to cover a
+    /// peak — while the SOFT memory.high limit IS carved down for efficiency. This
+    /// is exactly what makes a carve-induced OOM impossible: the kill ceiling is
+    /// monotone-non-decreasing, so no carve can move the OOM line down under a spike.
+    #[test]
+    fn efficiency_shrink_carves_soft_never_lowers_hard() {
+        let c = cfg();
+        // util 0.20 @ 2Gi hard, 2Gi soft ⇒ BandLaw wants to shrink. Peak == used (no
+        // spike history) so the hard floor is the idle setpoint, but the planner must
+        // STILL refuse to lower memory.max for efficiency.
+        let ws = 400 * MI;
+        let plan = plan_dual_carve(&BandLaw, ws, ws, 2 * GI, Some(2 * GI), &c);
+        // HARD: the kill ceiling is held — never lowered for efficiency.
+        match plan.hard {
+            Decision::NoSafeShrink { current } => assert_eq!(current, 2 * GI, "hard limit held"),
+            d => panic!("efficiency pressure must NOT lower memory.max, got {d:?}"),
+        }
+        // SOFT: memory.high IS reclaimed toward the working-set setpoint.
+        match plan.soft {
+            Some(Decision::Shrink { from, to }) => {
+                assert_eq!(from, 2 * GI);
+                assert!(to < from, "memory.high reclaimed for efficiency");
+                assert!(to >= soft_min(ws, &c), "soft shrink never below the soft floor");
+            }
+            other => panic!("efficiency pressure must reclaim memory.high, got {other:?}"),
+        }
+    }
+
+    /// A GROW still raises the HARD memory.max (buying kill-ceiling headroom is the
+    /// safe direction) AND the soft memory.high — neither plane is suppressed on grow.
+    #[test]
+    fn pressure_grows_both_planes() {
+        let c = cfg();
+        let ws = 950 * MI; // util 0.93 @ 1Gi ⇒ grow
+        let plan = plan_dual_carve(&BandLaw, ws, ws, GI, Some(GI), &c);
+        assert!(matches!(plan.hard, Decision::Grow { from: GI, .. }), "memory.max grows under pressure");
+        assert!(matches!(plan.soft, Some(Decision::Grow { from: GI, .. })), "memory.high grows under pressure");
+    }
+
+    /// THE AUTHENTIK REPLAY at the soft/hard level: a worker carved on its 40%-idle
+    /// reading. Under the soft/hard split, memory.max is HELD at its generous value
+    /// (the kill ceiling never moves down), so an un-observed boot spike up to that
+    /// ceiling cannot OOM — only memory.high (reclaim) was tightened. This is the
+    /// structural guarantee the peak floor alone could not give (the spike is
+    /// un-observed, so the peak is idle).
+    #[test]
+    fn authentik_efficiency_carve_cannot_lower_the_kill_ceiling() {
+        let c = cfg();
+        // the worker: idle 280Mi, but provisioned with a generous 662Mi memory.max
+        // (the operator's headroom for the boot spike). metrics only ever sees idle.
+        let idle = 280 * MI;
+        let hard_limit = 662 * MI;
+        let plan = plan_dual_carve(&BandLaw, idle, idle, hard_limit, Some(hard_limit), &c);
+        // memory.max (the kill ceiling) is HELD at 662Mi — never carved to ~350Mi
+        // (idle/0.8) the way the original single-limit carve did (→ the OOM).
+        assert!(
+            matches!(plan.hard, Decision::NoSafeShrink { current } if current == hard_limit),
+            "the kill ceiling must stay at {hard_limit}, got {:?}",
+            plan.hard
+        );
+        // a transient ~600Mi blueprint-discovery spike still fits UNDER the held
+        // memory.max — so it reclaims/throttles at memory.high, never OOM-kills.
+        let spike = 600 * MI;
+        let held_hard = match plan.hard {
+            Decision::NoSafeShrink { current } | Decision::Grow { to: current, .. } => current,
+            _ => hard_limit,
+        };
+        assert!(spike < held_hard, "the un-observed spike {spike} must fit under the held kill ceiling {held_hard}");
+    }
+
+    /// A dimension with NO soft plane (`soft_current: None`) is hard-only — exactly
+    /// the legacy single-limit behaviour, byte-identical to `decide_with`.
+    #[test]
+    fn no_soft_plane_is_legacy_hard_only() {
+        let c = cfg();
+        for (ws, lim) in [(950 * MI, GI), (800 * MI, GI), (16 * GI, 16 * GI)] {
+            let plan = plan_dual_carve(&BandLaw, ws, ws, lim, None, &c);
+            assert!(plan.soft.is_none(), "no soft plane ⇒ no soft decision");
+            // hard is decide_with EXCEPT an efficiency shrink is suppressed (the kill
+            // ceiling never lowers). For grow/hold/atceiling it is identical.
+            let legacy = decide_with(&BandLaw, ws, ws, lim, &c);
+            if !matches!(legacy, Decision::Shrink { .. }) {
+                assert_eq!(plan.hard, legacy, "non-shrink hard plane == decide_with");
+            }
+        }
+    }
+
+    /// The dual planner funnels BOTH planes through the SAME `safety_clamp`: across
+    /// adversarial laws + working sets, the soft target never drops below the soft
+    /// floor and the hard target never drops below the safe_min (and a hard shrink
+    /// is suppressed entirely for in-ceiling limits). The conformance oracle, lifted
+    /// to the soft/hard split.
+    #[test]
+    fn dual_carve_both_planes_stay_within_their_floors() {
+        struct ShrinkToZero;
+        impl ControlLaw for ShrinkToZero {
+            fn propose(&self, _w: u64, _l: u64, _c: &BandConfig) -> Proposal { Proposal::Target(0) }
+        }
+        let c = cfg();
+        for &ws in &[0u64, 100 * MI, 800 * MI, 4 * GI] {
+            for &hard in &[256 * MI, GI, 4 * GI] {
+                for soft in [None, Some(hard)] {
+                    let plan = plan_dual_carve(&ShrinkToZero, ws, ws, hard, soft, &c);
+                    // hard plane: an efficiency shrink of an in-ceiling limit is refused.
+                    assert!(
+                        !matches!(plan.hard, Decision::Shrink { from, .. } if from <= c.ceiling_bytes),
+                        "ws={ws} hard={hard}: memory.max must not shrink for efficiency, got {:?}", plan.hard
+                    );
+                    // soft plane (when present): a shrink never drops below the soft floor.
+                    if let Some(Decision::Shrink { to, .. }) = plan.soft {
+                        assert!(to >= soft_min(ws, &c), "ws={ws}: soft shrink {to} below soft floor");
+                    }
+                }
+            }
+        }
+    }
+
+    // ── PART 2: warmup-hold (closes the un-observed-boot-spike hole) ───────────
+
+    /// The warmup gate holds a SHRINK while the workload is still warming up, and
+    /// passes a GROW through untouched (buying headroom is always safe).
+    #[test]
+    fn warmup_holds_shrink_passes_grow() {
+        let shrink = Decision::Shrink { from: 2 * GI, to: GI };
+        assert_eq!(
+            clamp_to_warmup(shrink, 60, 600),
+            Decision::Warmup { current: 2 * GI, observed_for: 60, warmup: 600 }
+        );
+        // a grow during warmup is NEVER held.
+        let grow = Decision::Grow { from: GI, to: 2 * GI };
+        assert_eq!(clamp_to_warmup(grow, 60, 600), grow);
+        // past warmup ⇒ the shrink passes through.
+        assert_eq!(clamp_to_warmup(shrink, 700, 600), shrink);
+        // warmup disabled (0) ⇒ the shrink passes through.
+        assert_eq!(clamp_to_warmup(shrink, 1, 0), shrink);
+        // exactly at the boundary ⇒ past warmup (>=).
+        assert_eq!(clamp_to_warmup(shrink, 600, 600), shrink);
+    }
+
+    /// THE PART-2 PROPERTY (the authentik fix): a workload restarted LESS than
+    /// `warmup_seconds` ago is NEVER shrunk, regardless of how low its observed
+    /// utilization is. Drives the real `plan_tick`, so it is a property of the
+    /// shipped control flow.
+    #[test]
+    fn warmup_workload_is_never_shrunk_no_matter_how_idle() {
+        let c = cfg(); // warmup_seconds 600
+        for &used in &[0u64, 10 * MI, 100 * MI, 350 * MI] {
+            for &observed_for in &[0u64, 1, 60, 300, 599] {
+                let o = Observation {
+                    used, peak_used: used, capacity: 2 * GI, owners: ours(),
+                    staleness_secs: 0, memory_shrink_restart_free: false, observed_for_secs: observed_for, request_floor: 0,
+                };
+                let plan = plan_tick(&o, &c, Directionality::Bidirectional, false, "breathe-memory", MEMORY_LIMIT_FIELD, FRESH, None);
+                assert!(
+                    matches!(plan, TickPlan::Warmup { .. }),
+                    "used={used} observed_for={observed_for}: a warming-up workload must HOLD (never shrink), got {plan:?}"
+                );
+                // and CRUCIALLY: never an Act/Shrink.
+                assert!(!matches!(plan, TickPlan::Act { decision: Decision::Shrink { .. } }), "must never carve during warmup");
+            }
+        }
+        // past warmup, the same idle workload DOES shrink (the gate only delays).
+        let warm = Observation {
+            used: 100 * MI, peak_used: 100 * MI, capacity: 2 * GI, owners: ours(),
+            staleness_secs: 0, memory_shrink_restart_free: false, observed_for_secs: 601, request_floor: 0,
+        };
+        assert!(
+            matches!(plan_tick(&warm, &c, Directionality::Bidirectional, false, "breathe-memory", MEMORY_LIMIT_FIELD, FRESH, None), TickPlan::Act { decision: Decision::Shrink { .. } }),
+            "past warmup the idle workload shrinks normally"
+        );
+    }
+
+    /// A GROW during warmup STILL acts — refusing to grow at boot would itself risk
+    /// an OOM (the exact spike warmup is protecting against needs headroom NOW).
+    #[test]
+    fn warmup_never_blocks_a_grow() {
+        let c = cfg();
+        // util 0.93 @ 1Gi, restarted 5s ago (deep in warmup) ⇒ STILL grows.
+        let booting = Observation {
+            used: 950 * MI, peak_used: 950 * MI, capacity: GI, owners: ours(),
+            staleness_secs: 0, memory_shrink_restart_free: false, observed_for_secs: 5, request_floor: 0,
+        };
+        assert!(
+            matches!(plan_tick(&booting, &c, Directionality::Bidirectional, false, "breathe-memory", MEMORY_LIMIT_FIELD, FRESH, None), TickPlan::Act { decision: Decision::Grow { .. } }),
+            "a grow at boot must still act (the spike needs headroom)"
+        );
+    }
+
+    /// THE AUTHENTIK SEQUENCE end-to-end through warmup + the peak floor: the worker
+    /// boots idle, a transient spike arrives DURING the warmup window, and the band
+    /// must never have carved during the idle warmup phase — so when the spike lands
+    /// it folds into the peak (raising the never-OOM floor) before any shrink is ever
+    /// permitted. The combination (warmup-hold + peak-floor) closes the hole.
+    #[test]
+    fn authentik_warmup_never_carves_before_the_boot_spike_is_seen() {
+        let c = cfg();
+        // ticks every ~60s; the boot spike lands at t≈120s, still inside warmup(600).
+        // samples: idle, idle, SPIKE(900Mi), idle, idle — observed_for grows 0,60,120,…
+        let samples = [(0u64, 280 * MI), (60, 280 * MI), (120, 900 * MI), (180, 280 * MI), (240, 280 * MI)];
+        let mut limit = 2 * GI;
+        let mut peak = 0u64;
+        let mut ever_shrank_before_spike = false;
+        for (i, &(observed_for, used)) in samples.iter().enumerate() {
+            peak = update_peak(peak, used, 0.99);
+            let o = Observation {
+                used, peak_used: peak, capacity: limit, owners: ours(),
+                staleness_secs: 0, memory_shrink_restart_free: false, observed_for_secs: observed_for, request_floor: 0,
+            };
+            match plan_tick(&o, &c, Directionality::Bidirectional, false, "breathe-memory", MEMORY_LIMIT_FIELD, FRESH, None) {
+                TickPlan::Act { decision: Decision::Shrink { to, .. } } => { if i < 2 { ever_shrank_before_spike = true; } limit = to; }
+                TickPlan::Act { decision: Decision::Grow { to, .. } } => limit = to,
+                TickPlan::Warmup { .. } => {} // held — the correct behaviour during warmup
+                _ => {}
+            }
+        }
+        // during the idle warmup phase (before the spike) the band NEVER shrank …
+        assert!(!ever_shrank_before_spike, "must hold (never shrink) during the idle warmup phase");
+        // … so the limit never dropped below the spike, and a re-spike fits.
+        assert!(900 * MI <= limit, "the boot spike {} must fit under the held limit {limit}", 900 * MI);
     }
 }

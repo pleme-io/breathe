@@ -62,6 +62,8 @@ pub(crate) fn open_cfg() -> BandConfig {
         shrink_factor: 0.90,
         floor_bytes: 1,
         ceiling_bytes: 1_000_000,
+        request_floor_bytes: 0,
+        warmup_seconds: 0,
     }
 }
 
