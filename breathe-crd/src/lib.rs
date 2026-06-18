@@ -1205,7 +1205,7 @@ impl crate::Band for AppBand {
     fn band_config(&self) -> anyhow::Result<BandConfig> {
         let s = &self.spec;
         // app knobs are bare integers (maxmemory bytes, max_connections counts, …).
-        crate::band_config_of(s.setpoint, s.grow_above, s.shrink_below, s.grow_factor, s.shrink_factor, &s.floor, &s.ceiling, Unit::Count)
+        crate::band_config_of(s.setpoint, s.grow_above, s.shrink_below, s.grow_factor, s.shrink_factor, &s.floor, &s.ceiling, "", 0, Unit::Count)
     }
     fn max_staleness_seconds(&self) -> u64 {
         self.spec.max_staleness_seconds
@@ -1236,6 +1236,12 @@ impl crate::Band for AppBand {
     }
     fn status(&self) -> Option<&BandStatus> {
         self.status.as_ref()
+    }
+    fn mode_spec(&self) -> Option<PromotionMode> {
+        None
+    }
+    fn confirm_after_seconds(&self) -> u64 {
+        d_confirm_after()
     }
 }
 
