@@ -24,12 +24,15 @@ use std::{sync::Arc, time::Duration};
 use breathe_core::{reconcile_one, ReconcileInput};
 use breathe_crd::{
     ArcBand, Band, BreatheNodePool, CgroupBand, CgroupCpuBand, GiB, HostParamBand, NodePoolStatus,
+    PodMemoryHigh, PodMemoryHighStatus,
 };
 use breathe_host::{
     ArcDescriptor, CgroupCpuDescriptor, CgroupMemoryDescriptor, CpuSampleCache, HostCluster,
     HostParamDescriptor, NodeEnvelopes, SystemdSysfsEnv, new_cpu_sample_cache,
 };
-use breathe_provider::{BandProvider, ClassCooldowns, DimensionDescriptor, ResourceProvider, Target};
+use breathe_provider::{
+    BandProvider, Cluster, ClassCooldowns, DimensionDescriptor, LimitLayout, ResourceProvider, SsaPatch, Target,
+};
 use breathe_runtime::{
     error_status, event_for, metrics_for, next_requeue, now_secs, patch_status, rfc3339_in_future,
     should_emit_event, status_for, suspended_status, BandLabels, EventKind,
@@ -223,6 +226,8 @@ async fn reconcile_host_with<B: Band, D: DimensionDescriptor>(
         // warmup is not applicable (u64::MAX ⇒ the gate never fires). A host cgroup
         // shrink targets MemoryHigh (soft/reclaim) already — never an OOM-kill.
         observed_for_secs: None,
+        // host cgroup shrinks ALREADY target MemoryHigh (soft) — no hard-plane pin.
+        hard_plane_grow_only: false,
     };
 
     let outcome = reconcile_one(&input, &provider).await;
@@ -298,6 +303,104 @@ async fn reconcile_pool(obj: Arc<BreatheNodePool>, ctx: Arc<Ctx>) -> Result<Acti
     Ok(Action::requeue(ctx.requeue))
 }
 
+/// **Part 1 (SOFT k8s carve):** reconcile a `PodMemoryHigh` DISPATCH from the
+/// controller — write the pod's cgroup-v2 `memory.high` (SOFT/reclaim) to the
+/// controller's `desiredBytes`. This is the host-agent half of the SOFT-k8s-carve
+/// hand-off (`docs/OOM-VERIFICATION.md` § Part 1): the controller DECIDES (it reads
+/// the pod working set via metrics-server); the agent WRITES (it owns the node's
+/// cgroup files). NOT a self-deciding band — a desired-value dispatch, so it does
+/// NOT run the band law; it applies the pinned value via the shipped `HostCluster`
+/// writer. The k8s `limits.memory` (`memory.max`, HARD) is NEVER touched here — so
+/// this efficiency carve can never lower the kill ceiling (OOM-impossible).
+///
+/// Shadow-first: written only when BOTH the node's `BreatheNodePool.writeEnabled`
+/// is on AND the dispatch's `dryRun` is off; the pod's `memory.high` is bounded by
+/// the band's CRD ceiling (the dispatch carries an already-clamped value) and can
+/// never exceed the pod's `memory.max`.
+async fn reconcile_pod_memory_high(obj: Arc<PodMemoryHigh>, ctx: Arc<Ctx>) -> Result<Action, Error> {
+    let name = obj.name_any();
+    // not ours — another node's agent owns the pod.
+    if obj.spec.node_name != ctx.node_name {
+        return Ok(Action::requeue(ctx.requeue));
+    }
+    let api: Api<PodMemoryHigh> = Api::all(ctx.client.clone());
+    let patch_status = |status: PodMemoryHighStatus| {
+        let api = api.clone();
+        let name = name.clone();
+        async move {
+            api.patch_status(&name, &PatchParams::default(), &Patch::Merge(&json!({ "status": status })))
+                .await
+                .map(|_| ())
+        }
+    };
+
+    // The node enrollment charter carries the master write switch. No charter ⇒
+    // refuse to write (the same never-write-blind contract host bands obey).
+    let write_enabled = match node_pool(&ctx).await? {
+        Some(pool) => pool.spec.write_enabled,
+        None => {
+            patch_status(PodMemoryHighStatus {
+                phase: Some("Error".into()),
+                observed_node: Some(ctx.node_name.clone()),
+                message: Some(format!("no BreatheNodePool enrolls node {}", ctx.node_name)),
+                last_seen_epoch: Some(now_secs()),
+                ..Default::default()
+            })
+            .await?;
+            return Ok(Action::requeue(ctx.requeue));
+        }
+    };
+    // SHADOW unless BOTH the node master switch is on AND the dispatch is not dryRun.
+    let do_write = write_enabled && !obj.spec.dry_run;
+    // The pod memory.high lever has no L2 envelope (it is bounded by the pod's own
+    // memory.max + the band's CRD ceiling), so empty NodeEnvelopes is correct here.
+    let cluster = HostCluster::new(SystemdSysfsEnv::from_env(), NodeEnvelopes::default(), do_write);
+    let patch = SsaPatch {
+        target: Target {
+            namespace: String::new(),
+            name: obj.spec.pod_uid.clone(),
+            kind: "Pod".into(),
+            api_version: "v1".into(),
+            container: None,
+            pod_selector: None,
+        },
+        field_manager: "breathe/memory-soft".into(),
+        layout: LimitLayout::Host(obj.spec.provider_knob()),
+        resource: "memory".into(),
+        value: obj.spec.desired_bytes,
+    };
+    let status = match cluster.apply(&patch).await {
+        Ok(_) => {
+            let phase = if do_write { "Applied" } else { "ShadowWouldApply" };
+            info!(node = %ctx.node_name, pmh = %name, desired = obj.spec.desired_bytes, do_write, "pod memory.high reconciled");
+            PodMemoryHighStatus {
+                phase: Some(phase.into()),
+                written_bytes: Some(obj.spec.desired_bytes as i64),
+                observed_node: Some(ctx.node_name.clone()),
+                last_seen_epoch: Some(now_secs()),
+                ..Default::default()
+            }
+        }
+        Err(e) => {
+            warn!(node = %ctx.node_name, pmh = %name, error = %e, "pod memory.high write failed");
+            PodMemoryHighStatus {
+                phase: Some("Error".into()),
+                observed_node: Some(ctx.node_name.clone()),
+                message: Some(e.to_string()),
+                last_seen_epoch: Some(now_secs()),
+                ..Default::default()
+            }
+        }
+    };
+    patch_status(status).await?;
+    Ok(Action::requeue(ctx.requeue))
+}
+
+fn pod_memory_high_error_policy(_obj: Arc<PodMemoryHigh>, err: &Error, ctx: Arc<Ctx>) -> Action {
+    error!(error = %err, "pod memory.high reconcile error — backing off");
+    Action::requeue(ctx.requeue)
+}
+
 fn error_policy<B: Band>(_obj: Arc<B>, err: &Error, ctx: Arc<Ctx>) -> Action {
     error!(error = %err, "host reconcile error — backing off");
     Action::requeue(ctx.requeue)
@@ -348,7 +451,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         reporter,
     });
 
-    info!(node = %node_name, "breathe-host-agent starting — arc + cgroup-memory + cgroup-cpu + host-param (sysctl/zfs) dimensions");
+    info!(node = %node_name, "breathe-host-agent starting — arc + cgroup-memory + cgroup-cpu + host-param (sysctl/zfs) + pod-memory-high (SOFT k8s carve) dimensions");
 
     let arc = gen_controller!(Api::<ArcBand>::all(client.clone()))
         .run(reconcile_host::<ArcBand, ArcDescriptor>, error_policy::<ArcBand>, ctx.clone())
@@ -374,8 +477,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let pool = gen_controller!(Api::<BreatheNodePool>::all(client.clone()))
         .run(reconcile_pool, pool_error_policy, ctx.clone())
         .for_each(|_| async {});
+    // Part 1: the SOFT-k8s-carve dispatch — write a managed pod's memory.high to the
+    // controller's desiredBytes (the k8s limits.memory / memory.max is NEVER touched).
+    let pod_memory_high = gen_controller!(Api::<PodMemoryHigh>::all(client.clone()))
+        .run(reconcile_pod_memory_high, pod_memory_high_error_policy, ctx.clone())
+        .for_each(|_| async {});
 
-    tokio::join!(arc, cgroup, cgroup_cpu, host_param, pool);
+    tokio::join!(arc, cgroup, cgroup_cpu, host_param, pool, pod_memory_high);
     Ok(())
 }
 

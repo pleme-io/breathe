@@ -125,6 +125,8 @@ pub async fn reconcile_kube_param(obj: Arc<KubeParamBand>, ctx: Arc<Ctx>) -> Res
         // generic CR-field bands (Istio/HPA/CNPG retention/quota) have no pod
         // restart concept ⇒ warmup not applicable (u64::MAX ⇒ the gate never fires).
         observed_for_secs: None,
+        // generic CR-field bands carve their own field directly — no soft-plane split.
+        hard_plane_grow_only: false,
     };
 
     let outcome = reconcile_one(&input, &provider).await;

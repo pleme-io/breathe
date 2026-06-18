@@ -1124,6 +1124,124 @@ pub struct NodePoolStatus {
     pub last_seen_epoch: Option<i64>,
 }
 
+// ────────── PodMemoryHigh — the SOFT-k8s-carve controller→host-agent dispatch ──────────
+// `docs/OOM-VERIFICATION.md` § Part 1. A `MemoryBand` efficiency carve must write the
+// live pod's cgroup-v2 `memory.high` (SOFT/reclaim), NOT the k8s `limits.memory`
+// (`memory.max`, HARD/kill). The DECISION (what soft value) is the controller's — it
+// reads the pod working set via metrics-server. The WRITE is the host-agent's — it
+// owns the node's cgroup files. This CR is the typed hand-off: the controller declares
+// the desired pod `memory.high`; the host-agent that owns the node reconciles it via the
+// shipped `HostKnob::PodCgroupMemoryHigh` writer (NOT a parallel mechanism — the same
+// node-keyed-band reconcile shape ArcBand/CgroupBand/HostParamBand use). A DESIRED-VALUE
+// dispatch (a number to write), never a self-deciding band (the agent never re-decides —
+// it has no metrics-server access). Cluster-scoped, one per managed pod-container.
+
+/// The kubelet cgroup driver mirror for the CRD (serde mirror of
+/// `breathe_provider::CgroupDriver`) — selects the pod cgroup-v2 path layout the
+/// host-agent writes (systemd `.slice`/`.scope` vs cgroupfs flat).
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, JsonSchema, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub enum CgroupDriverSpec {
+    /// systemd driver (NixOS/containerd default + rio's live driver).
+    #[default]
+    Systemd,
+    /// cgroupfs driver (flat kubepods layout).
+    Cgroupfs,
+}
+
+impl CgroupDriverSpec {
+    /// The provider-typed driver the host-agent path mapper dispatches on.
+    #[must_use]
+    pub fn provider(self) -> breathe_provider::CgroupDriver {
+        match self {
+            Self::Systemd => breathe_provider::CgroupDriver::Systemd,
+            Self::Cgroupfs => breathe_provider::CgroupDriver::Cgroupfs,
+        }
+    }
+}
+
+/// **PodMemoryHigh** — the controller→host-agent SOFT-carve dispatch (cluster-scoped).
+/// The controller resolves the pod's cgroup coordinates (UID + CRI container id + QoS)
+/// and writes the desired `memory.high` bytes here; the host-agent on `nodeName`
+/// reconciles it onto the pod's cgroup file. The HARD `memory.max` (k8s `limits.memory`)
+/// is NEVER carved here — it is governed by the never-OOM peak ceiling on the k8s plane.
+#[derive(CustomResource, Serialize, Deserialize, Clone, Debug, JsonSchema)]
+#[kube(
+    group = "breathe.pleme.io",
+    version = "v1",
+    kind = "PodMemoryHigh",
+    shortname = "pmh",
+    category = "breathe",
+    status = "PodMemoryHighStatus",
+    printcolumn = r#"{"name":"Node","type":"string","jsonPath":".spec.nodeName"}"#,
+    printcolumn = r#"{"name":"QoS","type":"string","jsonPath":".spec.qosClass"}"#,
+    printcolumn = r#"{"name":"DesiredBytes","type":"integer","jsonPath":".spec.desiredBytes"}"#,
+    printcolumn = r#"{"name":"Phase","type":"string","jsonPath":".status.phase"}"#
+)]
+#[serde(rename_all = "camelCase")]
+pub struct PodMemoryHighSpec {
+    /// The node hosting the pod — the host-agent reconciles only the PodMemoryHigh
+    /// whose `nodeName` equals its own `NODE_NAME` (the BreatheNodePool node-match).
+    pub node_name: String,
+    /// The pod's `status.qosClass` (`Guaranteed`/`Burstable`/`BestEffort`) — which
+    /// kubepods cgroup subtree the pod's `memory.high` lives under.
+    pub qos_class: String,
+    /// The pod's `metadata.uid` — the per-pod cgroup slice/dir is named for it.
+    pub pod_uid: String,
+    /// The CRI container-runtime id (`containerd://…`/`cri-o://…`) — the per-container
+    /// cgroup scope/dir; the host-agent path mapper scheme-strips it.
+    pub container_runtime_id: String,
+    /// The kubelet cgroup driver — selects the path layout (default systemd).
+    #[serde(default)]
+    pub cgroup_driver: CgroupDriverSpec,
+    /// The DESIRED `memory.high` value in BYTES the host-agent must write — the
+    /// controller's efficiency-carve target (SOFT/reclaim). NEVER a `memory.max` value.
+    pub desired_bytes: u64,
+    /// The owning `MemoryBand` (namespace/name) — provenance for the audit trail +
+    /// the controller's ownership of this dispatch CR.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner_band: Option<String>,
+    /// SHADOW: the agent observes + reports the desired write but performs no cgroup
+    /// mutation. Composes with the node's `BreatheNodePool.writeEnabled` master switch
+    /// (either being shadow keeps the agent observe-only).
+    #[serde(default)]
+    pub dry_run: bool,
+}
+
+/// PodMemoryHigh status — the host-agent's reconcile receipt for the dispatch.
+#[derive(Serialize, Deserialize, Clone, Debug, JsonSchema, Default, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct PodMemoryHighStatus {
+    /// `Applied` (cgroup written) / `ShadowWouldApply` / `Error` / `Pending`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub phase: Option<String>,
+    /// The `memory.high` value the agent last wrote (or would write in shadow), bytes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub written_bytes: Option<i64>,
+    /// The node that reconciled this dispatch (the host-agent's `NODE_NAME`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub observed_node: Option<String>,
+    /// A typed error message when the write failed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_seen_epoch: Option<i64>,
+}
+
+impl PodMemoryHighSpec {
+    /// The provider-typed host knob the agent writes — maps the dispatch CR fields to
+    /// the shipped `HostKnob::PodCgroupMemoryHigh` (the SOFT cgroup-file lever).
+    #[must_use]
+    pub fn provider_knob(&self) -> breathe_provider::HostKnob {
+        breathe_provider::HostKnob::PodCgroupMemoryHigh {
+            driver: self.cgroup_driver.provider(),
+            qos: self.qos_class.clone(),
+            pod_uid: self.pod_uid.clone(),
+            container_runtime_id: self.container_runtime_id.clone(),
+        }
+    }
+}
+
 // ─────────────────── BreatheCloudPool — node-count Forma enrollment (BU2) ──────
 
 /// **BreatheCloudPool** — the declarative enrollment of a node-count `Forma`
@@ -2306,6 +2424,48 @@ mod tests {
         let yaml = serde_yaml::to_string(&crd).unwrap();
         assert!(yaml.contains("fieldPath"), "the KubeParamBand CRD must advertise fieldPath (camelCase)");
         assert!(!yaml.contains("field_path"), "the CRD must not carry the snake_case field_path");
+    }
+
+    #[test]
+    fn pod_memory_high_dispatch_round_trips_and_maps_to_the_soft_knob() {
+        // a camelCase PodMemoryHigh dispatch CR round-trips into the typed spec and
+        // maps to the SOFT HostKnob::PodCgroupMemoryHigh (never memory.max).
+        let pmh: PodMemoryHigh = serde_json::from_value(serde_json::json!({
+            "apiVersion": "breathe.pleme.io/v1", "kind": "PodMemoryHigh",
+            "metadata": { "name": "authentik-worker-xyz-worker" },
+            "spec": {
+                "nodeName": "rio",
+                "qosClass": "Burstable",
+                "podUid": "abc12345-6789-def0-1234-56789abcdef0",
+                "containerRuntimeId": "containerd://deadbeefcafe",
+                "cgroupDriver": "systemd",
+                "desiredBytes": 469_762_048u64, // 448Mi reclaim seat
+                "ownerBand": "authentik/authentik-worker-memory"
+            }
+        })).expect("a camelCase PodMemoryHigh CR must deserialize");
+        assert_eq!(pmh.spec.node_name, "rio");
+        assert_eq!(pmh.spec.desired_bytes, 469_762_048);
+        match pmh.spec.provider_knob() {
+            breathe_provider::HostKnob::PodCgroupMemoryHigh { driver, qos, pod_uid, container_runtime_id } => {
+                assert_eq!(driver, breathe_provider::CgroupDriver::Systemd);
+                assert_eq!(qos, "Burstable");
+                assert_eq!(pod_uid, "abc12345-6789-def0-1234-56789abcdef0");
+                assert_eq!(container_runtime_id, "containerd://deadbeefcafe");
+            }
+            other => panic!("the dispatch must map to the SOFT pod memory.high knob, got {other:?}"),
+        }
+        // the generated CRD advertises the camelCase desiredBytes the apiserver validates.
+        let crd = <PodMemoryHigh as kube::CustomResourceExt>::crd();
+        let yaml = serde_yaml::to_string(&crd).unwrap();
+        assert!(yaml.contains("desiredBytes"), "the PodMemoryHigh CRD must advertise desiredBytes (camelCase)");
+        assert!(yaml.contains("containerRuntimeId"));
+        // cgroupDriver defaults to systemd when omitted.
+        let dflt: PodMemoryHigh = serde_json::from_value(serde_json::json!({
+            "apiVersion": "breathe.pleme.io/v1", "kind": "PodMemoryHigh",
+            "metadata": { "name": "p" },
+            "spec": { "nodeName": "rio", "qosClass": "Guaranteed", "podUid": "u", "containerRuntimeId": "containerd://c", "desiredBytes": 1024u64 }
+        })).unwrap();
+        assert_eq!(dflt.spec.cgroup_driver, CgroupDriverSpec::Systemd);
     }
 
     // ── Promotion lifecycle (ShadowConfirmEffect) gate ────────────────────────

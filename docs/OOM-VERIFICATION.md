@@ -37,12 +37,21 @@ k8s `MemoryBand` carve (which writes `memory.max` via the pod-resize API) was th
 | The soft/hard distinction is a closed typed set; "can a target OOM-kill?" is a total function of the type | **truly-unrep** | `breathe-control::CarveSemantics{Soft,Hard}` + `can_oom()` | A `Soft` target has no code path that lowers `memory.max`; only `Hard.can_oom()` is `true`. A non-`Hard` carve cannot express a kill. |
 | An efficiency shrink NEVER lowers the HARD `memory.max` (kill) limit — the kill ceiling is monotone-non-decreasing under efficiency pressure | **truly-unrep** (pure core) | `breathe-control::plan_dual_carve` — a hard-plane `Shrink` (for an in-ceiling limit) is rewritten to `NoSafeShrink` | The planner has no branch that emits a hard `Shrink` for efficiency. Proven by `efficiency_shrink_carves_soft_never_lowers_hard` + the conformance oracle `dual_carve_both_planes_stay_within_their_floors` (adversarial `ShrinkToZero` law). |
 | The soft floor never drops below the request/config floor; the hard floor never below the demonstrated-peak `safe_min` — BOTH through the SAME `safety_clamp` | **truly-unrep** for the floor algebra; the *future* working set is **C2-ceiling** | `breathe-control::{safe_min, soft_min, safety_clamp}` (single source of truth) | `safe_min`/`soft_min` are the only floors; `safety_clamp` is the only gate every law funnels through. A future spike is unknowable at compile time (the C2 external-world ceiling), so the honest claim is "never below the DEMONSTRATED peak + the declared request" — structural, not a hope. |
-| The k8s efficiency carve writes the pod's `memory.high` (SOFT) cgroup file directly, NEVER `memory.max` | **pending-deploy** | `breathe-host::{pod_cgroup_memory_high_path, PodQosClass}` + `HostKnob::PodCgroupMemoryHigh` apply/read in `HostCluster` | The typed path mapper + the host-agent writer are **shipped + unit-tested** (`pod_cgroup_memory_high_path_is_the_systemd_driver_layout`, `pod_memory_high_apply_writes_the_soft_reclaim_file_not_the_hard_limit`). What is **NOT yet wired/verified without the live cluster**: (a) resolving the live pod's CRI container-runtime-id + QoS from the apiserver and routing a `MemoryBand`'s soft carve to the host-agent DaemonSet; (b) the cgroupfs-driver path variant (only the **systemd**-driver layout — rio's driver — is implemented; a `CgroupDriver` arm is the named follow-on). Until (a) ships, the k8s memory band still carves `memory.max` (HARD) and relies on Part 2 + the peak-floor for never-OOM. **This is the one piece that is not yet OOM-impossible-by-construction for the k8s plane.** |
+| The k8s efficiency carve's ROUTING never lowers `memory.max` — the routed HARD target is, by construction, `≥` the live limit (only a grow or an over-ceiling snap-down) | **truly-unrep** (pure routing) | `breathe-control::{plan_k8s_memory_carve, K8sMemoryCarve, K8sMemoryCarve::never_lowers_kill_ceiling}` | The routing decision has NO code path that emits a HARD target below the live `memory.max`: an efficiency shrink is suppressed to `hard_target: None` (hold) by `plan_dual_carve`; only a grow or an over-ceiling snap-down ever becomes a `hard_target`. Proven for ALL inputs incl. an adversarial `ShrinkToZero` law by `k8s_carve_never_lowers_the_kill_ceiling` (+ `k8s_efficiency_carve_routes_soft_holds_hard`, `k8s_authentik_replay_holds_the_kill_ceiling`). Reuses the ONE `safety_clamp` — unforked. |
+| The SOFT carve's pod→cgroup coordinate EXTRACTION refuses a malformed pod at the parse boundary (never a wrong cgroup path) | **parse-time-rejected** | `breathe-kube::pod_cgroup::{pod_coords_from_value, container_id_from_status, node_name_from_pod, PodCoordError}` | A pod missing `metadata.uid` / `status.qosClass` / a running container's `containerID` yields a typed `PodCoordError` BEFORE any coordinate flows to a writer — an un-started container is refused, never resolved to a bogus path. The container-id scheme-strip + QoS mapping + per-container pick are pure + tested (8 cases). |
+| The SOFT carve writes the pod's `memory.high` (SOFT) cgroup file directly — under the CORRECT cgroup-driver layout — NEVER `memory.max` | **truly-unrep** (writer + path) | `breathe-host::{pod_cgroup_memory_high_path_with_driver, CgroupDriver, PodQosClass}` + `HostKnob::PodCgroupMemoryHigh` apply/read in `HostCluster` | The path mapper now dispatches on a typed `CgroupDriver` (`Systemd` + `Cgroupfs` arms — both tested; rio's systemd is the default + the live path), and the writer targets a path that ALWAYS ends `/memory.high`, never `memory.max` (`systemd_and_cgroupfs_drivers_diverge_for_the_same_coordinates`, `pod_cgroup_memory_high_path_cgroupfs_driver_is_the_flat_layout`, `pod_memory_high_apply_writes_the_soft_reclaim_file_not_the_hard_limit`). The closed driver enum makes "wrong layout for the cluster's driver" a typed input, not a silent assumption. |
+| The controller→host-agent DISPATCH carries ONLY the soft target (a `desiredBytes`, never a hard value) | **truly-unrep** (pure dispatch payload) | `breathe-crd::PodMemoryHigh` + `breathe-controller::pod_memory_high::{build_pod_memory_high_dispatch, soft_target_for}` | The `PodMemoryHigh` dispatch CR has no field that can express a `memory.max` write; its `desiredBytes` is fed only `K8sMemoryCarve.soft_target`. Proven by `dispatch_carries_only_the_soft_target_never_a_hard_value`, `soft_target_routes_an_efficiency_carve_and_never_a_hard_value`. |
+| The LIVE end-to-end convergence: the controller SSA-applies the dispatch CR per managed pod, the apiserver stores it, the host-agent on the node reconciles the actual cgroupfs write, and a real CRI/QoS read resolves against a live kubelet | **pending-deploy** | `breathe-controller::pod_memory_high::ensure_soft_carve_dispatch` + `reconcile_memory` (controller) + `reconcile_pod_memory_high` (host-agent) + `KubeCluster::resolve_pod_soft_carve_targets` | The wiring is SHIPPED (the controller routes a MemoryBand's efficiency carve to a per-pod `PodMemoryHigh` dispatch; the host-agent reconciles it via the shipped `HostKnob::PodCgroupMemoryHigh` writer, shadow-gated by the node's `BreatheNodePool.writeEnabled`). What needs the LIVE cluster to VERIFY: (a) the pod list + the SSA apply against a real apiserver; (b) the actual `/sys/fs/cgroup/.../memory.high` write on a real node + a real CRI container-id resolution; (c) the cgroupfs-driver path against a non-systemd cluster (rio is systemd, so only that arm is live-exercised). The PURE routing/extraction/payload above are `truly-unrep`/`parse-time`; this row is the irreducible C2 external-world observation ceiling — the cluster must confirm the bytes landed. |
 
-**Net Part-1 tier:** the **pure soft/hard algebra is `truly-unrep`**; the **k8s live
-write of `memory.high` is `pending-deploy`** (typed core + host-agent writer shipped &
-tested; the apiserver→host-agent pod-cgroup routing is the remaining live wiring). The
-**host/cgroup plane is already `truly-unrep`** (it has always carved `MemoryHigh`/soft).
+**Net Part-1 tier:** the **pure soft/hard algebra + the k8s ROUTING decision + the
+pod-cgroup coordinate extraction + the driver-aware writer + the dispatch payload are
+all `truly-unrep` / `parse-time-rejected` at the LIBRARY level** — no expressible
+program lowers `memory.max` for efficiency, resolves a malformed pod to a wrong path,
+or dispatches a HARD value. The **LIVE end-to-end convergence (controller SSA-apply →
+apiserver → host-agent cgroup write on the node) is `pending-deploy`** — the C2
+external-world ceiling: the cluster must confirm the `memory.high` bytes actually
+landed. The **host/cgroup plane is already `truly-unrep`** (it has always carved
+`MemoryHigh`/soft).
 
 ---
 
@@ -87,23 +96,37 @@ live pod, closing the "operator forgot to declare requestFloor" gap.
 
 - **The pure soft/hard carve algebra IS unrepresentable-OOM** (`truly-unrep`): no
   expressible efficiency carve lowers `memory.max`; the kill ceiling only rises.
+- **The k8s ROUTING decision IS unrepresentable-OOM** (`truly-unrep`):
+  `plan_k8s_memory_carve`/`K8sMemoryCarve` have no code path that routes a HARD target
+  below the live `memory.max` — the efficiency carve is routed to the SOFT plane, the
+  HARD plane only ever grows or holds (`never_lowers_kill_ceiling` holds for all inputs,
+  adversarial laws included).
+- **The pod→cgroup coordinate extraction IS parse-time-rejected**: a malformed/un-started
+  pod is refused with a typed `PodCoordError` before any coordinate reaches a writer.
+- **The driver-aware `memory.high` writer + the dispatch payload ARE `truly-unrep`**: the
+  path always ends `/memory.high` (never `memory.max`) under the correct typed
+  `CgroupDriver` (systemd + cgroupfs both tested); the `PodMemoryHigh` dispatch CR has no
+  field that can express a HARD write.
 - **The host/cgroup plane IS already OOM-impossible** (it carves `MemoryHigh`/soft).
-- **The k8s plane's live `memory.high` write is `pending-deploy`**: the typed path
-  mapper + host-agent writer ship & test green, but the apiserver→host-agent pod-cgroup
-  routing (resolve the live container-runtime-id + QoS, hand the soft carve to the
-  DaemonSet) is the remaining live wiring. **Until it ships, the k8s memory band still
-  carves `memory.max` and is NOT yet OOM-impossible by construction** — it relies on
-  Part 2 (warmup-hold) + the demonstrated-peak floor (C2-ceiling) for never-OOM, which
-  is `only-mitigated`, not `truly-unrep`.
+- **The LIVE end-to-end convergence is `pending-deploy`** (the irreducible C2
+  external-world ceiling): the controller→host-agent wiring is shipped
+  (`reconcile_memory` routes a MemoryBand's efficiency carve to a per-pod `PodMemoryHigh`
+  dispatch; `reconcile_pod_memory_high` writes the cgroup file, shadow-gated by the
+  node's `BreatheNodePool.writeEnabled`), but the actual apiserver list + SSA apply + the
+  `/sys/fs/cgroup/.../memory.high` write on a real node need the cluster to confirm the
+  bytes landed.
 - **Warmup-hold + requestFloor are `only-mitigated`** (held decisions + value clamps),
   but warmup-hold is the specific runtime fix that would have prevented the authentik
   incident, and it is the path that keeps the band safe until the `pending-deploy`
-  soft-carve wiring lands.
+  live convergence is verified on rio.
 
-**The remaining work to reach `truly-unrep` on the k8s plane** (named, not hidden):
-route a `MemoryBand`'s efficiency carve to `HostKnob::PodCgroupMemoryHigh` (resolve the
-live pod UID + CRI container id + QoS from the apiserver, dispatch to the host-agent
-DaemonSet), pin the k8s `limits.memory` at the peak-floor ceiling, and add the
-cgroupfs-driver path arm. That converts the k8s efficiency carve from "writes
-memory.max (kill)" to "writes memory.high (reclaim)" — the same `truly-unrep` the
-host/cgroup plane already enjoys.
+**The remaining work — now NARROWED to live verification, not library construction**
+(named, not hidden): deploy the routing + dispatch to rio and confirm, on-cluster, that
+(1) the controller emits a `PodMemoryHigh` per managed authentik pod on an efficiency
+carve, (2) the host-agent writes the pod's `/sys/fs/cgroup/.../memory.high` to the routed
+soft bytes while `limits.memory` (`memory.max`) is untouched, and (3) a real CRI
+container-id + QoS resolves against the live kubelet. The cgroupfs-driver path arm is
+SHIPPED + tested but only the systemd arm (rio's driver) is live-exercised; a non-systemd
+cluster is the named follow-on. A `CgroupDriver` config knob on `BreatheConfig` (today the
+controller defaults the dispatch to `systemd`) is the small remaining config surface for
+cgroupfs clusters.

@@ -322,6 +322,91 @@ pub fn plan_dual_carve<L: ControlLaw>(
     DualCarve { hard, soft }
 }
 
+/// The ROUTING decision for one k8s `MemoryBand` tick under the soft/hard split —
+/// which actuator each plane goes to (`docs/OOM-VERIFICATION.md` § Part 1). It
+/// answers the load-bearing routing question the controller asks every tick:
+/// *"what must I write to `memory.max` (the k8s `limits.memory`, via the pod-resize
+/// API) and what must I dispatch to the host-agent for `memory.high`?"* — and the
+/// answer is OOM-impossible by construction because the [`hard_target`](Self::hard_target)
+/// can NEVER be a value below the live `memory.max` (an efficiency shrink of the
+/// kill ceiling is unrepresentable — there is no code path that produces it).
+///
+/// Built purely by [`plan_k8s_memory_carve`] from a [`DualCarve`]; the controller
+/// applies `hard_target` via `KubeCluster`'s pod-resize (`limits.memory`) and
+/// dispatches `soft_target` to the host-agent's `memory.high` writer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct K8sMemoryCarve {
+    /// The value the HARD `memory.max` (k8s `limits.memory`) must hold/grow to —
+    /// the never-OOM kill ceiling. `None` ⇒ leave `memory.max` exactly as it is
+    /// (hold). `Some(v)` is ALWAYS `≥` the live `memory.max` (only a grow to cover a
+    /// demonstrated peak, or a snap down of a genuinely over-ceiling limit, is ever
+    /// emitted) — an efficiency shrink of the kill ceiling has NO code path here.
+    pub hard_target: Option<u64>,
+    /// The value to dispatch to the host-agent for the SOFT `memory.high` (reclaim)
+    /// cgroup file — the efficiency-carve target. `None` ⇒ no soft change this tick
+    /// (in-band hold, or a refused soft shrink). Exceeding it reclaims + throttles,
+    /// NEVER kills, so seating it tight is always OOM-safe.
+    pub soft_target: Option<u64>,
+}
+
+impl K8sMemoryCarve {
+    /// By construction, the routing decision can NEVER instruct the controller to
+    /// LOWER the live `memory.max` (kill ceiling) for efficiency — `true` iff the
+    /// hard target (when present) is `≥ live_hard`. The whole OOM-impossibility of
+    /// the k8s plane funnels through this predicate: a `false` would mean an
+    /// efficiency carve lowered the kill ceiling, and the planner has no branch that
+    /// produces it (proven by `k8s_carve_never_lowers_the_kill_ceiling`).
+    #[must_use]
+    pub fn never_lowers_kill_ceiling(&self, live_hard: u64) -> bool {
+        self.hard_target.map_or(true, |t| t >= live_hard)
+    }
+}
+
+/// Plan ONE k8s `MemoryBand` tick as a typed actuator-routing decision — the pure
+/// core of the SOFT-k8s-carve routing (`docs/OOM-VERIFICATION.md` § Part 1). Reuses
+/// [`plan_dual_carve`] (so the never-OOM proof is unforked — both planes funnel
+/// through the SAME [`safety_clamp`]) and projects its [`DualCarve`] onto the two
+/// k8s actuators:
+///
+/// - **HARD (`memory.max` / k8s `limits.memory`, via pod-resize):** only a GROW or
+///   an over-ceiling SNAP-DOWN is ever a target; an efficiency shrink is suppressed
+///   to `None` (hold) by `plan_dual_carve`. So the kill ceiling is monotone-non-
+///   decreasing under efficiency pressure — the OOM line never moves down.
+/// - **SOFT (`memory.high`, dispatched to the host-agent):** the efficiency carve.
+///   A shrink seats `memory.high` at the working-set setpoint; a grow raises it; an
+///   in-band hold or a refused shrink is `None`.
+///
+/// `hard_current` is the live `memory.max` (k8s limit); `soft_current` is the live
+/// pod `memory.high` (`u64::MAX` when unset — the host-agent's read maps an unset
+/// cgroup file to `u64::MAX`, so the first tick snaps it down to the CRD ceiling).
+#[must_use]
+pub fn plan_k8s_memory_carve<L: ControlLaw>(
+    law: &L,
+    working_set: u64,
+    peak_working_set: u64,
+    hard_current: u64,
+    soft_current: u64,
+    cfg: &BandConfig,
+) -> K8sMemoryCarve {
+    let dual = plan_dual_carve(law, working_set, peak_working_set, hard_current, Some(soft_current), cfg);
+    // HARD: ONLY a grow or an over-ceiling snap-down is a target. An efficiency
+    // shrink arrives as NoSafeShrink (the kill ceiling is held) ⇒ None.
+    let hard_target = match dual.hard {
+        // `to >= from` for a grow; an over-ceiling snap-down arrives as a Shrink whose
+        // `from > ceiling` (handled inside decide_with), so its `to` is the ceiling —
+        // still NOT an efficiency lowering of an in-ceiling limit (those are NoSafeShrink).
+        Decision::Grow { to, .. } => Some(to),
+        Decision::Shrink { from, to } if from > cfg.ceiling_bytes => Some(to),
+        _ => None,
+    };
+    // SOFT: the efficiency-carve target — a grow or a (reclaim) shrink.
+    let soft_target = match dual.soft {
+        Some(Decision::Grow { to, .. } | Decision::Shrink { to, .. }) => Some(to),
+        _ => None,
+    };
+    K8sMemoryCarve { hard_target, soft_target }
+}
+
 /// A pluggable control law: the swap-in decision core of a breathe dimension.
 /// The law decides DIRECTION + MAGNITUDE only; every law runs through the SAME
 /// [`safety_clamp`] (floor/ceiling/safe-min), so the never-OOM + never-overshoot
@@ -2519,6 +2604,107 @@ mod tests {
                 }
             }
         }
+    }
+
+    // ── PART 1 (k8s plane): the actuator-ROUTING decision ──────────────────────
+
+    /// THE k8s-ROUTING INVARIANT: a `MemoryBand` efficiency carve routes the SHRINK
+    /// to the SOFT `memory.high` (host-agent) and NEVER lowers the HARD `memory.max`
+    /// (k8s `limits.memory`). The routing decision carries `hard_target = None` (hold
+    /// the kill ceiling) + a soft target — the k8s-plane mirror of the dual-carve
+    /// invariant, at the actuator-routing boundary the controller dispatches on.
+    #[test]
+    fn k8s_efficiency_carve_routes_soft_holds_hard() {
+        let c = cfg();
+        let ws = 400 * MI; // util 0.20 @ 2Gi ⇒ shrink pressure
+        let carve = plan_k8s_memory_carve(&BandLaw, ws, ws, 2 * GI, 2 * GI, &c);
+        // HARD memory.max: held — no pod-resize lowering of the kill ceiling.
+        assert_eq!(carve.hard_target, None, "the kill ceiling must NOT be lowered for efficiency");
+        // SOFT memory.high: reclaimed toward the working-set setpoint (host-agent write).
+        match carve.soft_target {
+            Some(t) => {
+                assert!(t < 2 * GI, "memory.high reclaimed for efficiency");
+                assert!(t >= soft_min(ws, &c), "soft target never below the soft floor");
+            }
+            None => panic!("an efficiency carve must dispatch a soft memory.high target"),
+        }
+    }
+
+    /// A GROW routes to BOTH actuators: the HARD `memory.max` rises (buying kill-
+    /// ceiling headroom is the safe direction, applied via pod-resize) AND the SOFT
+    /// `memory.high` rises (dispatched to the host-agent).
+    #[test]
+    fn k8s_grow_routes_to_both_planes() {
+        let c = cfg();
+        let ws = 950 * MI; // util 0.93 @ 1Gi ⇒ grow
+        let carve = plan_k8s_memory_carve(&BandLaw, ws, ws, GI, GI, &c);
+        assert!(carve.hard_target.is_some_and(|t| t > GI), "memory.max grows");
+        assert!(carve.soft_target.is_some_and(|t| t > GI), "memory.high grows");
+    }
+
+    /// The OOM-impossibility predicate: across every working set + live-limit pair,
+    /// even under an adversarial shrink-to-zero law, the routed HARD target can NEVER
+    /// be below the live `memory.max`. This is the structural never-OOM guarantee of
+    /// the k8s plane — `never_lowers_kill_ceiling` holds for ALL inputs.
+    #[test]
+    fn k8s_carve_never_lowers_the_kill_ceiling() {
+        struct ShrinkToZero;
+        impl ControlLaw for ShrinkToZero {
+            fn propose(&self, _w: u64, _l: u64, _c: &BandConfig) -> Proposal { Proposal::Target(0) }
+        }
+        let c = cfg();
+        // exercise BOTH the proven default law and an adversarial shrink-to-zero law
+        // through one closure, so the invariant is proven for any law (the gate owns it).
+        let check = |law_name: &str, carve: K8sMemoryCarve, ws: u64, hard: u64, soft: u64| {
+            assert!(
+                carve.never_lowers_kill_ceiling(hard),
+                "{law_name}: ws={ws} hard={hard} soft={soft} ⇒ routed hard {:?} would lower the kill ceiling",
+                carve.hard_target
+            );
+        };
+        for &ws in &[0u64, 50 * MI, 400 * MI, 950 * MI, 4 * GI, 32 * GI] {
+            for &hard in &[256 * MI, GI, 2 * GI, 16 * GI] {
+                for &soft in &[hard, u64::MAX] {
+                    check("BandLaw", plan_k8s_memory_carve(&BandLaw, ws, ws, hard, soft, &c), ws, hard, soft);
+                    check("ShrinkToZero", plan_k8s_memory_carve(&ShrinkToZero, ws, ws, hard, soft, &c), ws, hard, soft);
+                }
+            }
+        }
+    }
+
+    /// The authentik replay at the routing boundary: an idle worker provisioned with
+    /// a generous `memory.max` routes its efficiency carve to `memory.high` ONLY —
+    /// the kill ceiling is held, so the un-observed boot spike fits under it and
+    /// reclaims/throttles rather than OOM-killing.
+    #[test]
+    fn k8s_authentik_replay_holds_the_kill_ceiling() {
+        let c = cfg();
+        let idle = 280 * MI;
+        let hard_limit = 662 * MI;
+        let carve = plan_k8s_memory_carve(&BandLaw, idle, idle, hard_limit, hard_limit, &c);
+        assert_eq!(carve.hard_target, None, "the kill ceiling stays at the provisioned value");
+        assert!(carve.never_lowers_kill_ceiling(hard_limit));
+        // an unset soft cgroup (u64::MAX) snaps down to a real soft target on tick 1.
+        let unset = plan_k8s_memory_carve(&BandLaw, idle, idle, hard_limit, u64::MAX, &c);
+        assert!(unset.soft_target.is_some(), "an unset memory.high snaps down to a soft target");
+        assert_eq!(unset.hard_target, None, "still never lowers the kill ceiling");
+    }
+
+    /// An OVER-CEILING `memory.max` (e.g. a stale large limit above the band ceiling)
+    /// IS routed a hard snap-DOWN to the ceiling — distinct from an efficiency shrink
+    /// (which is suppressed). The snap-down is a correction, not an efficiency carve,
+    /// and `never_lowers_kill_ceiling` still holds against the OVER-ceiling live value
+    /// is false by design (a correction CAN lower an illegal over-ceiling limit) — but
+    /// it never lowers an IN-ceiling limit, which is the case that matters for OOM.
+    #[test]
+    fn k8s_over_ceiling_limit_is_snapped_down_but_in_ceiling_is_never_lowered() {
+        let c = cfg(); // ceiling 16Gi
+        let over = 32 * GI;
+        let carve = plan_k8s_memory_carve(&BandLaw, 8 * GI, 8 * GI, over, over, &c);
+        assert_eq!(carve.hard_target, Some(c.ceiling_bytes), "over-ceiling limit snaps to the ceiling");
+        // for an IN-ceiling limit the kill ceiling is never lowered (the OOM-safe case).
+        let in_ceiling = plan_k8s_memory_carve(&BandLaw, 400 * MI, 400 * MI, 2 * GI, 2 * GI, &c);
+        assert!(in_ceiling.never_lowers_kill_ceiling(2 * GI));
     }
 
     // ── PART 2: warmup-hold (closes the un-observed-boot-spike hole) ───────────

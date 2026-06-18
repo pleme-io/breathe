@@ -135,10 +135,32 @@ pub enum HostKnob {
     /// left at the never-OOM peak ceiling; this carves ONLY the soft reclaim limit, so
     /// an efficiency shrink can never OOM-kill the workload. `qos`/`pod_uid`/
     /// `container_runtime_id` address the pod's cgroup path (the host-agent resolves
-    /// the container id from the live pod status). This is the pod-scope mirror of
-    /// the host/cgroup `MemoryHigh` lever (already shipped). RestartFree (a live
+    /// the container id from the live pod status). `driver` selects the kubelet's
+    /// cgroup-driver path layout (systemd `.slice`/`.scope` vs cgroupfs flat) — the
+    /// SAME `(qos, uid, ctr)` resolves to a DIFFERENT path under each driver, so it
+    /// is a typed field, never an assumption. This is the pod-scope mirror of the
+    /// host/cgroup `MemoryHigh` lever (already shipped). RestartFree (a live
     /// memory.high write never restarts the container — reclaim, not kill).
-    PodCgroupMemoryHigh { qos: String, pod_uid: String, container_runtime_id: String },
+    PodCgroupMemoryHigh { driver: CgroupDriver, qos: String, pod_uid: String, container_runtime_id: String },
+}
+
+/// The kubelet's cgroup driver — the closed set that selects a pod's cgroup-v2
+/// path LAYOUT. The two drivers nest the kubepods tree DIFFERENTLY, so the same
+/// `(qos, pod_uid, container_runtime_id)` maps to a different `memory.high` file
+/// under each. A closed enum (never a free string) makes "which layout" a total
+/// function: a path is produced for exactly the two drivers k8s supports, and a
+/// future driver is a compile-error-forcing new arm, not a silent wrong path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum CgroupDriver {
+    /// systemd driver (kubelet `cgroupDriver: systemd`, the NixOS/containerd
+    /// default + rio's live driver): `kubepods.slice/[<qos>.slice/]kubepods-<qos>-
+    /// pod<uid_underscored>.slice/cri-containerd-<ctr>.scope/memory.high`.
+    #[default]
+    Systemd,
+    /// cgroupfs driver (`cgroupDriver: cgroupfs`): `kubepods/[<qos>/]pod<uid>/
+    /// <ctr>/memory.high` — flat, no `.slice`/`.scope`, the pod UID's dashes KEPT.
+    Cgroupfs,
 }
 
 /// **PR-4:** which of the four disjoint `io.max` sub-knobs a [`HostKnob::CgroupIoMax`]

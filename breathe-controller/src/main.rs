@@ -15,6 +15,7 @@ use std::{sync::Arc, time::Duration};
 mod node_forma;
 mod kube_param;
 mod quinhao;
+mod pod_memory_high;
 
 use breathe_core::{reconcile_one, PredictiveInput, ReconcileInput};
 use breathe_crd::{
@@ -252,6 +253,12 @@ async fn reconcile<B: Band, D: DimensionDescriptor + Default>(
         predictive,
         peak_used,
         observed_for_secs: Some(observed_for_secs),
+        // PART 1 (SOFT k8s carve): for the MEMORY dimension ONLY, pin the HARD plane
+        // (k8s limits.memory / memory.max) GROW-ONLY so an efficiency shrink can never
+        // lower the kill ceiling — the reclaim is routed to the SOFT memory.high plane
+        // by `reconcile_memory`'s per-pod PodMemoryHigh dispatch. cpu/storage have no
+        // breathe-carved soft cgroup plane, so they keep their own directionality.
+        hard_plane_grow_only: provider.id() == breathe_provider::DimensionId::Memory,
     };
 
     let outcome = reconcile_one(&input, &provider).await;
@@ -281,6 +288,85 @@ async fn reconcile<B: Band, D: DimensionDescriptor + Default>(
 fn error_policy<B: Band>(_obj: Arc<B>, err: &Error, ctx: Arc<Ctx>) -> Action {
     error!(error = %err, "reconcile error — backing off");
     Action::requeue(ctx.requeue)
+}
+
+/// **Part 1 (SOFT k8s carve):** the MemoryBand reconcile — runs the generic
+/// `reconcile<MemoryBand, MemoryDescriptor>` (which governs the HARD `memory.max` /
+/// k8s `limits.memory` ceiling: it only ever GROWS or HOLDS it, never lowers it for
+/// efficiency), then ROUTES the efficiency carve to the SOFT plane by emitting one
+/// `PodMemoryHigh` dispatch per managed pod (`docs/OOM-VERIFICATION.md` § Part 1).
+/// The dispatch's host-agent write of `memory.high` (reclaim) is what reclaims slack
+/// without ever lowering the kill ceiling — the k8s-plane never-OOM guarantee.
+///
+/// The soft routing reads the band's freshly-written status (`observed_used`/
+/// `observed_peak_used`/`observed_capacity`) — the same observation the generic tick
+/// produced — and computes the soft target via `pod_memory_high::soft_target_for`
+/// (which reuses `breathe_control::plan_k8s_memory_carve`, so the HARD plane is never
+/// touched). Shadow-first: the dispatch is `dryRun` whenever the band is in shadow.
+///
+/// `tier-honest`: the routing DECISION + the dispatch PAYLOAD are pure + library-
+/// tested; the live convergence (apiserver-listing pods, applying the dispatch CR,
+/// the host-agent cgroup write) is `pending-deploy`. A dispatch failure is logged,
+/// never propagated — the HARD-plane never-OOM guarantee holds regardless.
+async fn reconcile_memory(obj: Arc<MemoryBand>, ctx: Arc<Ctx>) -> Result<Action, Error> {
+    // HARD plane + status: the unchanged generic tick (governs limits.memory).
+    let action = reconcile::<MemoryBand, MemoryDescriptor>(obj.clone(), ctx.clone()).await?;
+
+    // SOFT plane: route the efficiency carve to memory.high via a per-pod dispatch.
+    // Only for a NON-suspended band with a fresh observation; a suspended/observation-
+    // less band has nothing to route (the HARD plane already held the kill ceiling).
+    if obj.suspended() {
+        return Ok(action);
+    }
+    let band = match Api::<MemoryBand>::all(ctx.client.clone()).get_opt(&obj.name_any()).await {
+        Ok(Some(b)) => b,
+        _ => return Ok(action), // can't re-read ⇒ skip the soft dispatch this tick
+    };
+    let (Ok(cfg), Some(st)) = (band.band_config(), band.status()) else {
+        return Ok(action);
+    };
+    let (Some(used), Some(cap)) = (st.observed_used, st.observed_capacity) else {
+        return Ok(action); // no fresh observation ⇒ nothing to route
+    };
+    let used = used.max(0) as u64;
+    let hard_current = cap.max(0) as u64;
+    let peak = st.observed_peak_used.unwrap_or(used as i64).max(0) as u64;
+    // The live pod memory.high is unknown to the controller (it has no node access);
+    // pass `u64::MAX` (unset) so the planner snaps it down to the routed soft target —
+    // the host-agent's read of the live cgroup file is the authoritative current value.
+    let Some(soft_bytes) = pod_memory_high::soft_target_for(used, peak, hard_current, u64::MAX, &cfg) else {
+        return Ok(action); // in-band hold / refused shrink ⇒ no soft dispatch
+    };
+
+    let tr = band.target_ref();
+    let target = Target {
+        namespace: band.namespace().unwrap_or_default(),
+        name: tr.name.clone(),
+        kind: tr.kind.clone(),
+        api_version: tr.api_version.clone().unwrap_or_default(),
+        container: tr.container.clone(),
+        pod_selector: tr.pod_selector.clone(),
+    };
+    let cluster = KubeCluster::new(ctx.client.clone(), ctx.prometheus_url.clone());
+    let dry_run = band.effective_dry_run(now_secs());
+    // rio runs the systemd cgroup driver (the default); a CgroupDriver config knob is
+    // the named follow-on for cgroupfs clusters.
+    match pod_memory_high::ensure_soft_carve_dispatch(
+        &ctx.client,
+        &cluster,
+        &band,
+        &target,
+        breathe_crd::CgroupDriverSpec::Systemd,
+        soft_bytes,
+        dry_run,
+    )
+    .await
+    {
+        Ok(n) if n > 0 => info!(band = %band.name_any(), dispatches = n, soft_bytes, dry_run, "routed soft memory.high carve to the host-agent"),
+        Ok(_) => {}
+        Err(e) => warn!(band = %band.name_any(), error = %e, "soft memory.high dispatch failed (non-fatal — HARD plane still held the kill ceiling)"),
+    }
+    Ok(action)
 }
 
 /// Summarize every band of kind `B` (across all namespaces) into the fleet overview.
@@ -438,7 +524,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     let mem = gen_controller!(Api::<MemoryBand>::all(client.clone()))
-        .run(reconcile::<MemoryBand, MemoryDescriptor>, error_policy::<MemoryBand>, ctx.clone())
+        .run(reconcile_memory, error_policy::<MemoryBand>, ctx.clone())
         .for_each(|_| async {});
     let cpu = gen_controller!(Api::<CpuBand>::all(client.clone()))
         .run(reconcile::<CpuBand, CpuDescriptor>, error_policy::<CpuBand>, ctx.clone())
