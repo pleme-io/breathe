@@ -429,6 +429,7 @@ fn receipt_kind_str(r: &TickReceipt) -> &'static str {
         TickReceipt::DryRunWouldApply { .. } => "DryRunWouldApply",
         TickReceipt::DeferredWouldRestart { .. } => "DeferredWouldRestart",
         TickReceipt::Observed { .. } => "Observed",
+        TickReceipt::Warmup { .. } => "Warmup",
         TickReceipt::Dormant => "Dormant",
         TickReceipt::Error { .. } => "Error",
     }
