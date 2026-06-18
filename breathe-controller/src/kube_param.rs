@@ -122,6 +122,9 @@ pub async fn reconcile_kube_param(obj: Arc<KubeParamBand>, ctx: Arc<Ctx>) -> Res
         force,
         predictive: None,
         peak_used,
+        // generic CR-field bands (Istio/HPA/CNPG retention/quota) have no pod
+        // restart concept ⇒ warmup not applicable (u64::MAX ⇒ the gate never fires).
+        observed_for_secs: None,
     };
 
     let outcome = reconcile_one(&input, &provider).await;

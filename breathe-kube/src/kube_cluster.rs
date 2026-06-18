@@ -550,6 +550,48 @@ impl Cluster for KubeCluster {
         }
         Ok(pods.iter().all(|p| Self::container_resize_not_required(&p.data, container, resource)))
     }
+
+    /// Part 3: read the target's LIVE declared `resources.requests.<resource>` — the
+    /// inviolable shrink floor (a limit below the request is invalid in k8s + unsafe).
+    /// Reads the MAX request across the band's pod group (so the floor covers the
+    /// hottest instance), in the resource's base unit. For pod-backed layouts
+    /// (`PodResize`/`PodTemplate`) the request lives on the live pods; for a CNPG
+    /// `Cluster` it lives at `spec.resources.requests.<resource>`. Best-effort `0`
+    /// when there is no readable request (the band's own `requestFloor` still binds).
+    async fn read_request_floor(
+        &self,
+        target: &Target,
+        layout: &LimitLayout,
+        resource: &str,
+    ) -> Result<u64, ProviderError> {
+        let unit = Unit::for_resource(resource);
+        match layout {
+            // pod-backed: the request lives on the live pods (max across the group).
+            LimitLayout::PodResize { container } | LimitLayout::PodTemplate { container } => {
+                let mut max = 0u64;
+                for pod in self.owner_pods(target).await? {
+                    if let Some(q) = Self::pod_container_qty(&pod.data, container, "requests", resource) {
+                        if let Some(v) = unit.parse(&q) {
+                            max = max.max(v);
+                        }
+                    }
+                }
+                Ok(max)
+            }
+            // CNPG Cluster top-level: spec.resources.requests.<resource>.
+            LimitLayout::ClusterTopLevel => {
+                let obj = self.get_owner(target).await?;
+                let q = obj
+                    .data
+                    .pointer(&format!("/spec/resources/requests/{resource}"))
+                    .and_then(Value::as_str)
+                    .and_then(|s| unit.parse(s));
+                Ok(q.unwrap_or(0))
+            }
+            // storage / host / generic-CR layouts carry no per-pod memory/cpu request.
+            _ => Ok(0),
+        }
+    }
 }
 
 #[cfg(test)]

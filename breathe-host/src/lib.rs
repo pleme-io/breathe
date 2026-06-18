@@ -67,6 +67,90 @@ pub fn zfs_param_path(param: &str) -> String {
     p
 }
 
+/// The cgroup v2 unified hierarchy root the kubelet mounts.
+pub const CGROUP_V2_ROOT: &str = "/sys/fs/cgroup";
+
+/// A pod's QoS class — the cgroup-v2 subtree a k8s pod's `memory.high` lives under.
+/// Kubernetes nests its cgroup tree by QoS: `Guaranteed` pods sit directly under
+/// `kubepods.slice`; `Burstable` and `BestEffort` each get their own intermediate
+/// slice. The typed enum makes "which subtree" a closed set, never a free string.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PodQosClass {
+    Guaranteed,
+    Burstable,
+    BestEffort,
+}
+
+impl PodQosClass {
+    /// Parse k8s's `status.qosClass` string. `None` for an unrecognized value (the
+    /// caller surfaces a typed error rather than guess a wrong cgroup subtree).
+    #[must_use]
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "Guaranteed" => Some(Self::Guaranteed),
+            "Burstable" => Some(Self::Burstable),
+            "BestEffort" => Some(Self::BestEffort),
+            _ => None,
+        }
+    }
+    /// The intermediate QoS slice segment under `kubepods.slice` (systemd cgroup
+    /// driver). `Guaranteed` has none (it sits directly under `kubepods.slice`).
+    #[must_use]
+    pub fn slice_segment(self) -> Option<&'static str> {
+        match self {
+            Self::Guaranteed => None,
+            Self::Burstable => Some("kubepods-burstable.slice"),
+            Self::BestEffort => Some("kubepods-besteffort.slice"),
+        }
+    }
+}
+
+/// **Part 1 (SOFT k8s carve):** map a k8s pod's `(qos, pod_uid, container_runtime_id)`
+/// to its cgroup-v2 `memory.high` (SOFT, reclaim) file under the **systemd** cgroup
+/// driver — the path the privileged host-agent DaemonSet writes to carve a pod's
+/// memory.high IN PLACE without touching the k8s `limits.memory` (`memory.max`,
+/// HARD/kill) ceiling. This mirrors the host/cgroup proof-of-shape (`MemoryHigh` on a
+/// systemd unit, already shipped) at the pod scope.
+///
+/// Systemd-driver layout (kubelet `cgroupDriver: systemd`, the NixOS/containerd
+/// default): `kubepods.slice/[<qos>.slice/]kubepods-<qos>-pod<uid>.slice/
+/// cri-containerd-<ctr-id>.scope/memory.high`, with the pod UID's `-` → `_`. The pod
+/// UID + container runtime id come from the live pod `status` (the CRI container id,
+/// stripped of its `containerd://` scheme). PURE + unit-tested; the host-agent feeds
+/// it live values + writes the result via `write_sysfs_u64`.
+///
+/// `tier-honest`: this is the SYSTEMD-driver path. The cgroupfs-driver layout differs
+/// (`kubepods/<qos>/pod<uid>/<ctr-id>/memory.high`, no `.slice`/`.scope`, UID dashes
+/// kept); a `CgroupDriver` arm is the documented follow-on. NixOS/rio runs the
+/// systemd driver, so this is the live path.
+#[must_use]
+pub fn pod_cgroup_memory_high_path(qos: PodQosClass, pod_uid: &str, container_runtime_id: &str) -> String {
+    let uid = pod_uid.replace('-', "_");
+    // strip a `containerd://` (or any `scheme://`) prefix off the CRI container id.
+    let ctr = container_runtime_id.rsplit("://").next().unwrap_or(container_runtime_id);
+    let mut p = String::from(CGROUP_V2_ROOT);
+    p.push_str("/kubepods.slice");
+    if let Some(seg) = qos.slice_segment() {
+        p.push('/');
+        p.push_str(seg);
+    }
+    // the per-pod slice + the per-container scope. Built by typed `push_str`
+    // composition (NOT `format!` of path syntax) — the sibling-helper idiom.
+    let qos_tag = match qos {
+        PodQosClass::Guaranteed => "kubepods",
+        PodQosClass::Burstable => "kubepods-burstable",
+        PodQosClass::BestEffort => "kubepods-besteffort",
+    };
+    p.push('/');
+    p.push_str(qos_tag);
+    p.push_str("-pod");
+    p.push_str(&uid);
+    p.push_str(".slice/cri-containerd-");
+    p.push_str(ctr);
+    p.push_str(".scope/memory.high");
+    p
+}
+
 /// Map a PSI `resource` (`cpu`/`memory`/`io`) to its pressure file. PR-3.
 #[must_use]
 pub fn psi_path(resource: &str) -> String {
@@ -403,7 +487,12 @@ impl NodeEnvelopes {
                 .ok_or_else(|| HostError::NoEnvelope(unit.clone())),
             // PR-2/PR-4: host-GLOBAL sysctls / ZFS params / io.max rate caps are not
             // nodepool-enveloped — the band's own CRD ceiling is the cap, no L2 wall.
-            HostKnob::Sysctl { .. } | HostKnob::ZfsParam { .. } | HostKnob::CgroupIoMax { .. } => Ok(u64::MAX),
+            // Part 1: a pod's memory.high (SOFT/reclaim) is bounded by the band's own
+            // CRD ceiling (and never exceeds the pod's memory.max), not the L2 wall.
+            HostKnob::Sysctl { .. }
+            | HostKnob::ZfsParam { .. }
+            | HostKnob::CgroupIoMax { .. }
+            | HostKnob::PodCgroupMemoryHigh { .. } => Ok(u64::MAX),
         }
     }
 }
@@ -657,6 +746,17 @@ impl<H: HostEnvironment> Cluster for HostCluster<H> {
                     None => Ok(u64::MAX),
                 }
             }
+            // Part 1: read the pod's current cgroup-v2 `memory.high` (SOFT/reclaim).
+            // The kernel writes "max" (unbounded) when unset → read_sysfs_u64 maps it
+            // to u64::MAX, so the band snaps it down to the CRD ceiling on the first
+            // tick (exactly like the io.max path).
+            LimitLayout::Host(HostKnob::PodCgroupMemoryHigh { qos, pod_uid, container_runtime_id }) => {
+                let qos = PodQosClass::parse(qos).ok_or_else(|| {
+                    ProviderError::ApiPermanent(format!("unknown pod QoS class {qos:?}"))
+                })?;
+                let path = pod_cgroup_memory_high_path(qos, pod_uid, container_runtime_id);
+                Ok(self.env.read_sysfs_u64(&path)?)
+            }
             _ => Err(ProviderError::ApiPermanent(
                 "k8s layout on HostCluster (route k8s dimensions to KubeCluster)".into(),
             )),
@@ -716,6 +816,17 @@ impl<H: HostEnvironment> Cluster for HostCluster<H> {
             // sets just this device's field, leaving the others untouched.
             HostKnob::CgroupIoMax { unit, device, field } => {
                 self.env.set_unit_property_str(unit, field.cap_property(), &format!("{device} {}", patch.value))?;
+            }
+            // Part 1 (SOFT k8s carve): write the POD's cgroup-v2 `memory.high` directly
+            // (the host-agent owns the pod's cgroup file). SOFT = reclaim + throttle,
+            // never kill — the k8s `limits.memory` (memory.max, HARD) is left at the
+            // never-OOM ceiling, so this efficiency carve can never OOM. The pod's
+            // memory.high path is the systemd-driver cgroup-v2 path for (qos, uid, ctr).
+            HostKnob::PodCgroupMemoryHigh { qos, pod_uid, container_runtime_id } => {
+                let qos = PodQosClass::parse(qos)
+                    .ok_or_else(|| ProviderError::ApiPermanent(format!("unknown pod QoS class {qos:?}")))?;
+                let path = pod_cgroup_memory_high_path(qos, pod_uid, container_runtime_id);
+                self.env.write_sysfs_u64(&path, patch.value)?;
             }
         }
         Ok(AppliedReceipt { source_hash: [0u8; 16] })
@@ -1374,5 +1485,73 @@ mod tests {
         let shadow = HostCluster::shadow(MockHostEnv::default(), envelopes());
         shadow.apply(&patch(1500)).await.unwrap();
         assert!(shadow.env().str_writes().is_empty(), "shadow never writes the host");
+    }
+
+    // ── Part 1: the SOFT k8s carve — pod cgroup-v2 memory.high path + writer ────
+
+    #[test]
+    fn pod_qos_parses_the_three_classes() {
+        assert_eq!(PodQosClass::parse("Guaranteed"), Some(PodQosClass::Guaranteed));
+        assert_eq!(PodQosClass::parse("Burstable"), Some(PodQosClass::Burstable));
+        assert_eq!(PodQosClass::parse("BestEffort"), Some(PodQosClass::BestEffort));
+        assert_eq!(PodQosClass::parse("Nonsense"), None);
+    }
+
+    #[test]
+    fn pod_cgroup_memory_high_path_is_the_systemd_driver_layout() {
+        // a Burstable pod: nested under kubepods-burstable.slice; UID dashes → '_';
+        // the containerd:// scheme is stripped off the CRI container id.
+        let uid = "abc12345-6789-def0-1234-56789abcdef0";
+        let ctr = "containerd://deadbeefcafe";
+        let path = pod_cgroup_memory_high_path(PodQosClass::Burstable, uid, ctr);
+        assert_eq!(
+            path,
+            "/sys/fs/cgroup/kubepods.slice/kubepods-burstable.slice/\
+             kubepods-burstable-podabc12345_6789_def0_1234_56789abcdef0.slice/\
+             cri-containerd-deadbeefcafe.scope/memory.high"
+        );
+        // it targets memory.high (SOFT/reclaim), NEVER memory.max (HARD/kill).
+        assert!(path.ends_with("/memory.high"));
+        assert!(!path.contains("memory.max"), "the SOFT carve must never touch memory.max");
+        // Guaranteed sits DIRECTLY under kubepods.slice (no intermediate qos slice).
+        let g = pod_cgroup_memory_high_path(PodQosClass::Guaranteed, uid, "id");
+        assert!(g.contains("/kubepods.slice/kubepods-podabc12345"), "Guaranteed has no qos sub-slice: {g}");
+        assert!(!g.contains("burstable") && !g.contains("besteffort"));
+    }
+
+    #[tokio::test]
+    async fn pod_memory_high_apply_writes_the_soft_reclaim_file_not_the_hard_limit() {
+        // The host-agent writes a pod's memory.high (SOFT) directly. The k8s
+        // limits.memory (memory.max, HARD) is NEVER written here — so an efficiency
+        // carve at this lever can never lower the kill ceiling (OOM-impossible).
+        let knob = HostKnob::PodCgroupMemoryHigh {
+            qos: "Burstable".into(),
+            pod_uid: "p-1".into(),
+            container_runtime_id: "containerd://c1".into(),
+        };
+        let layout = LimitLayout::Host(knob.clone());
+        let patch = SsaPatch {
+            target: unit_target("ignored"),
+            field_manager: "breathe/memory".into(),
+            layout: layout.clone(),
+            resource: "memory".into(),
+            value: 448 * 1024 * 1024, // carve memory.high to 448Mi (reclaim seat)
+        };
+        let expected = pod_cgroup_memory_high_path(PodQosClass::Burstable, "p-1", "containerd://c1");
+        // LIVE: exactly one write — to the pod's memory.high file.
+        let live = HostCluster::new(MockHostEnv::default(), envelopes(), true);
+        live.apply(&patch).await.unwrap();
+        assert_eq!(live.env().writes(), vec![(expected.clone(), 448 * 1024 * 1024)]);
+        assert!(live.env().writes().iter().all(|(p, _)| !p.contains("memory.max")), "never writes memory.max");
+        // SHADOW: writes nothing.
+        let shadow = HostCluster::shadow(MockHostEnv::default(), envelopes());
+        shadow.apply(&patch).await.unwrap();
+        assert!(shadow.env().writes().is_empty(), "shadow never writes the pod cgroup");
+        // an unknown QoS is a typed error, never a write to a wrong path.
+        let bad = SsaPatch {
+            layout: LimitLayout::Host(HostKnob::PodCgroupMemoryHigh { qos: "Bogus".into(), pod_uid: "p".into(), container_runtime_id: "c".into() }),
+            ..patch.clone()
+        };
+        assert!(matches!(live.apply(&bad).await.unwrap_err(), ProviderError::ApiPermanent(_)));
     }
 }

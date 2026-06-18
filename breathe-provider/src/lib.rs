@@ -128,6 +128,17 @@ pub enum HostKnob {
     /// independently. Set via `IO{Read,Write}{Bandwidth,IOPS}Max="<device>
     /// <value>"`. RestartFree (a live cgroup io cap never restarts the unit).
     CgroupIoMax { unit: String, device: String, field: IoMaxField },
+    /// **Part 1 (SOFT k8s carve):** a k8s POD's cgroup-v2 `memory.high` (SOFT,
+    /// reclaim — exceeding it throttles, NEVER kills) — the efficiency-carve target
+    /// for a memory band, written by the privileged host-agent DaemonSet directly to
+    /// the pod's cgroup file. The k8s `limits.memory` (`memory.max`, HARD/kill) is
+    /// left at the never-OOM peak ceiling; this carves ONLY the soft reclaim limit, so
+    /// an efficiency shrink can never OOM-kill the workload. `qos`/`pod_uid`/
+    /// `container_runtime_id` address the pod's cgroup path (the host-agent resolves
+    /// the container id from the live pod status). This is the pod-scope mirror of
+    /// the host/cgroup `MemoryHigh` lever (already shipped). RestartFree (a live
+    /// memory.high write never restarts the container — reclaim, not kill).
+    PodCgroupMemoryHigh { qos: String, pod_uid: String, container_runtime_id: String },
 }
 
 /// **PR-4:** which of the four disjoint `io.max` sub-knobs a [`HostKnob::CgroupIoMax`]
@@ -753,6 +764,23 @@ pub trait Cluster: Send + Sync {
         let _ = (target, layout, resource);
         Ok(false)
     }
+
+    /// The target's LIVE declared `resources.requests.<resource>` (max across the
+    /// pod group), in the resource's base unit — the inviolable shrink floor (a
+    /// limit below the request is invalid in k8s + unsafe). Folded into the effective
+    /// `BandConfig.request_floor_bytes` by `reconcile_one`, so the declared request is
+    /// honored even when the operator omitted `requestFloor` from the band CR. The
+    /// default is `0` (no request) for cluster impls without live-pod access
+    /// (host/mock); only `KubeCluster` reads the live pods' `requests`.
+    async fn read_request_floor(
+        &self,
+        target: &Target,
+        layout: &LimitLayout,
+        resource: &str,
+    ) -> Result<u64, ProviderError> {
+        let _ = (target, layout, resource);
+        Ok(0)
+    }
 }
 
 /// Whether a band's layout has a GOLDEN path to its setpoint — the eclusa
@@ -913,6 +941,13 @@ impl<C: Cluster + 'static, D: DimensionDescriptor> ResourceProvider for BandProv
             .cluster
             .read_resize_restart_free(target, &layout, self.descriptor.resource())
             .await?;
+        // The target's LIVE declared requests.<resource> — the inviolable shrink
+        // floor, sourced from the running pods so it is honored even when the band CR
+        // omitted it. `0` for cluster impls with no live-pod access (host/mock).
+        let request_floor = self
+            .cluster
+            .read_request_floor(target, &layout, self.descriptor.resource())
+            .await?;
         Ok(Observation {
             used: used.value,
             // The provider is HISTORY-FREE: it reports the instantaneous peak (==
@@ -924,6 +959,12 @@ impl<C: Cluster + 'static, D: DimensionDescriptor> ResourceProvider for BandProv
             owners,
             staleness_secs: used.age_secs,
             memory_shrink_restart_free,
+            // The provider is RESTART-HISTORY-FREE: it reports "warmup not applicable"
+            // (`u64::MAX` ⇒ always past warmup). The reconcile layer raises it to the
+            // real observed-since-restart age (from the band's warmup-start epoch /
+            // pod startTime) before the decision, exactly as it folds in `peak_used`.
+            observed_for_secs: u64::MAX,
+            request_floor,
         })
     }
 
@@ -1330,6 +1371,10 @@ pub mod mock {
         /// dormant target (`NoTargetPods`) or a metric outage (`MetricsMissing`) so
         /// the reconcile loop's error/dormant arms are testable.
         pub read_used_error: Option<ProviderError>,
+        /// What `read_request_floor` returns — the live declared `requests.<resource>`
+        /// (default 0 = none). Set it to model a pod with a declared request floor
+        /// that a shrink may never carve beneath (Part 3).
+        pub request_floor: u64,
         applied: Mutex<Vec<SsaPatch>>,
     }
 
@@ -1342,6 +1387,7 @@ pub mod mock {
                 owners,
                 resize_restart_free: false,
                 read_used_error: None,
+                request_floor: 0,
                 applied: Mutex::new(Vec::new()),
             }
         }
@@ -1349,6 +1395,13 @@ pub mod mock {
         #[must_use]
         pub fn with_resize_restart_free(mut self, v: bool) -> Self {
             self.resize_restart_free = v;
+            self
+        }
+        /// Model a pod with a declared `requests.<resource>` floor (Part 3) — a
+        /// shrink may never carve the limit beneath this even if the band CR omits it.
+        #[must_use]
+        pub fn with_request_floor(mut self, v: u64) -> Self {
+            self.request_floor = v;
             self
         }
         /// Make `read_used` fail with `e` — model a dormant target (`NoTargetPods`)
@@ -1401,6 +1454,14 @@ pub mod mock {
         ) -> Result<bool, ProviderError> {
             Ok(self.resize_restart_free)
         }
+        async fn read_request_floor(
+            &self,
+            _t: &Target,
+            _layout: &LimitLayout,
+            _resource: &str,
+        ) -> Result<u64, ProviderError> {
+            Ok(self.request_floor)
+        }
     }
 }
 
@@ -1426,6 +1487,7 @@ mod forma_seed {
             floor_bytes: floor,
             ceiling_bytes: ceiling,
             request_floor_bytes: 0,
+            warmup_seconds: 0,
         }
     }
 

@@ -105,6 +105,11 @@ pub fn event_for(receipt: &TickReceipt) -> Option<(EventKind, &'static str, Stri
         TickReceipt::DryRunWouldApply { from, to } => {
             (Normal, "ShadowWouldApply", format!("shadow: would carve {from} -> {to} (dryRun — nothing written)"))
         }
+        TickReceipt::Warmup { observed_for, warmup } => (
+            Normal,
+            "Warmup",
+            format!("warming up ({observed_for}s of {warmup}s) — shrink held until a full duty cycle is observed (boot-spike guard)"),
+        ),
         TickReceipt::Observed { decision } => match decision {
             Decision::AtCeiling { current } => (Normal, "AtCeiling", format!("at ceiling {current} — would grow but capped")),
             Decision::NoSafeShrink { current } => (Normal, "AtFloor", format!("at floor {current} — no safe shrink")),
@@ -112,7 +117,9 @@ pub fn event_for(receipt: &TickReceipt) -> Option<(EventKind, &'static str, Stri
             Decision::Grow { from, to } | Decision::Shrink { from, to } => {
                 (Normal, "ObservedNoAct", format!("observed {from} -> {to} (directionality/observe-only — not applied)"))
             }
-            Decision::Hold => return None, // within the deadband — resting, no event
+            // a Warmup decision never reaches Observed (it maps to TickReceipt::Warmup
+            // above); kept exhaustive + silent, never a panic.
+            Decision::Hold | Decision::Warmup { .. } => return None, // resting, no event
         },
         TickReceipt::Cooldown => return None, // transient post-carve wait — no event
         TickReceipt::Dormant => return None, // no pods in the group — resting, no event
@@ -174,8 +181,10 @@ pub fn conditions_for(outcome: &TickOutcome, prior: &[Condition], generation: Op
         TickReceipt::Observed { decision: Decision::Hold | Decision::AtCeiling { .. } | Decision::NoSafeShrink { .. } }
             | TickReceipt::Dormant // an empty (scaled-to-zero) target is trivially at rest
     );
-    let throttled =
-        matches!(r, TickReceipt::Cooldown | TickReceipt::DeferredWouldRestart { .. } | TickReceipt::Stale { .. });
+    let throttled = matches!(
+        r,
+        TickReceipt::Cooldown | TickReceipt::DeferredWouldRestart { .. } | TickReceipt::Stale { .. } | TickReceipt::Warmup { .. }
+    );
     let stale = matches!(r, TickReceipt::Stale { .. });
     let conflict = matches!(r, TickReceipt::Conflict { .. });
 
@@ -249,6 +258,15 @@ pub fn status_for(
                 "used {used} > capacity {capacity} — metric not per-entity (e.g. local-path PVC = whole-node fs); held"
             ));
         }
+        TickReceipt::Warmup { observed_for, warmup } => {
+            // the workload is still warming up (restarted < warmup ago) — a shrink is
+            // HELD so an un-observed boot spike can be seen before any carve. The limit
+            // is left exactly as-is (the comfortable berth: undisturbed, golden).
+            s.phase = Some("Warmup".into());
+            s.last_decision = Some(format!(
+                "warming up ({observed_for}s of {warmup}s) — shrink held until a full duty cycle is observed"
+            ));
+        }
         TickReceipt::Stale { staleness_secs } => {
             s.phase = Some("Stale".into());
             s.last_decision = Some(format!("metric {staleness_secs}s stale — held"));
@@ -285,6 +303,11 @@ pub fn status_for(
                 Decision::NoLimit => ("NoLimit", "no limit set — cannot reason on utilization".to_string()),
                 Decision::Grow { from, to } | Decision::Shrink { from, to } => {
                     ("Observed", format!("observed {from} -> {to} (not applied)"))
+                }
+                // a Warmup decision is surfaced via TickReceipt::Warmup, never here;
+                // kept exhaustive (no panic) in case a future path routes it through.
+                Decision::Warmup { observed_for, warmup, .. } => {
+                    ("Warmup", format!("warming up ({observed_for}s of {warmup}s) — shrink held"))
                 }
             };
             s.phase = Some(phase.into());
@@ -352,6 +375,40 @@ pub fn status_for(
     s
 }
 
+/// The WARMUP state for this tick: `(observed_for_secs, warmup_start_epoch)`. Pure
+/// + testable; the single source of truth both reconcile binaries use to drive the
+/// warmup gate and persist the warmup-start epoch.
+///
+/// - `observed_for_secs = now - warmup_start_epoch` — how long the workload has been
+///   observed since its last (re)start. Fed into `ReconcileInput.observed_for_secs`
+///   so a shrink is held while it is below the band's `warmup_seconds`.
+/// - `warmup_start_epoch` — carried forward in status. It is RESET to `now` when a
+///   RESTART is detected: the live limit (`observed_capacity`) dropped vs the prior
+///   tick (a re-created pod fell back to its template default), which means a fresh
+///   boot — and therefore a fresh boot spike — is incoming, so the warmup clock must
+///   restart. Absent prior epoch ⇒ this is the first observation ⇒ start the clock now.
+///
+/// `warmup_seconds == 0` short-circuits to `(u64::MAX, now)` (gate disabled — always
+/// past warmup), so a band that opts out is byte-identical to the pre-warmup path.
+#[must_use]
+pub fn warmup_state(prior: Option<&BandStatus>, observed_capacity: Option<u64>, warmup_seconds: u64, now: i64) -> (u64, i64) {
+    if warmup_seconds == 0 {
+        return (u64::MAX, now);
+    }
+    let prior_epoch = prior.and_then(|p| p.warmup_start_epoch);
+    let prior_cap = prior.and_then(|p| p.observed_capacity).and_then(|c| u64::try_from(c).ok());
+    // RESTART DETECTION: a strictly-lower live limit than last tick ⇒ a re-created pod
+    // fell back to its template default ⇒ a fresh boot ⇒ restart the warmup clock so
+    // the (un-observed) boot spike is seen before any carve resumes.
+    let restarted = matches!((observed_capacity, prior_cap), (Some(now_cap), Some(was)) if now_cap < was);
+    let start = match prior_epoch {
+        Some(e) if !restarted => e,
+        _ => now, // first observation, or a detected restart ⇒ (re)start the clock
+    };
+    let observed_for = u64::try_from((now - start).max(0)).unwrap_or(0);
+    (observed_for, start)
+}
+
 /// The requeue interval for the NEXT tick, keyed on what just happened — the
 /// real-time corollary of the restart-cost axis. A permitted carve (golden under
 /// the default policy) or a shadow requeues at the fast restart-free cadence
@@ -371,6 +428,10 @@ pub fn next_requeue(receipt: &TickReceipt, cooldowns: &ClassCooldowns) -> Durati
         }
         // a refused crossing: back off by exactly the blocked class.
         TickReceipt::DeferredWouldRestart { class, .. } => cooldowns.for_class(*class),
+        // warming up: re-look at the FAST cadence so the boot spike is sampled
+        // promptly (and folds into the peak) and the band can carve as soon as the
+        // warmup window elapses — never the slow window (which would delay convergence).
+        TickReceipt::Warmup { .. } => cooldowns.restart_free,
         // non-mutating / transient: the mid window.
         TickReceipt::Observed { .. }
         | TickReceipt::Cooldown

@@ -230,6 +230,12 @@ async fn reconcile<B: Band, D: DimensionDescriptor + Default>(
             let decay = obj.peak_decay().clamp(0.0, 0.999);
             ((prior_peak as f64) * decay) as u64
         });
+    // WARMUP: how long this target has been observed since its last (re)start, and
+    // the (possibly restart-reset) warmup-start epoch to carry forward. A shrink is
+    // HELD while observed_for < warmup_seconds (the un-observed-boot-spike OOM fix).
+    let prior_capacity = obj.status().and_then(|s| s.observed_capacity).and_then(|c| u64::try_from(c).ok());
+    let (observed_for_secs, warmup_start_epoch) =
+        breathe_runtime::warmup_state(obj.status(), prior_capacity, obj.warmup_seconds(), now_secs());
     let input = ReconcileInput {
         target: &target,
         cfg: &cfg,
@@ -245,11 +251,15 @@ async fn reconcile<B: Band, D: DimensionDescriptor + Default>(
         force,
         predictive,
         peak_used,
+        observed_for_secs: Some(observed_for_secs),
     };
 
     let outcome = reconcile_one(&input, &provider).await;
     let prior_phase = obj.status().and_then(|s| s.phase.as_deref()).map(String::from);
     let mut status = status_for(&outcome, obj.status(), obj.cooldown_seconds(), obj.generation());
+    // carry the warmup-start epoch forward (reset on a detected restart) so the next
+    // tick measures observed-since-restart correctly — the warmup gate's persistence.
+    status.warmup_start_epoch = Some(warmup_start_epoch);
     // M3 (Dev Loop): surface the namespace's ephemeral-env cost-guard (EnvId +
     // Densa cost-remaining) on the band status. Read-only; empty (no label / no
     // Densa) ⇒ no change (the rio default).

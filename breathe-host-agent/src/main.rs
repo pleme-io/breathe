@@ -219,6 +219,10 @@ async fn reconcile_host_with<B: Band, D: DimensionDescriptor>(
         force,
         predictive: None,
         peak_used,
+        // host dimensions (arc/cgroup/sysctl) have no restart/boot-spike concept ⇒
+        // warmup is not applicable (u64::MAX ⇒ the gate never fires). A host cgroup
+        // shrink targets MemoryHigh (soft/reclaim) already — never an OOM-kill.
+        observed_for_secs: None,
     };
 
     let outcome = reconcile_one(&input, &provider).await;
