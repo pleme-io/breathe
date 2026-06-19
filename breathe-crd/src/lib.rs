@@ -262,14 +262,19 @@ pub trait Band:
 
     // ── Promotion lifecycle (default methods; one law for every band kind) ─────
 
-    /// Resolve the effective promotion lifecycle: explicit `mode`, else legacy
-    /// `dryRun:true` → Shadow, else the fleet default (`ShadowConfirmEffect`).
+    /// Resolve the effective promotion lifecycle. Permanent shadow (never carve)
+    /// is reachable ONLY through the EXPLICIT `mode: shadow` — a deliberate,
+    /// eyes-open critical-path hold. It is NOT reachable through the legacy
+    /// `dryRun:true` boolean: a band parked never-live by a bare boolean is the
+    /// anti-pattern (it backs into a state with no exit). So when no explicit
+    /// `mode` is set, the lifecycle is always the bounded `ShadowConfirmEffect`
+    /// — start shadowed, then auto-promote to carving once the clean-observation
+    /// window proves it safe — regardless of `dryRun`. `dryRun:true` with no
+    /// `mode` therefore means exactly "start shadowed and calibrate" (which the
+    /// default already does), never "shadow forever". This makes "the band never
+    /// goes live" a state that is unrepresentable without explicit operator intent.
     fn promotion_mode(&self) -> PromotionMode {
-        match self.mode_spec() {
-            Some(m) => m,
-            None if self.dry_run() => PromotionMode::Shadow,
-            None => PromotionMode::ShadowConfirmEffect,
-        }
+        self.mode_spec().unwrap_or(PromotionMode::ShadowConfirmEffect)
     }
 
     /// The operator fast-path: `breathe.pleme.io/confirmed: "true"` promotes now.
@@ -2736,11 +2741,99 @@ mod tests {
         assert!(!b.effective_dry_run(0), "effect mode carves immediately");
     }
 
+    /// REGRESSION (the never-goes-live trap): a band set with the legacy
+    /// `dryRun:true` boolean and NO explicit `mode` must NOT resolve to permanent
+    /// `Shadow`. Before the fix it did, so such a band carved never and had no
+    /// exit — it was parked live-forever-never by a bare boolean. The invariant:
+    /// permanent shadow is reachable ONLY by the explicit `mode: shadow`; the
+    /// legacy boolean now means the bounded `ShadowConfirmEffect` (calibrate,
+    /// then auto-promote). A band that "never goes live" without explicit operator
+    /// intent is now unrepresentable.
     #[test]
-    fn legacy_dry_run_true_resolves_to_shadow() {
+    fn legacy_dry_run_true_calibrates_then_promotes_not_permanent_shadow() {
+        // No explicit mode + dryRun:true ⇒ the bounded FSM, NOT permanent Shadow.
         let b = mk_band(serde_json::json!({ "dryRun": true }), None, None);
+        assert_eq!(
+            b.promotion_mode(),
+            PromotionMode::ShadowConfirmEffect,
+            "legacy dryRun:true must map to the bounded lifecycle, never permanent Shadow"
+        );
+
+        // With a clean-observation window it auto-promotes off shadow — the exit a
+        // permanent-Shadow band never had. Ready since epoch 1000, confirm_after 1800.
+        let promoted = mk_band(
+            serde_json::json!({ "dryRun": true }),
+            Some(ready_status(EPOCH_1000, serde_json::json!([]))),
+            None,
+        );
+        assert!(
+            promoted.effective_dry_run(1000 + 100),
+            "still shadowed while the calibration window is open"
+        );
+        assert!(
+            !promoted.effective_dry_run(1000 + 1801),
+            "REGRESSION: legacy dryRun:true band auto-promotes to live after the clean window — never parked forever"
+        );
+    }
+
+    /// The deliberate hold still works: explicit `mode: shadow` IS permanent (the
+    /// one eyes-open way to never carve — critical-path holds rely on it).
+    #[test]
+    fn explicit_mode_shadow_is_still_permanent() {
+        let b = mk_band(
+            serde_json::json!({ "mode": "shadow", "dryRun": true }),
+            Some(ready_status(EPOCH_1000, serde_json::json!([]))),
+            None,
+        );
         assert_eq!(b.promotion_mode(), PromotionMode::Shadow);
-        assert!(b.effective_dry_run(i64::MAX / 2));
+        assert!(
+            b.effective_dry_run(i64::MAX / 2),
+            "explicit mode:shadow never carves regardless of dryRun or window"
+        );
+    }
+
+    /// FORCING-FUNCTION (the invariant, not one example): across the WHOLE
+    /// (mode_spec × dryRun) input space, a band that "never carves even with a
+    /// long-clean window" is reachable ONLY through an explicit `mode` of
+    /// `Shadow`/`Suspended` — NEVER through the legacy `dryRun` boolean alone.
+    /// This is the mechanical statement of "it never goes live should require
+    /// explicit operator intent": enumerate every authoring combination and prove
+    /// no boolean-only path lands in a never-exit state. A future edit that
+    /// re-introduces a `dryRun ⇒ permanent-shadow` arm fails HERE, not in prod.
+    #[test]
+    fn never_carve_requires_explicit_mode_across_the_whole_input_space() {
+        let modes = [
+            (None, "unset"),
+            (Some("shadow"), "shadow"),
+            (Some("effect"), "effect"),
+            (Some("shadowConfirmEffect"), "shadowConfirmEffect"),
+            (Some("suspended"), "suspended"),
+        ];
+        let long_past = i64::MAX / 2; // a clean-observation window that has surely elapsed
+        for (mode, mode_label) in modes {
+            for dry_run in [false, true] {
+                let mut spec = serde_json::Map::new();
+                if let Some(m) = mode {
+                    spec.insert("mode".into(), serde_json::json!(m));
+                }
+                spec.insert("dryRun".into(), serde_json::json!(dry_run));
+                // Give every band a long-clean Ready window so the ONLY thing that
+                // can keep it shadowed is a deliberate permanent mode.
+                let b = mk_band(
+                    serde_json::Value::Object(spec),
+                    Some(ready_status(EPOCH_1000, serde_json::json!([]))),
+                    None,
+                );
+                let never_carves = b.effective_dry_run(long_past);
+                let explicitly_held = matches!(mode, Some("shadow") | Some("suspended"));
+                assert_eq!(
+                    never_carves, explicitly_held,
+                    "INVARIANT VIOLATED for (mode={mode_label}, dryRun={dry_run}): a band may stay \
+                     never-live with a long-clean window IFF it carries an explicit permanent mode; \
+                     the legacy dryRun boolean must never produce a never-exit state"
+                );
+            }
+        }
     }
 
     #[test]

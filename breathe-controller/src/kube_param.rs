@@ -117,7 +117,10 @@ pub async fn reconcile_kube_param(obj: Arc<KubeParamBand>, ctx: Arc<Ctx>) -> Res
         cfg: &cfg,
         max_staleness_secs: obj.max_staleness_seconds(),
         in_cooldown,
-        dry_run: obj.dry_run(),
+        // FSM-derived gate (the promotion lifecycle), NOT the raw `dry_run` boolean:
+        // a `dryRun:true` CR-field band calibrates then auto-promotes like every
+        // other plane; permanent shadow needs explicit `mode: shadow`.
+        dry_run: obj.effective_dry_run(now_secs()),
         policy: obj.disruption_policy(),
         force,
         predictive: None,
