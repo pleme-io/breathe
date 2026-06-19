@@ -105,9 +105,12 @@ pub async fn reconcile_app_band(obj: Arc<AppBand>, ctx: Arc<Ctx>) -> Result<Acti
         dir: obj.spec.provider_directionality(),
     };
     // Select the actuator backend by the layout's variant tag (never the command
-    // string). write_enabled = !dryRun; apply is ALSO gated by dryRun upstream, so a
-    // shadow band never writes regardless. read_used flows to the metric KubeCluster.
-    let write_enabled = !obj.dry_run();
+    // string). write_enabled = !effective_dry_run; apply is ALSO gated by the same
+    // value upstream, so a shadowed band never writes regardless. We gate on the
+    // FSM-derived `effective_dry_run` (the promotion lifecycle), NOT the raw
+    // `dry_run` boolean — so a `dryRun:true` app-band calibrates then auto-promotes
+    // like every other plane (permanent shadow needs explicit `mode: shadow`).
+    let write_enabled = !obj.effective_dry_run(now_secs());
     let backend = match obj.spec.actuator_kind() {
         AppActuatorKind::ConfigReload => ActuatorBackend::config_reload_default(write_enabled),
         AppActuatorKind::ApiCall => ActuatorBackend::api_call(write_enabled),
@@ -130,7 +133,7 @@ pub async fn reconcile_app_band(obj: Arc<AppBand>, ctx: Arc<Ctx>) -> Result<Acti
         cfg: &cfg,
         max_staleness_secs: obj.max_staleness_seconds(),
         in_cooldown,
-        dry_run: obj.dry_run(),
+        dry_run: obj.effective_dry_run(now_secs()),
         policy: obj.disruption_policy(),
         force,
         predictive: None,
