@@ -24,6 +24,33 @@
 
 /// Tunable band/step policy. Every knob is config-driven (a `MemoryBand` CR's
 /// spec → the watcher's args). Defaults encode the 80/20 setpoint with a
+/// What a band does when its working-set reading is UNTRUSTED — a `0` reading
+/// from a running workload (almost always a broken/missing/lagging metric, not a
+/// real "needs nothing"), or an explicitly missing scrape. The non-negotiable
+/// invariant regardless of policy: **an untrusted reading may NEVER drive a
+/// downward carve** — trusting it carves to floor and OOM-kills the pod when its
+/// true working set returns (the fleet-wide split-brain). The policy only
+/// chooses what to do ABOVE that floor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum MetricMissingPolicy {
+    /// DEFAULT + safest. Restore headroom: if the limit currently sits below the
+    /// durable demonstrated-peak safe floor ([`safe_min`] computed from the
+    /// carried peak), grow back up to it; otherwise hold. A blind observer
+    /// assumes the worst and provides the headroom it cannot prove is unneeded.
+    #[default]
+    RestoreHeadroom,
+    /// Hold the current limit exactly — never shrink, never grow — until a
+    /// trusted reading returns. For bands where a transient metric gap should not
+    /// move the limit at all.
+    Hold,
+    /// Treat `0` as a REAL reading and run the band law normally — the gate never
+    /// fires. For dimensions where zero is legitimate, not a broken metric:
+    /// node-COUNT bands (a pool scaled to zero genuinely has 0 nodes), and any
+    /// host/CR-field dimension whose `0` is a true value. Never use for memory/cpu
+    /// of a running pod, where `0` is always a degraded metric.
+    Trust,
+}
+
 /// ~15-point deadband (70–85%).
 #[derive(Debug, Clone)]
 pub struct BandConfig {
@@ -60,6 +87,11 @@ pub struct BandConfig {
     /// folds into the peak) before any carve. Default `600` (10 min). A grow is NEVER
     /// held — buying headroom is always safe. `0` = warmup disabled.
     pub warmup_seconds: u64,
+    /// What to do when the working-set reading is UNTRUSTED (a `0` from a running
+    /// workload — a degraded metric, not a real zero). An untrusted reading NEVER
+    /// shrinks regardless of this; the policy chooses hold vs restore-headroom
+    /// above the floor. Default [`MetricMissingPolicy::RestoreHeadroom`].
+    pub metric_missing_policy: MetricMissingPolicy,
 }
 
 impl Default for BandConfig {
@@ -74,6 +106,7 @@ impl Default for BandConfig {
             ceiling_bytes: 16 * (1 << 30),
             request_floor_bytes: 0,
             warmup_seconds: 600,
+            metric_missing_policy: MetricMissingPolicy::RestoreHeadroom,
         }
     }
 }
@@ -559,7 +592,49 @@ pub fn decide_with<L: ControlLaw>(
     if current_limit > cfg.ceiling_bytes {
         return Decision::Shrink { from: current_limit, to: cfg.ceiling_bytes };
     }
+    if let Some(d) = metric_untrusted_decision(working_set, peak_working_set, current_limit, cfg) {
+        return d;
+    }
     safety_clamp(law.propose(working_set, current_limit, cfg), working_set, peak_working_set, current_limit, cfg)
+}
+
+/// The METRIC-TRUST GATE (the split-brain fail-safe). A `working_set == 0`
+/// reading from a running workload is almost always a broken/missing/lagging
+/// metric, not a real "needs nothing" — trusting it carves to floor and
+/// OOM-kills the pod when its true RSS returns (the fleet-wide split-brain where
+/// a degraded metric pipeline reports `used=0` for many pods). The
+/// non-negotiable invariant: an untrusted reading may NEVER drive a downward
+/// carve. Returns `Some(safe_decision)` when the reading is untrusted (per the
+/// configured [`MetricMissingPolicy`]), `None` when the reading is trusted and
+/// the normal band law should run. A grow into this gate is impossible — a 0
+/// reading can only ever Hold or restore headroom UP to the durable peak floor.
+#[must_use]
+pub fn metric_untrusted_decision(
+    working_set: u64,
+    peak_working_set: u64,
+    current_limit: u64,
+    cfg: &BandConfig,
+) -> Option<Decision> {
+    if working_set != 0 {
+        return None; // trusted reading — run the law
+    }
+    match cfg.metric_missing_policy {
+        // The dimension treats 0 as a real value (node-count scaled-to-zero, etc.)
+        // — never gate; run the law as if the reading were trusted.
+        MetricMissingPolicy::Trust => None,
+        // Never shrink; if a prior carve (or a risen floor) left the limit below
+        // the durable demonstrated-peak safe floor, grow back up to it.
+        MetricMissingPolicy::RestoreHeadroom => {
+            let safe = safe_min(peak_working_set, 0, cfg);
+            if current_limit < safe {
+                Some(Decision::Grow { from: current_limit, to: safe })
+            } else {
+                Some(Decision::Hold)
+            }
+        }
+        // Freeze the limit exactly until a trusted reading returns.
+        MetricMissingPolicy::Hold => Some(Decision::Hold),
+    }
 }
 
 /// Rate-aware sibling of [`decide_with`]: runs a law's *feed-forward*
@@ -583,6 +658,9 @@ pub fn decide_with_rate<L: ControlLaw>(
     }
     if current_limit > cfg.ceiling_bytes {
         return Decision::Shrink { from: current_limit, to: cfg.ceiling_bytes };
+    }
+    if let Some(d) = metric_untrusted_decision(working_set, peak_working_set, current_limit, cfg) {
+        return d;
     }
     safety_clamp(
         law.propose_with_rate(working_set, current_limit, cfg, rate),
@@ -1463,6 +1541,67 @@ mod tests {
 
     fn cfg() -> BandConfig {
         BandConfig::default()
+    }
+
+    // ── metric-trust gate (the split-brain fail-safe) ──────────────────────
+
+    /// THE BUG (fleet-wide `dry-run: 0 -> floor`, live on vector → OOM): a `0`
+    /// working-set reading from a running pod must NEVER drive a shrink. Before
+    /// the gate, `util = 0/limit = 0 < shrink_below` proposed a shrink that
+    /// `safety_clamp` lifted only to the floor — carving the pod to its floor on a
+    /// broken metric, then OOM-killing it when real RSS returned.
+    #[test]
+    fn a_zero_reading_never_shrinks() {
+        let c = cfg(); // RestoreHeadroom default
+        // limit comfortably above floor; a trusted low reading would shrink, but a
+        // 0 reading is untrusted ⇒ never shrink. peak 0 ⇒ safe_min == floor ≤ limit ⇒ hold.
+        let limit = 1 * GI;
+        assert_eq!(
+            decide_with(&BandLaw, 0, 0, limit, &c),
+            Decision::Hold,
+            "a 0 (untrusted) reading must hold, never shrink to floor"
+        );
+    }
+
+    /// RestoreHeadroom: if a prior carve stranded the limit below the durable
+    /// demonstrated-peak safe floor, a 0 reading GROWS it back (restore headroom)
+    /// — the vector fix: never leave a pod starved while the observer is blind.
+    #[test]
+    fn a_zero_reading_restores_headroom_to_the_durable_peak_floor() {
+        let c = cfg();
+        let peak = 800 * MI; // durable demonstrated peak (carried from status)
+        let stranded = 300 * MI; // a prior carve left the limit here (above floor 256Mi)
+        let safe = (peak as f64 / c.setpoint).ceil() as u64; // ceil(800Mi / 0.80) = 1000Mi
+        match decide_with(&BandLaw, 0, peak, stranded, &c) {
+            Decision::Grow { to, .. } => assert_eq!(to, safe, "restore to the durable-peak safe floor"),
+            other => panic!("expected a headroom-restoring grow, got {other:?}"),
+        }
+    }
+
+    /// The Hold policy freezes the limit exactly on an untrusted reading.
+    #[test]
+    fn hold_policy_freezes_on_a_zero_reading() {
+        let c = BandConfig { metric_missing_policy: MetricMissingPolicy::Hold, ..cfg() };
+        // even with a durable peak that would justify a restore, Hold freezes.
+        assert_eq!(decide_with(&BandLaw, 0, 800 * MI, 300 * MI, &c), Decision::Hold);
+    }
+
+    /// `Trust` (node-count + any dimension where 0 is real) NEVER gates — a 0
+    /// reading runs the band law normally (a pool scaled to zero stays at zero,
+    /// not held/restored as if the metric were broken).
+    #[test]
+    fn trust_policy_treats_zero_as_a_real_reading() {
+        let c = BandConfig { metric_missing_policy: MetricMissingPolicy::Trust, ..cfg() };
+        assert!(metric_untrusted_decision(0, 0, 1 * GI, &c).is_none(), "Trust must not gate a 0 reading");
+    }
+
+    /// A TRUSTED reading is unaffected — the gate only fires on `used == 0`.
+    #[test]
+    fn a_nonzero_reading_runs_the_normal_law() {
+        let c = cfg();
+        // util = 0.50 < shrink_below → a normal (clamped) shrink, NOT gated.
+        assert!(matches!(decide_with(&BandLaw, 500 * MI, 500 * MI, 1 * GI, &c), Decision::Shrink { .. }));
+        assert!(metric_untrusted_decision(500 * MI, 500 * MI, 1 * GI, &c).is_none());
     }
 
     // ── band edges ─────────────────────────────────────────────────────────
@@ -2736,7 +2875,10 @@ mod tests {
     #[test]
     fn warmup_workload_is_never_shrunk_no_matter_how_idle() {
         let c = cfg(); // warmup_seconds 600
-        for &used in &[0u64, 10 * MI, 100 * MI, 350 * MI] {
+        // TRUSTED idle readings (used ≥ 1). A `used == 0` reading is the
+        // metric-trust gate's domain (untrusted → Hold/restore, also never
+        // shrinks) — covered by `a_zero_reading_never_shrinks`, not warmup.
+        for &used in &[1u64, 10 * MI, 100 * MI, 350 * MI] {
             for &observed_for in &[0u64, 1, 60, 300, 599] {
                 let o = Observation {
                     used, peak_used: used, capacity: 2 * GI, owners: ours(),

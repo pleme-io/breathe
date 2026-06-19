@@ -376,6 +376,9 @@ fn band_config_of(
         ceiling_bytes: parse(ceiling)?,
         request_floor_bytes,
         warmup_seconds,
+        // Default to the safe split-brain policy; a band CRD knob can override it
+        // when the field is added to the spec (currently the proven default).
+        metric_missing_policy: breathe_control::MetricMissingPolicy::default(),
     })
 }
 
@@ -1593,6 +1596,10 @@ impl BreatheCloudPoolSpec {
             request_floor_bytes: 0,
             // node Formas have no restart/boot-spike concept ⇒ warmup disabled.
             warmup_seconds: 0,
+            // A node-COUNT of 0 is a REAL value (a pool scaled to zero), not a
+            // degraded metric — so the split-brain gate must NOT fire here; run
+            // the law on the true count. (Memory/cpu pod bands gate 0 as untrusted.)
+            metric_missing_policy: breathe_control::MetricMissingPolicy::Trust,
         }
     }
 }
