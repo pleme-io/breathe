@@ -120,48 +120,26 @@ fn classify_all_pass_is_ready() {
     assert!(matches!(classify(candidate(), &receipts, 3), ValidationStep::Ready(_)));
 }
 
-// ── FSM reflection / convergence (the BFS reachability forcing-function) ──
+// ── FSM convergence (via the shared shigoto-fsm forcing-function) ──
+// The hand-rolled BFS reachability + terminal-soundness + closed-graph walks were
+// replaced by the fleet `shigoto_fsm` harness (FaseRecurso impls ConvergentFsm).
+// One call proves: closed graph, terminals-have-no-successors-and-are-good, no
+// dead-end traps, AND every reachable phase reaches a good terminal — the same
+// guarantees, now from the shared primitive instead of four copies fleet-wide.
 
 #[test]
-fn terminals_are_exactly_three_and_have_no_successors() {
-    let terminals: Vec<_> = FaseRecurso::ALL.into_iter().filter(|f| f.is_terminal()).collect();
-    assert_eq!(terminals.len(), 3, "expected exactly 3 terminals, got {terminals:?}");
-    for f in terminals {
-        assert!(f.legal_successors().is_empty(), "{f} is terminal but has successors");
-        assert!(f.is_good_terminal(), "{f} terminal must be good");
-    }
+fn admission_fsm_is_convergent() {
+    shigoto_fsm::assert_convergent_fsm::<FaseRecurso>()
+        .expect("the resource-admission FSM must be convergent (every phase reaches a good terminal)");
 }
 
+/// The domain-specific count still pinned locally: exactly three good terminals
+/// (Aposentado retire / Rejeitado refuse / Expirado timeout) — a property of THIS
+/// FSM, not the generic convergence harness.
 #[test]
-fn every_reachable_phase_reaches_a_good_terminal() {
-    // The convergence claim made mechanical: from EVERY phase, a good terminal is
-    // reachable over the legal edges. This is non-vacuous only because Validando
-    // has the Rejeitado/Expirado exits (the FSM-completeness fix).
-    for start in FaseRecurso::ALL {
-        let mut seen = std::collections::HashSet::new();
-        let mut stack = vec![start];
-        let mut reached_good = false;
-        while let Some(f) = stack.pop() {
-            if !seen.insert(f) {
-                continue;
-            }
-            if f.is_good_terminal() {
-                reached_good = true;
-            }
-            stack.extend(f.legal_successors().iter().copied());
-        }
-        assert!(reached_good, "phase {start} cannot reach a good terminal — stuck state!");
-    }
-}
-
-#[test]
-fn legal_successors_reference_only_valid_phases() {
-    let all: std::collections::HashSet<_> = FaseRecurso::ALL.into_iter().collect();
-    for f in FaseRecurso::ALL {
-        for &s in f.legal_successors() {
-            assert!(all.contains(&s), "{f} → {s} references an unknown phase");
-        }
-    }
+fn exactly_three_terminals() {
+    let terminals = FaseRecurso::ALL.into_iter().filter(|f| f.is_terminal()).count();
+    assert_eq!(terminals, 3, "expected exactly 3 terminals");
 }
 
 #[test]
