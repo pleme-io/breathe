@@ -10,6 +10,10 @@ description = "Validated-resource admission — the phantom-typestate FSM + the 
 
 [dependencies]
 breathe-provider = { path = "../breathe-provider", version = "0.1.0" }
+# The typed-FSM convergence proof primitive (every reachable state reaches a good
+# terminal). breathe-admission's FaseRecurso is its first cross-repo consumer —
+# the hand-rolled BFS reachability tests are replaced by the shared harness.
+shigoto-fsm = "0.1"
 async-trait = "0.1"
 serde = { version = "1", features = ["derive"] }
 schemars = "0.8"

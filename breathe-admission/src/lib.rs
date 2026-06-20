@@ -173,6 +173,27 @@ impl std::fmt::Display for FaseRecurso {
     }
 }
 
+/// The resource-admission lifecycle is a convergent typed FSM (the eclusa/galho
+/// discipline): every reachable phase reaches a GOOD terminal over the legal
+/// edges, and the only terminals are good ones. Implementing the shared
+/// [`shigoto_fsm::ConvergentFsm`] trait replaces the hand-rolled BFS reachability
+/// tests with the fleet harness — `assert_convergent_fsm::<FaseRecurso>()` proves
+/// closed-graph + terminal-soundness + no-traps + universal convergence in one call.
+impl shigoto_fsm::ConvergentFsm for FaseRecurso {
+    fn all() -> &'static [Self] {
+        &Self::ALL
+    }
+    fn successors(&self) -> Vec<Self> {
+        self.legal_successors().to_vec()
+    }
+    fn is_terminal(&self) -> bool {
+        (*self).is_terminal()
+    }
+    fn is_good_terminal(&self) -> bool {
+        (*self).is_good_terminal()
+    }
+}
+
 // ============================================================================
 // The phantom typestate — the in-Rust enforcement (illegal transition = E0599).
 // ============================================================================
