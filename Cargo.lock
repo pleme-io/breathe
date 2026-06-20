@@ -485,6 +485,7 @@ dependencies = [
  "breathe-provider",
  "schemars 0.8.22",
  "serde",
+ "shigoto-fsm",
 ]
 
 [[package]]
@@ -3743,6 +3744,12 @@ checksum = "f40ca3c46823713e0d4209592e8d6e826aa57e928f09752619fc696c499637f6"
 dependencies = [
  "lazy_static",
 ]
+
+[[package]]
+name = "shigoto-fsm"
+version = "0.1.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d56937e92908afc6ab48627596565d10a019837071a8ae2024e2394f06395ac7"
 
 [[package]]
 name = "shikumi"
