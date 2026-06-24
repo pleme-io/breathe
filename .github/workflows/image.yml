@@ -36,7 +36,7 @@ jobs:
       imageAttr: image
       imageName: pleme-io/breathe-controller
       tag: latest
-      runner: rio-builder
+      runner: rio-build-01
     secrets: inherit
   host-agent:
     name: breathe-host-agent image → ghcr.io (rio-builder)
@@ -45,7 +45,7 @@ jobs:
       imageAttr: agent-image
       imageName: pleme-io/breathe-host-agent
       tag: latest
-      runner: rio-builder
+      runner: rio-build-01
     secrets: inherit
   api-server:
     name: breathe-api-server image → ghcr.io (rio-builder)
@@ -54,5 +54,5 @@ jobs:
       imageAttr: api-server-image
       imageName: pleme-io/breathe-api-server
       tag: latest
-      runner: rio-builder
+      runner: rio-build-01
     secrets: inherit
