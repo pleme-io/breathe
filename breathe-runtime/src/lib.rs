@@ -117,6 +117,15 @@ pub fn event_for(receipt: &TickReceipt) -> Option<(EventKind, &'static str, Stri
             "Warmup",
             format!("warming up ({observed_for}s of {warmup}s) — shrink held until a full duty cycle is observed (boot-spike guard)"),
         ),
+        TickReceipt::Throttled { restarting } => (
+            Normal,
+            "ThrottledHold",
+            if *restarting {
+                "recently restarted / crash-looping — shrink held (low usage is a symptom, not safe slack)".to_string()
+            } else {
+                "actively throttled — shrink held + growing out of the cap (usage is CFS-capped; throttle reveals the suppressed demand)".to_string()
+            },
+        ),
         TickReceipt::Observed { decision } => match decision {
             Decision::AtCeiling { current } => (Normal, "AtCeiling", format!("at ceiling {current} — would grow but capped")),
             Decision::NoSafeShrink { current } => (Normal, "AtFloor", format!("at floor {current} — no safe shrink")),
@@ -124,9 +133,9 @@ pub fn event_for(receipt: &TickReceipt) -> Option<(EventKind, &'static str, Stri
             Decision::Grow { from, to } | Decision::Shrink { from, to } => {
                 (Normal, "ObservedNoAct", format!("observed {from} -> {to} (directionality/observe-only — not applied)"))
             }
-            // a Warmup decision never reaches Observed (it maps to TickReceipt::Warmup
-            // above); kept exhaustive + silent, never a panic.
-            Decision::Hold | Decision::Warmup { .. } => return None, // resting, no event
+            // a Warmup/Throttled decision never reaches Observed (it maps to its own
+            // TickReceipt above); kept exhaustive + silent, never a panic.
+            Decision::Hold | Decision::Warmup { .. } | Decision::Throttled { .. } => return None, // resting, no event
         },
         TickReceipt::Cooldown => return None, // transient post-carve wait — no event
         TickReceipt::Dormant => return None, // no pods in the group — resting, no event
@@ -190,7 +199,7 @@ pub fn conditions_for(outcome: &TickOutcome, prior: &[Condition], generation: Op
     );
     let throttled = matches!(
         r,
-        TickReceipt::Cooldown | TickReceipt::DeferredWouldRestart { .. } | TickReceipt::Stale { .. } | TickReceipt::Warmup { .. }
+        TickReceipt::Cooldown | TickReceipt::DeferredWouldRestart { .. } | TickReceipt::Stale { .. } | TickReceipt::Warmup { .. } | TickReceipt::Throttled { .. }
     );
     let stale = matches!(r, TickReceipt::Stale { .. });
     let conflict = matches!(r, TickReceipt::Conflict { .. });
@@ -227,6 +236,7 @@ pub fn conditions_for(outcome: &TickOutcome, prior: &[Condition], generation: Op
 /// `status_for` no longer increments counters itself (the dual-source-of-truth the
 /// Urdume-microservice refactor removed).
 #[must_use]
+#[allow(clippy::too_many_lines)] // one exhaustive receipt→status match; the +1 Throttled arm pushed it over
 pub fn status_for(
     outcome: &TickOutcome,
     prior: Option<&BandStatus>,
@@ -278,6 +288,18 @@ pub fn status_for(
                 "warming up ({observed_for}s of {warmup}s) — shrink held until a full duty cycle is observed"
             ));
         }
+        TickReceipt::Throttled { restarting } => {
+            // the no-starve hold: the workload is throttled / crash-looping, so its
+            // (CFS-capped) low usage is a symptom, not safe slack — the shrink is HELD
+            // and the band grows OUT of the throttle (the limit only ever rises). The
+            // comfortable berth: undisturbed, never starved. Closes the CPU ratchet.
+            s.phase = Some("Throttled".into());
+            s.last_decision = Some(if *restarting {
+                "recently restarted / crash-looping — shrink held (low usage is not safe slack)".into()
+            } else {
+                "actively throttled — shrink held, growing out of the cap (usage is CFS-capped)".into()
+            });
+        }
         TickReceipt::Stale { staleness_secs } => {
             s.phase = Some("Stale".into());
             s.last_decision = Some(format!("metric {staleness_secs}s stale — held"));
@@ -319,6 +341,11 @@ pub fn status_for(
                 // kept exhaustive (no panic) in case a future path routes it through.
                 Decision::Warmup { observed_for, warmup, .. } => {
                     ("Warmup", format!("warming up ({observed_for}s of {warmup}s) — shrink held"))
+                }
+                // a Throttled decision is surfaced via TickReceipt::Throttled, never
+                // here; kept exhaustive (no panic) in case a future path routes it.
+                Decision::Throttled { restarting, .. } => {
+                    ("Throttled", format!("throttled/restarting={restarting} — shrink held (no-starve)"))
                 }
             };
             s.phase = Some(phase.into());
@@ -430,6 +457,7 @@ fn receipt_kind_str(r: &TickReceipt) -> &'static str {
         TickReceipt::DeferredWouldRestart { .. } => "DeferredWouldRestart",
         TickReceipt::Observed { .. } => "Observed",
         TickReceipt::Warmup { .. } => "Warmup",
+        TickReceipt::Throttled { .. } => "Throttled",
         TickReceipt::Dormant => "Dormant",
         TickReceipt::Error { .. } => "Error",
     }
@@ -500,10 +528,12 @@ pub fn next_requeue(receipt: &TickReceipt, cooldowns: &ClassCooldowns) -> Durati
         }
         // a refused crossing: back off by exactly the blocked class.
         TickReceipt::DeferredWouldRestart { class, .. } => cooldowns.for_class(*class),
-        // warming up: re-look at the FAST cadence so the boot spike is sampled
-        // promptly (and folds into the peak) and the band can carve as soon as the
-        // warmup window elapses — never the slow window (which would delay convergence).
-        TickReceipt::Warmup { .. } => cooldowns.restart_free,
+        // warming up OR throttled/restarting: re-look at the FAST cadence. A warming-up
+        // workload needs its boot spike sampled promptly (folds into the peak so it can
+        // carve the moment warmup elapses); a throttled/restarting workload is the one
+        // we most want to track closely (it is being starved RIGHT NOW) so we observe
+        // the throttle clearing + grow it out of the cap promptly. Never the slow window.
+        TickReceipt::Warmup { .. } | TickReceipt::Throttled { .. } => cooldowns.restart_free,
         // non-mutating / transient: the mid window.
         TickReceipt::Observed { .. }
         | TickReceipt::Cooldown

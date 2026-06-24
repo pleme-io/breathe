@@ -12,7 +12,7 @@
 
 use breathe_provider::{
     ApplySemantics, DimensionDescriptor, DimensionId, Directionality, LimitLayout, MetricSource,
-    Target,
+    SuppressedDemand, Target,
 };
 
 /// memory/cpu live on the pod template (Deployment/StatefulSet) or top-level on a
@@ -59,6 +59,12 @@ impl DimensionDescriptor for MemoryDescriptor {
             selector: target.pod_selector.clone(),
         }
     }
+    /// Memory's suppressed demand is ALREADY visible: the working set spikes ABOVE the
+    /// soft `memory.high` (folding into the demonstrated peak) while the hard
+    /// `memory.max` holds — so no separate throttle read is needed (the default).
+    fn suppressed_demand(&self) -> SuppressedDemand {
+        SuppressedDemand::WorkingSetExceedsSoftLimit
+    }
 }
 
 /// **CPU** — bidirectional; carve `limits.cpu` (millicores). `used` is the live
@@ -84,6 +90,51 @@ impl DimensionDescriptor for CpuDescriptor {
             pod_prefix: target.name.clone(),
             selector: target.pod_selector.clone(),
         }
+    }
+    /// CPU's `used` is HARD-CAPPED by the CFS quota — it can never exceed the limit —
+    /// so its suppressed demand is non-blind ONLY via CFS THROTTLING. This declaration
+    /// is what makes the CPU-blindness ratchet (the pangea-operator 2026-06 starve)
+    /// structurally impossible: a CPU band MUST read its throttle signal.
+    fn suppressed_demand(&self) -> SuppressedDemand {
+        SuppressedDemand::CfsThrottling
+    }
+    /// The CFS-throttling signal — `rate(container_cpu_cfs_throttled_periods_total)`
+    /// from `cAdvisor` (mirrors the storage dimension's `PromQL` path). A non-zero rate
+    /// means the workload was throttled in the window — it wanted MORE CPU than its
+    /// (capped) `used` shows. The reconcile layer maps the non-zero scalar onto
+    /// `Observation.throttle_signal`, which lifts demand above the cap so the proven
+    /// safe-min floor refuses a shrink and the band grows out of the throttle. Scoped
+    /// to the same pod group the `used` metric reads (selector or owner-name prefix).
+    /// (cAdvisor `container_cpu_cfs_throttled_periods_total` is the cleanest fleet
+    /// source; `cpu.stat`'s `nr_throttled` is the host-agent equivalent for the
+    /// cgroup-cpu host dimension.)
+    fn throttle_source(&self, target: &Target) -> Option<MetricSource> {
+        // ceil so any throttling at all reads as >= 1 (a small fractional rate must
+        // not floor to 0 and re-hide the suppressed demand).
+        let pod_match = match &target.pod_selector {
+            // a label-selected pod group: match the container metric by the same labels.
+            Some(sel) => sel
+                .split(',')
+                .filter(|kv| !kv.is_empty())
+                .map(|kv| {
+                    let mut it = kv.splitn(2, '=');
+                    let k = it.next().unwrap_or("").trim();
+                    let v = it.next().unwrap_or("").trim();
+                    format!(r#"{k}="{v}""#)
+                })
+                .collect::<Vec<_>>()
+                .join(","),
+            // owner-resolved: cAdvisor labels carry the pod name; match by prefix.
+            None => format!(r#"pod=~"{name}.*""#, name = target.name),
+        };
+        let sel = if pod_match.is_empty() {
+            format!(r#"namespace="{ns}""#, ns = target.namespace)
+        } else {
+            format!(r#"namespace="{ns}",{pod_match}"#, ns = target.namespace)
+        };
+        Some(MetricSource::Prometheus(format!(
+            r#"ceil(sum(rate(container_cpu_cfs_throttled_periods_total{{{sel},container!=""}}[2m])))"#
+        )))
     }
 }
 
@@ -115,6 +166,11 @@ impl DimensionDescriptor for StorageDescriptor {
             r#"max(kubelet_volume_stats_used_bytes{{namespace="{ns}",{pvc_sel}}})"#,
             ns = target.namespace
         ))
+    }
+    /// Storage is grow-only — there is no shrink to ratchet, so suppressed demand is a
+    /// non-issue by construction (the down-cliff is unrepresentable). No throttle read.
+    fn suppressed_demand(&self) -> SuppressedDemand {
+        SuppressedDemand::GrowOnly
     }
 }
 
@@ -189,6 +245,38 @@ mod tests {
         let d = CpuDescriptor::default();
         assert_eq!(d.directionality(), Directionality::Bidirectional);
         assert!(matches!(d.metric_source(&deploy()), MetricSource::PodMetricsMax { .. }));
+    }
+
+    /// THE CPU-BLINDNESS DESCRIPTOR CONTRACT: cpu declares `CfsThrottling` and
+    /// supplies a CFS-throttling `PromQL` throttle source (the non-blind signal),
+    /// whereas memory (over-soft-limit spike) and storage (grow-only) declare their
+    /// own variants and supply NO throttle source. This is the descriptor-level half
+    /// of the structural fix — a cpu band cannot exist without its throttle read.
+    #[test]
+    fn cpu_declares_cfs_throttling_with_a_throttle_source() {
+        use breathe_provider::SuppressedDemand;
+        let d = CpuDescriptor::default();
+        assert_eq!(d.suppressed_demand(), SuppressedDemand::CfsThrottling);
+        match d.throttle_source(&deploy()) {
+            Some(MetricSource::Prometheus(q)) => {
+                assert!(q.contains("container_cpu_cfs_throttled_periods_total"), "must read CFS throttling: {q}");
+                assert!(q.contains("rate("), "a throttle RATE over a window: {q}");
+                assert!(q.contains(r#"namespace="x""#), "scoped to the target namespace: {q}");
+            }
+            other => panic!("cpu must supply a CFS-throttling PromQL source, got {other:?}"),
+        }
+        // a label-selected (ARC runner) cpu band scopes the throttle query by the SAME labels.
+        match d.throttle_source(&runner()) {
+            Some(MetricSource::Prometheus(q)) => {
+                assert!(q.contains(r#"actions.github.com/scale-set-name="rio-build-01""#), "selector-scoped throttle: {q}");
+            }
+            other => panic!("runner cpu throttle source must be label-scoped, got {other:?}"),
+        }
+        // memory + storage declare their own variants and carry NO throttle read.
+        assert_eq!(MemoryDescriptor::default().suppressed_demand(), SuppressedDemand::WorkingSetExceedsSoftLimit);
+        assert!(MemoryDescriptor::default().throttle_source(&deploy()).is_none(), "memory has no separate throttle read");
+        assert_eq!(StorageDescriptor.suppressed_demand(), SuppressedDemand::GrowOnly);
+        assert!(StorageDescriptor.throttle_source(&deploy()).is_none(), "storage is grow-only — no throttle read");
     }
 
     #[test]

@@ -90,6 +90,15 @@ pub enum TickReceipt {
     /// to reclaim (the un-observed-boot-spike OOM); the band waits until a boot spike
     /// would have been observed before any carve. A grow during warmup still acts.
     Warmup { observed_for: u64, warmup: u64 },
+    /// A SHRINK was warranted by the (CFS-capped) usage metric, but the workload's
+    /// SUPPRESSED DEMAND is non-blind — it is being actively THROTTLED, or recently
+    /// (re)started / crash-looping — so the low usage is a symptom, not proof of safe
+    /// slack. HELD + surfaced (the no-starve invariant). This closes the CPU-blindness
+    /// ratchet that starved pangea-operator (2026-06): a CFS-throttled workload's
+    /// usage can never exceed its limit, so a usage-keyed shrink would ratchet it to
+    /// the floor. A grow is never held. `restarting` distinguishes a crash-loop hold
+    /// from a live-throttle hold.
+    Throttled { restarting: bool },
     /// The driving sample was too old to carve — held + surfaced.
     Stale { staleness_secs: u64 },
     /// A mutation was warranted but the target is cooling down.
@@ -136,6 +145,7 @@ impl TickReceipt {
             | Self::Observed { .. }
             | Self::Dormant
             | Self::Warmup { .. }
+            | Self::Throttled { .. }
             | Self::Cooldown
             | Self::Stale { .. }
             | Self::Conflict { .. }
@@ -263,6 +273,7 @@ pub async fn reconcile_one(
             TickReceipt::MetricUnrepresentable { used, capacity }
         }
         TickPlan::Warmup { observed_for, warmup, .. } => TickReceipt::Warmup { observed_for, warmup },
+        TickPlan::Throttled { restarting, .. } => TickReceipt::Throttled { restarting },
         TickPlan::Stale { staleness_secs, .. } => TickReceipt::Stale { staleness_secs },
         TickPlan::Cooldown { .. } => TickReceipt::Cooldown,
         TickPlan::Observe { decision } => TickReceipt::Observed { decision },
@@ -643,5 +654,87 @@ mod tests {
         let prov = resize_provider(MockCluster::new(950 * MI, 0, GI, we_own()).with_resize_restart_free(true));
         let input = ReconcileInput { target: &t, cfg: &cfg, max_staleness_secs: 60, in_cooldown: false, dry_run: false, policy: DisruptionPolicy::RestartFreeOnly, force: None, predictive: None, peak_used: None, observed_for_secs: Some(5), hard_plane_grow_only: false };
         assert!(matches!(reconcile_one(&input, &prov).await.receipt, TickReceipt::Applied { from: GI, .. }), "a grow at boot must still act");
+    }
+
+    // ── CPU-BLINDNESS / NO-STARVE end-to-end (the pangea-operator 2026-06 fix) ────
+
+    /// THE OPERATOR CASE end-to-end through the provider + cluster: a CPU band with
+    /// an IDLE observed usage but ACTIVE CFS throttling (the descriptor's throttle
+    /// source read via `MockCluster::with_throttle_source`) must NEVER carve the
+    /// limit down — it grows out of the cap instead. The reconcile-path proof that
+    /// breathe will not starve a throttled CPU workload the way it starved
+    /// pangea-operator (1000m→283m). Uses the real `CpuDescriptor` so the throttle
+    /// read fires exactly as it would on-cluster.
+    #[tokio::test]
+    async fn reconcile_never_starves_an_idle_but_throttled_cpu_workload() {
+        use breathe_dimensions::CpuDescriptor;
+        const CPU_FIELD: &str = "resources.limits.cpu";
+        let cfg = BandConfig { floor_bytes: 100, ceiling_bytes: 4000, ..BandConfig::default() };
+        let t = deploy_target();
+        let cpu = CpuDescriptor::with_resize_capability(true);
+        // the exact throttle source the descriptor will ask the cluster to read.
+        let throttle_src = cpu.throttle_source(&t).expect("cpu has a throttle source");
+        let cpu_owns = vec![FieldOwner { manager: "breathe/cpu".into(), field: CPU_FIELD.into() }];
+        // idle 50m @ 1000m (a STRONG idle shrink signal) BUT actively throttled.
+        let cluster = MockCluster::new(50, 0, 1000, cpu_owns.clone())
+            .with_resize_restart_free(true)
+            .with_throttle_source(throttle_src)
+            .with_throttle(5);
+        let prov = BandProvider::new(cluster, cpu);
+        let input = ReconcileInput { target: &t, cfg: &cfg, max_staleness_secs: 60, in_cooldown: false, dry_run: false, policy: DisruptionPolicy::RestartFreeOnly, force: None, predictive: None, peak_used: None, observed_for_secs: None, hard_plane_grow_only: false };
+        let out = reconcile_one(&input, &prov).await;
+        // never a shrink — it grows out of the cap (or holds); both honor no-starve.
+        match out.receipt {
+            TickReceipt::Applied { from, to, .. } => {
+                assert_eq!(from, 1000);
+                assert!(to > from, "a throttled idle cpu workload must GROW out of the cap, not shrink");
+            }
+            TickReceipt::Throttled { .. } => {}
+            other => panic!("throttled idle cpu workload must grow or hold (never starve), got {other:?}"),
+        }
+        // CRUCIAL: nothing was carved DOWN.
+        for p in &prov.cluster().applied() {
+            assert!(p.value >= 1000, "a throttled cpu carve must never lower the limit, wrote {}", p.value);
+        }
+
+        // CONTRAST: the SAME idle reading WITHOUT a throttle signal DOES shrink
+        // (legacy path), proving the throttle read is exactly what holds the invariant.
+        let cpu2 = CpuDescriptor::with_resize_capability(true);
+        let src2 = cpu2.throttle_source(&t).unwrap();
+        let cluster2 = MockCluster::new(50, 0, 1000, cpu_owns)
+            .with_resize_restart_free(true)
+            .with_throttle_source(src2); // registered but throttle_signal stays 0
+        let prov2 = BandProvider::new(cluster2, cpu2);
+        let input2 = ReconcileInput { target: &t, cfg: &cfg, max_staleness_secs: 60, in_cooldown: false, dry_run: false, policy: DisruptionPolicy::RestartFreeOnly, force: None, predictive: None, peak_used: None, observed_for_secs: None, hard_plane_grow_only: false };
+        assert!(
+            matches!(reconcile_one(&input2, &prov2).await.receipt, TickReceipt::Applied { from, to, .. } if to < from),
+            "without a throttle signal the idle cpu workload shrinks (the signal is load-bearing)"
+        );
+    }
+
+    /// A crash-looping (restarting) workload is never starved end-to-end either —
+    /// `read_restarting` flows from the cluster through the provider into the no-starve
+    /// path. `restarting` is descriptor-independent (read for every dimension), so a
+    /// memory band proves it too. The outcome is grow-or-hold — NEVER a shrink (the
+    /// demand lift grows out of the idle reading; the gate holds it if it doesn't).
+    #[tokio::test]
+    async fn reconcile_never_starves_a_crash_looping_workload() {
+        let cfg = BandConfig::default();
+        let t = deploy_target();
+        // idle + restarting, no live throttle ⇒ the no-starve path holds/grows, never shrinks.
+        let cluster = MockCluster::new(100 * MI, 0, 2 * GI, we_own())
+            .with_resize_restart_free(true)
+            .with_restarting(true);
+        let prov = resize_provider(cluster);
+        let input = ReconcileInput { target: &t, cfg: &cfg, max_staleness_secs: 60, in_cooldown: false, dry_run: false, policy: DisruptionPolicy::RestartFreeOnly, force: None, predictive: None, peak_used: None, observed_for_secs: None, hard_plane_grow_only: false };
+        let out = reconcile_one(&input, &prov).await;
+        // never a shrink: a crash-looping idle workload grows out (demand lift) or holds.
+        assert!(
+            !matches!(out.receipt, TickReceipt::Applied { from, to, .. } if to < from),
+            "a crash-looping workload must NEVER be carved down, got {:?}", out.receipt
+        );
+        for p in &prov.cluster().applied() {
+            assert!(p.value >= 2 * GI, "a crash-loop carve must never lower the limit, wrote {}", p.value);
+        }
     }
 }

@@ -1,3 +1,7 @@
 /target
 **/*.rs.bk
 Cargo.build-spec.json
+
+# nix build output symlink
+result
+result-*

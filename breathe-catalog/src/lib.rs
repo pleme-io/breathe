@@ -10,7 +10,7 @@
 //! Mirrors `sui-spec`'s catalog template; the maturity gate is a breathe-local
 //! enum (a conscious fork, not a verbatim reuse of sui-spec's `M*TypedOnly`).
 
-use breathe_provider::{DimensionId, Directionality, DisruptionClass};
+use breathe_provider::{DimensionId, Directionality, DisruptionClass, SuppressedDemand};
 
 /// The provisioning catalog (`Floresta`) — the infra-scale peer of the dimension
 /// catalog (resource SHAPES + the `Densa` envelope). See docs/PROVISIONING.md §2.2.
@@ -82,6 +82,18 @@ pub struct DimensionSpec {
     /// How the dimension recovers from a brief mis-allocation — decides whether
     /// "on average" is sound (`Soft`) or fatal-below-floor (`Hard`).
     pub resource_class: ResourceClass,
+    /// HOW this dimension's SUPPRESSED DEMAND is observed — the typed declaration
+    /// that makes the CPU-blindness ratchet (the pangea-operator 2026-06 starve)
+    /// structurally impossible. A dimension whose `used` is hard-capped (CPU under
+    /// CFS) hides its demand from the usage metric; this REQUIRED field names the
+    /// non-blind signal (CPU → `CfsThrottling`, memory → `WorkingSetExceedsSoftLimit`,
+    /// storage → `GrowOnly`). Because it is a non-`Option` field, a new dimension
+    /// CANNOT be added to the catalog without declaring it — and the reflection tests
+    /// below assert it agrees with the dimension's directionality/resource-class, so
+    /// no future dimension can be carve-blind the way CPU was. (The minimal structural
+    /// enforcement; the full `(defdimension)` LOC-reduction macro is the follow-on —
+    /// see `suppressed_demand_is_declared_for_every_dimension`.)
+    pub suppressed_demand: SuppressedDemand,
     pub purpose: &'static str,
     /// The upstream surface this mirrors, if any.
     pub upstream_mirror: Option<&'static str>,
@@ -99,6 +111,7 @@ pub const CATALOG: &[DimensionSpec] = &[
         maturity: Maturity::Working,
         directionality: Directionality::Bidirectional,
         resource_class: ResourceClass::Hard, // exceeding limits.memory → OOM-kill (pointwise cliff)
+        suppressed_demand: SuppressedDemand::WorkingSetExceedsSoftLimit,
         purpose: "hold container memory at the band by carving resources.limits.memory",
         upstream_mirror: None,
         depends_on: &[DimensionId::Replica],
@@ -110,6 +123,7 @@ pub const CATALOG: &[DimensionSpec] = &[
         maturity: Maturity::M2Typed,
         directionality: Directionality::GrowOnly,
         resource_class: ResourceClass::HardDownSoftUp, // CSI grow-only; the down-cliff is unrepresentable
+        suppressed_demand: SuppressedDemand::GrowOnly,
         purpose: "grow PVC capacity at 80% (data persists; never shrink)",
         upstream_mirror: None,
         depends_on: &[],
@@ -121,6 +135,7 @@ pub const CATALOG: &[DimensionSpec] = &[
         maturity: Maturity::M2Typed,
         directionality: Directionality::Bidirectional,
         resource_class: ResourceClass::Soft, // over-limit is a throttle, recoverable
+        suppressed_demand: SuppressedDemand::CfsThrottling,
         purpose: "hold cpu at the band by carving resources.limits.cpu (millicores)",
         upstream_mirror: None,
         depends_on: &[DimensionId::Replica],
@@ -132,6 +147,7 @@ pub const CATALOG: &[DimensionSpec] = &[
         maturity: Maturity::Informational,
         directionality: Directionality::ObserveOnly,
         resource_class: ResourceClass::Soft, // scaling is recoverable; never mutated anyway
+        suppressed_demand: SuppressedDemand::NotApplicable,
         purpose: "observe replica count; compose with KEDA via disjoint fields (never write)",
         upstream_mirror: Some("KEDA ScaledObject"),
         depends_on: &[],
@@ -144,6 +160,7 @@ pub const CATALOG: &[DimensionSpec] = &[
         maturity: Maturity::Working,
         directionality: Directionality::Bidirectional,
         resource_class: ResourceClass::Soft, // shrinking evicts cache (perf-recoverable), never OOM
+        suppressed_demand: SuppressedDemand::WorkingSetExceedsSoftLimit,
         purpose: "hold the ZFS ARC at the band by carving zfs_arc_max within nodeBudget.arcMaxGiB",
         upstream_mirror: Some("/sys/module/zfs/parameters/zfs_arc_max"),
         depends_on: &[],
@@ -155,6 +172,7 @@ pub const CATALOG: &[DimensionSpec] = &[
         maturity: Maturity::Working,
         directionality: Directionality::Bidirectional,
         resource_class: ResourceClass::Soft, // MemoryHigh is a soft reclaim throttle (not MemoryMax/OOM)
+        suppressed_demand: SuppressedDemand::WorkingSetExceedsSoftLimit,
         purpose: "hold a unit's working set at the band by carving transient MemoryHigh within its nodeBudget envelope",
         upstream_mirror: Some("systemctl set-property --runtime <unit> MemoryHigh"),
         depends_on: &[],
@@ -166,6 +184,7 @@ pub const CATALOG: &[DimensionSpec] = &[
         maturity: Maturity::Working,
         directionality: Directionality::Bidirectional,
         resource_class: ResourceClass::Soft, // CPUQuota throttles (slow), never kills — a soft cap
+        suppressed_demand: SuppressedDemand::CfsThrottling,
         purpose: "hold a unit's cpu rate at the band by carving transient CPUQuota within its nodeBudget cpu territory",
         upstream_mirror: Some("systemctl set-property --runtime <unit> CPUQuota"),
         depends_on: &[],
@@ -180,6 +199,7 @@ pub const CATALOG: &[DimensionSpec] = &[
         // descriptor's per-instance directionality data — a restriction, never a widening.
         directionality: Directionality::Bidirectional,
         resource_class: ResourceClass::Soft, // a mis-sized sysctl/ZFS param stalls/throttles; rarely an OOM
+        suppressed_demand: SuppressedDemand::WorkingSetExceedsSoftLimit,
         purpose: "hold any sysctl / ZFS module parameter at the band via the generic Host(Sysctl)/Host(ZfsParam) arms (PR-2: one descriptor, data-driven)",
         upstream_mirror: Some("/proc/sys/* · /sys/module/zfs/parameters/*"),
         depends_on: &[],
@@ -193,6 +213,7 @@ pub const CATALOG: &[DimensionSpec] = &[
         // (a retention band is ShrinkBias / a GrowOnly via descriptor data).
         directionality: Directionality::Bidirectional,
         resource_class: ResourceClass::Soft, // a mis-sized CR field throttles/queues; rarely an OOM
+        suppressed_demand: SuppressedDemand::WorkingSetExceedsSoftLimit,
         purpose: "hold any k8s-CR field at the band via the generic CrField/DestinationRule/NamespaceEnvelope/ControllerSetpoint layouts (Step-6/8/12: one descriptor, data-driven, KubeCluster SSA)",
         upstream_mirror: Some("k8s CR spec fields (Istio/CNPG/VM/ResourceQuota/HPA)"),
         depends_on: &[],
@@ -206,6 +227,7 @@ pub const CATALOG: &[DimensionSpec] = &[
         // (e.g. a maxmemory band is GrowOnly via descriptor data).
         directionality: Directionality::Bidirectional,
         resource_class: ResourceClass::Soft, // a mis-sized app knob throttles/queues/evicts; rarely an OOM
+        suppressed_demand: SuppressedDemand::WorkingSetExceedsSoftLimit,
         purpose: "hold any application-actuator knob at the band via the ConfigFile/ApiCall layouts, dispatched by the ActuatorCluster sum type (ConfigReload/redis-CLI/JMX/app-admin-RPC); used read from the metrics plane (Step-9/13: one descriptor, data-driven)",
         upstream_mirror: Some("config files · redis/kafka/nats CONFIG · JMX MBeans · app admin RPC"),
         depends_on: &[],
@@ -512,6 +534,79 @@ mod tests {
                 assert!(a.note.contains("USE"), "{} must say when the roll is worth it", a.name);
             }
         }
+    }
+
+    /// THE NO-BLIND-DIMENSION INVARIANT (the CPU-blindness structural fix): every
+    /// dimension declares HOW its suppressed demand is observed, and the declaration
+    /// must agree with the dimension's movement policy + recovery class — so no future
+    /// dimension can be carve-blind the way CPU was (the pangea-operator 2026-06
+    /// starve). Because `suppressed_demand` is a non-`Option` field, "is it declared?"
+    /// is enforced at COMPILE time (a new row won't build without it); this test
+    /// enforces the SEMANTIC agreement that makes the declaration meaningful.
+    #[test]
+    fn suppressed_demand_is_declared_for_every_dimension() {
+        // partition: every variant is covered (sum == catalog size).
+        let n = [
+            SuppressedDemand::WorkingSetExceedsSoftLimit,
+            SuppressedDemand::CfsThrottling,
+            SuppressedDemand::GrowOnly,
+            SuppressedDemand::NotApplicable,
+        ]
+        .iter()
+        .map(|sd| CATALOG.iter().filter(|d| d.suppressed_demand == *sd).count())
+        .sum::<usize>();
+        assert_eq!(n, CATALOG.len(), "every dimension declares exactly one SuppressedDemand");
+
+        for d in CATALOG {
+            match d.suppressed_demand {
+                // GrowOnly suppressed-demand ⟺ GrowOnly directionality: a grow-only
+                // dimension has no shrink to ratchet, so its suppressed demand is a
+                // non-issue by construction — and ONLY a grow-only dimension may say so.
+                SuppressedDemand::GrowOnly => assert_eq!(
+                    d.directionality, Directionality::GrowOnly,
+                    "{}: GrowOnly suppressed-demand requires GrowOnly directionality", d.name
+                ),
+                // NotApplicable ⟺ ObserveOnly: never mutated ⇒ no carve to suppress.
+                SuppressedDemand::NotApplicable => assert_eq!(
+                    d.directionality, Directionality::ObserveOnly,
+                    "{}: NotApplicable suppressed-demand requires ObserveOnly directionality", d.name
+                ),
+                // CfsThrottling is the hard-capped-SOFT case: usage is capped at the
+                // limit (the cgroup throttles), so demand shows up ONLY as throttling.
+                // A Hard (OOM) resource is NOT CFS-throttled — over-limit kills, it
+                // doesn't throttle — so CfsThrottling must be a Soft resource.
+                SuppressedDemand::CfsThrottling => assert_eq!(
+                    d.resource_class, ResourceClass::Soft,
+                    "{}: CfsThrottling is the hard-capped-Soft case (over-limit throttles, never OOMs)", d.name
+                ),
+                // WorkingSetExceedsSoftLimit: the spike-above-the-soft-limit case
+                // (memory/host-memory) — visible in the primary peak path, no throttle
+                // read. Must NOT be a grow-only/observe-only dimension (those have their
+                // own variants) — i.e. it is a genuinely bidirectional carved dimension.
+                SuppressedDemand::WorkingSetExceedsSoftLimit => assert_ne!(
+                    d.directionality, Directionality::ObserveOnly,
+                    "{}: WorkingSetExceedsSoftLimit is for a carved dimension, not observe-only", d.name
+                ),
+            }
+        }
+    }
+
+    /// The CPU dimensions are EXACTLY the ones whose suppressed demand is CFS
+    /// throttling — the non-blind signal that closes the ratchet. cpu (pod) +
+    /// cgroup-cpu (host) carry it; nothing else does. Pins the fix to the right rows.
+    #[test]
+    fn cfs_throttling_is_declared_exactly_for_the_cpu_dimensions() {
+        let cfs: Vec<DimensionId> = CATALOG
+            .iter()
+            .filter(|d| d.suppressed_demand == SuppressedDemand::CfsThrottling)
+            .map(|d| d.id)
+            .collect();
+        assert!(cfs.contains(&DimensionId::Cpu), "the k8s cpu dimension is CFS-throttled");
+        assert!(cfs.contains(&DimensionId::CgroupCpu), "the host cpu dimension is CFS-throttled");
+        assert_eq!(cfs.len(), 2, "exactly the two cpu dimensions are CFS-throttled, got {cfs:?}");
+        // and memory/storage are NOT CFS-throttled (memory OOMs, storage is grow-only).
+        assert_eq!(lookup(DimensionId::Memory).unwrap().suppressed_demand, SuppressedDemand::WorkingSetExceedsSoftLimit);
+        assert_eq!(lookup(DimensionId::Storage).unwrap().suppressed_demand, SuppressedDemand::GrowOnly);
     }
 
     /// The host dimensions route to the HostCluster boundary, not the k8s API.

@@ -15,6 +15,7 @@ fn cfg() -> BandConfig {
         ceiling_bytes: 1_000_000,
         request_floor_bytes: 0,
         warmup_seconds: 0,
+        metric_missing_policy: breathe_control::MetricMissingPolicy::RestoreHeadroom,
     }
 }
 
