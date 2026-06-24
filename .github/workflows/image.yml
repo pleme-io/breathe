@@ -1,10 +1,15 @@
 # Build + push EVERY breathe OCI image on merge to main.
 #
-# Runs on GitHub Linux runners (network available — sidesteps the rio
-# FOD-DNS-in-sandbox blocker), nix-builds each distroless image from flake.nix,
-# and pushes it PRIVATE to ghcr.io/pleme-io/breathe-* via skopeo. A matrix so
-# adding an image is one row, never a forked workflow — the controller, the host
-# agent (the hands), AND the api-server (REST/GraphQL/gRPC) all ship here.
+# Runs on the SELF-HOSTED rio-builder (x86_64) via substrate's image-push.yml —
+# the same proven path hanabi / pangea-operator use. This is BILLING-INDEPENDENT
+# (self-hosted runners do not consume GitHub-hosted minutes), which matters: the
+# old `ubuntu-latest` jobs were dead-on-arrival whenever org GitHub-Actions
+# billing lapsed. rio-builder has a working nix + network (the historical
+# FOD-DNS-in-sandbox blocker is resolved — hanabi/pangea-operator build heavy nix
+# images here daily), so the controller, host-agent, AND api-server all ship via
+# the one reusable. breathe images stay PRIVATE (package visibility set
+# out-of-band, unchanged). :latest is the moving pointer the rio HelmRelease pulls
+# (pullPolicy: Always) — a new build needs a `kubectl rollout restart` to pick up.
 name: image
 
 on:
@@ -21,39 +26,33 @@ on:
 permissions:
   contents: read
   packages: write
+  id-token: write
 
 jobs:
-  image:
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - flake: image
-            repo: breathe-controller
-          - flake: agent-image
-            repo: breathe-host-agent
-          - flake: api-server-image
-            repo: breathe-api-server
-    steps:
-      - uses: actions/checkout@v4
-      - uses: DeterminateSystems/nix-installer-action@main
-      - uses: DeterminateSystems/magic-nix-cache-action@main
-      - name: Build the OCI image (distroless, Linux)
-        run: nix build ".#${{ matrix.flake }}" --print-build-logs
-      - name: Push (private — breathe is private)
-        run: |
-          # nixpkgs skopeo rejects the runner's v1 /etc/containers/registries.conf;
-          # point it at a minimal v2 file and push with --dest-creds (no login step).
-          echo 'unqualified-search-registries = []' > /tmp/registries.conf
-          export CONTAINERS_REGISTRIES_CONF=/tmp/registries.conf
-          IMG=ghcr.io/pleme-io/${{ matrix.repo }}
-          CREDS="${{ github.actor }}:${{ secrets.GITHUB_TOKEN }}"
-          # Tag = the flake `version` (single source of truth) so each release line
-          # gets a distinct, traceable tag; :latest is the moving pointer the rio
-          # HelmRelease pulls (pullPolicy: Always) for in-line iteration.
-          VER=$(nix eval --raw ".#packages.x86_64-linux.image.imageTag" 2>/dev/null || \
-                grep -oP 'version = "\K[0-9.]+' flake.nix | head -1)
-          nix run nixpkgs#skopeo -- copy --dest-creds "$CREDS" docker-archive:result "docker://$IMG:$VER"
-          nix run nixpkgs#skopeo -- copy --dest-creds "$CREDS" docker-archive:result "docker://$IMG:latest"
-          echo "pushed $IMG:$VER + :latest (private)"
+  controller:
+    name: breathe-controller image → ghcr.io (rio-builder)
+    uses: pleme-io/substrate/.github/workflows/image-push.yml@main
+    with:
+      imageAttr: image
+      imageName: pleme-io/breathe-controller
+      tag: latest
+      runner: rio-builder
+    secrets: inherit
+  host-agent:
+    name: breathe-host-agent image → ghcr.io (rio-builder)
+    uses: pleme-io/substrate/.github/workflows/image-push.yml@main
+    with:
+      imageAttr: agent-image
+      imageName: pleme-io/breathe-host-agent
+      tag: latest
+      runner: rio-builder
+    secrets: inherit
+  api-server:
+    name: breathe-api-server image → ghcr.io (rio-builder)
+    uses: pleme-io/substrate/.github/workflows/image-push.yml@main
+    with:
+      imageAttr: api-server-image
+      imageName: pleme-io/breathe-api-server
+      tag: latest
+      runner: rio-builder
+    secrets: inherit
