@@ -191,6 +191,16 @@ pub enum Decision {
     /// the seconds the workload has been observed; `warmup` the configured window. A
     /// grow is never held (raising the limit is always safe).
     Warmup { current: u64, observed_for: u64, warmup: u64 },
+    /// Would shrink, but the workload's SUPPRESSED DEMAND is non-blind: the resource
+    /// is being actively THROTTLED right now (CFS throttling for cpu), or the
+    /// workload recently (re)started / is crash-looping. The low observed `used` is
+    /// therefore not proof the slack is safe to reclaim — for a hard-capped soft
+    /// resource like CPU the observed usage can NEVER exceed the limit (CFS caps it),
+    /// so a usage-keyed shrink would ratchet a bursty/idle workload to its floor and
+    /// starve it. A shrink is HELD; a grow is never held (relieving the throttle is
+    /// the safe direction). `current` is the held limit; `restarting` is `true` when
+    /// the hold is driven by a recent restart / crash-loop (vs live throttling).
+    Throttled { current: u64, restarting: bool },
 }
 
 /// A control law's RAW proposal for one tick — the target limit it wants,
@@ -1142,6 +1152,29 @@ pub struct Observation {
     /// the DECLARED request is honored even when the operator omitted `requestFloor`
     /// from the band CR. `0` = no request declared / not applicable (host/node).
     pub request_floor: u64,
+    /// The SUPPRESSED-DEMAND signal — the load-bearing fix for the CPU-blindness
+    /// ratchet (the pangea-operator 2026-06 starve). For a hard-capped soft resource
+    /// (CPU under a CFS quota), the observed `used` can NEVER exceed `capacity`: the
+    /// cgroup throttles the workload at the limit, so metrics-server only ever sees
+    /// usage ≤ limit. Each shrink lowers usage, which "justifies" the next shrink — a
+    /// ratchet to the floor that starves the workload. The throttle is the demand the
+    /// usage metric structurally cannot show: `> 0` means the resource is being
+    /// throttled NOW (the descriptor reports CFS throttled-periods-per-second, a PSI
+    /// stall %, or a throttle-ratio-derived value). When present, the reconcile layer
+    /// (a) lifts the band-law inputs to a demand ABOVE the current limit (so the
+    /// proven `safe_min` peak-floor refuses any shrink and the law grows) AND (b) the
+    /// `plan_tick` throttle gate holds a shrink as a typed [`Decision::Throttled`] —
+    /// belt-and-suspenders. `0` = no throttle / not applicable (memory, storage,
+    /// observe-only). UNIT-AGNOSTIC: a presence/magnitude, never compared to
+    /// `used`/`capacity`. See [`throttled_demand`].
+    pub throttle_signal: u64,
+    /// `true` iff the target recently (re)started or is crash-looping (an observed
+    /// restart inside the warmup window, or a non-zero restart-count delta). Like a
+    /// live throttle, a crash-loop means the current low `used` is a symptom, not
+    /// proof of safe slack — so a shrink is HELD ([`Decision::Throttled`] with
+    /// `restarting: true`). `false` = stable / not applicable. The reconcile layer
+    /// sets it from the target's pod restart status.
+    pub restarting: bool,
 }
 
 /// The WARMUP GATE: hold a SHRINK while the workload is still warming up. A
@@ -1162,6 +1195,57 @@ pub fn clamp_to_warmup(d: Decision, observed_for_secs: u64, warmup_seconds: u64)
             observed_for: observed_for_secs,
             warmup: warmup_seconds,
         },
+        other => other,
+    }
+}
+
+/// THE NON-BLIND CPU INPUT — compute the demand a THROTTLED workload actually has,
+/// which its (CFS-capped) usage metric structurally cannot reveal. When the
+/// suppressed-demand signal is present (`throttle_signal > 0` and/or `restarting`),
+/// the workload wanted MORE than its current limit — the throttle proves it. Report
+/// a demand ABOVE the limit so the proven band law grows and, crucially, the proven
+/// peak-keyed [`safe_min`] floor REFUSES any shrink (the carve can never drop the
+/// limit below a value ≥ the limit). This is how the fix flows through the EXISTING
+/// safety gate with ZERO change to `decide`/`safety_clamp`/`safe_min`: it only ever
+/// RAISES the band law's `used`/`peak` inputs, exactly as `update_peak` does for a
+/// memory spike. The lift is `ceil(current_limit * grow_factor)` — one grow step
+/// above the cap, the same magnitude a normal grow uses — so a throttled workload
+/// climbs out of the throttle at the band's own gentle rate. `None` ⇒ no throttle
+/// signal (the demand is just the observed `used`, byte-identical to before).
+/// Pure + dependency-free + testable.
+#[must_use]
+#[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+pub fn throttled_demand(used: u64, current_limit: u64, throttle_signal: u64, restarting: bool, cfg: &BandConfig) -> Option<u64> {
+    if throttle_signal == 0 && !restarting {
+        return None;
+    }
+    // The throttle proves demand > limit; seat the demand one grow-step above the cap
+    // (never below the observed `used`, which under throttle is ≈ the cap). A
+    // restart-only signal (no live throttle) still lifts to just over the cap so the
+    // peak-floor refuses a shrink while the workload re-establishes its duty cycle.
+    let one_step = ((current_limit as f64) * cfg.grow_factor).ceil() as u64;
+    Some(one_step.max(current_limit.saturating_add(1)).max(used))
+}
+
+/// THE NO-STARVE GATE: hold a SHRINK while the workload's suppressed demand is
+/// non-blind — it is being actively THROTTLED (`throttle_signal > 0`) or recently
+/// (re)started / crash-looping (`restarting`). This is the explicit, NAMED runtime
+/// invariant the operator asked for: `throttled || restarting ⇒ proposal ∈ {Grow,
+/// Hold}, never Shrink`. It is BELT-AND-SUSPENDERS over [`throttled_demand`] (which
+/// already lifts the band-law inputs so the proven `safe_min` floor refuses the
+/// shrink): even if the demand-lift somehow did not bind, this gate converts any
+/// surviving shrink to a typed [`Decision::Throttled`] hold. A GROW (and every
+/// non-shrink outcome) passes through untouched — relieving a throttle by buying
+/// headroom is always the safe direction. No signal ⇒ no-op (behaviour-preserving).
+/// Pure + testable. Mirrors [`clamp_to_warmup`]; runs in `plan_tick` AFTER
+/// directionality and warmup, BEFORE freshness/cooldown.
+#[must_use]
+pub fn clamp_to_throttle(d: Decision, throttle_signal: u64, restarting: bool) -> Decision {
+    if throttle_signal == 0 && !restarting {
+        return d;
+    }
+    match d {
+        Decision::Shrink { from, .. } => Decision::Throttled { current: from, restarting },
         other => other,
     }
 }
@@ -1207,6 +1291,15 @@ pub enum TickPlan {
     /// been observed (so a boot spike folds into the demonstrated peak) before any
     /// carve. A grow during warmup still acts (buying headroom is always safe).
     Warmup { observed_for: u64, warmup: u64, current: u64 },
+    /// A SHRINK is warranted by the (CFS-capped) usage metric, but the workload's
+    /// SUPPRESSED DEMAND is non-blind — it is being actively THROTTLED, or recently
+    /// (re)started / is crash-looping — so the low usage is a symptom, not proof of
+    /// safe slack. Held + surfaced as the typed no-starve outcome; the band waits for
+    /// the throttle to clear before reconsidering any reclaim (and grows it out under
+    /// sustained throttle, via the demand lift). A grow is never held. This closes the
+    /// CPU-blindness ratchet that starved pangea-operator (2026-06). `restarting`
+    /// distinguishes a crash-loop hold from a live-throttle hold.
+    Throttled { current: u64, restarting: bool },
     /// A mutation is warranted but the driving sample is too old to trust —
     /// hold + surface (the never-OOM proof requires a fresh metric).
     Stale { staleness_secs: u64, decision: Decision },
@@ -1260,16 +1353,32 @@ pub fn plan_tick(
     // The shrink-safety floor is keyed on the DEMONSTRATED PEAK (`obs.peak_used`),
     // never the instantaneous `obs.used` — a low-water sample can't carve under a
     // recent spike. `peak_used ≥ used` is maintained by the reconcile layer.
+    //
+    // SUPPRESSED-DEMAND LIFT (the CPU-blindness fix): when the workload is being
+    // throttled (CFS) or has recently restarted, its (CFS-capped) `used` cannot
+    // exceed the limit, so a usage-keyed shrink would ratchet it to the floor. The
+    // throttle proves the demand the usage metric can't show — so lift BOTH the
+    // band-law `used` and the peak floor to a demand ABOVE the current limit. The
+    // proven `decide`/`safety_clamp`/`safe_min` then (a) GROW (demand > limit) and
+    // (b) structurally REFUSE any shrink (the peak-keyed floor is ≥ the limit). This
+    // is the SAME mechanism as a memory spike folding into the peak — it only ever
+    // RAISES the inputs, so the never-OOM oracle is untouched. `None` ⇒ no throttle,
+    // byte-identical to before.
+    let (law_used, law_peak) =
+        match throttled_demand(obs.used, obs.capacity, obs.throttle_signal, obs.restarting, cfg) {
+            Some(demand) => (obs.used.max(demand), obs.peak_used.max(demand)),
+            None => (obs.used, obs.peak_used),
+        };
     let raw = match predictive {
         Some((rate, lookahead_secs)) => decide_with_rate(
             &PredictiveGrow { inner: BandLaw, lookahead_secs },
-            obs.used,
-            obs.peak_used,
+            law_used,
+            law_peak,
             obs.capacity,
             cfg,
             rate,
         ),
-        None => decide_with(&BandLaw, obs.used, obs.peak_used, obs.capacity, cfg),
+        None => decide_with(&BandLaw, law_used, law_peak, obs.capacity, cfg),
     };
     let decision = clamp_to_directionality(raw, dir);
     // WARMUP GATE: a SHRINK is held while the workload is still warming up (observed
@@ -1281,6 +1390,17 @@ pub fn plan_tick(
     let decision = clamp_to_warmup(decision, obs.observed_for_secs, cfg.warmup_seconds);
     if let Decision::Warmup { observed_for, warmup, current } = decision {
         return TickPlan::Warmup { observed_for, warmup, current };
+    }
+    // NO-STARVE GATE (the explicit, NAMED runtime invariant): a throttled or
+    // recently-restarted/crash-looping workload is NEVER shrunk — `throttled ||
+    // restarting ⇒ proposal ∈ {Grow, Hold}`. Belt-and-suspenders over the demand
+    // lift above (which already grows + refuses the shrink via the proven floor):
+    // even if the lift didn't bind, this converts a surviving shrink to a typed hold.
+    // Runs AFTER warmup, BEFORE freshness/cooldown — a throttle hold is a strong
+    // non-mutating reason. A grow passes through (relieving throttle is always safe).
+    let decision = clamp_to_throttle(decision, obs.throttle_signal, obs.restarting);
+    if let Decision::Throttled { current, restarting } = decision {
+        return TickPlan::Throttled { current, restarting };
     }
     let is_mutation = matches!(decision, Decision::Grow { .. } | Decision::Shrink { .. });
     if !is_mutation {
@@ -1853,12 +1973,12 @@ mod tests {
     fn obs(used: u64, cap: u64, owners: Vec<FieldOwner>) -> Observation {
         // peak == used: no trailing-window history ⇒ instantaneous-equivalent.
         // observed_for u64::MAX ⇒ past warmup (warmup is exercised in its own tests).
-        Observation { used, peak_used: used, capacity: cap, owners, staleness_secs: 0, memory_shrink_restart_free: false, observed_for_secs: u64::MAX, request_floor: 0 }
+        Observation { used, peak_used: used, capacity: cap, owners, staleness_secs: 0, memory_shrink_restart_free: false, observed_for_secs: u64::MAX, request_floor: 0, throttle_signal: 0, restarting: false }
     }
     /// An observation with an explicit trailing-window peak (peak ≥ used).
     #[allow(dead_code)] // a shared test helper retained for peak-keyed observations.
     fn obs_peak(used: u64, peak: u64, cap: u64, owners: Vec<FieldOwner>) -> Observation {
-        Observation { used, peak_used: peak.max(used), capacity: cap, owners, staleness_secs: 0, memory_shrink_restart_free: false, observed_for_secs: u64::MAX, request_floor: 0 }
+        Observation { used, peak_used: peak.max(used), capacity: cap, owners, staleness_secs: 0, memory_shrink_restart_free: false, observed_for_secs: u64::MAX, request_floor: 0, throttle_signal: 0, restarting: false }
     }
     fn ours() -> Vec<FieldOwner> {
         vec![owns("breathe-memory", MEMORY_LIMIT_FIELD)]
@@ -1948,7 +2068,7 @@ mod tests {
     fn plan_refuses_to_mutate_on_stale_metric() {
         // util 0.95 would Act(Grow), but a sample older than the bound must never
         // carve — the never-OOM proof holds only on a fresh metric.
-        let stale = Observation { used: 950 * MI, peak_used: 950 * MI, capacity: GI, owners: ours(), staleness_secs: 120, memory_shrink_restart_free: false, observed_for_secs: u64::MAX, request_floor: 0 };
+        let stale = Observation { used: 950 * MI, peak_used: 950 * MI, capacity: GI, owners: ours(), staleness_secs: 120, memory_shrink_restart_free: false, observed_for_secs: u64::MAX, request_floor: 0, throttle_signal: 0, restarting: false };
         match plan_tick(&stale, &cfg(), Directionality::Bidirectional, false, "breathe-memory", MEMORY_LIMIT_FIELD, FRESH, None) {
             TickPlan::Stale { staleness_secs: 120, decision: Decision::Grow { .. } } => {}
             p => panic!("expected Stale(Grow), got {p:?}"),
@@ -2449,7 +2569,7 @@ mod tests {
         let mut trail = Vec::with_capacity(samples.len());
         for &used in samples {
             peak = update_peak(peak, used, decay);
-            let o = Observation { used, peak_used: peak, capacity: limit, owners: ours(), staleness_secs: 0, memory_shrink_restart_free: false, observed_for_secs: u64::MAX, request_floor: 0 };
+            let o = Observation { used, peak_used: peak, capacity: limit, owners: ours(), staleness_secs: 0, memory_shrink_restart_free: false, observed_for_secs: u64::MAX, request_floor: 0, throttle_signal: 0, restarting: false };
             match plan_tick(&o, c, Directionality::Bidirectional, false, "breathe-memory", MEMORY_LIMIT_FIELD, FRESH, None) {
                 TickPlan::Act { decision: Decision::Grow { to, .. } | Decision::Shrink { to, .. } } => limit = to,
                 _ => {}
@@ -2519,7 +2639,7 @@ mod tests {
                             // — the floor must hold the peak at least the tick it is seen.
                             peak = update_peak(peak, used, 0.0); // = max(peak, used)
                             let floor = ((peak as f64 / c.setpoint).ceil() as u64).max(c.floor_bytes);
-                            let o = Observation { used, peak_used: peak, capacity: limit, owners: ours(), staleness_secs: 0, memory_shrink_restart_free: false, observed_for_secs: u64::MAX, request_floor: 0 };
+                            let o = Observation { used, peak_used: peak, capacity: limit, owners: ours(), staleness_secs: 0, memory_shrink_restart_free: false, observed_for_secs: u64::MAX, request_floor: 0, throttle_signal: 0, restarting: false };
                             match plan_tick(&o, &c, Directionality::Bidirectional, false, "breathe-memory", MEMORY_LIMIT_FIELD, FRESH, None) {
                                 TickPlan::Act { decision: Decision::Shrink { to, .. } } => {
                                     assert!(
@@ -2552,7 +2672,7 @@ mod tests {
             d => panic!("expected a request-floor-bound Shrink/NoSafeShrink, got {d:?}"),
         }
         // and the request floor composes with the peak floor (max of the two binds).
-        let o = Observation { used: 100 * MI, peak_used: GI + 200 * MI, capacity: 4 * GI, owners: ours(), staleness_secs: 0, memory_shrink_restart_free: false, observed_for_secs: u64::MAX, request_floor: 0 };
+        let o = Observation { used: 100 * MI, peak_used: GI + 200 * MI, capacity: 4 * GI, owners: ours(), staleness_secs: 0, memory_shrink_restart_free: false, observed_for_secs: u64::MAX, request_floor: 0, throttle_signal: 0, restarting: false };
         if let TickPlan::Act { decision: Decision::Shrink { to, .. } } =
             plan_tick(&o, &c, Directionality::Bidirectional, false, "breathe-memory", MEMORY_LIMIT_FIELD, FRESH, None)
         {
@@ -2882,7 +3002,7 @@ mod tests {
             for &observed_for in &[0u64, 1, 60, 300, 599] {
                 let o = Observation {
                     used, peak_used: used, capacity: 2 * GI, owners: ours(),
-                    staleness_secs: 0, memory_shrink_restart_free: false, observed_for_secs: observed_for, request_floor: 0,
+                    staleness_secs: 0, memory_shrink_restart_free: false, observed_for_secs: observed_for, request_floor: 0, throttle_signal: 0, restarting: false,
                 };
                 let plan = plan_tick(&o, &c, Directionality::Bidirectional, false, "breathe-memory", MEMORY_LIMIT_FIELD, FRESH, None);
                 assert!(
@@ -2896,7 +3016,7 @@ mod tests {
         // past warmup, the same idle workload DOES shrink (the gate only delays).
         let warm = Observation {
             used: 100 * MI, peak_used: 100 * MI, capacity: 2 * GI, owners: ours(),
-            staleness_secs: 0, memory_shrink_restart_free: false, observed_for_secs: 601, request_floor: 0,
+            staleness_secs: 0, memory_shrink_restart_free: false, observed_for_secs: 601, request_floor: 0, throttle_signal: 0, restarting: false,
         };
         assert!(
             matches!(plan_tick(&warm, &c, Directionality::Bidirectional, false, "breathe-memory", MEMORY_LIMIT_FIELD, FRESH, None), TickPlan::Act { decision: Decision::Shrink { .. } }),
@@ -2912,7 +3032,7 @@ mod tests {
         // util 0.93 @ 1Gi, restarted 5s ago (deep in warmup) ⇒ STILL grows.
         let booting = Observation {
             used: 950 * MI, peak_used: 950 * MI, capacity: GI, owners: ours(),
-            staleness_secs: 0, memory_shrink_restart_free: false, observed_for_secs: 5, request_floor: 0,
+            staleness_secs: 0, memory_shrink_restart_free: false, observed_for_secs: 5, request_floor: 0, throttle_signal: 0, restarting: false,
         };
         assert!(
             matches!(plan_tick(&booting, &c, Directionality::Bidirectional, false, "breathe-memory", MEMORY_LIMIT_FIELD, FRESH, None), TickPlan::Act { decision: Decision::Grow { .. } }),
@@ -2938,7 +3058,7 @@ mod tests {
             peak = update_peak(peak, used, 0.99);
             let o = Observation {
                 used, peak_used: peak, capacity: limit, owners: ours(),
-                staleness_secs: 0, memory_shrink_restart_free: false, observed_for_secs: observed_for, request_floor: 0,
+                staleness_secs: 0, memory_shrink_restart_free: false, observed_for_secs: observed_for, request_floor: 0, throttle_signal: 0, restarting: false,
             };
             match plan_tick(&o, &c, Directionality::Bidirectional, false, "breathe-memory", MEMORY_LIMIT_FIELD, FRESH, None) {
                 TickPlan::Act { decision: Decision::Shrink { to, .. } } => { if i < 2 { ever_shrank_before_spike = true; } limit = to; }
@@ -2951,5 +3071,194 @@ mod tests {
         assert!(!ever_shrank_before_spike, "must hold (never shrink) during the idle warmup phase");
         // … so the limit never dropped below the spike, and a re-spike fits.
         assert!(900 * MI <= limit, "the boot spike {} must fit under the held limit {limit}", 900 * MI);
+    }
+
+    // ── CPU-BLINDNESS / NO-STARVE INVARIANT (the pangea-operator 2026-06 fix) ─────
+
+    /// An observation with a live throttle signal (and/or restarting), keyed on a
+    /// peak == used (no history) — models a CFS-capped CPU workload whose usage can
+    /// never exceed its limit.
+    fn obs_throttled(used: u64, cap: u64, throttle: u64, restarting: bool) -> Observation {
+        Observation {
+            used, peak_used: used, capacity: cap, owners: ours(),
+            staleness_secs: 0, memory_shrink_restart_free: false, observed_for_secs: u64::MAX,
+            request_floor: 0, throttle_signal: throttle, restarting,
+        }
+    }
+
+    /// THE CPU-BLINDNESS PROPERTY: for ANY `(limit, observed_usage ≤ limit,
+    /// throttled = true)`, the carve is NEVER a `Shrink`. This is the structural
+    /// no-starve invariant — a CFS-throttled workload's observed usage is hard-capped
+    /// at its limit, so a usage-keyed shrink would ratchet a bursty/idle workload to
+    /// the floor and starve it (exactly what happened to pangea-operator). Exhaustive
+    /// over a wide grid of (usage, limit) with usage ≤ limit, the canonical capped case.
+    #[test]
+    fn throttled_workload_is_never_shrunk_for_any_usage_at_or_below_limit() {
+        let c = cfg();
+        let limits = [256 * MI, 500 * MI, GI, 2 * GI, 4 * GI, 8 * GI];
+        for &limit in &limits {
+            // every usage from 0 up to the limit in fine steps (CFS caps usage ≤ limit).
+            for num in 0..=20u64 {
+                let used = (limit / 20) * num; // 0%, 5%, …, 100% of the cap
+                for &throttle in &[1u64, 5, 100] {
+                    for &restarting in &[false, true] {
+                        let o = obs_throttled(used, limit, throttle, restarting);
+                        let plan = plan_tick(&o, &c, Directionality::Bidirectional, false, "breathe-memory", MEMORY_LIMIT_FIELD, FRESH, None);
+                        // the carve must NEVER be a shrink — neither an Act(Shrink) nor a
+                        // cooldown'd/stale Shrink decision; the only permitted outcomes are
+                        // a hold (Throttled / Observe) or a GROW.
+                        assert!(
+                            !matches!(plan,
+                                TickPlan::Act { decision: Decision::Shrink { .. } }
+                                | TickPlan::Cooldown { decision: Decision::Shrink { .. } }
+                                | TickPlan::Stale { decision: Decision::Shrink { .. }, .. }),
+                            "throttled workload SHRANK (the CPU-starve ratchet): used={used} limit={limit} throttle={throttle} restarting={restarting} → {plan:?}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// Even with the throttle gate DISABLED (`throttle_signal` 0) but `restarting`,
+    /// a recently-restarted / crash-looping workload is never shrunk either — the
+    /// no-starve invariant covers the crash-loop case the operator named.
+    #[test]
+    fn restarting_workload_is_never_shrunk_no_matter_how_idle() {
+        let c = cfg();
+        for &used in &[0u64, 10 * MI, 100 * MI, 400 * MI] {
+            let o = obs_throttled(used, 2 * GI, 0, true); // idle, no live throttle, but restarting
+            let plan = plan_tick(&o, &c, Directionality::Bidirectional, false, "breathe-memory", MEMORY_LIMIT_FIELD, FRESH, None);
+            assert!(
+                !matches!(plan, TickPlan::Act { decision: Decision::Shrink { .. } }),
+                "a restarting workload must never be shrunk: used={used} → {plan:?}"
+            );
+        }
+    }
+
+    /// THE OPERATOR CASE, reproduced: an IDLE observed usage (1m ≈ the cap's noise
+    /// floor) with ACTIVE CFS throttling — exactly pangea-operator's idle-between-
+    /// bursts profile that breathe carved 1000m→283m. The band must (a) NEVER shrink
+    /// below the throttle-derived demand floor, and (b) under SUSTAINED throttle,
+    /// GROW (climb out of the cap). This is the regression test for the live incident.
+    #[test]
+    fn operator_case_idle_usage_with_throttle_grows_and_never_starves() {
+        // cpu band semantics: scalars are millicores. limit 1000m, observed idle ~1m,
+        // but the workload is being THROTTLED during its plan burst.
+        let cpu_cfg = BandConfig { floor_bytes: 100, ceiling_bytes: 4000, ..BandConfig::default() };
+        let limit = 1000u64; // 1000m, the pre-incident limit
+        let o = obs_throttled(1, limit, /*throttle*/ 5, false); // ~1m idle, actively throttled
+        match plan_tick(&o, &cpu_cfg, Directionality::Bidirectional, false, "breathe-memory", MEMORY_LIMIT_FIELD, FRESH, None) {
+            // the throttle lifts demand above the cap ⇒ the band law GROWS (climb out).
+            TickPlan::Act { decision: Decision::Grow { from, to } } => {
+                assert_eq!(from, limit);
+                assert!(to > limit, "sustained throttle must GROW the cpu limit, got {to}");
+            }
+            // a Throttled hold (if the demand-lift somehow didn't reach the grow edge)
+            // is also acceptable — the invariant is "never shrink", and a hold honors it.
+            TickPlan::Throttled { current, .. } => assert_eq!(current, limit),
+            p => panic!("operator case must grow or hold (never shrink/starve), got {p:?}"),
+        }
+
+        // SUSTAINED throttle over many ticks: the limit must MONOTONICALLY climb out
+        // of the cap, never ratchet down — the opposite of the incident's 1000→283.
+        let mut lim = limit;
+        for _ in 0..20 {
+            let o = obs_throttled(1, lim, 5, false); // still idle-but-throttled at the new cap
+            match plan_tick(&o, &cpu_cfg, Directionality::Bidirectional, false, "breathe-memory", MEMORY_LIMIT_FIELD, FRESH, None) {
+                TickPlan::Act { decision: Decision::Grow { to, .. } } => { assert!(to >= lim); lim = to; }
+                TickPlan::Observe { decision: Decision::AtCeiling { .. } } | TickPlan::Throttled { .. } => break,
+                p => panic!("sustained throttle must only ever grow or hold, got {p:?}"),
+            }
+        }
+        assert!(lim >= limit, "the limit must never drop below where it started under sustained throttle (got {lim})");
+        assert!(lim > limit, "sustained throttle should have GROWN the limit out of the cap (got {lim})");
+    }
+
+    /// CONTRAST: the SAME idle reading WITHOUT a throttle signal DOES shrink (the
+    /// legacy behaviour) — proving the throttle signal is exactly what holds the
+    /// shrink. This is the before/after that pins the fix to the new input.
+    #[test]
+    fn idle_without_throttle_still_shrinks_proving_the_signal_is_load_bearing() {
+        let c = cfg();
+        // idle @ 2Gi, NO throttle, past warmup ⇒ the legacy idle shrink.
+        let o = obs_throttled(100 * MI, 2 * GI, 0, false);
+        assert!(
+            matches!(plan_tick(&o, &c, Directionality::Bidirectional, false, "breathe-memory", MEMORY_LIMIT_FIELD, FRESH, None), TickPlan::Act { decision: Decision::Shrink { .. } }),
+            "without a throttle signal an idle workload still shrinks (the signal is load-bearing)"
+        );
+    }
+
+    /// A GROW under throttle ALWAYS acts — relieving a throttle by buying headroom is
+    /// the safe direction; the gate only ever holds a SHRINK.
+    #[test]
+    fn throttle_never_blocks_a_grow() {
+        let c = cfg();
+        // high util @ 1Gi + throttle ⇒ a grow, never held.
+        let o = obs_throttled(950 * MI, GI, 5, false);
+        assert!(
+            matches!(plan_tick(&o, &c, Directionality::Bidirectional, false, "breathe-memory", MEMORY_LIMIT_FIELD, FRESH, None), TickPlan::Act { decision: Decision::Grow { .. } }),
+            "a grow under throttle must still act"
+        );
+    }
+
+    // ── the pure throttle helpers ────────────────────────────────────────────
+
+    #[test]
+    #[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    fn throttled_demand_lifts_above_the_limit_only_when_signalled() {
+        let c = cfg();
+        // no signal ⇒ None (byte-identical to before).
+        assert_eq!(throttled_demand(100 * MI, GI, 0, false, &c), None);
+        // a throttle signal ⇒ demand strictly above the current limit (one grow step).
+        let d = throttled_demand(1, GI, 5, false, &c).expect("throttled ⇒ Some demand");
+        assert!(d > GI, "throttled demand {d} must exceed the limit {GI} (so the floor refuses a shrink + the law grows)");
+        assert_eq!(d, (GI as f64 * c.grow_factor).ceil() as u64, "one grow-step above the cap");
+        // restarting alone (no live throttle) still lifts just above the cap.
+        let r = throttled_demand(1, GI, 0, true, &c).expect("restarting ⇒ Some demand");
+        assert!(r > GI);
+    }
+
+    #[test]
+    fn clamp_to_throttle_holds_a_shrink_passes_grow_and_hold() {
+        // a shrink under throttle ⇒ held as a typed Throttled.
+        assert_eq!(
+            clamp_to_throttle(Decision::Shrink { from: GI, to: 800 * MI }, 5, false),
+            Decision::Throttled { current: GI, restarting: false }
+        );
+        // restarting flag is propagated.
+        assert_eq!(
+            clamp_to_throttle(Decision::Shrink { from: GI, to: 800 * MI }, 0, true),
+            Decision::Throttled { current: GI, restarting: true }
+        );
+        // a grow passes through untouched.
+        assert_eq!(
+            clamp_to_throttle(Decision::Grow { from: GI, to: 2 * GI }, 5, false),
+            Decision::Grow { from: GI, to: 2 * GI }
+        );
+        // no signal ⇒ no-op (behaviour-preserving).
+        assert_eq!(
+            clamp_to_throttle(Decision::Shrink { from: GI, to: 800 * MI }, 0, false),
+            Decision::Shrink { from: GI, to: 800 * MI }
+        );
+        // a hold is untouched.
+        assert_eq!(clamp_to_throttle(Decision::Hold, 5, false), Decision::Hold);
+    }
+
+    /// The throttle lift flows through the EXISTING `safe_min` floor: a throttled
+    /// workload's effective demand raises `safe_min` ABOVE the limit, so the proven
+    /// `safety_clamp` itself (not just the gate) refuses any shrink. Proves the fix
+    /// is "a non-blind input to the proven gate", not a new safety path.
+    #[test]
+    fn throttle_lift_raises_safe_min_above_the_limit_so_the_proven_clamp_refuses_a_shrink() {
+        let c = cfg();
+        let limit = GI;
+        let demand = throttled_demand(1, limit, 5, false, &c).unwrap();
+        // safe_min keyed on the lifted demand-as-peak is ≥ the limit ⇒ no shrink room.
+        let sm = safe_min(demand, demand, &c);
+        assert!(sm >= limit, "lifted safe_min {sm} must be ≥ the limit {limit} (the floor itself refuses a shrink)");
+        // and the proven safety_clamp turns an aggressive shrink proposal into a grow/hold.
+        let d = safety_clamp(Proposal::Target(1), demand, demand, limit, &c);
+        assert!(!matches!(d, Decision::Shrink { .. }), "the proven clamp must not produce a shrink under the lift, got {d:?}");
     }
 }

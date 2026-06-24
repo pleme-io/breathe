@@ -78,6 +78,64 @@ impl std::fmt::Display for DimensionId {
     }
 }
 
+/// HOW a dimension's SUPPRESSED DEMAND becomes observable — the typed declaration
+/// every dimension MUST make so no future dimension can be carve-blind the way CPU
+/// was (the pangea-operator 2026-06 starve). A dimension whose `used` is HARD-CAPPED
+/// (the cgroup throttles at the limit) hides its true demand from the usage metric;
+/// this enum names the non-blind signal that reveals it. Adding a dimension forces a
+/// conscious choice of variant — a `DimensionDescriptor` declares it via
+/// [`DimensionDescriptor::suppressed_demand`], and the catalog declares it as a
+/// required `DimensionSpec` field, so the build fails if either is missing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SuppressedDemand {
+    /// MEMORY: the working set can spike ABOVE the soft `memory.high` (revealing
+    /// demand) while the hard `memory.max` holds — so the demonstrated-peak floor
+    /// already sees the real demand. No separate throttle read is needed: suppressed
+    /// demand is visible in the primary `used`/peak path. The default.
+    WorkingSetExceedsSoftLimit,
+    /// CPU: usage is HARD-CAPPED by the cgroup CFS quota, so the usage metric can
+    /// NEVER exceed the limit — the suppressed demand shows up ONLY as CFS throttling
+    /// (`container_cpu_cfs_throttled_periods_total` / `cpu.stat`). The descriptor
+    /// supplies a [`DimensionDescriptor::throttle_source`]; its non-zero scalar drives
+    /// `Observation.throttle_signal`, lifting demand above the cap so the proven floor
+    /// refuses a shrink and the band grows out of the throttle. THE CPU-blindness fix.
+    CfsThrottling,
+    /// STORAGE: grow-only — there is no shrink to ratchet, so suppressed demand is a
+    /// non-issue by construction (the down-cliff is unrepresentable). Declared for
+    /// completeness; carries no throttle read.
+    GrowOnly,
+    /// OBSERVE-ONLY (replica): never mutated, so there is no carve to suppress. No
+    /// throttle read. Declared for completeness so the catalog partition is total.
+    NotApplicable,
+}
+
+impl SuppressedDemand {
+    /// Stable label for catalog rendering / logging.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::WorkingSetExceedsSoftLimit => "working-set-exceeds-soft-limit",
+            Self::CfsThrottling => "cfs-throttling",
+            Self::GrowOnly => "grow-only",
+            Self::NotApplicable => "not-applicable",
+        }
+    }
+    /// `true` iff this signal is observed by a SEPARATE throttle read (vs already
+    /// being in the primary `used`/peak path or having no suppressed-demand hole).
+    /// The catalog reflection test asserts a dimension declaring `CfsThrottling`
+    /// supplies a `throttle_source`, and one that doesn't, doesn't.
+    #[must_use]
+    pub fn needs_throttle_source(self) -> bool {
+        matches!(self, Self::CfsThrottling)
+    }
+}
+
+impl std::fmt::Display for SuppressedDemand {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 /// A reconcile target — the owner object whose limit a band controls.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Target {
@@ -811,6 +869,22 @@ pub trait Cluster: Send + Sync {
         let _ = (target, layout, resource);
         Ok(0)
     }
+
+    /// Whether `target`'s pods recently (re)started or are crash-looping — the
+    /// restart half of the no-starve signal (a crash-loop means the current low
+    /// `used` is a symptom, not proof of safe slack, so a shrink is held). The
+    /// default is the conservative `false` (assume stable) for cluster impls without
+    /// live-pod access (host/mock); only `KubeCluster` reads the live pod restart
+    /// status. Read-only; never mutates.
+    async fn read_restarting(
+        &self,
+        target: &Target,
+        layout: &LimitLayout,
+        resource: &str,
+    ) -> Result<bool, ProviderError> {
+        let _ = (target, layout, resource);
+        Ok(false)
+    }
 }
 
 /// Whether a band's layout has a GOLDEN path to its setpoint — the eclusa
@@ -883,6 +957,40 @@ pub trait DimensionDescriptor: Send + Sync + 'static {
     fn layout(&self, target: &Target) -> LimitLayout;
     /// The PromQL whose scalar is the dimension's `used`.
     fn metric_source(&self, target: &Target) -> MetricSource;
+
+    /// How this dimension OBSERVES its SUPPRESSED DEMAND — the signal that proves a
+    /// workload wants more than its (hard-capped) `used` can show. This is the
+    /// structural fix for the CPU-blindness ratchet (the pangea-operator 2026-06
+    /// starve): a CFS-throttled workload's usage can never exceed its limit, so the
+    /// usage metric alone ratchets a bursty/idle CPU band to its floor. Each
+    /// [`SuppressedDemand`] variant says HOW the suppressed demand becomes visible;
+    /// for [`SuppressedDemand::CfsThrottling`] the descriptor returns a throttle
+    /// [`MetricSource`] (the `PromQL` `rate(container_cpu_cfs_throttled_periods_total)`
+    /// — mirrors the storage dimension's `PromQL` path) whose non-zero scalar the
+    /// reconcile layer maps onto `Observation.throttle_signal`.
+    ///
+    /// The DEFAULT is `WorkingSetExceedsSoftLimit` with NO throttle source — the
+    /// memory/storage case, where suppressed demand is already visible (the working
+    /// set spikes ABOVE the soft limit and folds into the peak; storage is grow-only).
+    /// A new dimension MUST consciously pick its variant: the catalog reflection test
+    /// fails the build if a [`DimensionId`] declares a `kind` whose contract this
+    /// descriptor cannot honor, so no future dimension can be carve-blind the way CPU
+    /// was. CPU overrides this to `CfsThrottling` + a throttle source.
+    fn suppressed_demand(&self) -> SuppressedDemand {
+        SuppressedDemand::WorkingSetExceedsSoftLimit
+    }
+
+    /// The optional throttle [`MetricSource`] whose non-zero scalar the reconcile
+    /// layer maps onto `Observation.throttle_signal`. `Some` ONLY for a dimension
+    /// whose [`suppressed_demand`](Self::suppressed_demand) is observed by a separate
+    /// throttle read (CPU's CFS-throttling `PromQL`); `None` (the default) for every
+    /// dimension whose suppressed demand is already in the primary `used`/peak path
+    /// (memory's over-soft-limit spike) or has no suppressed-demand hole (grow-only
+    /// storage, observe-only replica). `target` lets the query be entity-scoped.
+    fn throttle_source(&self, target: &Target) -> Option<MetricSource> {
+        let _ = target;
+        None
+    }
 }
 
 /// The spine — the dyn interface `breathe-core` reconciles through.
@@ -978,6 +1086,24 @@ impl<C: Cluster + 'static, D: DimensionDescriptor> ResourceProvider for BandProv
             .cluster
             .read_request_floor(target, &layout, self.descriptor.resource())
             .await?;
+        // SUPPRESSED-DEMAND READ (the CPU-blindness fix): for a dimension whose
+        // suppressed demand is observed by a SEPARATE throttle read (cpu's CFS
+        // throttling), read it here and project onto `throttle_signal`. The throttle
+        // is read through the SAME `read_used` seam the storage dimension already uses
+        // for PromQL — one path, no new I/O primitive. A throttle-read FAILURE is
+        // fail-SAFE: it maps to `0` (no signal), so the band proceeds on usage exactly
+        // as before — a missing throttle metric never forces nor blocks a carve.
+        let throttle_signal = match self.descriptor.throttle_source(target) {
+            Some(src) => self.cluster.read_used(&src).await.map_or(0, |s| s.value),
+            None => 0,
+        };
+        // The restart half of the no-starve signal — `false` for impls without
+        // live-pod access (host/mock); `KubeCluster` reads the live restart status.
+        let restarting = self
+            .cluster
+            .read_restarting(target, &layout, self.descriptor.resource())
+            .await
+            .unwrap_or(false);
         Ok(Observation {
             used: used.value,
             // The provider is HISTORY-FREE: it reports the instantaneous peak (==
@@ -995,6 +1121,8 @@ impl<C: Cluster + 'static, D: DimensionDescriptor> ResourceProvider for BandProv
             // pod startTime) before the decision, exactly as it folds in `peak_used`.
             observed_for_secs: u64::MAX,
             request_floor,
+            throttle_signal,
+            restarting,
         })
     }
 
@@ -1405,6 +1533,19 @@ pub mod mock {
         /// (default 0 = none). Set it to model a pod with a declared request floor
         /// that a shrink may never carve beneath (Part 3).
         pub request_floor: u64,
+        /// The throttle scalar a SEPARATE throttle-source `read_used` returns (default
+        /// 0 = no throttle). Set it to model a CFS-throttled CPU workload — the
+        /// suppressed-demand signal that closes the CPU-blindness ratchet. Returned for
+        /// ANY `read_used` whose source is the registered `throttle_source` value.
+        pub throttle_signal: u64,
+        /// What `read_restarting` returns (default false = stable). Set it to model a
+        /// recently-restarted / crash-looping target whose shrink must be held.
+        pub restarting: bool,
+        /// The `MetricSource` a descriptor's `throttle_source` returns for this mock —
+        /// when `read_used` is called with this exact source, the mock returns
+        /// `throttle_signal` instead of `used` (so a CPU descriptor's throttle read is
+        /// driveable end-to-end against the mock).
+        pub throttle_source: Option<MetricSource>,
         applied: Mutex<Vec<SsaPatch>>,
     }
 
@@ -1418,8 +1559,35 @@ pub mod mock {
                 resize_restart_free: false,
                 read_used_error: None,
                 request_floor: 0,
+                throttle_signal: 0,
+                restarting: false,
+                throttle_source: None,
                 applied: Mutex::new(Vec::new()),
             }
+        }
+        /// Model a CFS-throttled workload (the CPU-blindness case): a non-zero throttle
+        /// signal returned via the registered `throttle_source`. The default
+        /// `throttle_source` (`MetricSource::Prometheus("throttle")`) matches what a
+        /// test descriptor returns, so the suppressed-demand read fires end-to-end.
+        #[must_use]
+        pub fn with_throttle(mut self, signal: u64) -> Self {
+            self.throttle_signal = signal;
+            self.throttle_source
+                .get_or_insert_with(|| MetricSource::Prometheus("throttle".into()));
+            self
+        }
+        /// Register the exact `MetricSource` the descriptor's `throttle_source` returns,
+        /// so `read_used` of that source yields `throttle_signal` (not `used`).
+        #[must_use]
+        pub fn with_throttle_source(mut self, src: MetricSource) -> Self {
+            self.throttle_source = Some(src);
+            self
+        }
+        /// Model a recently-restarted / crash-looping target (a shrink must be held).
+        #[must_use]
+        pub fn with_restarting(mut self, v: bool) -> Self {
+            self.restarting = v;
+            self
         }
         /// Model a pod whose `resizePolicy` makes an in-place shrink restart-free.
         #[must_use]
@@ -1449,7 +1617,17 @@ pub mod mock {
 
     #[async_trait]
     impl Cluster for MockCluster {
-        async fn read_used(&self, _source: &MetricSource) -> Result<Sample, ProviderError> {
+        async fn read_used(&self, source: &MetricSource) -> Result<Sample, ProviderError> {
+            // A read of the registered THROTTLE source returns the throttle scalar
+            // (the suppressed-demand signal), never the primary `used` — so a CPU
+            // descriptor's separate throttle read is driveable end-to-end. The error
+            // injection applies only to the PRIMARY used read (a throttle outage is
+            // fail-safe to 0 in the provider, exercised separately).
+            if let Some(ts) = &self.throttle_source
+                && source == ts
+            {
+                return Ok(Sample { value: self.throttle_signal, age_secs: 0 });
+            }
             match &self.read_used_error {
                 Some(e) => Err(e.clone()),
                 None => Ok(self.used),
@@ -1492,6 +1670,14 @@ pub mod mock {
         ) -> Result<u64, ProviderError> {
             Ok(self.request_floor)
         }
+        async fn read_restarting(
+            &self,
+            _t: &Target,
+            _layout: &LimitLayout,
+            _resource: &str,
+        ) -> Result<bool, ProviderError> {
+            Ok(self.restarting)
+        }
     }
 }
 
@@ -1518,6 +1704,7 @@ mod forma_seed {
             ceiling_bytes: ceiling,
             request_floor_bytes: 0,
             warmup_seconds: 0,
+            metric_missing_policy: breathe_control::MetricMissingPolicy::RestoreHeadroom,
         }
     }
 

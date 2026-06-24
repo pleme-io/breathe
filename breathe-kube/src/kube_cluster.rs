@@ -647,6 +647,49 @@ impl Cluster for KubeCluster {
             _ => Ok(0),
         }
     }
+
+    /// The restart half of the no-starve signal: are the target's pods recently
+    /// (re)started or crash-looping? A pod with ANY container in `CrashLoopBackOff`,
+    /// or whose current container is `waiting` after a non-zero `restartCount`,
+    /// counts. A crash-loop means the current low usage is a symptom (the workload
+    /// keeps dying before it can do real work), not safe slack — so a shrink is held.
+    /// Best-effort `false` for non-pod-backed layouts / unreadable status (never
+    /// blocks a carve spuriously). Read-only.
+    async fn read_restarting(
+        &self,
+        target: &Target,
+        layout: &LimitLayout,
+        _resource: &str,
+    ) -> Result<bool, ProviderError> {
+        // only pod-backed layouts have a per-pod restart concept.
+        if !matches!(layout, LimitLayout::PodResize { .. } | LimitLayout::PodTemplate { .. }) {
+            return Ok(false);
+        }
+        let pods = self.owner_pods(target).await?;
+        for pod in &pods {
+            let Some(statuses) = pod.data.pointer("/status/containerStatuses").and_then(Value::as_array) else {
+                continue;
+            };
+            for cs in statuses {
+                // an explicit crash-loop is the strongest signal.
+                if cs
+                    .pointer("/state/waiting/reason")
+                    .and_then(Value::as_str)
+                    .is_some_and(|r| r == "CrashLoopBackOff")
+                {
+                    return Ok(true);
+                }
+                // a container currently waiting AFTER a restart (it died and is backing
+                // off / re-pulling) is also still un-stable — treat as restarting.
+                let restart_count = cs.pointer("/restartCount").and_then(Value::as_u64).unwrap_or(0);
+                let waiting = cs.pointer("/state/waiting").is_some();
+                if restart_count > 0 && waiting {
+                    return Ok(true);
+                }
+            }
+        }
+        Ok(false)
+    }
 }
 
 #[cfg(test)]
