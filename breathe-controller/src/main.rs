@@ -175,6 +175,97 @@ async fn detect_resize_capable(client: &Client) -> bool {
     }
 }
 
+// ── Environment discovery: the inputs to the env-discovered band-default tier
+// (breathe_config::envprofile). Read-only + best-effort — every probe miss
+// lands on the fail-safe value, so an unprobeable cluster is treated as FOREIGN
+// (least-privilege by default). The detected profile + its resolved best-fit
+// band defaults are logged + exported once at startup so operators see the
+// posture without it silently mutating anything.
+use breathe_config::envprofile::{
+    self, CapacityType, Cloud, EnvironmentProfile, Orchestrator, Tenancy,
+};
+use k8s_openapi::api::authorization::v1::{
+    ResourceAttributes, SelfSubjectAccessReview, SelfSubjectAccessReviewSpec,
+};
+use k8s_openapi::api::core::v1::Node;
+use kube::api::{ListParams, PostParams};
+
+/// Classify a node's cloud + market posture from its `providerID` prefix and
+/// capacity-type label. **Pure** — the unit-testable core of
+/// [`detect_environment`].
+fn classify_node(provider_id: &str, capacity_label: Option<&str>) -> (Cloud, CapacityType) {
+    let cloud = if provider_id.starts_with("aws://") {
+        Cloud::Aws
+    } else if provider_id.starts_with("gce://") || provider_id.starts_with("gcp://") {
+        Cloud::Gcp
+    } else if provider_id.starts_with("azure://") {
+        Cloud::Azure
+    } else {
+        Cloud::None
+    };
+    let capacity = match capacity_label.map(str::to_ascii_lowercase).as_deref() {
+        Some("spot") => CapacityType::Spot,
+        Some("on-demand" | "on_demand" | "ondemand") => CapacityType::OnDemand,
+        _ => CapacityType::Unknown,
+    };
+    (cloud, capacity)
+}
+
+/// Can this controller create nodes cluster-wide? A `SelfSubjectAccessReview`;
+/// `Some(false)` (denied) is the strongest "we don't own this cluster" signal.
+/// `None` on probe failure → the caller treats tenancy as Unknown (fail-safe).
+async fn can_create_nodes(client: &Client) -> Option<bool> {
+    let ssar = SelfSubjectAccessReview {
+        spec: SelfSubjectAccessReviewSpec {
+            resource_attributes: Some(ResourceAttributes {
+                verb: Some("create".into()),
+                resource: Some("nodes".into()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    match Api::<SelfSubjectAccessReview>::all(client.clone())
+        .create(&PostParams::default(), &ssar)
+        .await
+    {
+        Ok(r) => r.status.map(|s| s.allowed),
+        Err(e) => {
+            warn!(error = %e, "SelfSubjectAccessReview(create nodes) failed; tenancy unknown");
+            None
+        }
+    }
+}
+
+/// Detect the [`EnvironmentProfile`] breathe is reconciling in. Read-only +
+/// best-effort; every miss fails safe (foreign / unknown).
+async fn detect_environment(client: &Client, resize_capable: bool) -> EnvironmentProfile {
+    let (cloud, capacity) = match Api::<Node>::all(client.clone())
+        .list(&ListParams::default().limit(1))
+        .await
+    {
+        Ok(list) => list.items.first().map_or((Cloud::None, CapacityType::Unknown), |node| {
+            let provider = node.spec.as_ref().and_then(|s| s.provider_id.as_deref()).unwrap_or_default();
+            let cap = node.metadata.labels.as_ref().and_then(|l| {
+                l.get("karpenter.sh/capacity-type")
+                    .or_else(|| l.get("eks.amazonaws.com/capacityType"))
+            });
+            classify_node(provider, cap.map(String::as_str))
+        }),
+        Err(e) => {
+            warn!(error = %e, "node list failed during environment detection; assuming conservative");
+            (Cloud::None, CapacityType::Unknown)
+        }
+    };
+    let tenancy = match can_create_nodes(client).await {
+        Some(true) => Tenancy::Own,
+        Some(false) => Tenancy::Foreign,
+        None => Tenancy::Unknown,
+    };
+    EnvironmentProfile { orchestrator: Orchestrator::Kubernetes, cloud, tenancy, capacity, resize_capable }
+}
+
 /// The namespace label carrying a band's `EphemeralEnvId` (the ephemeral-env binding).
 const ENV_ID_LABEL: &str = "breathe.pleme.io/env-id";
 
@@ -587,6 +678,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let client = Client::try_default().await?;
     let resize_capable = detect_resize_capable(&client).await;
+
+    // ── Environment-discovered band-default posture (best fit for THIS cluster).
+    // Detected once, read-only; the resolved defaults are the recommendation a
+    // foreign/multi-tenant cluster gets least-disruptive shadow-first values,
+    // our own cluster keeps the broad statics. Surfaced (log + metric); auto-
+    // apply onto unset band fields is the staged next step (needs the band-spec
+    // Option<T> migration so it never clobbers an explicit operator value).
+    let environment = detect_environment(&client, resize_capable).await;
+    let env_defaults = envprofile::resolve(&environment);
+    info!(
+        tenancy = %environment.tenancy,
+        cloud = %environment.cloud,
+        capacity = %environment.capacity,
+        foreign = environment.is_foreign(),
+        rec_mode = ?env_defaults.mode,
+        rec_setpoint = ?env_defaults.setpoint,
+        rec_node_provisioning = ?env_defaults.allow_node_provisioning,
+        "environment-discovered band-default posture resolved"
+    );
+    metrics::gauge!("breathe_environment_foreign", "tenancy" => environment.tenancy.as_str())
+        .set(if environment.is_foreign() { 1.0 } else { 0.0 });
+
     // BreatheConfig (a cluster k8s object) overrides the env defaults for the last
     // env-only knobs — prometheusUrl / requeue / class cooldowns.
     let bcfg = load_breathe_config(&client).await;
@@ -699,4 +812,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     tokio::join!(mem, cpu, sto, overview, cloud_pools, kube_params, quinhao_pools, app_bands);
     Ok(())
+}
+
+#[cfg(test)]
+mod env_detect_tests {
+    use super::{classify_node, CapacityType, Cloud};
+
+    #[test]
+    fn classify_node_maps_provider_prefix_and_capacity_label() {
+        assert_eq!(
+            classify_node("aws:///us-east-2a/i-0abc", Some("spot")),
+            (Cloud::Aws, CapacityType::Spot)
+        );
+        assert_eq!(
+            classify_node("gce://proj/zone/inst", Some("on-demand")),
+            (Cloud::Gcp, CapacityType::OnDemand)
+        );
+        assert_eq!(classify_node("azure:///subs/x", Some("SPOT")), (Cloud::Azure, CapacityType::Spot));
+        // kind / bare / no label → no cloud, unknown capacity (fail-safe).
+        assert_eq!(
+            classify_node("kind://podman/kind/control-plane", None),
+            (Cloud::None, CapacityType::Unknown)
+        );
+        assert_eq!(classify_node("", None), (Cloud::None, CapacityType::Unknown));
+    }
 }
