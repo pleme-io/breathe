@@ -169,6 +169,94 @@ impl BandConfig {
         }
         Ok(())
     }
+
+    /// Apply a single `lapidar` trial override to this IN-MEMORY config (the CR
+    /// spec is never touched — `self` was built from spec; this returns a new
+    /// value the band law uses for this tick only).
+    ///
+    /// **Clamped-by-construction:** the one changed field is clamped into the
+    /// interval bounded by its UNCHANGED neighbours, so the well-ordered-deadband
+    /// invariant ([`Self::validate`]) holds for the result no matter how *stale*
+    /// the stored override is (e.g. a later operator spec edit narrowed the band
+    /// under the override). Because `lapidar` tunes exactly one ordering field at
+    /// a time over an already-valid spec, clamping that single field preserves
+    /// `shrink_below ≤ setpoint ≤ grow_above` — infallible, debug-asserted. A
+    /// `NaN` override is inert.
+    #[must_use]
+    pub fn with_override(mut self, param: lapidar::TunedParam, value: f64) -> Self {
+        if value.is_nan() {
+            return self;
+        }
+        // The smallest sane positive utilization fraction for a shrink trigger.
+        const MIN_FRAC: f64 = 0.01;
+        match param {
+            lapidar::TunedParam::Setpoint => {
+                self.setpoint = value.clamp(self.shrink_below, self.grow_above);
+            }
+            lapidar::TunedParam::GrowAbove => {
+                self.grow_above = value.clamp(self.setpoint, 1.0);
+            }
+            lapidar::TunedParam::ShrinkBelow => {
+                self.shrink_below = value.clamp(MIN_FRAC, self.setpoint);
+            }
+            lapidar::TunedParam::WarmupSeconds => {
+                // NaN already returned; negative → 0; huge → saturating cast.
+                self.warmup_seconds = value.max(0.0) as u64;
+            }
+        }
+        debug_assert!(self.validate().is_ok(), "with_override must preserve a valid band");
+        self
+    }
+}
+
+#[cfg(test)]
+mod with_override_tests {
+    use super::BandConfig;
+    use super::lapidar::TunedParam;
+
+    #[test]
+    fn setpoint_override_applies_within_band() {
+        let cfg = BandConfig::default().with_override(TunedParam::Setpoint, 0.75);
+        assert!((cfg.setpoint - 0.75).abs() < 1e-9);
+        assert!(cfg.validate().is_ok());
+    }
+
+    #[test]
+    fn stale_override_is_clamped_into_the_current_band() {
+        // grow_above default 0.85; a stale setpoint override of 0.99 clamps to 0.85.
+        let cfg = BandConfig::default().with_override(TunedParam::Setpoint, 0.99);
+        assert!((cfg.setpoint - cfg.grow_above).abs() < 1e-9, "clamped to grow_above");
+        assert!(cfg.validate().is_ok(), "clamp preserves validity");
+        // a below-floor shrink_below override clamps up, not through 0.
+        let cfg2 = BandConfig::default().with_override(TunedParam::ShrinkBelow, -5.0);
+        assert!(cfg2.shrink_below > 0.0 && cfg2.validate().is_ok());
+    }
+
+    #[test]
+    fn grow_above_override_stays_ordered() {
+        let cfg = BandConfig::default().with_override(TunedParam::GrowAbove, 0.90);
+        assert!(cfg.grow_above >= cfg.setpoint && cfg.grow_above <= 1.0);
+        assert!(cfg.validate().is_ok());
+    }
+
+    #[test]
+    fn warmup_override_saturates_and_nan_is_inert() {
+        let cfg = BandConfig::default().with_override(TunedParam::WarmupSeconds, 900.0);
+        assert_eq!(cfg.warmup_seconds, 900);
+        let neg = BandConfig::default().with_override(TunedParam::WarmupSeconds, -1.0);
+        assert_eq!(neg.warmup_seconds, 0);
+        let nan = BandConfig::default().with_override(TunedParam::Setpoint, f64::NAN);
+        assert!((nan.setpoint - BandConfig::default().setpoint).abs() < 1e-9, "NaN inert");
+    }
+
+    #[test]
+    fn every_param_override_keeps_a_valid_band() {
+        for p in [TunedParam::Setpoint, TunedParam::GrowAbove, TunedParam::ShrinkBelow, TunedParam::WarmupSeconds] {
+            for v in [-1.0, 0.0, 0.5, 0.83, 1.0, 5.0, 1e9] {
+                assert!(BandConfig::default().with_override(p, v).validate().is_ok(), "{p:?} {v}");
+            }
+        }
+    }
 }
 
 /// The outcome of one band evaluation for one target. Every non-`Hold` variant
