@@ -22,6 +22,11 @@
 //!   4. [`plan_tick`] — the pure reconcile heart: guard → decide → directionality
 //!      → freshness → cooldown → a [`TickPlan`] the async loop executes.
 
+/// `lapidar` — the self-optimization loop every CONTROLLED band runs by default
+/// (analyze → suggest → apply → watch → test → accept/revert). Pure, like the
+/// band law it refines.
+pub mod lapidar;
+
 /// Tunable band/step policy. Every knob is config-driven (a `MemoryBand` CR's
 /// spec → the watcher's args). Defaults encode the 80/20 setpoint with a
 /// What a band does when its working-set reading is UNTRUSTED — a `0` reading
