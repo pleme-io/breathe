@@ -10,6 +10,7 @@ description = "Shikumi-backed service configuration for breathe — the BreatheS
 
 [dependencies]
 shikumi = { git = "https://github.com/pleme-io/shikumi" }
+kanchi = { git = "https://github.com/pleme-io/kanchi" }
 serde = { version = "1", features = ["derive"] }
 thiserror = "2"
 

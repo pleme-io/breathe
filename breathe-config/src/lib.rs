@@ -31,6 +31,8 @@
 //! shared `BREATHE_` prefix would map those to unknown keys and a
 //! `deny_unknown_fields` load would reject them — crash-looping the controller.
 
+pub mod envprofile;
+
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};

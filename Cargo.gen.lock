@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "cargo_lock_sha256": "d7542d81958c2cab44ce1649d5d42b0a8462c8f03d430fb39296bf208db52594",
+  "cargo_lock_sha256": "49adf7e5da809d7f12c18855eab171f1dd9bf0a033208dc21d52cf3d8d590cc2",
   "target_resolves": {
     "base": {
       "Inflector-0.11.4": {
@@ -2524,6 +2524,16 @@
       },
       "breathe-config-0.1.0": {
         "runtime_dependencies": [
+          {
+            "name": "kanchi",
+            "package_key": "kanchi-0.1.0-837f57e6c9b52e3d8781a56a46523627765362a0",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
           {
             "name": "serde",
             "package_key": "serde-1.0.228",
@@ -9760,6 +9770,11 @@
             "tree": "target"
           }
         ],
+        "build_dependencies": [],
+        "features": []
+      },
+      "paste-1.0.15": {
+        "runtime_dependencies": [],
         "build_dependencies": [],
         "features": []
       },
@@ -18452,6 +18467,26 @@
               "std"
             ]
           },
+          "block2-0.6.2": {
+            "runtime_dependencies": [
+              {
+                "name": "objc2",
+                "package_key": "objc2-0.6.4",
+                "kind": "normal",
+                "features": [
+                  "std"
+                ],
+                "uses_default_features": false,
+                "optional": false,
+                "target": null,
+                "tree": "target"
+              }
+            ],
+            "build_dependencies": [],
+            "features": [
+              "alloc"
+            ]
+          },
           "core-foundation-0.10.1": {
             "runtime_dependencies": [
               {
@@ -18564,6 +18599,39 @@
             "build_dependencies": [],
             "features": []
           },
+          "dispatch2-0.3.1": {
+            "runtime_dependencies": [
+              {
+                "name": "bitflags",
+                "package_key": "bitflags-2.12.1",
+                "kind": "normal",
+                "features": [
+                  "std"
+                ],
+                "uses_default_features": false,
+                "optional": false,
+                "target": null,
+                "tree": "target"
+              },
+              {
+                "name": "objc2",
+                "package_key": "objc2-0.6.4",
+                "kind": "normal",
+                "features": [
+                  "std"
+                ],
+                "uses_default_features": false,
+                "optional": true,
+                "target": null,
+                "tree": "target"
+              }
+            ],
+            "build_dependencies": [],
+            "features": [
+              "alloc",
+              "objc2"
+            ]
+          },
           "iana-time-zone-0.1.65": {
             "runtime_dependencies": [
               {
@@ -18581,6 +18649,68 @@
             "features": [
               "fallback"
             ]
+          },
+          "kanchi-0.1.0-837f57e6c9b52e3d8781a56a46523627765362a0": {
+            "runtime_dependencies": [
+              {
+                "name": "libc",
+                "package_key": "libc-0.2.186",
+                "kind": "normal",
+                "features": [],
+                "uses_default_features": true,
+                "optional": false,
+                "target": null,
+                "tree": "target"
+              },
+              {
+                "name": "objc2",
+                "package_key": "objc2-0.6.4",
+                "kind": "normal",
+                "features": [],
+                "uses_default_features": true,
+                "optional": false,
+                "target": "cfg(target_os = \"macos\")",
+                "tree": "target"
+              },
+              {
+                "name": "objc2_app_kit",
+                "package_key": "objc2-app-kit-0.3.2",
+                "kind": "normal",
+                "features": [
+                  "NSApplication",
+                  "NSScreen"
+                ],
+                "uses_default_features": true,
+                "optional": false,
+                "target": "cfg(target_os = \"macos\")",
+                "tree": "target"
+              },
+              {
+                "name": "objc2_foundation",
+                "package_key": "objc2-foundation-0.3.2",
+                "kind": "normal",
+                "features": [
+                  "NSString",
+                  "NSUserDefaults"
+                ],
+                "uses_default_features": true,
+                "optional": false,
+                "target": "cfg(target_os = \"macos\")",
+                "tree": "target"
+              },
+              {
+                "name": "paste",
+                "package_key": "paste-1.0.15",
+                "kind": "normal",
+                "features": [],
+                "uses_default_features": true,
+                "optional": false,
+                "target": null,
+                "tree": "host"
+              }
+            ],
+            "build_dependencies": [],
+            "features": []
           },
           "kqueue-1.2.0": {
             "runtime_dependencies": [
@@ -18748,6 +18878,1203 @@
               "kqueue",
               "macos_kqueue",
               "mio"
+            ]
+          },
+          "objc2-0.6.4": {
+            "runtime_dependencies": [
+              {
+                "name": "objc2_encode",
+                "package_key": "objc2-encode-4.1.0",
+                "kind": "normal",
+                "features": [],
+                "uses_default_features": false,
+                "optional": false,
+                "target": null,
+                "tree": "target"
+              }
+            ],
+            "build_dependencies": [],
+            "features": [
+              "alloc",
+              "default",
+              "std"
+            ]
+          },
+          "objc2-app-kit-0.3.2": {
+            "runtime_dependencies": [
+              {
+                "name": "bitflags",
+                "package_key": "bitflags-2.12.1",
+                "kind": "normal",
+                "features": [
+                  "std"
+                ],
+                "uses_default_features": false,
+                "optional": true,
+                "target": null,
+                "tree": "target"
+              },
+              {
+                "name": "block2",
+                "package_key": "block2-0.6.2",
+                "kind": "normal",
+                "features": [
+                  "alloc"
+                ],
+                "uses_default_features": false,
+                "optional": true,
+                "target": null,
+                "tree": "target"
+              },
+              {
+                "name": "libc",
+                "package_key": "libc-0.2.186",
+                "kind": "normal",
+                "features": [],
+                "uses_default_features": false,
+                "optional": true,
+                "target": null,
+                "tree": "target"
+              },
+              {
+                "name": "objc2",
+                "package_key": "objc2-0.6.4",
+                "kind": "normal",
+                "features": [
+                  "std"
+                ],
+                "uses_default_features": false,
+                "optional": false,
+                "target": null,
+                "tree": "target"
+              },
+              {
+                "name": "objc2_cloud_kit",
+                "package_key": "objc2-cloud-kit-0.3.2",
+                "kind": "normal",
+                "features": [
+                  "CKContainer",
+                  "CKRecord",
+                  "CKShare",
+                  "CKShareMetadata"
+                ],
+                "uses_default_features": false,
+                "optional": true,
+                "target": "cfg(target_vendor = \"apple\")",
+                "tree": "target"
+              },
+              {
+                "name": "objc2_core_data",
+                "package_key": "objc2-core-data-0.3.2",
+                "kind": "normal",
+                "features": [
+                  "NSAttributeDescription",
+                  "NSEntityDescription",
+                  "NSFetchRequest",
+                  "NSManagedObjectContext",
+                  "NSManagedObjectModel",
+                  "NSPersistentStoreRequest",
+                  "NSPropertyDescription"
+                ],
+                "uses_default_features": false,
+                "optional": true,
+                "target": "cfg(target_vendor = \"apple\")",
+                "tree": "target"
+              },
+              {
+                "name": "objc2_core_foundation",
+                "package_key": "objc2-core-foundation-0.3.2",
+                "kind": "normal",
+                "features": [
+                  "CFCGTypes",
+                  "CFDate",
+                  "objc2"
+                ],
+                "uses_default_features": false,
+                "optional": true,
+                "target": null,
+                "tree": "target"
+              },
+              {
+                "name": "objc2_core_graphics",
+                "package_key": "objc2-core-graphics-0.3.2",
+                "kind": "normal",
+                "features": [
+                  "CGColor",
+                  "CGColorSpace",
+                  "CGContext",
+                  "CGDirectDisplay",
+                  "CGEventTypes",
+                  "CGFont",
+                  "CGImage",
+                  "CGPath",
+                  "objc2"
+                ],
+                "uses_default_features": false,
+                "optional": true,
+                "target": "cfg(target_vendor = \"apple\")",
+                "tree": "target"
+              },
+              {
+                "name": "objc2_core_image",
+                "package_key": "objc2-core-image-0.3.2",
+                "kind": "normal",
+                "features": [
+                  "CIColor",
+                  "CIContext",
+                  "CIFilter",
+                  "CIImage"
+                ],
+                "uses_default_features": false,
+                "optional": true,
+                "target": "cfg(target_vendor = \"apple\")",
+                "tree": "target"
+              },
+              {
+                "name": "objc2_core_text",
+                "package_key": "objc2-core-text-0.3.2",
+                "kind": "normal",
+                "features": [
+                  "CTFont",
+                  "CTFontCollection",
+                  "CTFontDescriptor",
+                  "CTGlyphInfo",
+                  "objc2"
+                ],
+                "uses_default_features": false,
+                "optional": true,
+                "target": "cfg(target_vendor = \"apple\")",
+                "tree": "target"
+              },
+              {
+                "name": "objc2_core_video",
+                "package_key": "objc2-core-video-0.3.2",
+                "kind": "normal",
+                "features": [
+                  "CVBase",
+                  "objc2"
+                ],
+                "uses_default_features": false,
+                "optional": true,
+                "target": "cfg(target_vendor = \"apple\")",
+                "tree": "target"
+              },
+              {
+                "name": "objc2_foundation",
+                "package_key": "objc2-foundation-0.3.2",
+                "kind": "normal",
+                "features": [
+                  "alloc"
+                ],
+                "uses_default_features": false,
+                "optional": false,
+                "target": null,
+                "tree": "target"
+              },
+              {
+                "name": "objc2_quartz_core",
+                "package_key": "objc2-quartz-core-0.3.2",
+                "kind": "normal",
+                "features": [
+                  "CADisplayLink",
+                  "CALayer",
+                  "CAMediaTiming",
+                  "CAMediaTimingFunction",
+                  "CAOpenGLLayer"
+                ],
+                "uses_default_features": false,
+                "optional": true,
+                "target": "cfg(target_vendor = \"apple\")",
+                "tree": "target"
+              }
+            ],
+            "build_dependencies": [],
+            "features": [
+              "AppKitDefines",
+              "AppKitErrors",
+              "NSATSTypesetter",
+              "NSAccessibility",
+              "NSAccessibilityColor",
+              "NSAccessibilityConstants",
+              "NSAccessibilityCustomAction",
+              "NSAccessibilityCustomRotor",
+              "NSAccessibilityElement",
+              "NSAccessibilityProtocols",
+              "NSActionCell",
+              "NSAdaptiveImageGlyph",
+              "NSAffineTransform",
+              "NSAlert",
+              "NSAlignmentFeedbackFilter",
+              "NSAnimation",
+              "NSAnimationContext",
+              "NSAppearance",
+              "NSAppleScriptExtensions",
+              "NSApplication",
+              "NSApplicationScripting",
+              "NSArrayController",
+              "NSAttributedString",
+              "NSBackgroundExtensionView",
+              "NSBezierPath",
+              "NSBitmapImageRep",
+              "NSBox",
+              "NSBrowser",
+              "NSBrowserCell",
+              "NSButton",
+              "NSButtonCell",
+              "NSButtonTouchBarItem",
+              "NSCIImageRep",
+              "NSCachedImageRep",
+              "NSCandidateListTouchBarItem",
+              "NSCell",
+              "NSClickGestureRecognizer",
+              "NSClipView",
+              "NSCollectionView",
+              "NSCollectionViewCompositionalLayout",
+              "NSCollectionViewFlowLayout",
+              "NSCollectionViewGridLayout",
+              "NSCollectionViewLayout",
+              "NSCollectionViewTransitionLayout",
+              "NSColor",
+              "NSColorList",
+              "NSColorPanel",
+              "NSColorPicker",
+              "NSColorPickerTouchBarItem",
+              "NSColorPicking",
+              "NSColorSampler",
+              "NSColorSpace",
+              "NSColorWell",
+              "NSComboBox",
+              "NSComboBoxCell",
+              "NSComboButton",
+              "NSControl",
+              "NSController",
+              "NSCursor",
+              "NSCustomImageRep",
+              "NSCustomTouchBarItem",
+              "NSDataAsset",
+              "NSDatePicker",
+              "NSDatePickerCell",
+              "NSDictionaryController",
+              "NSDiffableDataSource",
+              "NSDirection",
+              "NSDockTile",
+              "NSDocument",
+              "NSDocumentController",
+              "NSDocumentScripting",
+              "NSDragging",
+              "NSDraggingItem",
+              "NSDraggingSession",
+              "NSDrawer",
+              "NSEPSImageRep",
+              "NSErrors",
+              "NSEvent",
+              "NSFilePromiseProvider",
+              "NSFilePromiseReceiver",
+              "NSFileWrapperExtensions",
+              "NSFont",
+              "NSFontAssetRequest",
+              "NSFontCollection",
+              "NSFontDescriptor",
+              "NSFontManager",
+              "NSFontPanel",
+              "NSForm",
+              "NSFormCell",
+              "NSGestureRecognizer",
+              "NSGlassEffectView",
+              "NSGlyphGenerator",
+              "NSGlyphInfo",
+              "NSGradient",
+              "NSGraphics",
+              "NSGraphicsContext",
+              "NSGridView",
+              "NSGroupTouchBarItem",
+              "NSHapticFeedback",
+              "NSHelpManager",
+              "NSImage",
+              "NSImageCell",
+              "NSImageRep",
+              "NSImageView",
+              "NSInputManager",
+              "NSInputServer",
+              "NSInterfaceStyle",
+              "NSItemBadge",
+              "NSItemProvider",
+              "NSKeyValueBinding",
+              "NSLayoutAnchor",
+              "NSLayoutConstraint",
+              "NSLayoutGuide",
+              "NSLayoutManager",
+              "NSLevelIndicator",
+              "NSLevelIndicatorCell",
+              "NSMagnificationGestureRecognizer",
+              "NSMatrix",
+              "NSMediaLibraryBrowserController",
+              "NSMenu",
+              "NSMenuItem",
+              "NSMenuItemBadge",
+              "NSMenuItemCell",
+              "NSMenuToolbarItem",
+              "NSMovie",
+              "NSNib",
+              "NSNibConnector",
+              "NSNibControlConnector",
+              "NSNibDeclarations",
+              "NSNibLoading",
+              "NSNibOutletConnector",
+              "NSObjectController",
+              "NSOpenGL",
+              "NSOpenGLLayer",
+              "NSOpenGLView",
+              "NSOpenPanel",
+              "NSOutlineView",
+              "NSPDFImageRep",
+              "NSPDFInfo",
+              "NSPDFPanel",
+              "NSPICTImageRep",
+              "NSPageController",
+              "NSPageLayout",
+              "NSPanGestureRecognizer",
+              "NSPanel",
+              "NSParagraphStyle",
+              "NSPasteboard",
+              "NSPasteboardItem",
+              "NSPathCell",
+              "NSPathComponentCell",
+              "NSPathControl",
+              "NSPathControlItem",
+              "NSPersistentDocument",
+              "NSPickerTouchBarItem",
+              "NSPopUpButton",
+              "NSPopUpButtonCell",
+              "NSPopover",
+              "NSPopoverTouchBarItem",
+              "NSPredicateEditor",
+              "NSPredicateEditorRowTemplate",
+              "NSPressGestureRecognizer",
+              "NSPressureConfiguration",
+              "NSPreviewRepresentingActivityItem",
+              "NSPrintInfo",
+              "NSPrintOperation",
+              "NSPrintPanel",
+              "NSPrinter",
+              "NSProgressIndicator",
+              "NSResponder",
+              "NSRotationGestureRecognizer",
+              "NSRuleEditor",
+              "NSRulerMarker",
+              "NSRulerView",
+              "NSRunningApplication",
+              "NSSavePanel",
+              "NSScreen",
+              "NSScrollView",
+              "NSScroller",
+              "NSScrubber",
+              "NSScrubberItemView",
+              "NSScrubberLayout",
+              "NSSearchField",
+              "NSSearchFieldCell",
+              "NSSearchToolbarItem",
+              "NSSecureTextField",
+              "NSSegmentedCell",
+              "NSSegmentedControl",
+              "NSShadow",
+              "NSSharingCollaborationModeRestriction",
+              "NSSharingService",
+              "NSSharingServicePickerToolbarItem",
+              "NSSharingServicePickerTouchBarItem",
+              "NSSlider",
+              "NSSliderAccessory",
+              "NSSliderCell",
+              "NSSliderTouchBarItem",
+              "NSSound",
+              "NSSpeechRecognizer",
+              "NSSpeechSynthesizer",
+              "NSSpellChecker",
+              "NSSpellProtocol",
+              "NSSplitView",
+              "NSSplitViewController",
+              "NSSplitViewItem",
+              "NSSplitViewItemAccessoryViewController",
+              "NSStackView",
+              "NSStatusBar",
+              "NSStatusBarButton",
+              "NSStatusItem",
+              "NSStepper",
+              "NSStepperCell",
+              "NSStepperTouchBarItem",
+              "NSStoryboard",
+              "NSStoryboardSegue",
+              "NSStringDrawing",
+              "NSSwitch",
+              "NSTabView",
+              "NSTabViewController",
+              "NSTabViewItem",
+              "NSTableCellView",
+              "NSTableColumn",
+              "NSTableHeaderCell",
+              "NSTableHeaderView",
+              "NSTableRowView",
+              "NSTableView",
+              "NSTableViewDiffableDataSource",
+              "NSTableViewRowAction",
+              "NSText",
+              "NSTextAlternatives",
+              "NSTextAttachment",
+              "NSTextAttachmentCell",
+              "NSTextCheckingClient",
+              "NSTextCheckingController",
+              "NSTextContainer",
+              "NSTextContent",
+              "NSTextContentManager",
+              "NSTextElement",
+              "NSTextField",
+              "NSTextFieldCell",
+              "NSTextFinder",
+              "NSTextInputClient",
+              "NSTextInputContext",
+              "NSTextInsertionIndicator",
+              "NSTextLayoutFragment",
+              "NSTextLayoutManager",
+              "NSTextLineFragment",
+              "NSTextList",
+              "NSTextListElement",
+              "NSTextRange",
+              "NSTextSelection",
+              "NSTextSelectionNavigation",
+              "NSTextStorage",
+              "NSTextStorageScripting",
+              "NSTextTable",
+              "NSTextView",
+              "NSTextViewportLayoutController",
+              "NSTintConfiguration",
+              "NSTintProminence",
+              "NSTitlebarAccessoryViewController",
+              "NSTokenField",
+              "NSTokenFieldCell",
+              "NSToolbar",
+              "NSToolbarItem",
+              "NSToolbarItemGroup",
+              "NSTouch",
+              "NSTouchBar",
+              "NSTouchBarItem",
+              "NSTrackingArea",
+              "NSTrackingSeparatorToolbarItem",
+              "NSTreeController",
+              "NSTreeNode",
+              "NSTypesetter",
+              "NSUserActivity",
+              "NSUserDefaultsController",
+              "NSUserInterfaceCompression",
+              "NSUserInterfaceItemIdentification",
+              "NSUserInterfaceItemSearching",
+              "NSUserInterfaceLayout",
+              "NSUserInterfaceValidation",
+              "NSView",
+              "NSViewController",
+              "NSViewLayoutRegion",
+              "NSVisualEffectView",
+              "NSWindow",
+              "NSWindowController",
+              "NSWindowRestoration",
+              "NSWindowScripting",
+              "NSWindowTab",
+              "NSWindowTabGroup",
+              "NSWorkspace",
+              "NSWritingToolsCoordinator",
+              "NSWritingToolsCoordinatorAnimationParameters",
+              "NSWritingToolsCoordinatorContext",
+              "alloc",
+              "bitflags",
+              "block2",
+              "default",
+              "libc",
+              "objc2-cloud-kit",
+              "objc2-core-data",
+              "objc2-core-foundation",
+              "objc2-core-graphics",
+              "objc2-core-image",
+              "objc2-core-text",
+              "objc2-core-video",
+              "objc2-quartz-core",
+              "std"
+            ]
+          },
+          "objc2-cloud-kit-0.3.2": {
+            "runtime_dependencies": [
+              {
+                "name": "bitflags",
+                "package_key": "bitflags-2.12.1",
+                "kind": "normal",
+                "features": [
+                  "std"
+                ],
+                "uses_default_features": false,
+                "optional": true,
+                "target": null,
+                "tree": "target"
+              },
+              {
+                "name": "objc2",
+                "package_key": "objc2-0.6.4",
+                "kind": "normal",
+                "features": [
+                  "std"
+                ],
+                "uses_default_features": false,
+                "optional": false,
+                "target": null,
+                "tree": "target"
+              },
+              {
+                "name": "objc2_foundation",
+                "package_key": "objc2-foundation-0.3.2",
+                "kind": "normal",
+                "features": [
+                  "alloc"
+                ],
+                "uses_default_features": false,
+                "optional": false,
+                "target": null,
+                "tree": "target"
+              }
+            ],
+            "build_dependencies": [],
+            "features": [
+              "CKContainer",
+              "CKRecord",
+              "CKShare",
+              "CKShareMetadata",
+              "bitflags"
+            ]
+          },
+          "objc2-core-data-0.3.2": {
+            "runtime_dependencies": [
+              {
+                "name": "bitflags",
+                "package_key": "bitflags-2.12.1",
+                "kind": "normal",
+                "features": [
+                  "std"
+                ],
+                "uses_default_features": false,
+                "optional": true,
+                "target": null,
+                "tree": "target"
+              },
+              {
+                "name": "objc2",
+                "package_key": "objc2-0.6.4",
+                "kind": "normal",
+                "features": [
+                  "std"
+                ],
+                "uses_default_features": false,
+                "optional": false,
+                "target": null,
+                "tree": "target"
+              },
+              {
+                "name": "objc2_foundation",
+                "package_key": "objc2-foundation-0.3.2",
+                "kind": "normal",
+                "features": [
+                  "alloc"
+                ],
+                "uses_default_features": false,
+                "optional": false,
+                "target": null,
+                "tree": "target"
+              }
+            ],
+            "build_dependencies": [],
+            "features": [
+              "NSAttributeDescription",
+              "NSEntityDescription",
+              "NSFetchRequest",
+              "NSManagedObjectContext",
+              "NSManagedObjectModel",
+              "NSPersistentStoreRequest",
+              "NSPropertyDescription",
+              "bitflags"
+            ]
+          },
+          "objc2-core-foundation-0.3.2": {
+            "runtime_dependencies": [
+              {
+                "name": "bitflags",
+                "package_key": "bitflags-2.12.1",
+                "kind": "normal",
+                "features": [
+                  "std"
+                ],
+                "uses_default_features": false,
+                "optional": true,
+                "target": null,
+                "tree": "target"
+              },
+              {
+                "name": "objc2",
+                "package_key": "objc2-0.6.4",
+                "kind": "normal",
+                "features": [
+                  "std"
+                ],
+                "uses_default_features": false,
+                "optional": true,
+                "target": null,
+                "tree": "target"
+              }
+            ],
+            "build_dependencies": [],
+            "features": [
+              "CFArray",
+              "CFAttributedString",
+              "CFCGTypes",
+              "CFCalendar",
+              "CFCharacterSet",
+              "CFData",
+              "CFDate",
+              "CFDictionary",
+              "CFError",
+              "CFFileSecurity",
+              "CFLocale",
+              "CFMachPort",
+              "CFMessagePort",
+              "CFNumber",
+              "CFRunLoop",
+              "CFSet",
+              "CFStream",
+              "CFString",
+              "CFURL",
+              "bitflags",
+              "objc2"
+            ]
+          },
+          "objc2-core-graphics-0.3.2": {
+            "runtime_dependencies": [
+              {
+                "name": "bitflags",
+                "package_key": "bitflags-2.12.1",
+                "kind": "normal",
+                "features": [
+                  "std"
+                ],
+                "uses_default_features": false,
+                "optional": true,
+                "target": null,
+                "tree": "target"
+              },
+              {
+                "name": "objc2",
+                "package_key": "objc2-0.6.4",
+                "kind": "normal",
+                "features": [
+                  "std"
+                ],
+                "uses_default_features": false,
+                "optional": true,
+                "target": null,
+                "tree": "target"
+              },
+              {
+                "name": "objc2_core_foundation",
+                "package_key": "objc2-core-foundation-0.3.2",
+                "kind": "normal",
+                "features": [],
+                "uses_default_features": false,
+                "optional": false,
+                "target": null,
+                "tree": "target"
+              }
+            ],
+            "build_dependencies": [],
+            "features": [
+              "CGColor",
+              "CGColorSpace",
+              "CGContext",
+              "CGDirectDisplay",
+              "CGEventTypes",
+              "CGFont",
+              "CGImage",
+              "CGPath",
+              "bitflags",
+              "objc2"
+            ]
+          },
+          "objc2-core-image-0.3.2": {
+            "runtime_dependencies": [
+              {
+                "name": "objc2",
+                "package_key": "objc2-0.6.4",
+                "kind": "normal",
+                "features": [
+                  "std"
+                ],
+                "uses_default_features": false,
+                "optional": false,
+                "target": null,
+                "tree": "target"
+              },
+              {
+                "name": "objc2_foundation",
+                "package_key": "objc2-foundation-0.3.2",
+                "kind": "normal",
+                "features": [
+                  "alloc"
+                ],
+                "uses_default_features": false,
+                "optional": false,
+                "target": null,
+                "tree": "target"
+              }
+            ],
+            "build_dependencies": [],
+            "features": [
+              "CIColor",
+              "CIContext",
+              "CIFilter",
+              "CIImage"
+            ]
+          },
+          "objc2-core-text-0.3.2": {
+            "runtime_dependencies": [
+              {
+                "name": "bitflags",
+                "package_key": "bitflags-2.12.1",
+                "kind": "normal",
+                "features": [
+                  "std"
+                ],
+                "uses_default_features": false,
+                "optional": true,
+                "target": null,
+                "tree": "target"
+              },
+              {
+                "name": "objc2",
+                "package_key": "objc2-0.6.4",
+                "kind": "normal",
+                "features": [
+                  "std"
+                ],
+                "uses_default_features": false,
+                "optional": true,
+                "target": null,
+                "tree": "target"
+              },
+              {
+                "name": "objc2_core_foundation",
+                "package_key": "objc2-core-foundation-0.3.2",
+                "kind": "normal",
+                "features": [],
+                "uses_default_features": false,
+                "optional": false,
+                "target": null,
+                "tree": "target"
+              }
+            ],
+            "build_dependencies": [],
+            "features": [
+              "CTFont",
+              "CTFontCollection",
+              "CTFontDescriptor",
+              "CTGlyphInfo",
+              "bitflags",
+              "objc2"
+            ]
+          },
+          "objc2-core-video-0.3.2": {
+            "runtime_dependencies": [
+              {
+                "name": "bitflags",
+                "package_key": "bitflags-2.12.1",
+                "kind": "normal",
+                "features": [
+                  "std"
+                ],
+                "uses_default_features": false,
+                "optional": true,
+                "target": null,
+                "tree": "target"
+              },
+              {
+                "name": "objc2",
+                "package_key": "objc2-0.6.4",
+                "kind": "normal",
+                "features": [
+                  "std"
+                ],
+                "uses_default_features": false,
+                "optional": true,
+                "target": null,
+                "tree": "target"
+              },
+              {
+                "name": "objc2_core_foundation",
+                "package_key": "objc2-core-foundation-0.3.2",
+                "kind": "normal",
+                "features": [],
+                "uses_default_features": false,
+                "optional": false,
+                "target": null,
+                "tree": "target"
+              }
+            ],
+            "build_dependencies": [],
+            "features": [
+              "CVBase",
+              "bitflags",
+              "objc2"
+            ]
+          },
+          "objc2-encode-4.1.0": {
+            "runtime_dependencies": [],
+            "build_dependencies": [],
+            "features": [
+              "alloc",
+              "std"
+            ]
+          },
+          "objc2-foundation-0.3.2": {
+            "runtime_dependencies": [
+              {
+                "name": "bitflags",
+                "package_key": "bitflags-2.12.1",
+                "kind": "normal",
+                "features": [
+                  "std"
+                ],
+                "uses_default_features": false,
+                "optional": true,
+                "target": null,
+                "tree": "target"
+              },
+              {
+                "name": "block2",
+                "package_key": "block2-0.6.2",
+                "kind": "normal",
+                "features": [
+                  "alloc"
+                ],
+                "uses_default_features": false,
+                "optional": true,
+                "target": null,
+                "tree": "target"
+              },
+              {
+                "name": "libc",
+                "package_key": "libc-0.2.186",
+                "kind": "normal",
+                "features": [],
+                "uses_default_features": false,
+                "optional": true,
+                "target": null,
+                "tree": "target"
+              },
+              {
+                "name": "objc2",
+                "package_key": "objc2-0.6.4",
+                "kind": "normal",
+                "features": [
+                  "std"
+                ],
+                "uses_default_features": false,
+                "optional": false,
+                "target": null,
+                "tree": "target"
+              },
+              {
+                "name": "objc2_core_foundation",
+                "package_key": "objc2-core-foundation-0.3.2",
+                "kind": "normal",
+                "features": [
+                  "CFArray",
+                  "CFAttributedString",
+                  "CFCGTypes",
+                  "CFCalendar",
+                  "CFCharacterSet",
+                  "CFData",
+                  "CFDate",
+                  "CFDictionary",
+                  "CFError",
+                  "CFFileSecurity",
+                  "CFLocale",
+                  "CFMachPort",
+                  "CFMessagePort",
+                  "CFRunLoop",
+                  "CFSet",
+                  "CFStream",
+                  "CFURL",
+                  "objc2"
+                ],
+                "uses_default_features": false,
+                "optional": true,
+                "target": null,
+                "tree": "target"
+              }
+            ],
+            "build_dependencies": [],
+            "features": [
+              "FoundationErrors",
+              "FoundationLegacySwiftCompatibility",
+              "NSAffineTransform",
+              "NSAppleEventDescriptor",
+              "NSAppleEventManager",
+              "NSAppleScript",
+              "NSArchiver",
+              "NSArray",
+              "NSAttributedString",
+              "NSAutoreleasePool",
+              "NSBackgroundActivityScheduler",
+              "NSBundle",
+              "NSByteCountFormatter",
+              "NSByteOrder",
+              "NSCache",
+              "NSCalendar",
+              "NSCalendarDate",
+              "NSCharacterSet",
+              "NSClassDescription",
+              "NSCoder",
+              "NSComparisonPredicate",
+              "NSCompoundPredicate",
+              "NSConnection",
+              "NSData",
+              "NSDate",
+              "NSDateComponentsFormatter",
+              "NSDateFormatter",
+              "NSDateInterval",
+              "NSDateIntervalFormatter",
+              "NSDebug",
+              "NSDecimal",
+              "NSDecimalNumber",
+              "NSDictionary",
+              "NSDistantObject",
+              "NSDistributedLock",
+              "NSDistributedNotificationCenter",
+              "NSEnergyFormatter",
+              "NSEnumerator",
+              "NSError",
+              "NSException",
+              "NSExpression",
+              "NSExtensionContext",
+              "NSExtensionItem",
+              "NSExtensionRequestHandling",
+              "NSFileCoordinator",
+              "NSFileHandle",
+              "NSFileManager",
+              "NSFilePresenter",
+              "NSFileVersion",
+              "NSFileWrapper",
+              "NSFormatter",
+              "NSGarbageCollector",
+              "NSGeometry",
+              "NSHFSFileTypes",
+              "NSHTTPCookie",
+              "NSHTTPCookieStorage",
+              "NSHashTable",
+              "NSHost",
+              "NSISO8601DateFormatter",
+              "NSIndexPath",
+              "NSIndexSet",
+              "NSInflectionRule",
+              "NSInvocation",
+              "NSItemProvider",
+              "NSJSONSerialization",
+              "NSKeyValueCoding",
+              "NSKeyValueObserving",
+              "NSKeyValueSharedObservers",
+              "NSKeyedArchiver",
+              "NSLengthFormatter",
+              "NSLinguisticTagger",
+              "NSListFormatter",
+              "NSLocale",
+              "NSLocalizedNumberFormatRule",
+              "NSLock",
+              "NSMapTable",
+              "NSMassFormatter",
+              "NSMeasurement",
+              "NSMeasurementFormatter",
+              "NSMetadata",
+              "NSMetadataAttributes",
+              "NSMethodSignature",
+              "NSMorphology",
+              "NSNetServices",
+              "NSNotification",
+              "NSNotificationQueue",
+              "NSNull",
+              "NSNumberFormatter",
+              "NSObjCRuntime",
+              "NSObject",
+              "NSObjectScripting",
+              "NSOperation",
+              "NSOrderedCollectionChange",
+              "NSOrderedCollectionDifference",
+              "NSOrderedSet",
+              "NSOrthography",
+              "NSPathUtilities",
+              "NSPersonNameComponents",
+              "NSPersonNameComponentsFormatter",
+              "NSPointerArray",
+              "NSPointerFunctions",
+              "NSPort",
+              "NSPortCoder",
+              "NSPortMessage",
+              "NSPortNameServer",
+              "NSPredicate",
+              "NSProcessInfo",
+              "NSProgress",
+              "NSPropertyList",
+              "NSProtocolChecker",
+              "NSProxy",
+              "NSRange",
+              "NSRegularExpression",
+              "NSRelativeDateTimeFormatter",
+              "NSRunLoop",
+              "NSScanner",
+              "NSScriptClassDescription",
+              "NSScriptCoercionHandler",
+              "NSScriptCommand",
+              "NSScriptCommandDescription",
+              "NSScriptExecutionContext",
+              "NSScriptKeyValueCoding",
+              "NSScriptObjectSpecifiers",
+              "NSScriptStandardSuiteCommands",
+              "NSScriptSuiteRegistry",
+              "NSScriptWhoseTests",
+              "NSSet",
+              "NSSortDescriptor",
+              "NSSpellServer",
+              "NSStream",
+              "NSString",
+              "NSTask",
+              "NSTermOfAddress",
+              "NSTextCheckingResult",
+              "NSThread",
+              "NSTimeZone",
+              "NSTimer",
+              "NSURL",
+              "NSURLAuthenticationChallenge",
+              "NSURLCache",
+              "NSURLConnection",
+              "NSURLCredential",
+              "NSURLCredentialStorage",
+              "NSURLDownload",
+              "NSURLError",
+              "NSURLHandle",
+              "NSURLProtectionSpace",
+              "NSURLProtocol",
+              "NSURLRequest",
+              "NSURLResponse",
+              "NSURLSession",
+              "NSUUID",
+              "NSUbiquitousKeyValueStore",
+              "NSUndoManager",
+              "NSUnit",
+              "NSUserActivity",
+              "NSUserDefaults",
+              "NSUserNotification",
+              "NSUserScriptTask",
+              "NSValue",
+              "NSValueTransformer",
+              "NSXMLDTD",
+              "NSXMLDTDNode",
+              "NSXMLDocument",
+              "NSXMLElement",
+              "NSXMLNode",
+              "NSXMLNodeOptions",
+              "NSXMLParser",
+              "NSXPCConnection",
+              "NSZone",
+              "alloc",
+              "bitflags",
+              "block2",
+              "default",
+              "libc",
+              "objc2-core-foundation",
+              "std"
+            ]
+          },
+          "objc2-io-surface-0.3.2": {
+            "runtime_dependencies": [
+              {
+                "name": "bitflags",
+                "package_key": "bitflags-2.12.1",
+                "kind": "normal",
+                "features": [
+                  "std"
+                ],
+                "uses_default_features": false,
+                "optional": true,
+                "target": null,
+                "tree": "target"
+              },
+              {
+                "name": "objc2",
+                "package_key": "objc2-0.6.4",
+                "kind": "normal",
+                "features": [
+                  "std"
+                ],
+                "uses_default_features": false,
+                "optional": true,
+                "target": null,
+                "tree": "target"
+              }
+            ],
+            "build_dependencies": [],
+            "features": [
+              "IOSurfaceRef",
+              "bitflags",
+              "objc2"
+            ]
+          },
+          "objc2-quartz-core-0.3.2": {
+            "runtime_dependencies": [
+              {
+                "name": "bitflags",
+                "package_key": "bitflags-2.12.1",
+                "kind": "normal",
+                "features": [
+                  "std"
+                ],
+                "uses_default_features": false,
+                "optional": true,
+                "target": null,
+                "tree": "target"
+              },
+              {
+                "name": "objc2",
+                "package_key": "objc2-0.6.4",
+                "kind": "normal",
+                "features": [
+                  "std"
+                ],
+                "uses_default_features": false,
+                "optional": false,
+                "target": null,
+                "tree": "target"
+              },
+              {
+                "name": "objc2_foundation",
+                "package_key": "objc2-foundation-0.3.2",
+                "kind": "normal",
+                "features": [
+                  "alloc"
+                ],
+                "uses_default_features": false,
+                "optional": false,
+                "target": null,
+                "tree": "target"
+              }
+            ],
+            "build_dependencies": [],
+            "features": [
+              "CADisplayLink",
+              "CALayer",
+              "CAMediaTiming",
+              "CAMediaTimingFunction",
+              "CAOpenGLLayer",
+              "bitflags"
             ]
           },
           "quanta-0.12.6": {
@@ -19387,6 +20714,32 @@
                 "optional": false,
                 "target": null,
                 "tree": "target"
+              }
+            ],
+            "build_dependencies": [],
+            "features": []
+          },
+          "kanchi-0.1.0-837f57e6c9b52e3d8781a56a46523627765362a0": {
+            "runtime_dependencies": [
+              {
+                "name": "libc",
+                "package_key": "libc-0.2.186",
+                "kind": "normal",
+                "features": [],
+                "uses_default_features": true,
+                "optional": false,
+                "target": null,
+                "tree": "target"
+              },
+              {
+                "name": "paste",
+                "package_key": "paste-1.0.15",
+                "kind": "normal",
+                "features": [],
+                "uses_default_features": true,
+                "optional": false,
+                "target": null,
+                "tree": "host"
               }
             ],
             "build_dependencies": [],
@@ -20075,6 +21428,32 @@
             "build_dependencies": [],
             "features": []
           },
+          "kanchi-0.1.0-837f57e6c9b52e3d8781a56a46523627765362a0": {
+            "runtime_dependencies": [
+              {
+                "name": "libc",
+                "package_key": "libc-0.2.186",
+                "kind": "normal",
+                "features": [],
+                "uses_default_features": true,
+                "optional": false,
+                "target": null,
+                "tree": "target"
+              },
+              {
+                "name": "paste",
+                "package_key": "paste-1.0.15",
+                "kind": "normal",
+                "features": [],
+                "uses_default_features": true,
+                "optional": false,
+                "target": null,
+                "tree": "host"
+              }
+            ],
+            "build_dependencies": [],
+            "features": []
+          },
           "linux-raw-sys-0.12.1": {
             "runtime_dependencies": [],
             "build_dependencies": [],
@@ -20663,6 +22042,26 @@
               "std"
             ]
           },
+          "block2-0.6.2": {
+            "runtime_dependencies": [
+              {
+                "name": "objc2",
+                "package_key": "objc2-0.6.4",
+                "kind": "normal",
+                "features": [
+                  "std"
+                ],
+                "uses_default_features": false,
+                "optional": false,
+                "target": null,
+                "tree": "target"
+              }
+            ],
+            "build_dependencies": [],
+            "features": [
+              "alloc"
+            ]
+          },
           "core-foundation-0.10.1": {
             "runtime_dependencies": [
               {
@@ -20739,6 +22138,39 @@
             "build_dependencies": [],
             "features": []
           },
+          "dispatch2-0.3.1": {
+            "runtime_dependencies": [
+              {
+                "name": "bitflags",
+                "package_key": "bitflags-2.12.1",
+                "kind": "normal",
+                "features": [
+                  "std"
+                ],
+                "uses_default_features": false,
+                "optional": false,
+                "target": null,
+                "tree": "target"
+              },
+              {
+                "name": "objc2",
+                "package_key": "objc2-0.6.4",
+                "kind": "normal",
+                "features": [
+                  "std"
+                ],
+                "uses_default_features": false,
+                "optional": true,
+                "target": null,
+                "tree": "target"
+              }
+            ],
+            "build_dependencies": [],
+            "features": [
+              "alloc",
+              "objc2"
+            ]
+          },
           "iana-time-zone-0.1.65": {
             "runtime_dependencies": [
               {
@@ -20756,6 +22188,68 @@
             "features": [
               "fallback"
             ]
+          },
+          "kanchi-0.1.0-837f57e6c9b52e3d8781a56a46523627765362a0": {
+            "runtime_dependencies": [
+              {
+                "name": "libc",
+                "package_key": "libc-0.2.186",
+                "kind": "normal",
+                "features": [],
+                "uses_default_features": true,
+                "optional": false,
+                "target": null,
+                "tree": "target"
+              },
+              {
+                "name": "objc2",
+                "package_key": "objc2-0.6.4",
+                "kind": "normal",
+                "features": [],
+                "uses_default_features": true,
+                "optional": false,
+                "target": "cfg(target_os = \"macos\")",
+                "tree": "target"
+              },
+              {
+                "name": "objc2_app_kit",
+                "package_key": "objc2-app-kit-0.3.2",
+                "kind": "normal",
+                "features": [
+                  "NSApplication",
+                  "NSScreen"
+                ],
+                "uses_default_features": true,
+                "optional": false,
+                "target": "cfg(target_os = \"macos\")",
+                "tree": "target"
+              },
+              {
+                "name": "objc2_foundation",
+                "package_key": "objc2-foundation-0.3.2",
+                "kind": "normal",
+                "features": [
+                  "NSString",
+                  "NSUserDefaults"
+                ],
+                "uses_default_features": true,
+                "optional": false,
+                "target": "cfg(target_os = \"macos\")",
+                "tree": "target"
+              },
+              {
+                "name": "paste",
+                "package_key": "paste-1.0.15",
+                "kind": "normal",
+                "features": [],
+                "uses_default_features": true,
+                "optional": false,
+                "target": null,
+                "tree": "host"
+              }
+            ],
+            "build_dependencies": [],
+            "features": []
           },
           "kqueue-1.2.0": {
             "runtime_dependencies": [
@@ -20923,6 +22417,1203 @@
               "kqueue",
               "macos_kqueue",
               "mio"
+            ]
+          },
+          "objc2-0.6.4": {
+            "runtime_dependencies": [
+              {
+                "name": "objc2_encode",
+                "package_key": "objc2-encode-4.1.0",
+                "kind": "normal",
+                "features": [],
+                "uses_default_features": false,
+                "optional": false,
+                "target": null,
+                "tree": "target"
+              }
+            ],
+            "build_dependencies": [],
+            "features": [
+              "alloc",
+              "default",
+              "std"
+            ]
+          },
+          "objc2-app-kit-0.3.2": {
+            "runtime_dependencies": [
+              {
+                "name": "bitflags",
+                "package_key": "bitflags-2.12.1",
+                "kind": "normal",
+                "features": [
+                  "std"
+                ],
+                "uses_default_features": false,
+                "optional": true,
+                "target": null,
+                "tree": "target"
+              },
+              {
+                "name": "block2",
+                "package_key": "block2-0.6.2",
+                "kind": "normal",
+                "features": [
+                  "alloc"
+                ],
+                "uses_default_features": false,
+                "optional": true,
+                "target": null,
+                "tree": "target"
+              },
+              {
+                "name": "libc",
+                "package_key": "libc-0.2.186",
+                "kind": "normal",
+                "features": [],
+                "uses_default_features": false,
+                "optional": true,
+                "target": null,
+                "tree": "target"
+              },
+              {
+                "name": "objc2",
+                "package_key": "objc2-0.6.4",
+                "kind": "normal",
+                "features": [
+                  "std"
+                ],
+                "uses_default_features": false,
+                "optional": false,
+                "target": null,
+                "tree": "target"
+              },
+              {
+                "name": "objc2_cloud_kit",
+                "package_key": "objc2-cloud-kit-0.3.2",
+                "kind": "normal",
+                "features": [
+                  "CKContainer",
+                  "CKRecord",
+                  "CKShare",
+                  "CKShareMetadata"
+                ],
+                "uses_default_features": false,
+                "optional": true,
+                "target": "cfg(target_vendor = \"apple\")",
+                "tree": "target"
+              },
+              {
+                "name": "objc2_core_data",
+                "package_key": "objc2-core-data-0.3.2",
+                "kind": "normal",
+                "features": [
+                  "NSAttributeDescription",
+                  "NSEntityDescription",
+                  "NSFetchRequest",
+                  "NSManagedObjectContext",
+                  "NSManagedObjectModel",
+                  "NSPersistentStoreRequest",
+                  "NSPropertyDescription"
+                ],
+                "uses_default_features": false,
+                "optional": true,
+                "target": "cfg(target_vendor = \"apple\")",
+                "tree": "target"
+              },
+              {
+                "name": "objc2_core_foundation",
+                "package_key": "objc2-core-foundation-0.3.2",
+                "kind": "normal",
+                "features": [
+                  "CFCGTypes",
+                  "CFDate",
+                  "objc2"
+                ],
+                "uses_default_features": false,
+                "optional": true,
+                "target": null,
+                "tree": "target"
+              },
+              {
+                "name": "objc2_core_graphics",
+                "package_key": "objc2-core-graphics-0.3.2",
+                "kind": "normal",
+                "features": [
+                  "CGColor",
+                  "CGColorSpace",
+                  "CGContext",
+                  "CGDirectDisplay",
+                  "CGEventTypes",
+                  "CGFont",
+                  "CGImage",
+                  "CGPath",
+                  "objc2"
+                ],
+                "uses_default_features": false,
+                "optional": true,
+                "target": "cfg(target_vendor = \"apple\")",
+                "tree": "target"
+              },
+              {
+                "name": "objc2_core_image",
+                "package_key": "objc2-core-image-0.3.2",
+                "kind": "normal",
+                "features": [
+                  "CIColor",
+                  "CIContext",
+                  "CIFilter",
+                  "CIImage"
+                ],
+                "uses_default_features": false,
+                "optional": true,
+                "target": "cfg(target_vendor = \"apple\")",
+                "tree": "target"
+              },
+              {
+                "name": "objc2_core_text",
+                "package_key": "objc2-core-text-0.3.2",
+                "kind": "normal",
+                "features": [
+                  "CTFont",
+                  "CTFontCollection",
+                  "CTFontDescriptor",
+                  "CTGlyphInfo",
+                  "objc2"
+                ],
+                "uses_default_features": false,
+                "optional": true,
+                "target": "cfg(target_vendor = \"apple\")",
+                "tree": "target"
+              },
+              {
+                "name": "objc2_core_video",
+                "package_key": "objc2-core-video-0.3.2",
+                "kind": "normal",
+                "features": [
+                  "CVBase",
+                  "objc2"
+                ],
+                "uses_default_features": false,
+                "optional": true,
+                "target": "cfg(target_vendor = \"apple\")",
+                "tree": "target"
+              },
+              {
+                "name": "objc2_foundation",
+                "package_key": "objc2-foundation-0.3.2",
+                "kind": "normal",
+                "features": [
+                  "alloc"
+                ],
+                "uses_default_features": false,
+                "optional": false,
+                "target": null,
+                "tree": "target"
+              },
+              {
+                "name": "objc2_quartz_core",
+                "package_key": "objc2-quartz-core-0.3.2",
+                "kind": "normal",
+                "features": [
+                  "CADisplayLink",
+                  "CALayer",
+                  "CAMediaTiming",
+                  "CAMediaTimingFunction",
+                  "CAOpenGLLayer"
+                ],
+                "uses_default_features": false,
+                "optional": true,
+                "target": "cfg(target_vendor = \"apple\")",
+                "tree": "target"
+              }
+            ],
+            "build_dependencies": [],
+            "features": [
+              "AppKitDefines",
+              "AppKitErrors",
+              "NSATSTypesetter",
+              "NSAccessibility",
+              "NSAccessibilityColor",
+              "NSAccessibilityConstants",
+              "NSAccessibilityCustomAction",
+              "NSAccessibilityCustomRotor",
+              "NSAccessibilityElement",
+              "NSAccessibilityProtocols",
+              "NSActionCell",
+              "NSAdaptiveImageGlyph",
+              "NSAffineTransform",
+              "NSAlert",
+              "NSAlignmentFeedbackFilter",
+              "NSAnimation",
+              "NSAnimationContext",
+              "NSAppearance",
+              "NSAppleScriptExtensions",
+              "NSApplication",
+              "NSApplicationScripting",
+              "NSArrayController",
+              "NSAttributedString",
+              "NSBackgroundExtensionView",
+              "NSBezierPath",
+              "NSBitmapImageRep",
+              "NSBox",
+              "NSBrowser",
+              "NSBrowserCell",
+              "NSButton",
+              "NSButtonCell",
+              "NSButtonTouchBarItem",
+              "NSCIImageRep",
+              "NSCachedImageRep",
+              "NSCandidateListTouchBarItem",
+              "NSCell",
+              "NSClickGestureRecognizer",
+              "NSClipView",
+              "NSCollectionView",
+              "NSCollectionViewCompositionalLayout",
+              "NSCollectionViewFlowLayout",
+              "NSCollectionViewGridLayout",
+              "NSCollectionViewLayout",
+              "NSCollectionViewTransitionLayout",
+              "NSColor",
+              "NSColorList",
+              "NSColorPanel",
+              "NSColorPicker",
+              "NSColorPickerTouchBarItem",
+              "NSColorPicking",
+              "NSColorSampler",
+              "NSColorSpace",
+              "NSColorWell",
+              "NSComboBox",
+              "NSComboBoxCell",
+              "NSComboButton",
+              "NSControl",
+              "NSController",
+              "NSCursor",
+              "NSCustomImageRep",
+              "NSCustomTouchBarItem",
+              "NSDataAsset",
+              "NSDatePicker",
+              "NSDatePickerCell",
+              "NSDictionaryController",
+              "NSDiffableDataSource",
+              "NSDirection",
+              "NSDockTile",
+              "NSDocument",
+              "NSDocumentController",
+              "NSDocumentScripting",
+              "NSDragging",
+              "NSDraggingItem",
+              "NSDraggingSession",
+              "NSDrawer",
+              "NSEPSImageRep",
+              "NSErrors",
+              "NSEvent",
+              "NSFilePromiseProvider",
+              "NSFilePromiseReceiver",
+              "NSFileWrapperExtensions",
+              "NSFont",
+              "NSFontAssetRequest",
+              "NSFontCollection",
+              "NSFontDescriptor",
+              "NSFontManager",
+              "NSFontPanel",
+              "NSForm",
+              "NSFormCell",
+              "NSGestureRecognizer",
+              "NSGlassEffectView",
+              "NSGlyphGenerator",
+              "NSGlyphInfo",
+              "NSGradient",
+              "NSGraphics",
+              "NSGraphicsContext",
+              "NSGridView",
+              "NSGroupTouchBarItem",
+              "NSHapticFeedback",
+              "NSHelpManager",
+              "NSImage",
+              "NSImageCell",
+              "NSImageRep",
+              "NSImageView",
+              "NSInputManager",
+              "NSInputServer",
+              "NSInterfaceStyle",
+              "NSItemBadge",
+              "NSItemProvider",
+              "NSKeyValueBinding",
+              "NSLayoutAnchor",
+              "NSLayoutConstraint",
+              "NSLayoutGuide",
+              "NSLayoutManager",
+              "NSLevelIndicator",
+              "NSLevelIndicatorCell",
+              "NSMagnificationGestureRecognizer",
+              "NSMatrix",
+              "NSMediaLibraryBrowserController",
+              "NSMenu",
+              "NSMenuItem",
+              "NSMenuItemBadge",
+              "NSMenuItemCell",
+              "NSMenuToolbarItem",
+              "NSMovie",
+              "NSNib",
+              "NSNibConnector",
+              "NSNibControlConnector",
+              "NSNibDeclarations",
+              "NSNibLoading",
+              "NSNibOutletConnector",
+              "NSObjectController",
+              "NSOpenGL",
+              "NSOpenGLLayer",
+              "NSOpenGLView",
+              "NSOpenPanel",
+              "NSOutlineView",
+              "NSPDFImageRep",
+              "NSPDFInfo",
+              "NSPDFPanel",
+              "NSPICTImageRep",
+              "NSPageController",
+              "NSPageLayout",
+              "NSPanGestureRecognizer",
+              "NSPanel",
+              "NSParagraphStyle",
+              "NSPasteboard",
+              "NSPasteboardItem",
+              "NSPathCell",
+              "NSPathComponentCell",
+              "NSPathControl",
+              "NSPathControlItem",
+              "NSPersistentDocument",
+              "NSPickerTouchBarItem",
+              "NSPopUpButton",
+              "NSPopUpButtonCell",
+              "NSPopover",
+              "NSPopoverTouchBarItem",
+              "NSPredicateEditor",
+              "NSPredicateEditorRowTemplate",
+              "NSPressGestureRecognizer",
+              "NSPressureConfiguration",
+              "NSPreviewRepresentingActivityItem",
+              "NSPrintInfo",
+              "NSPrintOperation",
+              "NSPrintPanel",
+              "NSPrinter",
+              "NSProgressIndicator",
+              "NSResponder",
+              "NSRotationGestureRecognizer",
+              "NSRuleEditor",
+              "NSRulerMarker",
+              "NSRulerView",
+              "NSRunningApplication",
+              "NSSavePanel",
+              "NSScreen",
+              "NSScrollView",
+              "NSScroller",
+              "NSScrubber",
+              "NSScrubberItemView",
+              "NSScrubberLayout",
+              "NSSearchField",
+              "NSSearchFieldCell",
+              "NSSearchToolbarItem",
+              "NSSecureTextField",
+              "NSSegmentedCell",
+              "NSSegmentedControl",
+              "NSShadow",
+              "NSSharingCollaborationModeRestriction",
+              "NSSharingService",
+              "NSSharingServicePickerToolbarItem",
+              "NSSharingServicePickerTouchBarItem",
+              "NSSlider",
+              "NSSliderAccessory",
+              "NSSliderCell",
+              "NSSliderTouchBarItem",
+              "NSSound",
+              "NSSpeechRecognizer",
+              "NSSpeechSynthesizer",
+              "NSSpellChecker",
+              "NSSpellProtocol",
+              "NSSplitView",
+              "NSSplitViewController",
+              "NSSplitViewItem",
+              "NSSplitViewItemAccessoryViewController",
+              "NSStackView",
+              "NSStatusBar",
+              "NSStatusBarButton",
+              "NSStatusItem",
+              "NSStepper",
+              "NSStepperCell",
+              "NSStepperTouchBarItem",
+              "NSStoryboard",
+              "NSStoryboardSegue",
+              "NSStringDrawing",
+              "NSSwitch",
+              "NSTabView",
+              "NSTabViewController",
+              "NSTabViewItem",
+              "NSTableCellView",
+              "NSTableColumn",
+              "NSTableHeaderCell",
+              "NSTableHeaderView",
+              "NSTableRowView",
+              "NSTableView",
+              "NSTableViewDiffableDataSource",
+              "NSTableViewRowAction",
+              "NSText",
+              "NSTextAlternatives",
+              "NSTextAttachment",
+              "NSTextAttachmentCell",
+              "NSTextCheckingClient",
+              "NSTextCheckingController",
+              "NSTextContainer",
+              "NSTextContent",
+              "NSTextContentManager",
+              "NSTextElement",
+              "NSTextField",
+              "NSTextFieldCell",
+              "NSTextFinder",
+              "NSTextInputClient",
+              "NSTextInputContext",
+              "NSTextInsertionIndicator",
+              "NSTextLayoutFragment",
+              "NSTextLayoutManager",
+              "NSTextLineFragment",
+              "NSTextList",
+              "NSTextListElement",
+              "NSTextRange",
+              "NSTextSelection",
+              "NSTextSelectionNavigation",
+              "NSTextStorage",
+              "NSTextStorageScripting",
+              "NSTextTable",
+              "NSTextView",
+              "NSTextViewportLayoutController",
+              "NSTintConfiguration",
+              "NSTintProminence",
+              "NSTitlebarAccessoryViewController",
+              "NSTokenField",
+              "NSTokenFieldCell",
+              "NSToolbar",
+              "NSToolbarItem",
+              "NSToolbarItemGroup",
+              "NSTouch",
+              "NSTouchBar",
+              "NSTouchBarItem",
+              "NSTrackingArea",
+              "NSTrackingSeparatorToolbarItem",
+              "NSTreeController",
+              "NSTreeNode",
+              "NSTypesetter",
+              "NSUserActivity",
+              "NSUserDefaultsController",
+              "NSUserInterfaceCompression",
+              "NSUserInterfaceItemIdentification",
+              "NSUserInterfaceItemSearching",
+              "NSUserInterfaceLayout",
+              "NSUserInterfaceValidation",
+              "NSView",
+              "NSViewController",
+              "NSViewLayoutRegion",
+              "NSVisualEffectView",
+              "NSWindow",
+              "NSWindowController",
+              "NSWindowRestoration",
+              "NSWindowScripting",
+              "NSWindowTab",
+              "NSWindowTabGroup",
+              "NSWorkspace",
+              "NSWritingToolsCoordinator",
+              "NSWritingToolsCoordinatorAnimationParameters",
+              "NSWritingToolsCoordinatorContext",
+              "alloc",
+              "bitflags",
+              "block2",
+              "default",
+              "libc",
+              "objc2-cloud-kit",
+              "objc2-core-data",
+              "objc2-core-foundation",
+              "objc2-core-graphics",
+              "objc2-core-image",
+              "objc2-core-text",
+              "objc2-core-video",
+              "objc2-quartz-core",
+              "std"
+            ]
+          },
+          "objc2-cloud-kit-0.3.2": {
+            "runtime_dependencies": [
+              {
+                "name": "bitflags",
+                "package_key": "bitflags-2.12.1",
+                "kind": "normal",
+                "features": [
+                  "std"
+                ],
+                "uses_default_features": false,
+                "optional": true,
+                "target": null,
+                "tree": "target"
+              },
+              {
+                "name": "objc2",
+                "package_key": "objc2-0.6.4",
+                "kind": "normal",
+                "features": [
+                  "std"
+                ],
+                "uses_default_features": false,
+                "optional": false,
+                "target": null,
+                "tree": "target"
+              },
+              {
+                "name": "objc2_foundation",
+                "package_key": "objc2-foundation-0.3.2",
+                "kind": "normal",
+                "features": [
+                  "alloc"
+                ],
+                "uses_default_features": false,
+                "optional": false,
+                "target": null,
+                "tree": "target"
+              }
+            ],
+            "build_dependencies": [],
+            "features": [
+              "CKContainer",
+              "CKRecord",
+              "CKShare",
+              "CKShareMetadata",
+              "bitflags"
+            ]
+          },
+          "objc2-core-data-0.3.2": {
+            "runtime_dependencies": [
+              {
+                "name": "bitflags",
+                "package_key": "bitflags-2.12.1",
+                "kind": "normal",
+                "features": [
+                  "std"
+                ],
+                "uses_default_features": false,
+                "optional": true,
+                "target": null,
+                "tree": "target"
+              },
+              {
+                "name": "objc2",
+                "package_key": "objc2-0.6.4",
+                "kind": "normal",
+                "features": [
+                  "std"
+                ],
+                "uses_default_features": false,
+                "optional": false,
+                "target": null,
+                "tree": "target"
+              },
+              {
+                "name": "objc2_foundation",
+                "package_key": "objc2-foundation-0.3.2",
+                "kind": "normal",
+                "features": [
+                  "alloc"
+                ],
+                "uses_default_features": false,
+                "optional": false,
+                "target": null,
+                "tree": "target"
+              }
+            ],
+            "build_dependencies": [],
+            "features": [
+              "NSAttributeDescription",
+              "NSEntityDescription",
+              "NSFetchRequest",
+              "NSManagedObjectContext",
+              "NSManagedObjectModel",
+              "NSPersistentStoreRequest",
+              "NSPropertyDescription",
+              "bitflags"
+            ]
+          },
+          "objc2-core-foundation-0.3.2": {
+            "runtime_dependencies": [
+              {
+                "name": "bitflags",
+                "package_key": "bitflags-2.12.1",
+                "kind": "normal",
+                "features": [
+                  "std"
+                ],
+                "uses_default_features": false,
+                "optional": true,
+                "target": null,
+                "tree": "target"
+              },
+              {
+                "name": "objc2",
+                "package_key": "objc2-0.6.4",
+                "kind": "normal",
+                "features": [
+                  "std"
+                ],
+                "uses_default_features": false,
+                "optional": true,
+                "target": null,
+                "tree": "target"
+              }
+            ],
+            "build_dependencies": [],
+            "features": [
+              "CFArray",
+              "CFAttributedString",
+              "CFCGTypes",
+              "CFCalendar",
+              "CFCharacterSet",
+              "CFData",
+              "CFDate",
+              "CFDictionary",
+              "CFError",
+              "CFFileSecurity",
+              "CFLocale",
+              "CFMachPort",
+              "CFMessagePort",
+              "CFNumber",
+              "CFRunLoop",
+              "CFSet",
+              "CFStream",
+              "CFString",
+              "CFURL",
+              "bitflags",
+              "objc2"
+            ]
+          },
+          "objc2-core-graphics-0.3.2": {
+            "runtime_dependencies": [
+              {
+                "name": "bitflags",
+                "package_key": "bitflags-2.12.1",
+                "kind": "normal",
+                "features": [
+                  "std"
+                ],
+                "uses_default_features": false,
+                "optional": true,
+                "target": null,
+                "tree": "target"
+              },
+              {
+                "name": "objc2",
+                "package_key": "objc2-0.6.4",
+                "kind": "normal",
+                "features": [
+                  "std"
+                ],
+                "uses_default_features": false,
+                "optional": true,
+                "target": null,
+                "tree": "target"
+              },
+              {
+                "name": "objc2_core_foundation",
+                "package_key": "objc2-core-foundation-0.3.2",
+                "kind": "normal",
+                "features": [],
+                "uses_default_features": false,
+                "optional": false,
+                "target": null,
+                "tree": "target"
+              }
+            ],
+            "build_dependencies": [],
+            "features": [
+              "CGColor",
+              "CGColorSpace",
+              "CGContext",
+              "CGDirectDisplay",
+              "CGEventTypes",
+              "CGFont",
+              "CGImage",
+              "CGPath",
+              "bitflags",
+              "objc2"
+            ]
+          },
+          "objc2-core-image-0.3.2": {
+            "runtime_dependencies": [
+              {
+                "name": "objc2",
+                "package_key": "objc2-0.6.4",
+                "kind": "normal",
+                "features": [
+                  "std"
+                ],
+                "uses_default_features": false,
+                "optional": false,
+                "target": null,
+                "tree": "target"
+              },
+              {
+                "name": "objc2_foundation",
+                "package_key": "objc2-foundation-0.3.2",
+                "kind": "normal",
+                "features": [
+                  "alloc"
+                ],
+                "uses_default_features": false,
+                "optional": false,
+                "target": null,
+                "tree": "target"
+              }
+            ],
+            "build_dependencies": [],
+            "features": [
+              "CIColor",
+              "CIContext",
+              "CIFilter",
+              "CIImage"
+            ]
+          },
+          "objc2-core-text-0.3.2": {
+            "runtime_dependencies": [
+              {
+                "name": "bitflags",
+                "package_key": "bitflags-2.12.1",
+                "kind": "normal",
+                "features": [
+                  "std"
+                ],
+                "uses_default_features": false,
+                "optional": true,
+                "target": null,
+                "tree": "target"
+              },
+              {
+                "name": "objc2",
+                "package_key": "objc2-0.6.4",
+                "kind": "normal",
+                "features": [
+                  "std"
+                ],
+                "uses_default_features": false,
+                "optional": true,
+                "target": null,
+                "tree": "target"
+              },
+              {
+                "name": "objc2_core_foundation",
+                "package_key": "objc2-core-foundation-0.3.2",
+                "kind": "normal",
+                "features": [],
+                "uses_default_features": false,
+                "optional": false,
+                "target": null,
+                "tree": "target"
+              }
+            ],
+            "build_dependencies": [],
+            "features": [
+              "CTFont",
+              "CTFontCollection",
+              "CTFontDescriptor",
+              "CTGlyphInfo",
+              "bitflags",
+              "objc2"
+            ]
+          },
+          "objc2-core-video-0.3.2": {
+            "runtime_dependencies": [
+              {
+                "name": "bitflags",
+                "package_key": "bitflags-2.12.1",
+                "kind": "normal",
+                "features": [
+                  "std"
+                ],
+                "uses_default_features": false,
+                "optional": true,
+                "target": null,
+                "tree": "target"
+              },
+              {
+                "name": "objc2",
+                "package_key": "objc2-0.6.4",
+                "kind": "normal",
+                "features": [
+                  "std"
+                ],
+                "uses_default_features": false,
+                "optional": true,
+                "target": null,
+                "tree": "target"
+              },
+              {
+                "name": "objc2_core_foundation",
+                "package_key": "objc2-core-foundation-0.3.2",
+                "kind": "normal",
+                "features": [],
+                "uses_default_features": false,
+                "optional": false,
+                "target": null,
+                "tree": "target"
+              }
+            ],
+            "build_dependencies": [],
+            "features": [
+              "CVBase",
+              "bitflags",
+              "objc2"
+            ]
+          },
+          "objc2-encode-4.1.0": {
+            "runtime_dependencies": [],
+            "build_dependencies": [],
+            "features": [
+              "alloc",
+              "std"
+            ]
+          },
+          "objc2-foundation-0.3.2": {
+            "runtime_dependencies": [
+              {
+                "name": "bitflags",
+                "package_key": "bitflags-2.12.1",
+                "kind": "normal",
+                "features": [
+                  "std"
+                ],
+                "uses_default_features": false,
+                "optional": true,
+                "target": null,
+                "tree": "target"
+              },
+              {
+                "name": "block2",
+                "package_key": "block2-0.6.2",
+                "kind": "normal",
+                "features": [
+                  "alloc"
+                ],
+                "uses_default_features": false,
+                "optional": true,
+                "target": null,
+                "tree": "target"
+              },
+              {
+                "name": "libc",
+                "package_key": "libc-0.2.186",
+                "kind": "normal",
+                "features": [],
+                "uses_default_features": false,
+                "optional": true,
+                "target": null,
+                "tree": "target"
+              },
+              {
+                "name": "objc2",
+                "package_key": "objc2-0.6.4",
+                "kind": "normal",
+                "features": [
+                  "std"
+                ],
+                "uses_default_features": false,
+                "optional": false,
+                "target": null,
+                "tree": "target"
+              },
+              {
+                "name": "objc2_core_foundation",
+                "package_key": "objc2-core-foundation-0.3.2",
+                "kind": "normal",
+                "features": [
+                  "CFArray",
+                  "CFAttributedString",
+                  "CFCGTypes",
+                  "CFCalendar",
+                  "CFCharacterSet",
+                  "CFData",
+                  "CFDate",
+                  "CFDictionary",
+                  "CFError",
+                  "CFFileSecurity",
+                  "CFLocale",
+                  "CFMachPort",
+                  "CFMessagePort",
+                  "CFRunLoop",
+                  "CFSet",
+                  "CFStream",
+                  "CFURL",
+                  "objc2"
+                ],
+                "uses_default_features": false,
+                "optional": true,
+                "target": null,
+                "tree": "target"
+              }
+            ],
+            "build_dependencies": [],
+            "features": [
+              "FoundationErrors",
+              "FoundationLegacySwiftCompatibility",
+              "NSAffineTransform",
+              "NSAppleEventDescriptor",
+              "NSAppleEventManager",
+              "NSAppleScript",
+              "NSArchiver",
+              "NSArray",
+              "NSAttributedString",
+              "NSAutoreleasePool",
+              "NSBackgroundActivityScheduler",
+              "NSBundle",
+              "NSByteCountFormatter",
+              "NSByteOrder",
+              "NSCache",
+              "NSCalendar",
+              "NSCalendarDate",
+              "NSCharacterSet",
+              "NSClassDescription",
+              "NSCoder",
+              "NSComparisonPredicate",
+              "NSCompoundPredicate",
+              "NSConnection",
+              "NSData",
+              "NSDate",
+              "NSDateComponentsFormatter",
+              "NSDateFormatter",
+              "NSDateInterval",
+              "NSDateIntervalFormatter",
+              "NSDebug",
+              "NSDecimal",
+              "NSDecimalNumber",
+              "NSDictionary",
+              "NSDistantObject",
+              "NSDistributedLock",
+              "NSDistributedNotificationCenter",
+              "NSEnergyFormatter",
+              "NSEnumerator",
+              "NSError",
+              "NSException",
+              "NSExpression",
+              "NSExtensionContext",
+              "NSExtensionItem",
+              "NSExtensionRequestHandling",
+              "NSFileCoordinator",
+              "NSFileHandle",
+              "NSFileManager",
+              "NSFilePresenter",
+              "NSFileVersion",
+              "NSFileWrapper",
+              "NSFormatter",
+              "NSGarbageCollector",
+              "NSGeometry",
+              "NSHFSFileTypes",
+              "NSHTTPCookie",
+              "NSHTTPCookieStorage",
+              "NSHashTable",
+              "NSHost",
+              "NSISO8601DateFormatter",
+              "NSIndexPath",
+              "NSIndexSet",
+              "NSInflectionRule",
+              "NSInvocation",
+              "NSItemProvider",
+              "NSJSONSerialization",
+              "NSKeyValueCoding",
+              "NSKeyValueObserving",
+              "NSKeyValueSharedObservers",
+              "NSKeyedArchiver",
+              "NSLengthFormatter",
+              "NSLinguisticTagger",
+              "NSListFormatter",
+              "NSLocale",
+              "NSLocalizedNumberFormatRule",
+              "NSLock",
+              "NSMapTable",
+              "NSMassFormatter",
+              "NSMeasurement",
+              "NSMeasurementFormatter",
+              "NSMetadata",
+              "NSMetadataAttributes",
+              "NSMethodSignature",
+              "NSMorphology",
+              "NSNetServices",
+              "NSNotification",
+              "NSNotificationQueue",
+              "NSNull",
+              "NSNumberFormatter",
+              "NSObjCRuntime",
+              "NSObject",
+              "NSObjectScripting",
+              "NSOperation",
+              "NSOrderedCollectionChange",
+              "NSOrderedCollectionDifference",
+              "NSOrderedSet",
+              "NSOrthography",
+              "NSPathUtilities",
+              "NSPersonNameComponents",
+              "NSPersonNameComponentsFormatter",
+              "NSPointerArray",
+              "NSPointerFunctions",
+              "NSPort",
+              "NSPortCoder",
+              "NSPortMessage",
+              "NSPortNameServer",
+              "NSPredicate",
+              "NSProcessInfo",
+              "NSProgress",
+              "NSPropertyList",
+              "NSProtocolChecker",
+              "NSProxy",
+              "NSRange",
+              "NSRegularExpression",
+              "NSRelativeDateTimeFormatter",
+              "NSRunLoop",
+              "NSScanner",
+              "NSScriptClassDescription",
+              "NSScriptCoercionHandler",
+              "NSScriptCommand",
+              "NSScriptCommandDescription",
+              "NSScriptExecutionContext",
+              "NSScriptKeyValueCoding",
+              "NSScriptObjectSpecifiers",
+              "NSScriptStandardSuiteCommands",
+              "NSScriptSuiteRegistry",
+              "NSScriptWhoseTests",
+              "NSSet",
+              "NSSortDescriptor",
+              "NSSpellServer",
+              "NSStream",
+              "NSString",
+              "NSTask",
+              "NSTermOfAddress",
+              "NSTextCheckingResult",
+              "NSThread",
+              "NSTimeZone",
+              "NSTimer",
+              "NSURL",
+              "NSURLAuthenticationChallenge",
+              "NSURLCache",
+              "NSURLConnection",
+              "NSURLCredential",
+              "NSURLCredentialStorage",
+              "NSURLDownload",
+              "NSURLError",
+              "NSURLHandle",
+              "NSURLProtectionSpace",
+              "NSURLProtocol",
+              "NSURLRequest",
+              "NSURLResponse",
+              "NSURLSession",
+              "NSUUID",
+              "NSUbiquitousKeyValueStore",
+              "NSUndoManager",
+              "NSUnit",
+              "NSUserActivity",
+              "NSUserDefaults",
+              "NSUserNotification",
+              "NSUserScriptTask",
+              "NSValue",
+              "NSValueTransformer",
+              "NSXMLDTD",
+              "NSXMLDTDNode",
+              "NSXMLDocument",
+              "NSXMLElement",
+              "NSXMLNode",
+              "NSXMLNodeOptions",
+              "NSXMLParser",
+              "NSXPCConnection",
+              "NSZone",
+              "alloc",
+              "bitflags",
+              "block2",
+              "default",
+              "libc",
+              "objc2-core-foundation",
+              "std"
+            ]
+          },
+          "objc2-io-surface-0.3.2": {
+            "runtime_dependencies": [
+              {
+                "name": "bitflags",
+                "package_key": "bitflags-2.12.1",
+                "kind": "normal",
+                "features": [
+                  "std"
+                ],
+                "uses_default_features": false,
+                "optional": true,
+                "target": null,
+                "tree": "target"
+              },
+              {
+                "name": "objc2",
+                "package_key": "objc2-0.6.4",
+                "kind": "normal",
+                "features": [
+                  "std"
+                ],
+                "uses_default_features": false,
+                "optional": true,
+                "target": null,
+                "tree": "target"
+              }
+            ],
+            "build_dependencies": [],
+            "features": [
+              "IOSurfaceRef",
+              "bitflags",
+              "objc2"
+            ]
+          },
+          "objc2-quartz-core-0.3.2": {
+            "runtime_dependencies": [
+              {
+                "name": "bitflags",
+                "package_key": "bitflags-2.12.1",
+                "kind": "normal",
+                "features": [
+                  "std"
+                ],
+                "uses_default_features": false,
+                "optional": true,
+                "target": null,
+                "tree": "target"
+              },
+              {
+                "name": "objc2",
+                "package_key": "objc2-0.6.4",
+                "kind": "normal",
+                "features": [
+                  "std"
+                ],
+                "uses_default_features": false,
+                "optional": false,
+                "target": null,
+                "tree": "target"
+              },
+              {
+                "name": "objc2_foundation",
+                "package_key": "objc2-foundation-0.3.2",
+                "kind": "normal",
+                "features": [
+                  "alloc"
+                ],
+                "uses_default_features": false,
+                "optional": false,
+                "target": null,
+                "tree": "target"
+              }
+            ],
+            "build_dependencies": [],
+            "features": [
+              "CADisplayLink",
+              "CALayer",
+              "CAMediaTiming",
+              "CAMediaTimingFunction",
+              "CAOpenGLLayer",
+              "bitflags"
             ]
           },
           "quanta-0.12.6": {
@@ -21552,6 +24243,32 @@
                 "optional": false,
                 "target": null,
                 "tree": "target"
+              }
+            ],
+            "build_dependencies": [],
+            "features": []
+          },
+          "kanchi-0.1.0-837f57e6c9b52e3d8781a56a46523627765362a0": {
+            "runtime_dependencies": [
+              {
+                "name": "libc",
+                "package_key": "libc-0.2.186",
+                "kind": "normal",
+                "features": [],
+                "uses_default_features": true,
+                "optional": false,
+                "target": null,
+                "tree": "target"
+              },
+              {
+                "name": "paste",
+                "package_key": "paste-1.0.15",
+                "kind": "normal",
+                "features": [],
+                "uses_default_features": true,
+                "optional": false,
+                "target": null,
+                "tree": "host"
               }
             ],
             "build_dependencies": [],
@@ -22230,6 +24947,32 @@
             "build_dependencies": [],
             "features": []
           },
+          "kanchi-0.1.0-837f57e6c9b52e3d8781a56a46523627765362a0": {
+            "runtime_dependencies": [
+              {
+                "name": "libc",
+                "package_key": "libc-0.2.186",
+                "kind": "normal",
+                "features": [],
+                "uses_default_features": true,
+                "optional": false,
+                "target": null,
+                "tree": "target"
+              },
+              {
+                "name": "paste",
+                "package_key": "paste-1.0.15",
+                "kind": "normal",
+                "features": [],
+                "uses_default_features": true,
+                "optional": false,
+                "target": null,
+                "tree": "host"
+              }
+            ],
+            "build_dependencies": [],
+            "features": []
+          },
           "linux-raw-sys-0.12.1": {
             "runtime_dependencies": [],
             "build_dependencies": [],
@@ -22887,6 +25630,9 @@
     "block-buffer-0.10.4": {
       "edition": "2018"
     },
+    "block2-0.6.2": {
+      "edition": "2021"
+    },
     "breathe-actuator-0.1.0": {
       "edition": "2024",
       "lib_target": {
@@ -23181,6 +25927,9 @@
     "digest-0.10.7": {
       "edition": "2018"
     },
+    "dispatch2-0.3.1": {
+      "edition": "2021"
+    },
     "displaydoc-0.2.6": {
       "edition": "2021",
       "proc_macro": true
@@ -23472,6 +26221,9 @@
       "build_script": "build.rs",
       "links": "k8s-openapi-0.23.0"
     },
+    "kanchi-0.1.0-837f57e6c9b52e3d8781a56a46523627765362a0": {
+      "edition": "2024"
+    },
     "kqueue-1.2.0": {
       "edition": "2021"
     },
@@ -23601,6 +26353,46 @@
       "edition": "2021",
       "build_script": "build.rs"
     },
+    "objc2-0.6.4": {
+      "edition": "2021",
+      "build_script": "build.rs"
+    },
+    "objc2-app-kit-0.3.2": {
+      "edition": "2021"
+    },
+    "objc2-cloud-kit-0.3.2": {
+      "edition": "2021"
+    },
+    "objc2-core-data-0.3.2": {
+      "edition": "2021"
+    },
+    "objc2-core-foundation-0.3.2": {
+      "edition": "2021"
+    },
+    "objc2-core-graphics-0.3.2": {
+      "edition": "2021"
+    },
+    "objc2-core-image-0.3.2": {
+      "edition": "2021"
+    },
+    "objc2-core-text-0.3.2": {
+      "edition": "2021"
+    },
+    "objc2-core-video-0.3.2": {
+      "edition": "2021"
+    },
+    "objc2-encode-4.1.0": {
+      "edition": "2021"
+    },
+    "objc2-foundation-0.3.2": {
+      "edition": "2021"
+    },
+    "objc2-io-surface-0.3.2": {
+      "edition": "2021"
+    },
+    "objc2-quartz-core-0.3.2": {
+      "edition": "2021"
+    },
     "once_cell-1.21.4": {
       "edition": "2021"
     },
@@ -23621,6 +26413,11 @@
     },
     "parking_lot_core-0.9.12": {
       "edition": "2021",
+      "build_script": "build.rs"
+    },
+    "paste-1.0.15": {
+      "edition": "2018",
+      "proc_macro": true,
       "build_script": "build.rs"
     },
     "pastey-0.2.3": {
@@ -24339,6 +27136,7 @@
     "gen-macros-0.1.11-2c6668f4ab1023559ce5daad775978b178f074d1": "sha256-cUuCYi88FJUEfqCitZDivze4zY9hXhpGUgxqvQbwbkE=",
     "gen-platform-0.1.11-2c6668f4ab1023559ce5daad775978b178f074d1": "sha256-cUuCYi88FJUEfqCitZDivze4zY9hXhpGUgxqvQbwbkE=",
     "gen-types-0.1.11-2c6668f4ab1023559ce5daad775978b178f074d1": "sha256-cUuCYi88FJUEfqCitZDivze4zY9hXhpGUgxqvQbwbkE=",
+    "kanchi-0.1.0-837f57e6c9b52e3d8781a56a46523627765362a0": "sha256-kxa3GKByEottN8fR/gQF4KGd/lu54j8DRGbwdrOjFhM=",
     "shikumi-0.1.73-272f5f2e8748d5463563a16c3576d785d10df0c0": "sha256-tRFRW6ZNK3v3o3nq9fJbpQAcYCLLBmvC7oJhHFssDzw="
   },
   "flake_metadata": {}
