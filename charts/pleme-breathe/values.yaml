@@ -32,3 +32,7 @@ logLevel: "info,breathe_controller=info"
 
 # Image pull secret(s) for the private ghcr image.
 imagePullSecrets: []
+
+# Pin the controller pod (e.g. to a tainted, isolated node pool).
+nodeSelector: {}
+tolerations: []
