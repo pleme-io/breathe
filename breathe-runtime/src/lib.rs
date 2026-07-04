@@ -859,6 +859,12 @@ pub fn replica_status_for(
                 ReplicaDecision::Hold { .. } => ("Holding", format!("within band — held at {current} replicas")),
                 ReplicaDecision::AtFloor { .. } => ("AtFloor", format!("at HA floor {current} — no safe scale-in")),
                 ReplicaDecision::AtCeiling { .. } => ("AtCeiling", format!("at ceiling {current} — would scale out")),
+                // Persistent (stateful): a scale-in is HELD pending drain/rebalance of
+                // the ordinal's data — the reactive shrink is not written directly.
+                ReplicaDecision::HeldForRebalance { would_shrink_to, .. } => (
+                    "PendingRebalance",
+                    format!("scale-in to {would_shrink_to} held — drain/rebalance the ordinal's data first (stateful)"),
+                ),
                 // a carve routed through Observed only defensively (resolve covers the
                 // real cases above); keep exhaustive, never panic.
                 other => ("Observed", other.to_string()),

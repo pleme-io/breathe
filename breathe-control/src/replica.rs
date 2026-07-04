@@ -131,6 +131,165 @@ pub const MAX_REPLICAS: u32 = 100_000;
 /// [`ReplicaBandConfig::ha_floor`] to 3.
 pub const DEFAULT_FLOOR: u32 = 2;
 
+/// A quorum size that is **provably odd and ≥ 3** — the resting membership of a
+/// consensus/Raft set. The field is private and the only constructors round to a
+/// legal rung, so an even count and a sub-3 count are *unconstructible*: no
+/// `OddQuorum` value can be even or below [`OddQuorum::MIN`]. This is the
+/// truly-unrepresentable core of the [`Topology::FullyDistributed`] invariant —
+/// there is no code path that yields an even/too-small quorum *target*, not a
+/// runtime clamp sitting in front of one (★★ UNREPRESENTABILITY:
+/// truly-unrepresentable, on the target-value axis).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct OddQuorum(u32); // private: construction ONLY via the smart constructors
+
+impl OddQuorum {
+    /// The smallest legal quorum. A consensus set below 3 cannot tolerate any
+    /// fault (2 → majority 2 → no fault tolerance; 1 → no consensus), so 3 is the
+    /// floor of the type itself.
+    pub const MIN: u32 = 3;
+
+    /// The smallest odd quorum `≥ max(MIN, n)` — rounds an even `n` UP to the next
+    /// odd. Used to snap a *desired* count up onto a legal rung (grow / floor).
+    #[must_use]
+    pub fn at_least(n: u32) -> Self {
+        let base = n.max(Self::MIN);
+        Self(if base % 2 == 0 { base.saturating_add(1) } else { base })
+    }
+
+    /// The largest odd quorum `≤ ceiling` but never below [`Self::MIN`] — rounds an
+    /// even `ceiling` DOWN to the next odd. Used to snap a *desired* count down onto
+    /// a legal rung (shrink / ceiling). A `ceiling < MIN` yields `MIN` (a quorum
+    /// below 3 is not representable; the config gate rejects such a ceiling at parse
+    /// time, so this is a defensive floor, never a silently-wrong small quorum).
+    #[must_use]
+    pub fn at_most(ceiling: u32) -> Self {
+        if ceiling <= Self::MIN {
+            return Self(Self::MIN);
+        }
+        Self(if ceiling % 2 == 0 { ceiling - 1 } else { ceiling })
+    }
+
+    /// The next odd rung strictly ABOVE `current` (one membership step up), never
+    /// below [`Self::MIN`]. `5 → 7`, `3 → 5`, an even `4 → 5`, `0 → 3`.
+    #[must_use]
+    pub fn step_up(current: u32) -> Self {
+        Self::at_least(current.saturating_add(1))
+    }
+
+    /// The next odd rung strictly BELOW an odd-normalized `current` (one membership
+    /// step down), never below [`Self::MIN`]. `7 → 5`, `5 → 3`, `3 → 3` (the floor
+    /// binds), an even `4 → 3`.
+    #[must_use]
+    pub fn step_down(current: u32) -> Self {
+        let odd = Self::at_least(current).0; // normalize a drifted even current up
+        Self(odd.saturating_sub(2).max(Self::MIN))
+    }
+
+    /// The raw odd count. Every value returned here is `odd && ≥ MIN` by
+    /// construction — the whole point of the type.
+    #[must_use]
+    pub fn get(self) -> u32 {
+        self.0
+    }
+}
+
+/// The workload TOPOLOGY — a **first-class axis** of the horizontal band
+/// (theory/BREATHABILITY.md §II.5). It selects BOTH the scaling algorithm and the
+/// hard invariant the band may never violate. One `ReplicaBand`, a topology tag,
+/// four algorithms — so the horizontal dimension is correct across every layer
+/// (persistent, non-persistent, master/slave, fully distributed), not just the
+/// easy stateless case.
+///
+/// Tier-honesty (★★ UNREPRESENTABILITY — never round a runtime clamp up to
+/// "unrepresentable"):
+///   * **NonPersistent** — no extra invariant; the HA floor is the only bound.
+///   * **Persistent** — a scale-in is emitted as the non-actuating
+///     [`ReplicaDecision::HeldForRebalance`] (the reactive shrink has NO write
+///     path — `target() == current`); the replication-factor floor is
+///     *only-mitigated* (a clamp) at the decision and *parse-time-rejected* at the
+///     config gate.
+///   * **MasterSlave** — the primary count folds into the floor so a rest below it
+///     is *only-mitigated* (clamp) + *parse-time-rejected* (config); the read
+///     replicas breathe above it.
+///   * **FullyDistributed** — the *quantized quorum target* is
+///     *truly-unrepresentable* even/sub-3 (via [`OddQuorum`]); the majority-safe
+///     *step* (one odd rung per tick) is *only-mitigated* (a velocity clamp — Rust
+///     cannot prove the graph-reachability quantifier); the ceiling-≥-3 config is
+///     *parse-time-rejected*.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Topology {
+    /// Stateless: every pod is interchangeable. Free HPA-style scaling on the
+    /// work-rate signal; a reclaim scales out on the survivors; the HA floor is the
+    /// only invariant. The back-compat default (existing bands behave unchanged).
+    #[default]
+    NonPersistent,
+    /// Stateful, PVC-per-replica (StatefulSet ordinals). Scale-UP adds an
+    /// ordinal+PVC freely; a scale-DOWN must drain/rebalance the ordinal's data
+    /// FIRST, so the band DEFERS the shrink ([`ReplicaDecision::HeldForRebalance`])
+    /// rather than orphan un-rebalanced data, and never rests below the
+    /// `replication_factor`.
+    Persistent {
+        /// The data-replication factor — the band never rests below this many
+        /// replicas (a shrink under it would drop a data copy).
+        replication_factor: u32,
+    },
+    /// Primary + read-replicas. Only the read-replica count breathes; the band
+    /// never scales the primary away (a primary loss is a *failover* / retirada, not
+    /// a replica scale). The total floor covers `primaries` (1 for a single primary,
+    /// 2 for an HA pair).
+    MasterSlave {
+        /// The writable-primary count folded into the floor (never scaled away).
+        primaries: u32,
+    },
+    /// Quorum/consensus (Raft/etcd). The resting count is always ODD and ≥ 3, a
+    /// live majority is preserved, and membership changes one rung at a time — a
+    /// scale-down never crosses the majority line.
+    FullyDistributed,
+}
+
+impl Topology {
+    /// Stable label (status / catalog rendering / logging).
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::NonPersistent => "non-persistent",
+            Self::Persistent { .. } => "persistent",
+            Self::MasterSlave { .. } => "master-slave",
+            Self::FullyDistributed => "fully-distributed",
+        }
+    }
+
+    /// The topology's own hard minimum-replica invariant, folded on top of the HA
+    /// floor by [`ReplicaBandConfig::topology_floor`]. Not the whole floor — see
+    /// [`ReplicaBandConfig::topology_floor`] for the odd-snap on `FullyDistributed`.
+    #[must_use]
+    pub fn hard_floor(self) -> u32 {
+        match self {
+            Self::NonPersistent => 0,
+            Self::Persistent { replication_factor } => replication_factor,
+            Self::MasterSlave { primaries } => primaries,
+            Self::FullyDistributed => OddQuorum::MIN,
+        }
+    }
+
+    /// Snap a target `to` onto the topology's legal envelope — identity for every
+    /// topology except `FullyDistributed`, which snaps to an [`OddQuorum`] rung
+    /// within `[floor, ceiling]`. Used by the break-glass force path so even a
+    /// forced count stays inside the topology invariant (a forced even quorum is
+    /// snapped to odd; the primary/replication floors already bound the clamp).
+    #[must_use]
+    pub fn quantize_target(self, to: u32, floor: u32, ceiling: u32) -> u32 {
+        match self {
+            Self::FullyDistributed => {
+                let up = OddQuorum::at_least(to).get();
+                let cap = OddQuorum::at_most(ceiling).get();
+                up.min(cap).max(floor)
+            }
+            _ => to,
+        }
+    }
+}
+
 /// The typed HORIZONTAL band configuration — the replica peer of
 /// [`crate::BandConfig`]. Every field is config-driven (a `ReplicaBand` CR's
 /// spec). Defaults encode the fleet posture: HA floor 2, react fast up / hold
@@ -166,6 +325,10 @@ pub struct ReplicaBandConfig {
     /// avoids a cliff). `max_scale_down_pods` defaults to 1.
     pub max_scale_down_pct: u32,
     pub max_scale_down_pods: u32,
+    /// The workload TOPOLOGY — selects the per-topology scaling algorithm AND the
+    /// hard invariant the band may never violate. Default [`Topology::NonPersistent`]
+    /// (stateless), so an existing band's behaviour is byte-unchanged.
+    pub topology: Topology,
 }
 
 impl Default for ReplicaBandConfig {
@@ -183,6 +346,7 @@ impl Default for ReplicaBandConfig {
             max_scale_up_pods: 4,
             max_scale_down_pct: 10,
             max_scale_down_pods: 1,
+            topology: Topology::NonPersistent,
         }
     }
 }
@@ -201,6 +365,11 @@ pub enum ReplicaError {
     BadSignal,
     /// The environment could not read a required input (metric / replica count).
     Unreadable(&'static str),
+    /// The [`Topology`] invariant cannot be satisfied by this config — the
+    /// topology's hard floor (replication factor / primary count / quorum-3)
+    /// exceeds the ceiling, or a required parameter is zero. Rejected at the config
+    /// gate before any decision runs (★★ UNREPRESENTABILITY: parse-time-rejected).
+    TopologyUnsatisfiable(&'static str),
 }
 
 impl std::fmt::Display for ReplicaError {
@@ -211,6 +380,7 @@ impl std::fmt::Display for ReplicaError {
             Self::NoDenominator => f.write_str("target must be > 0"),
             Self::BadSignal => f.write_str("signal value must be finite and ≥ 0"),
             Self::Unreadable(what) => write!(f, "environment could not read {what}"),
+            Self::TopologyUnsatisfiable(what) => write!(f, "topology invariant unsatisfiable: {what}"),
         }
     }
 }
@@ -227,12 +397,30 @@ impl ReplicaBandConfig {
         }
     }
 
+    /// The TOPOLOGY-adjusted floor — [`Self::effective_floor`] raised to also cover
+    /// the topology's hard invariant: the data-replication factor (Persistent), the
+    /// primary count (MasterSlave), or an odd-snapped quorum floor ≥ 3
+    /// (FullyDistributed). This is the floor every carve clamps against, so a rest
+    /// below the topology invariant is bound here (only-mitigated: a clamp) on top of
+    /// the config gate that parse-rejects a ceiling too small to hold it.
+    #[must_use]
+    pub fn topology_floor(&self) -> u32 {
+        let base = self.effective_floor().max(self.topology.hard_floor());
+        match self.topology {
+            // the quorum floor must itself be a legal odd rung.
+            Topology::FullyDistributed => OddQuorum::at_least(base).get(),
+            _ => base,
+        }
+    }
+
     /// Parse-time validation — a malformed band is a typed error, never a silent
     /// wrong scale (★★ UNREPRESENTABILITY: parse-time-rejected).
     ///
     /// # Errors
     /// [`ReplicaError::ZeroCeiling`] / [`ReplicaError::EmptyRange`] /
-    /// [`ReplicaError::NoDenominator`] when the respective invariant is violated.
+    /// [`ReplicaError::NoDenominator`] when the respective invariant is violated;
+    /// [`ReplicaError::TopologyUnsatisfiable`] when the topology's hard floor cannot
+    /// fit under the ceiling (or a topology parameter is zero).
     pub fn validate(&self) -> Result<(), ReplicaError> {
         if self.ceiling == 0 {
             return Err(ReplicaError::ZeroCeiling);
@@ -242,6 +430,33 @@ impl ReplicaBandConfig {
         }
         if self.target <= 0.0 || !self.target.is_finite() {
             return Err(ReplicaError::NoDenominator);
+        }
+        // topology config invariants — a config that cannot hold the invariant is
+        // refused BEFORE any decision runs (parse-time-rejected), never silently
+        // clamped into a wrong shape at carve time.
+        match self.topology {
+            Topology::NonPersistent => {}
+            Topology::Persistent { replication_factor } => {
+                if replication_factor == 0 {
+                    return Err(ReplicaError::TopologyUnsatisfiable("persistent replication_factor must be ≥ 1"));
+                }
+                if replication_factor > self.ceiling {
+                    return Err(ReplicaError::TopologyUnsatisfiable("ceiling is below the data-replication factor"));
+                }
+            }
+            Topology::MasterSlave { primaries } => {
+                if primaries == 0 {
+                    return Err(ReplicaError::TopologyUnsatisfiable("master-slave needs ≥ 1 primary"));
+                }
+                if primaries > self.ceiling {
+                    return Err(ReplicaError::TopologyUnsatisfiable("ceiling is below the primary count"));
+                }
+            }
+            Topology::FullyDistributed => {
+                if self.ceiling < OddQuorum::MIN {
+                    return Err(ReplicaError::TopologyUnsatisfiable("quorum ceiling must be ≥ 3"));
+                }
+            }
         }
         Ok(())
     }
@@ -296,6 +511,16 @@ pub enum ReplicaDecision {
     /// the shed load lands on already-warm capacity, never a cold-start hole. Never
     /// resolves to a scale-in while a reclaim is pending.
     SpotScaleOut { from: u32, to: u32, reclaim: u32 },
+    /// **Persistent (stateful) only.** A scale-IN is DUE but is HELD: the ordinal's
+    /// data must be drained/rebalanced off the PVC-bearing replica BEFORE it is
+    /// removed, so the band does NOT shrink `.spec.replicas` directly (that would
+    /// orphan un-rebalanced data). Non-actuating BY CONSTRUCTION — [`Self::target`]
+    /// returns `current`, so [`plan_replica_tick`] produces no write for it: the
+    /// reactive persistent shrink simply has no actuation path. `would_shrink_to`
+    /// is the count the band would rest at once a rebalance controller has drained
+    /// the ordinal (surfaced for observability; an operator drains + break-glass
+    /// forces the count to actually remove it).
+    HeldForRebalance { current: u32, would_shrink_to: u32 },
 }
 
 impl ReplicaDecision {
@@ -307,6 +532,10 @@ impl ReplicaDecision {
     pub fn target(self) -> u32 {
         match self {
             Self::Hold { current } | Self::AtFloor { current } | Self::AtCeiling { current } => current,
+            // HeldForRebalance is non-actuating: its target IS the current count, so a
+            // caller that uniformly `assign(target())` writes nothing (the reactive
+            // persistent shrink has no write path).
+            Self::HeldForRebalance { current, .. } => current,
             Self::ScaleUp { to, .. } | Self::ScaleDown { to, .. } | Self::SpotScaleOut { to, .. } => to,
         }
     }
@@ -319,6 +548,7 @@ impl ReplicaDecision {
     pub fn current(self) -> u32 {
         match self {
             Self::Hold { current } | Self::AtFloor { current } | Self::AtCeiling { current } => current,
+            Self::HeldForRebalance { current, .. } => current,
             Self::ScaleUp { from, .. } | Self::ScaleDown { from, .. } | Self::SpotScaleOut { from, .. } => from,
         }
     }
@@ -344,6 +574,7 @@ impl ReplicaDecision {
             Self::AtFloor { .. } => "AtFloor",
             Self::AtCeiling { .. } => "AtCeiling",
             Self::SpotScaleOut { .. } => "SpotScaleOut",
+            Self::HeldForRebalance { .. } => "HeldForRebalance",
         }
     }
 }
@@ -357,6 +588,9 @@ impl std::fmt::Display for ReplicaDecision {
             Self::AtFloor { current } => write!(f, "AtFloor@{current}"),
             Self::AtCeiling { current } => write!(f, "AtCeiling@{current}"),
             Self::SpotScaleOut { from, to, reclaim } => write!(f, "SpotScaleOut {from}→{to} (reclaim {reclaim})"),
+            Self::HeldForRebalance { current, would_shrink_to } => {
+                write!(f, "HeldForRebalance@{current} (would shrink to {would_shrink_to} after drain)")
+            }
         }
     }
 }
@@ -382,8 +616,41 @@ fn clamp(v: u32, lo: u32, hi: u32) -> u32 {
 ///   6. **velocity cap** — bound the per-tick step in each direction.
 #[must_use]
 pub fn decide_replicas(cfg: &ReplicaBandConfig, obs: &ReplicaObservation) -> ReplicaDecision {
+    // Dispatch on the topology axis — each arm picks its algorithm AND enforces its
+    // hard invariant. The shared HPA-ratio + anti-flap arithmetic lives once in
+    // [`decide_core`] (parameterized on the effective floor); only `FullyDistributed`
+    // needs its own odd-rung law. NonPersistent is the current behaviour verbatim.
+    match cfg.topology {
+        Topology::NonPersistent => decide_core(cfg, obs, cfg.effective_floor()),
+        // MasterSlave: the read-replicas breathe on the SAME core law; the primary
+        // count is folded into the floor (topology_floor) so a scale-in can never
+        // rest below it — "never scale the primary away" is the floor invariant.
+        Topology::MasterSlave { .. } => decide_core(cfg, obs, cfg.topology_floor()),
+        // Persistent: the core law runs against the replication-factor floor, then a
+        // would-be scale-in is re-typed to the non-actuating HeldForRebalance — the
+        // reactive shrink is DEFERRED to a drain/rebalance, never written directly.
+        Topology::Persistent { .. } => match decide_core(cfg, obs, cfg.topology_floor()) {
+            ReplicaDecision::ScaleDown { from, to } => {
+                ReplicaDecision::HeldForRebalance { current: from, would_shrink_to: to }
+            }
+            other => other,
+        },
+        // FullyDistributed: its own quorum-safe odd-rung law.
+        Topology::FullyDistributed => decide_quorum(cfg, obs),
+    }
+}
+
+/// The shared HPA-ratio + asymmetric-anti-flap core, parameterized on the effective
+/// `floor` (the topology dispatcher supplies the right one). This is the exact
+/// stateless algorithm; `NonPersistent` calls it with [`ReplicaBandConfig::effective_floor`]
+/// (byte-identical to the pre-topology behaviour), Persistent/MasterSlave call it with
+/// the topology-raised floor.
+///
+/// Order (each step is load-bearing): spot-reclaim → HPA ratio → asymmetric tolerance
+/// dead-band → scale-down stabilization → floor/ceiling clamp → velocity cap.
+#[must_use]
+fn decide_core(cfg: &ReplicaBandConfig, obs: &ReplicaObservation, floor: u32) -> ReplicaDecision {
     let current = obs.current_replicas;
-    let floor = cfg.effective_floor();
     let ceiling = cfg.ceiling.max(floor); // a mis-ordered range never inverts the clamp
     let raw = cfg.signal.desired_raw(current, obs.signal_value, cfg.target);
 
@@ -429,6 +696,65 @@ pub fn decide_replicas(cfg: &ReplicaBandConfig, obs: &ReplicaObservation) -> Rep
         ReplicaDecision::ScaleDown { from: current, to }
     } else {
         // wanted to shrink but the floor (or the window/velocity) binds.
+        ReplicaDecision::AtFloor { current }
+    }
+}
+
+/// The FULLY-DISTRIBUTED (quorum/consensus) law: the resting count is ALWAYS an
+/// [`OddQuorum`] (odd, ≥ 3), a live majority is preserved, and membership changes one
+/// odd rung at a time — a scale-down never crosses the majority line.
+///
+/// Every carve `to` is produced by an [`OddQuorum`] constructor, so an even or sub-3
+/// quorum *target* is truly-unrepresentable (there is no code path that builds one —
+/// not a clamp in front of one). The one-rung-per-tick step is the majority-safe
+/// mechanism: from an odd `k ≥ 5`, dropping to `k-2` leaves `k-2 ≥ majority(k) =
+/// (k+1)/2`, so a single resting transition always retains quorum; at `k = 3` the
+/// floor binds and it never shrinks below 3. (That the step is a velocity clamp, not
+/// a compile error, is the only-mitigated half — Rust cannot prove the reachability
+/// quantifier; the config gate parse-rejects a ceiling < 3.)
+#[must_use]
+fn decide_quorum(cfg: &ReplicaBandConfig, obs: &ReplicaObservation) -> ReplicaDecision {
+    let current = obs.current_replicas;
+    let floor = cfg.topology_floor(); // odd, ≥ 3 (topology_floor snaps it)
+    // the ceiling snapped DOWN to a legal odd rung, never below the (odd) floor.
+    let ceiling = OddQuorum::at_most(cfg.ceiling.max(floor)).get().max(floor);
+    let raw = cfg.signal.desired_raw(current, obs.signal_value, cfg.target);
+
+    // ── Spot reclaim → quorum scale-OUT (adding voters never loses majority). ───
+    // Cover the doomed voters, snapped to the next legal odd rung within the wall.
+    if obs.reclaim_pending > 0 {
+        let want = current.saturating_add(obs.reclaim_pending).max(raw);
+        let to = OddQuorum::at_least(want).get().min(ceiling).max(floor);
+        return ReplicaDecision::SpotScaleOut { from: current, to, reclaim: obs.reclaim_pending };
+    }
+
+    // ── Asymmetric tolerance dead-band (same metric-ratio gate as the core). ────
+    let ratio = cfg.signal.metric_ratio(current, obs.signal_value, cfg.target);
+    let want_up = ratio > 1.0 + cfg.tolerance_up;
+    let want_down = ratio < 1.0 - cfg.tolerance_down;
+    if !want_up && !want_down {
+        return ReplicaDecision::Hold { current };
+    }
+
+    if want_up {
+        // GROW one odd rung toward the odd-snapped desired, within the odd ceiling.
+        let desired = OddQuorum::at_least(clamp(raw, floor, ceiling)).get().min(ceiling);
+        let to = desired.min(OddQuorum::step_up(current).get()).max(floor).min(ceiling);
+        return if to > current {
+            ReplicaDecision::ScaleUp { from: current, to }
+        } else {
+            ReplicaDecision::AtCeiling { current }
+        };
+    }
+
+    // SHRINK one odd rung, majority-safe. Snap the (window-stabilized) desired DOWN
+    // to an odd rung, and never remove more than one rung this tick.
+    let stabilized = obs.window_max_desired.map_or(raw, |w| w.max(raw));
+    let desired = OddQuorum::at_most(clamp(stabilized, floor, ceiling)).get().max(floor);
+    let to = desired.max(OddQuorum::step_down(current).get()).clamp(floor, ceiling);
+    if to < current {
+        ReplicaDecision::ScaleDown { from: current, to }
+    } else {
         ReplicaDecision::AtFloor { current }
     }
 }
@@ -550,11 +876,15 @@ pub fn plan_replica_tick<E: ReplicaEnvironment>(
     cfg.validate()?;
     let decision = match gate.force {
         Some(v) => {
-            // break-glass: pin to the forced count, still floor/ceiling-clamped.
+            // break-glass: pin to the forced count, still inside the TOPOLOGY safety
+            // envelope — the topology floor (primary/replication/quorum) + ceiling
+            // clamp AND the topology quantize (a forced even quorum snaps to odd).
+            // Break-glass bypasses the band LAW, never the safety envelope.
             let current = env.current_replicas()?;
-            let floor = cfg.effective_floor();
+            let floor = cfg.topology_floor();
             let ceiling = cfg.ceiling.max(floor);
-            let to = v.clamp(floor, ceiling);
+            let clamped = v.clamp(floor, ceiling);
+            let to = cfg.topology.quantize_target(clamped, floor, ceiling);
             if to > current {
                 ReplicaDecision::ScaleUp { from: current, to }
             } else if to < current {
@@ -929,5 +1259,255 @@ mod tests {
         assert_eq!(rest.decision, ReplicaDecision::Hold { current: 5 });
         assert_eq!(rest.actuate, None);
         assert!(!rest.deferred);
+    }
+
+    // ══════════════════════ TOPOLOGY axis (§II.5) ══════════════════════════════
+    //
+    // Each topology test proves TWO things: the algorithm scales correctly AND the
+    // hard invariant holds. Tier per invariant is stated in the doc-comments on
+    // `Topology` / `OddQuorum` — these tests are the mechanical evidence.
+
+    // ── OddQuorum: the truly-unrepresentable core (even/sub-3 is unconstructible) ──
+
+    #[test]
+    fn odd_quorum_is_always_odd_and_at_least_three() {
+        for n in 0u32..64 {
+            // every constructor path yields an odd value ≥ 3 — there is no input that
+            // builds an even or sub-3 quorum (the type has no other constructor).
+            assert!(OddQuorum::at_least(n).get() % 2 == 1 && OddQuorum::at_least(n).get() >= 3);
+            assert!(OddQuorum::at_most(n).get() % 2 == 1 && OddQuorum::at_most(n).get() >= 3);
+            assert!(OddQuorum::step_up(n).get() % 2 == 1 && OddQuorum::step_up(n).get() >= 3);
+            assert!(OddQuorum::step_down(n).get() % 2 == 1 && OddQuorum::step_down(n).get() >= 3);
+        }
+        assert_eq!(OddQuorum::at_least(4).get(), 5); // even rounds UP
+        assert_eq!(OddQuorum::at_most(4).get(), 3); // even rounds DOWN
+        assert_eq!(OddQuorum::at_least(0).get(), 3); // never below MIN
+        assert_eq!(OddQuorum::step_up(5).get(), 7); // one rung up
+        assert_eq!(OddQuorum::step_down(5).get(), 3); // one rung down
+        assert_eq!(OddQuorum::step_down(3).get(), 3); // the floor binds at MIN
+    }
+
+    // ── NonPersistent (stateless): free scaling, identity to the pre-topology law ──
+
+    #[test]
+    fn stateless_topology_scales_free_and_matches_the_core() {
+        let c = ReplicaBandConfig { topology: Topology::NonPersistent, ceiling: 50, ..Default::default() };
+        // grows freely on load (the exact same decision the default already made).
+        assert_eq!(
+            decide_replicas(&c, &ReplicaObservation::reactive(4, 0.9)),
+            ReplicaDecision::ScaleUp { from: 4, to: 5 }
+        );
+        // shrinks freely when idle (no rebalance hold, no odd-snap).
+        assert_eq!(
+            decide_replicas(&c, &ReplicaObservation::reactive(10, 0.4)),
+            ReplicaDecision::ScaleDown { from: 10, to: 9 }
+        );
+    }
+
+    // ── Persistent (stateful): grow free, scale-in HELD, replication-factor floor ──
+
+    #[test]
+    fn persistent_grows_freely_but_defers_scale_in_to_rebalance() {
+        let c = ReplicaBandConfig {
+            topology: Topology::Persistent { replication_factor: 3 },
+            ceiling: 10,
+            ..Default::default()
+        };
+        // GROW is free — a scale-out adds an ordinal+PVC with no hold.
+        let grow = decide_replicas(&c, &ReplicaObservation::reactive(3, 1.6));
+        assert!(matches!(grow, ReplicaDecision::ScaleUp { from: 3, .. }), "persistent grows free: {grow:?}");
+
+        // a would-be SCALE-IN is re-typed to the non-actuating HeldForRebalance — the
+        // reactive shrink has NO write path (drain/rebalance the ordinal first).
+        let shrink = decide_replicas(&c, &ReplicaObservation::reactive(6, 0.1));
+        assert!(matches!(shrink, ReplicaDecision::HeldForRebalance { current: 6, .. }), "got {shrink:?}");
+        assert_eq!(shrink.target(), 6, "HeldForRebalance never actuates a shrink");
+        assert!(!shrink.is_carve());
+        // …and through the planner it writes nothing even when live + policy-permitted.
+        let env = MockReplicaEnvironment { current_replicas: 6, signal_value: 0.1, ..Default::default() };
+        let plan = plan_replica_tick(&c, &env, gate(false, false, true)).expect("plans");
+        assert_eq!(plan.actuate, None, "a persistent reactive shrink is never written");
+    }
+
+    #[test]
+    fn persistent_never_rests_below_the_replication_factor() {
+        let c = ReplicaBandConfig {
+            topology: Topology::Persistent { replication_factor: 3 },
+            floor: 2, // base floor below rf — the rf floor must win
+            ceiling: 10,
+            ..Default::default()
+        };
+        assert_eq!(c.topology_floor(), 3, "the replication factor raises the floor");
+        // at the rf floor, an idle band reports AtFloor — never a shrink below 3.
+        assert_eq!(decide_replicas(&c, &ReplicaObservation::reactive(3, 0.05)), ReplicaDecision::AtFloor { current: 3 });
+        // no observation ever produces a rest below the replication factor.
+        for cur in 0u32..12 {
+            for &v in &[0.0, 0.05, 0.5, 0.9, 3.0] {
+                let d = decide_replicas(&c, &ReplicaObservation::reactive(cur, v));
+                assert!(d.target() >= 3 || d.current() < 3, "rest below rf: cur={cur} v={v} -> {d:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn persistent_config_that_cannot_hold_the_factor_is_parse_rejected() {
+        let bad_rf = ReplicaBandConfig {
+            topology: Topology::Persistent { replication_factor: 20 },
+            ceiling: 10,
+            ..Default::default()
+        };
+        assert_eq!(
+            bad_rf.validate(),
+            Err(ReplicaError::TopologyUnsatisfiable("ceiling is below the data-replication factor"))
+        );
+        let zero_rf = ReplicaBandConfig {
+            topology: Topology::Persistent { replication_factor: 0 },
+            ceiling: 10,
+            ..Default::default()
+        };
+        assert_eq!(
+            zero_rf.validate(),
+            Err(ReplicaError::TopologyUnsatisfiable("persistent replication_factor must be ≥ 1"))
+        );
+    }
+
+    // ── MasterSlave: read-replicas breathe, the primary is never scaled away ──────
+
+    #[test]
+    fn master_slave_scales_read_replicas_but_never_the_primary() {
+        // 2 primaries (an HA pair); base floor below that — the primary floor wins.
+        let c = ReplicaBandConfig {
+            topology: Topology::MasterSlave { primaries: 2 },
+            floor: 1,
+            ceiling: 12,
+            ..Default::default()
+        };
+        assert_eq!(c.topology_floor(), 2, "the primary count is the hard floor");
+        // read-replica scaling: a loaded 5-replica set (2 primary + 3 read) grows.
+        assert!(matches!(
+            decide_replicas(&c, &ReplicaObservation::reactive(5, 0.95)),
+            ReplicaDecision::ScaleUp { from: 5, .. }
+        ));
+        // idle read-replicas shrink toward the primary floor, never below it.
+        assert!(matches!(
+            decide_replicas(&c, &ReplicaObservation::reactive(5, 0.1)),
+            ReplicaDecision::ScaleDown { from: 5, .. }
+        ));
+        // AT the primary floor, an idle band reports AtFloor — the primary stays put.
+        assert_eq!(decide_replicas(&c, &ReplicaObservation::reactive(2, 0.01)), ReplicaDecision::AtFloor { current: 2 });
+        // INVARIANT sweep: no decision ever targets a count below the primaries.
+        for cur in 0u32..14 {
+            for &v in &[0.0, 0.05, 0.5, 0.9, 4.0] {
+                let d = decide_replicas(&c, &ReplicaObservation::reactive(cur, v));
+                assert!(
+                    d.target() >= 2 || d.current() < 2,
+                    "master-slave scaled the primary away: cur={cur} v={v} -> {d:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn master_slave_config_without_room_for_the_primary_is_parse_rejected() {
+        let too_many = ReplicaBandConfig {
+            topology: Topology::MasterSlave { primaries: 20 },
+            ceiling: 10,
+            ..Default::default()
+        };
+        assert_eq!(too_many.validate(), Err(ReplicaError::TopologyUnsatisfiable("ceiling is below the primary count")));
+        let zero = ReplicaBandConfig { topology: Topology::MasterSlave { primaries: 0 }, ceiling: 10, ..Default::default() };
+        assert_eq!(zero.validate(), Err(ReplicaError::TopologyUnsatisfiable("master-slave needs ≥ 1 primary")));
+    }
+
+    // ── FullyDistributed: odd-only quorum, majority-safe one-rung steps ───────────
+
+    fn quorum() -> ReplicaBandConfig {
+        ReplicaBandConfig { topology: Topology::FullyDistributed, floor: 2, ceiling: 9, ..Default::default() }
+    }
+
+    #[test]
+    fn quorum_grows_and_shrinks_one_odd_rung_at_a_time() {
+        let c = quorum();
+        // loaded 3-node quorum grows ONE rung: 3 → 5 (not straight to the desired 7+).
+        assert_eq!(decide_replicas(&c, &ReplicaObservation::reactive(3, 1.6)), ReplicaDecision::ScaleUp { from: 3, to: 5 });
+        // idle 5-node quorum shrinks ONE rung: 5 → 3.
+        assert_eq!(decide_replicas(&c, &ReplicaObservation::reactive(5, 0.05)), ReplicaDecision::ScaleDown { from: 5, to: 3 });
+    }
+
+    #[test]
+    fn quorum_shrink_never_crosses_the_majority_line() {
+        let c = ReplicaBandConfig { topology: Topology::FullyDistributed, floor: 2, ceiling: 15, ..Default::default() };
+        // a deeply-idle 9-node quorum drops only ONE rung to 7 (removing 2), never
+        // 9 → 3 (which would remove 6 at once and risk crossing majority).
+        assert_eq!(decide_replicas(&c, &ReplicaObservation::reactive(9, 0.01)), ReplicaDecision::ScaleDown { from: 9, to: 7 });
+        // 7 → 5, 5 → 3, then the floor binds: a quorum NEVER shrinks below 3.
+        assert_eq!(decide_replicas(&c, &ReplicaObservation::reactive(7, 0.01)), ReplicaDecision::ScaleDown { from: 7, to: 5 });
+        assert_eq!(decide_replicas(&c, &ReplicaObservation::reactive(3, 0.01)), ReplicaDecision::AtFloor { current: 3 });
+        // and the resting invariant holds each step: k → k-2 keeps a live majority.
+        for k in [5u32, 7, 9, 11, 13] {
+            if let ReplicaDecision::ScaleDown { from, to } = decide_replicas(&c, &ReplicaObservation::reactive(k, 0.01)) {
+                assert!(to >= (from + 1) / 2, "shrink {from}->{to} crossed majority({from})={}", (from + 1) / 2);
+            } else {
+                panic!("expected a one-rung shrink at k={k}");
+            }
+        }
+    }
+
+    #[test]
+    fn quorum_target_is_never_even_or_below_three_over_a_full_sweep() {
+        // the truly-unrepresentable invariant, exercised: across every current count,
+        // signal, ceiling parity, and a pending reclaim, a quorum CARVE target is
+        // always odd and ≥ 3 (there is no code path that yields an even/sub-3 target).
+        for &ceiling in &[3u32, 4, 5, 8, 9, 10] {
+            let c = ReplicaBandConfig { topology: Topology::FullyDistributed, floor: 2, ceiling, ..Default::default() };
+            for cur in 0u32..14 {
+                for &v in &[0.0, 0.01, 0.4, 0.8, 0.95, 2.0, 100.0] {
+                    for &reclaim in &[0u32, 1, 4] {
+                        let obs = ReplicaObservation {
+                            current_replicas: cur,
+                            signal_value: v,
+                            window_max_desired: None,
+                            reclaim_pending: reclaim,
+                        };
+                        let d = decide_replicas(&c, &obs);
+                        if d.is_carve() {
+                            let to = d.target();
+                            assert!(to % 2 == 1 && to >= 3, "even/sub-3 quorum target {to} from {d:?} (cur={cur} v={v} rc={reclaim})");
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn quorum_reclaim_scales_out_to_an_odd_rung() {
+        let c = quorum();
+        // a 3-node quorum losing 1 voter pre-scales OUT to the next odd rung (5), odd.
+        let obs = ReplicaObservation { current_replicas: 3, signal_value: 0.8, window_max_desired: None, reclaim_pending: 1 };
+        let d = decide_replicas(&c, &obs);
+        assert!(matches!(d, ReplicaDecision::SpotScaleOut { from: 3, to: 5, reclaim: 1 }), "got {d:?}");
+    }
+
+    #[test]
+    fn quorum_config_with_a_sub_three_ceiling_is_parse_rejected() {
+        let bad = ReplicaBandConfig { topology: Topology::FullyDistributed, floor: 1, ceiling: 2, ..Default::default() };
+        assert_eq!(bad.validate(), Err(ReplicaError::TopologyUnsatisfiable("quorum ceiling must be ≥ 3")));
+    }
+
+    // ── break-glass stays inside the topology envelope ────────────────────────────
+
+    #[test]
+    fn break_glass_force_stays_inside_the_topology_envelope() {
+        // FullyDistributed: a forced EVEN count is snapped to the nearest legal odd.
+        let q = quorum();
+        let env = MockReplicaEnvironment { current_replicas: 3, signal_value: 0.5, ..Default::default() };
+        let forced = plan_replica_tick(&q, &env, ReplicaGate { force: Some(4), ..gate(false, false, true) }).expect("plans");
+        assert_eq!(forced.actuate, Some(5), "a forced even quorum snaps to odd (4 -> 5)");
+        // Persistent: a forced count below the replication factor is floored at it.
+        let p = ReplicaBandConfig { topology: Topology::Persistent { replication_factor: 3 }, ceiling: 10, ..Default::default() };
+        let penv = MockReplicaEnvironment { current_replicas: 5, signal_value: 0.5, ..Default::default() };
+        let pf = plan_replica_tick(&p, &penv, ReplicaGate { force: Some(1), ..gate(false, false, true) }).expect("plans");
+        assert_eq!(pf.actuate, Some(3), "a forced sub-factor count is floored at the replication factor");
     }
 }

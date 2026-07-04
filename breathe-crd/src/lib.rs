@@ -19,7 +19,7 @@
 
 use std::collections::BTreeMap;
 
-use breathe_control::replica::{ReplicaBandConfig, ReplicaSignal};
+use breathe_control::replica::{ReplicaBandConfig, ReplicaSignal, Topology};
 use breathe_control::{BandConfig, MetricMissingPolicy, Unit};
 use breathe_provider::{DisruptionPolicy, LimitLayout, MetricSource};
 use kube::CustomResource;
@@ -1294,6 +1294,77 @@ impl ReplicaSignalSpec {
     }
 }
 
+/// Which topology CLASS a [`ReplicaBand`] scales as — the plain string discriminant
+/// (serde mirror of the `breathe_control::replica::Topology` arms, minus their
+/// params). A unit enum so the CRD schema is all-`String` (structural-schema-safe,
+/// exactly like `ReplicaSignalSpec` / `PromotionMode`).
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, JsonSchema, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub enum TopologyKind {
+    /// Stateless: any pod interchangeable — free HPA-style scaling, HA floor only.
+    #[default]
+    NonPersistent,
+    /// Stateful, PVC-per-ordinal — grow adds an ordinal+PVC freely; a scale-in is
+    /// HELD for drain/rebalance and never rests below `replicationFactor`.
+    Persistent,
+    /// Primary + read-replicas — only the read-replicas breathe; the band never
+    /// scales the `primaries` away (a primary loss is a failover, not a scale).
+    MasterSlave,
+    /// Quorum/consensus (Raft/etcd) — odd count ≥ 3, majority-safe one-rung steps.
+    FullyDistributed,
+}
+
+/// The workload TOPOLOGY of a [`ReplicaBand`] (serde mirror of
+/// `breathe_control::replica::Topology`). It picks BOTH the scaling algorithm and the
+/// hard invariant the band may never violate (theory/BREATHABILITY.md §II.5). Default
+/// `nonPersistent` (stateless) — an omitted `topology` leaves an existing band's
+/// behaviour byte-unchanged.
+///
+/// A FLAT STRUCT (a string `kind` + the per-class params as optionals), NOT a
+/// tagged enum: the k8s apiserver's structural-schema conversion rejects both a
+/// mixed unit/struct enum (String-vs-Object variants) and an internally-tagged enum
+/// (a per-variant `kind` const in a `oneOf` — the property must be identical across
+/// subschemas). The flat struct keeps every property a single fixed schema. A
+/// `persistent`/`masterSlave` class whose param is omitted becomes a
+/// [`breathe_control::replica::ReplicaError::TopologyUnsatisfiable`] at the config
+/// gate (parse-time-rejected), surfaced as an error status before any scale.
+///
+/// Wire forms: `{"kind": "nonPersistent"}` |
+/// `{"kind": "persistent", "replicationFactor": 3}` |
+/// `{"kind": "masterSlave", "primaries": 1}` | `{"kind": "fullyDistributed"}`.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, JsonSchema, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct TopologySpec {
+    /// The topology class.
+    #[serde(default)]
+    pub kind: TopologyKind,
+    /// `persistent` only: the data-replication factor — the band never rests below
+    /// this many replicas. Ignored by the other classes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub replication_factor: Option<u32>,
+    /// `masterSlave` only: the writable-primary count folded into the floor (never
+    /// scaled away). Ignored by the other classes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub primaries: Option<u32>,
+}
+
+impl TopologySpec {
+    /// The control-layer topology this maps to. A `persistent`/`masterSlave` class
+    /// with its param omitted maps to a `0` param, which the control-layer
+    /// [`ReplicaBandConfig::validate`] then parse-rejects
+    /// ([`breathe_control::replica::ReplicaError::TopologyUnsatisfiable`]) — a missing
+    /// factor/primary count is never silently a wrong scale.
+    #[must_use]
+    pub fn control(self) -> Topology {
+        match self.kind {
+            TopologyKind::NonPersistent => Topology::NonPersistent,
+            TopologyKind::Persistent => Topology::Persistent { replication_factor: self.replication_factor.unwrap_or(0) },
+            TopologyKind::MasterSlave => Topology::MasterSlave { primaries: self.primaries.unwrap_or(0) },
+            TopologyKind::FullyDistributed => Topology::FullyDistributed,
+        }
+    }
+}
+
 /// The `used` signal for a [`ReplicaBand`] — a PromQL whose scalar is the driving
 /// work-rate metric (RPS, queue depth, per-replica utilization).
 #[derive(Serialize, Deserialize, Clone, Debug, JsonSchema, PartialEq, Eq)]
@@ -1330,6 +1401,15 @@ pub struct ReplicaBandSpec {
     /// The workload whose `.spec.replicas` this band scales (`Deployment` /
     /// `StatefulSet`).
     pub target_ref: TargetRef,
+    /// The workload TOPOLOGY — selects the scaling ALGORITHM and the hard invariant
+    /// the band may never violate. Default `nonPersistent` (stateless: free HPA
+    /// scaling, HA floor). `persistent` (StatefulSet/PVC-per-ordinal: grow freely, a
+    /// scale-in is HELD for drain/rebalance, never below `replicationFactor`).
+    /// `masterSlave` (breathe the read-replicas only, never scale the primary away).
+    /// `fullyDistributed` (quorum/consensus: odd count ≥ 3, majority-safe one-rung
+    /// steps).
+    #[serde(default)]
+    pub topology: TopologySpec,
     /// Which signal drives scaling.
     #[serde(default)]
     pub signal: ReplicaSignalSpec,
@@ -1413,6 +1493,7 @@ impl ReplicaBandSpec {
             max_scale_up_pods: self.max_scale_up_pods,
             max_scale_down_pct: self.max_scale_down_pct,
             max_scale_down_pods: self.max_scale_down_pods,
+            topology: self.topology.control(),
         }
     }
     /// The typed actuator layout — SSA-write `.spec.replicas` on the owner kind.
@@ -1450,8 +1531,8 @@ impl crate::Band for ReplicaBand {
             setpoint: 0.80,
             grow_factor: 1.25,
             shrink_factor: 0.90,
-            floor_bytes: u64::from(rc.effective_floor()),
-            ceiling_bytes: u64::from(rc.ceiling.max(rc.effective_floor())),
+            floor_bytes: u64::from(rc.topology_floor()),
+            ceiling_bytes: u64::from(rc.ceiling.max(rc.topology_floor())),
             request_floor_bytes: 0,
             warmup_seconds: 0,
             metric_missing_policy: MetricMissingPolicy::Trust,
@@ -3188,5 +3269,71 @@ mod tests {
         assert!(yaml.contains("toleranceUp"));
         assert!(yaml.contains("maxScaleDownPods"));
         assert!(yaml.contains("rband"), "the shortname is registered");
+    }
+
+    #[test]
+    fn replica_band_topology_defaults_non_persistent_and_bridges_each_arm() {
+        // An omitted `topology` ⇒ NonPersistent (back-compat: existing bands unchanged).
+        let plain: ReplicaBand = serde_json::from_value(serde_json::json!({
+            "apiVersion": "breathe.pleme.io/v1", "kind": "ReplicaBand",
+            "metadata": { "name": "web", "namespace": "prod" },
+            "spec": {
+                "targetRef": { "kind": "Deployment", "name": "web", "apiVersion": "apps/v1" },
+                "metric": { "prometheus": "q" }
+            }
+        })).expect("deserialize");
+        assert_eq!(plain.spec.topology, TopologySpec::default());
+        assert_eq!(plain.spec.topology.kind, TopologyKind::NonPersistent);
+        assert_eq!(plain.spec.replica_band_config().topology, Topology::NonPersistent);
+
+        // Each authored arm bridges to the control-layer topology + raises the floor.
+        let quorum: ReplicaBand = serde_json::from_value(serde_json::json!({
+            "apiVersion": "breathe.pleme.io/v1", "kind": "ReplicaBand",
+            "metadata": { "name": "etcd", "namespace": "kube-system" },
+            "spec": {
+                "targetRef": { "kind": "StatefulSet", "name": "etcd", "apiVersion": "apps/v1" },
+                "metric": { "prometheus": "q" }, "topology": { "kind": "fullyDistributed" }, "ceiling": 9
+            }
+        })).expect("deserialize");
+        assert_eq!(quorum.spec.topology.kind, TopologyKind::FullyDistributed);
+        let rc = quorum.spec.replica_band_config();
+        assert_eq!(rc.topology, Topology::FullyDistributed);
+        assert_eq!(rc.topology_floor(), 3, "a quorum floor is snapped odd, ≥ 3");
+
+        let db: ReplicaBand = serde_json::from_value(serde_json::json!({
+            "apiVersion": "breathe.pleme.io/v1", "kind": "ReplicaBand",
+            "metadata": { "name": "mysql", "namespace": "camelot" },
+            "spec": {
+                "targetRef": { "kind": "StatefulSet", "name": "mysql", "apiVersion": "apps/v1" },
+                "metric": { "prometheus": "q" },
+                "topology": { "kind": "masterSlave", "primaries": 1 }, "ceiling": 8
+            }
+        })).expect("deserialize");
+        assert_eq!(db.spec.topology.kind, TopologyKind::MasterSlave);
+        assert_eq!(db.spec.topology.primaries, Some(1));
+        assert_eq!(db.spec.replica_band_config().topology, Topology::MasterSlave { primaries: 1 });
+
+        let neo: ReplicaBand = serde_json::from_value(serde_json::json!({
+            "apiVersion": "breathe.pleme.io/v1", "kind": "ReplicaBand",
+            "metadata": { "name": "neo4j", "namespace": "camelot" },
+            "spec": {
+                "targetRef": { "kind": "StatefulSet", "name": "neo4j", "apiVersion": "apps/v1" },
+                "metric": { "prometheus": "q" },
+                "topology": { "kind": "persistent", "replicationFactor": 3 }, "ceiling": 10
+            }
+        })).expect("deserialize");
+        assert_eq!(neo.spec.topology.kind, TopologyKind::Persistent);
+        assert_eq!(neo.spec.topology.replication_factor, Some(3));
+        assert_eq!(neo.spec.replica_band_config().topology, Topology::Persistent { replication_factor: 3 });
+        assert_eq!(neo.spec.replica_band_config().topology_floor(), 3);
+    }
+
+    #[test]
+    fn replica_band_crd_advertises_the_topology_surface() {
+        let crd = <ReplicaBand as kube::CustomResourceExt>::crd();
+        let yaml = serde_yaml::to_string(&crd).unwrap();
+        assert!(yaml.contains("topology"), "the CRD must advertise the topology field");
+        assert!(yaml.contains("fullyDistributed"), "the FullyDistributed arm is in the schema");
+        assert!(yaml.contains("replicationFactor"), "the Persistent factor is camelCase in the schema");
     }
 }
