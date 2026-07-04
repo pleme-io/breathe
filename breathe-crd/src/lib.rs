@@ -1511,6 +1511,20 @@ impl ReplicaBandSpec {
     pub fn provider_reclaim_metric(&self) -> Option<MetricSource> {
         self.metric.reclaim_prometheus.clone().map(MetricSource::Prometheus)
     }
+
+    /// Parse-time validation of THIS band, including the topology ↔ target-kind
+    /// coupling: a stateful topology (`persistent` / `masterSlave` /
+    /// `fullyDistributed`) whose `targetRef.kind` is not `StatefulSet` is refused
+    /// (ordinal-drain + PVC-per-replica semantics hold only on a StatefulSet). Reuses
+    /// the control-layer [`breathe_control::replica::ReplicaBandConfig::validate_for_target`]
+    /// with this band's own `targetRef.kind` — the CRD is the layer that owns the
+    /// target, so it supplies the kind the numeric config gate cannot see.
+    ///
+    /// # Errors
+    /// Any [`breathe_control::replica::ReplicaError`] the coupled gate raises.
+    pub fn validate_for_target(&self) -> Result<(), breathe_control::replica::ReplicaError> {
+        self.replica_band_config().validate_for_target(&self.target_ref.kind)
+    }
 }
 
 impl crate::Band for ReplicaBand {
@@ -3335,5 +3349,84 @@ mod tests {
         assert!(yaml.contains("topology"), "the CRD must advertise the topology field");
         assert!(yaml.contains("fullyDistributed"), "the FullyDistributed arm is in the schema");
         assert!(yaml.contains("replicationFactor"), "the Persistent factor is camelCase in the schema");
+    }
+
+    #[test]
+    fn topology_kind_mirror_agrees_with_the_control_border() {
+        // CATALOG REFLECTION (CRD ↔ Rust border): every TopologyKind arm maps to a
+        // distinct breathe_control Topology whose stable label is one of ALL_LABELS,
+        // and the four arms cover ALL_LABELS exactly — the CRD mirror can't drift from
+        // the control enum without failing here.
+        use breathe_control::replica::Topology;
+        let arms = [
+            TopologyKind::NonPersistent,
+            TopologyKind::Persistent,
+            TopologyKind::MasterSlave,
+            TopologyKind::FullyDistributed,
+        ];
+        let mut labels: Vec<&'static str> = arms
+            .iter()
+            .map(|k| {
+                let spec = TopologySpec { kind: *k, replication_factor: Some(1), primaries: Some(1) };
+                spec.control().as_str()
+            })
+            .collect();
+        labels.sort_unstable();
+        let mut expected = Topology::ALL_LABELS.to_vec();
+        expected.sort_unstable();
+        assert_eq!(labels, expected, "the CRD TopologyKind arms must mirror breathe_control::Topology exactly");
+
+        // and the serde wire tokens are the camelCase mirror (structural-schema-safe).
+        for (k, tok) in [
+            (TopologyKind::NonPersistent, "nonPersistent"),
+            (TopologyKind::Persistent, "persistent"),
+            (TopologyKind::MasterSlave, "masterSlave"),
+            (TopologyKind::FullyDistributed, "fullyDistributed"),
+        ] {
+            let j = serde_json::to_value(k).unwrap();
+            assert_eq!(j, serde_json::Value::String(tok.to_string()));
+        }
+    }
+
+    #[test]
+    fn stateful_replica_band_on_a_deployment_is_parse_rejected() {
+        use breathe_control::replica::ReplicaError;
+        // a masterSlave band pointed at a Deployment is refused (topology ↔ kind gate).
+        let db_on_deploy: ReplicaBand = serde_json::from_value(serde_json::json!({
+            "apiVersion": "breathe.pleme.io/v1", "kind": "ReplicaBand",
+            "metadata": { "name": "mysql", "namespace": "camelot" },
+            "spec": {
+                "targetRef": { "kind": "Deployment", "name": "mysql" },
+                "metric": { "prometheus": "q" },
+                "topology": { "kind": "masterSlave", "primaries": 1 }, "ceiling": 8
+            }
+        })).expect("deserializes");
+        assert_eq!(
+            db_on_deploy.spec.validate_for_target(),
+            Err(ReplicaError::TopologyTargetMismatch("master-slave"))
+        );
+
+        // the SAME band on a StatefulSet validates.
+        let db_on_sts: ReplicaBand = serde_json::from_value(serde_json::json!({
+            "apiVersion": "breathe.pleme.io/v1", "kind": "ReplicaBand",
+            "metadata": { "name": "mysql", "namespace": "camelot" },
+            "spec": {
+                "targetRef": { "kind": "StatefulSet", "name": "mysql" },
+                "metric": { "prometheus": "q" },
+                "topology": { "kind": "masterSlave", "primaries": 1 }, "ceiling": 8
+            }
+        })).expect("deserializes");
+        assert_eq!(db_on_sts.spec.validate_for_target(), Ok(()));
+
+        // a NonPersistent band on a Deployment is fine (stateless pods interchangeable).
+        let web: ReplicaBand = serde_json::from_value(serde_json::json!({
+            "apiVersion": "breathe.pleme.io/v1", "kind": "ReplicaBand",
+            "metadata": { "name": "web", "namespace": "camelot" },
+            "spec": {
+                "targetRef": { "kind": "Deployment", "name": "web" },
+                "metric": { "prometheus": "q" }, "ceiling": 10
+            }
+        })).expect("deserializes");
+        assert_eq!(web.spec.validate_for_target(), Ok(()));
     }
 }

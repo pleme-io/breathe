@@ -561,6 +561,7 @@ dependencies = [
 name = "breathe-catalog"
 version = "0.1.0"
 dependencies = [
+ "breathe-control",
  "breathe-provider",
 ]
 

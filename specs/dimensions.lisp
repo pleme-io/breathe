@@ -68,6 +68,27 @@
   :depends-on  ()
   :mirrors     "k8s Deployment/StatefulSet spec.replicas (HPA/KEDA peer)"
   :law         "HPA ratio ceil(current×metric/target) + asymmetric anti-flap + HA floor(2) + spot scale-OUT (retirada)"
+  ;; The TOPOLOGY sub-axis (theory/BREATHABILITY.md §II.5): a first-class field of
+  ;; the ReplicaBand that selects BOTH the scaling ALGORITHM and the hard INVARIANT
+  ;; the band may never violate. The typed mirror is breathe-control's `Topology`
+  ;; (the Rust border), the CRD's `TopologyKind` (the wire class), and
+  ;; breathe-catalog's REPLICA_TOPOLOGY_AXIS (the catalog row); the CATALOG
+  ;; REFLECTION tests fail the build if the four drift. `:requires-target` is the
+  ;; topology↔target-kind coupling — the three STATEFUL arms REQUIRE a StatefulSet
+  ;; (ordinal-drain + PVC-per-replica semantics); `non-persistent` runs on any kind.
+  :topology-axis
+   ((:arm "non-persistent"    :crd-kind "nonPersistent"    :requires-target :any
+      :invariant  "HA floor only — stateless, pods interchangeable"
+      :algorithm  "free HPA-ratio scaling; a reclaim scales OUT on the survivors")
+    (:arm "persistent"        :crd-kind "persistent"       :requires-target "StatefulSet"
+      :invariant  "never rest below replicationFactor; a scale-in is HELD for ordinal drain/rebalance"
+      :algorithm  "grow adds an ordinal+PVC freely; a reactive shrink → HeldForRebalance (no write path)")
+    (:arm "master-slave"      :crd-kind "masterSlave"      :requires-target "StatefulSet"
+      :invariant  "never scale the primary away (primary = ordinal-0); the floor covers primaries"
+      :algorithm  "only the read-replicas breathe on the core law, above the primary floor")
+    (:arm "fully-distributed" :crd-kind "fullyDistributed" :requires-target "StatefulSet"
+      :invariant  "odd quorum ≥ 3, a live majority preserved, one-rung membership steps"
+      :algorithm  "OddQuorum-quantized grow/shrink; a scale-down never crosses the majority line"))
   :purpose     "hold a workload's replica COUNT at a work-rate band by carving spec.replicas; composes with the vertical bands (right-sized AND right-counted)")
 
 ;;; ── HOST dimensions ────────────────────────────────────────────────────────

@@ -263,6 +263,73 @@ pub fn lookup(id: DimensionId) -> Option<&'static DimensionSpec> {
     CATALOG.iter().find(|d| d.id == id)
 }
 
+// ── The REPLICA dimension's TOPOLOGY sub-axis (theory/BREATHABILITY.md §II.5) ──
+//    The replica dimension is the only one with an internal sub-axis: the workload
+//    TOPOLOGY, which selects BOTH the scaling algorithm and the hard invariant the
+//    band may never violate. This is the catalog mirror of the `Topology` Rust
+//    border (breathe-control), the `TopologyKind` CRD class (breathe-crd), and the
+//    `:topology-axis` lisp form (specs/dimensions.lisp). The reflection tests fail
+//    the build if the four surfaces drift.
+
+/// The target-kind requirement of one topology arm — the typed encoding of the
+/// topology ↔ target-kind coupling. A STATEFUL arm's ordinal-drain +
+/// PVC-per-replica invariants hold ONLY on a StatefulSet; a stateless arm runs on
+/// any interchangeable-pod workload.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RequiresTarget {
+    /// Any workload kind (Deployment, StatefulSet, owner-less pod group).
+    Any,
+    /// A specific k8s `kind` (`StatefulSet` for every stateful topology).
+    Kind(&'static str),
+}
+
+/// One arm of the replica dimension's TOPOLOGY sub-axis, declared as typed data.
+/// `control_label` matches `breathe_control::replica::Topology::as_str`; `crd_kind`
+/// matches the CRD `TopologyKind` serde (camelCase) token; `lisp_token` is the
+/// `:crd-kind` authored in the `:topology-axis` lisp form. The reflection tests
+/// cross-check all three.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TopologyArm {
+    /// The kebab-case control-border label (`Topology::as_str`).
+    pub control_label: &'static str,
+    /// The camelCase CRD wire class (`TopologyKind` serde token / lisp `:crd-kind`).
+    pub crd_kind: &'static str,
+    /// The target-kind this arm REQUIRES (the topology ↔ target-kind coupling).
+    pub requires_target: RequiresTarget,
+    /// The hard invariant the band may never violate under this arm.
+    pub invariant: &'static str,
+}
+
+/// The replica dimension's four topology arms, enumerated + coupled. Adding an arm
+/// to `Topology` / `TopologyKind` REQUIRES a row here (and a `:topology-axis` arm in
+/// the lisp); the reflection tests fail the build otherwise.
+pub const REPLICA_TOPOLOGY_AXIS: [TopologyArm; 4] = [
+    TopologyArm {
+        control_label: "non-persistent",
+        crd_kind: "nonPersistent",
+        requires_target: RequiresTarget::Any,
+        invariant: "HA floor only — stateless, pods interchangeable",
+    },
+    TopologyArm {
+        control_label: "persistent",
+        crd_kind: "persistent",
+        requires_target: RequiresTarget::Kind("StatefulSet"),
+        invariant: "never rest below replicationFactor; a scale-in is HELD for ordinal drain/rebalance",
+    },
+    TopologyArm {
+        control_label: "master-slave",
+        crd_kind: "masterSlave",
+        requires_target: RequiresTarget::Kind("StatefulSet"),
+        invariant: "never scale the primary away (primary = ordinal-0); the floor covers primaries",
+    },
+    TopologyArm {
+        control_label: "fully-distributed",
+        crd_kind: "fullyDistributed",
+        requires_target: RequiresTarget::Kind("StatefulSet"),
+        invariant: "odd quorum ≥ 3, a live majority preserved, one-rung membership steps",
+    },
+];
+
 // ── The ACTION catalog — the explicit, typed enumeration of every knob breathe
 //    can carve, classified by RESTART COST. The restart-free set is what breathe
 //    drives toward real-time through the standard tick; the restart-requiring set
@@ -631,6 +698,94 @@ mod tests {
             if d.id.is_host() {
                 assert!(d.upstream_mirror.is_some(), "{} must name its host upstream", d.name);
             }
+        }
+    }
+
+    // ── REPLICA TOPOLOGY sub-axis reflection (CATALOG REFLECTION) ────────────────
+    //    Rust border (breathe_control::Topology) ↔ catalog (REPLICA_TOPOLOGY_AXIS)
+    //    ↔ Lisp (specs/dimensions.lisp :topology-axis). The CRD ↔ border leg is
+    //    proven in breathe-crd (topology_kind_mirror_agrees_with_the_control_border);
+    //    with border↔catalog and border↔lisp below, all four surfaces agree.
+
+    /// The authored lisp — the reflection tests assert the catalog's topology arms
+    /// are all declared here (Lisp ↔ catalog), the same include_str convention that
+    /// keeps the dimensions catalog honest against its `(defdimension …)` forms.
+    const DIMENSIONS_LISP: &str = include_str!("../../specs/dimensions.lisp");
+
+    #[test]
+    fn topology_axis_labels_are_unique_and_four() {
+        assert_eq!(REPLICA_TOPOLOGY_AXIS.len(), 4);
+        let mut labels: Vec<&str> = REPLICA_TOPOLOGY_AXIS.iter().map(|a| a.control_label).collect();
+        labels.sort_unstable();
+        labels.dedup();
+        assert_eq!(labels.len(), 4, "duplicate control_label in the topology axis");
+        let mut kinds: Vec<&str> = REPLICA_TOPOLOGY_AXIS.iter().map(|a| a.crd_kind).collect();
+        kinds.sort_unstable();
+        kinds.dedup();
+        assert_eq!(kinds.len(), 4, "duplicate crd_kind in the topology axis");
+    }
+
+    #[test]
+    fn topology_axis_mirrors_the_control_border() {
+        // Every catalog arm's control_label is a real Topology::as_str, and the axis
+        // covers Topology::ALL_LABELS exactly — a new arm can't be added to the enum
+        // without a catalog row, or vice versa.
+        use breathe_control::replica::Topology;
+        let mut catalog: Vec<&str> = REPLICA_TOPOLOGY_AXIS.iter().map(|a| a.control_label).collect();
+        catalog.sort_unstable();
+        let mut border = Topology::ALL_LABELS.to_vec();
+        border.sort_unstable();
+        assert_eq!(catalog, border, "REPLICA_TOPOLOGY_AXIS must mirror breathe_control::Topology::ALL_LABELS");
+    }
+
+    #[test]
+    fn topology_axis_target_coupling_matches_the_border() {
+        // The catalog's requires_target agrees with the border's requires_statefulset:
+        // exactly the three stateful arms require a StatefulSet; non-persistent is Any.
+        use breathe_control::replica::{Topology, STATEFULSET_KIND};
+        // An explicit (label → border value) table — no panic arm, no fallthrough.
+        let table = [
+            ("non-persistent", Topology::NonPersistent),
+            ("persistent", Topology::Persistent { replication_factor: 1 }),
+            ("master-slave", Topology::MasterSlave { primaries: 1 }),
+            ("fully-distributed", Topology::FullyDistributed),
+        ];
+        for arm in &REPLICA_TOPOLOGY_AXIS {
+            let topo = table
+                .iter()
+                .find(|(label, _)| *label == arm.control_label)
+                .map(|(_, t)| *t)
+                .expect("every catalog arm has a matching Topology border value");
+            match arm.requires_target {
+                RequiresTarget::Any => assert!(
+                    !topo.requires_statefulset(),
+                    "{} is Any but the border requires a StatefulSet",
+                    arm.control_label
+                ),
+                RequiresTarget::Kind(k) => {
+                    assert!(
+                        topo.requires_statefulset(),
+                        "{} requires a Kind but the border says Any",
+                        arm.control_label
+                    );
+                    assert_eq!(k, STATEFULSET_KIND, "the only stateful target is StatefulSet");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn topology_axis_is_declared_in_the_lisp() {
+        // Lisp ↔ catalog: the :topology-axis form names every arm's crd-kind. The
+        // crd_kind tokens are mutually non-substring (nonPersistent has capital P), so
+        // a bare `contains` is unambiguous — no format! needed.
+        assert!(DIMENSIONS_LISP.contains(":topology-axis"), "the replica dimension must declare :topology-axis");
+        for arm in &REPLICA_TOPOLOGY_AXIS {
+            assert!(
+                DIMENSIONS_LISP.contains(arm.crd_kind),
+                "the lisp :topology-axis is missing the {} arm",
+                arm.crd_kind
+            );
         }
     }
 }
