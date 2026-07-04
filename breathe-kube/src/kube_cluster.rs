@@ -247,8 +247,17 @@ impl KubeCluster {
         Ok(out)
     }
 
-    /// Prometheus instant query → (value, sample age).
-    async fn prometheus_used(&self, promql: &str) -> Result<Sample, ProviderError> {
+    /// Prometheus instant query → the RAW `f64` scalar + the underlying sample's
+    /// age (seconds). The fractional read the HORIZONTAL band needs — a per-replica
+    /// utilization ratio (`0.9`) or a fractional work rate would be destroyed by the
+    /// `u64` truncation [`prometheus_used`](Self::prometheus_used) applies for the
+    /// vertical (byte/millicore) dimensions. Every failure is a typed
+    /// [`ProviderError`] (never a panic).
+    ///
+    /// # Errors
+    /// [`ProviderError::ApiTransient`] on the HTTP/JSON call, [`ProviderError::MetricsMissing`]
+    /// when the instant query returns no `data.result[0].value` pair.
+    pub async fn query_scalar(&self, promql: &str) -> Result<(f64, u64), ProviderError> {
         let url = format!("{}/api/v1/query", self.prometheus_url.trim_end_matches('/'));
         let resp: Value = self
             .http
@@ -265,14 +274,22 @@ impl KubeCluster {
             .and_then(Value::as_array)
             .ok_or(ProviderError::MetricsMissing)?;
         let ts = pair.first().and_then(Value::as_f64).ok_or(ProviderError::MetricsMissing)?;
-        let value: u64 = pair
+        let value: f64 = pair
             .get(1)
             .and_then(Value::as_str)
             .and_then(|s| s.parse::<f64>().ok())
-            .map(|f| f as u64)
             .ok_or(ProviderError::MetricsMissing)?;
         let now = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs_f64()).unwrap_or(ts);
-        Ok(Sample { value, age_secs: (now - ts).max(0.0) as u64 })
+        Ok((value, (now - ts).max(0.0) as u64))
+    }
+
+    /// Prometheus instant query → (value, sample age). The vertical (byte/millicore)
+    /// read: reuses [`query_scalar`](Self::query_scalar) and truncates the scalar to
+    /// `u64` (a saturating `f64 as u64`, so a negative reading floors at 0) — the
+    /// dimension-agnostic `used` contract of the [`Cluster`] trait.
+    async fn prometheus_used(&self, promql: &str) -> Result<Sample, ProviderError> {
+        let (value, age_secs) = self.query_scalar(promql).await?;
+        Ok(Sample { value: value as u64, age_secs })
     }
 
     /// The ALWAYS-ON metric source: read live container usage from metrics-server
