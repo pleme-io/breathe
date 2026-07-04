@@ -58,16 +58,17 @@
 
 (defdimension-replica
   :name        "replica"
-  :maturity    :informational
-  :directionality :observe-only       ; KEDA owns spec.replicas; breathe never writes it
-  :observe     "status.replicas + KEDA ScaledObject (read-only)"
+  :maturity    :working
+  :directionality :bidirectional       ; HORIZONTAL: scale spec.replicas both ways on a work-rate signal
+  :observe     "PromQL work-rate signal (queue depth / RPS / per-replica util) — never memory"
   :field       "spec.replicas"
-  :manager     "keda-operator"        ; the OTHER manager — breathe yields this field by construction
-  :assign      :none
-  :semantics   :observe-only
+  :manager     "breathe/replica"       ; disjoint field ⇒ a co-writing KEDA/HPA is a cooperative-yield 409, never a fight
+  :assign      :ssa-apply              ; SSA-write spec.replicas (scale-OUT restart-free; scale-IN sheds a pod, gated)
+  :semantics   :continuous-reconciliation
   :depends-on  ()
-  :mirrors     "KEDA ScaledObject"
-  :purpose     "observe replica count; compose with KEDA via disjoint fields (never write)")
+  :mirrors     "k8s Deployment/StatefulSet spec.replicas (HPA/KEDA peer)"
+  :law         "HPA ratio ceil(current×metric/target) + asymmetric anti-flap + HA floor(2) + spot scale-OUT (retirada)"
+  :purpose     "hold a workload's replica COUNT at a work-rate band by carving spec.replicas; composes with the vertical bands (right-sized AND right-counted)")
 
 ;;; ── HOST dimensions ────────────────────────────────────────────────────────
 ;;; Boundary = the HostCluster impl (systemd/sysfs), NOT the k8s API. The

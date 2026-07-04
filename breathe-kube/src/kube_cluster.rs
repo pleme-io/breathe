@@ -115,6 +115,9 @@ impl KubeCluster {
             | LimitLayout::ControllerSetpoint { field_path, .. } => {
                 data.pointer(field_path).map(json_scalar_to_string)
             }
+            // HORIZONTAL: the workload's current replica count (`.spec.replicas`),
+            // rendered as a bare integer string the Count unit parses.
+            LimitLayout::Replica { .. } => data.pointer("/spec/replicas").map(json_scalar_to_string),
             // external-protocol / network layouts are never read on a k8s object here
             // (their actuators own the read) — typed None, never a silent wrong value.
             LimitLayout::ConfigFile { .. } | LimitLayout::ApiCall { .. } | LimitLayout::PodNetworkBandwidth { .. } => None,
@@ -464,7 +467,11 @@ impl Cluster for KubeCluster {
             | LimitLayout::ControllerSetpoint { .. }
             | LimitLayout::ConfigFile { .. }
             | LimitLayout::ApiCall { .. }
-            | LimitLayout::PodNetworkBandwidth { .. } => return Ok(Vec::new()),
+            | LimitLayout::PodNetworkBandwidth { .. }
+            // HORIZONTAL: `.spec.replicas` — breathe is the writer; a co-writer
+            // (KEDA/HPA) is detected via the 409 on apply (no `.force()`), the same
+            // cooperative-yield guard every generic-path layout uses.
+            | LimitLayout::Replica { .. } => return Ok(Vec::new()),
         };
         Ok(field_owners(&mf, &segments, logical_field))
     }
@@ -547,6 +554,11 @@ impl Cluster for KubeCluster {
             | LimitLayout::ControllerSetpoint { field_path, .. } => {
                 nested_json_under_spec(field_path, json!(patch.value))
             }
+            // HORIZONTAL: SSA-write the bare replica count to `.spec.replicas`.
+            // Same no-`.force()` cooperative-yield discipline: a competing scaler
+            // that owns the field yields a 409 (mapped to a transient retry), never
+            // a clobber. Rendered as a bare integer (never a Quantity string).
+            LimitLayout::Replica { .. } => json!({ "replicas": patch.value }),
             // external-protocol / network layouts have dedicated actuators.
             LimitLayout::ConfigFile { .. } | LimitLayout::ApiCall { .. } | LimitLayout::PodNetworkBandwidth { .. } => {
                 return Err(ProviderError::ApiPermanent(

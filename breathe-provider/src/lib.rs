@@ -104,8 +104,10 @@ pub enum SuppressedDemand {
     /// non-issue by construction (the down-cliff is unrepresentable). Declared for
     /// completeness; carries no throttle read.
     GrowOnly,
-    /// OBSERVE-ONLY (replica): never mutated, so there is no carve to suppress. No
-    /// throttle read. Declared for completeness so the catalog partition is total.
+    /// OBSERVE-ONLY: a dimension that is never mutated, so there is no carve to
+    /// suppress. No throttle read. Declared for completeness so the catalog
+    /// partition is total. (No shipped dimension uses it today — replica became a
+    /// first-class horizontal carve; kept for a future observe-only dimension.)
     NotApplicable,
 }
 
@@ -405,6 +407,15 @@ pub enum LimitLayout {
     /// bandwidth` annotation (rolls) OR a host-tc HTB class (`host_tc=true`,
     /// RestartFree — the golden path). `direction` selects egress/ingress.
     PodNetworkBandwidth { direction: NetDirection, host_tc: bool },
+    /// **HORIZONTAL:** the workload's `.spec.replicas` count — the typed replica
+    /// actuator for a `ReplicaBand`. `kind` is the owner (`Deployment` /
+    /// `StatefulSet`); the value written is a bare replica count. Asymmetric restart
+    /// cost: a scale-OUT leaves every surviving pod undisturbed (`RestartFree`,
+    /// like `node-add`), while a scale-IN sheds a pod (`RestartRequiring`, the
+    /// `replica-scale-down` action) — so a `RestartFreeOnly` band scales out freely
+    /// and gates scale-in until its `DisruptionPolicy` permits the shed. The
+    /// horizontal peer of the vertical `PodResize`/`PodTemplate` limit layouts.
+    Replica { kind: String },
 }
 
 /// **Step-9/12:** how a [`LimitLayout::ConfigFile`] value takes effect.
@@ -684,6 +695,9 @@ impl LimitLayout {
             Self::PodNetworkBandwidth { host_tc, .. } => {
                 if *host_tc { DisruptionClass::RestartFree } else { DisruptionClass::RestartRequiring }
             }
+            // Coarse worst-case: a scale-IN sheds a pod (RestartRequiring). The
+            // per-direction `action_class` refines a scale-OUT to RestartFree.
+            Self::Replica { .. } => DisruptionClass::RestartRequiring,
         }
     }
 
@@ -716,6 +730,12 @@ impl LimitLayout {
             | Self::NamespaceEnvelope { .. }
             | Self::ControllerSetpoint { .. }
             | Self::PodNetworkBandwidth { .. } => self.disruption_class(),
+            // HORIZONTAL: a scale-OUT (grow) leaves survivors undisturbed
+            // (RestartFree); a scale-IN (shrink) sheds a pod (RestartRequiring).
+            // `resource` is "replicas"; the direction is what matters.
+            Self::Replica { .. } => {
+                if growing { DisruptionClass::RestartFree } else { DisruptionClass::RestartRequiring }
+            }
         }
     }
 }

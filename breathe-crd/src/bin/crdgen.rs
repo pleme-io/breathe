@@ -3,7 +3,7 @@
 
 use breathe_crd::{
     AppBand, ArcBand, BreatheCloudPool, BreatheConfig, BreatheNodePool, BreatheOverview, CgroupBand, CgroupCpuBand,
-    CpuBand, Densa, HostParamBand, KubeParamBand, MemoryBand, PodMemoryHigh, QuinhaoPool, StorageBand,
+    CpuBand, Densa, HostParamBand, KubeParamBand, MemoryBand, PodMemoryHigh, QuinhaoPool, ReplicaBand, StorageBand,
 };
 use kube::CustomResourceExt;
 
@@ -12,6 +12,8 @@ fn main() {
         MemoryBand::crd(),
         CpuBand::crd(),
         StorageBand::crd(),
+        // HORIZONTAL — the workload replica-count band (scale on a work-rate signal)
+        ReplicaBand::crd(),
         // host dimensions + the node enrollment charter
         ArcBand::crd(),
         CgroupBand::crd(),
