@@ -311,6 +311,18 @@ impl ReplicaDecision {
         }
     }
 
+    /// The replica count this decision started FROM (the observed `.spec.replicas`).
+    /// Uniform across every arm — the carve arms carry `from`, the no-op arms carry
+    /// `current` — so a caller can render the `from -> to` transition without
+    /// re-reading the observation.
+    #[must_use]
+    pub fn current(self) -> u32 {
+        match self {
+            Self::Hold { current } | Self::AtFloor { current } | Self::AtCeiling { current } => current,
+            Self::ScaleUp { from, .. } | Self::ScaleDown { from, .. } | Self::SpotScaleOut { from, .. } => from,
+        }
+    }
+
     /// `true` when this decision mutates the replica count (a real carve).
     #[must_use]
     pub fn is_carve(self) -> bool {
@@ -474,6 +486,98 @@ pub fn interpret_replica<E: ReplicaEnvironment>(
     };
     // phase 3 — decide (pure).
     Ok(decide_replicas(cfg, &obs))
+}
+
+/// The gate applied to a horizontal DECISION before it reaches the actuator — the
+/// pure encoding of the shadow→confirm→effect lifecycle, the post-carve cooldown,
+/// the `DisruptionPolicy` scale-in gate, and break-glass, with NO I/O. The async
+/// controller resolves each field (`dry_run` via `Band::effective_dry_run`,
+/// `scale_in_permitted` via `DisruptionPolicy::permits`, `force` via the CR's
+/// break-glass) and hands it here; [`plan_replica_tick`] then decides whether — and
+/// to what — `.spec.replicas` is written. Keeping the whole gate a pure input makes
+/// "shadow observes but never writes / a scale-in is refused by policy" unit-testable
+/// without a cluster.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ReplicaGate {
+    /// SHADOW: observe + attest, never write. The effective dry-run for this tick
+    /// (a `ShadowConfirmEffect` band before its confirm window, an explicit
+    /// `mode: shadow`, or a stale sample the caller refuses to act on).
+    pub dry_run: bool,
+    /// Within the post-carve cooldown window — a carve may be due but is held.
+    pub in_cooldown: bool,
+    /// Does the band's `DisruptionPolicy` permit a scale-IN? A scale-in sheds a pod
+    /// (`RestartRequiring`); a scale-OUT is always `RestartFree` and is NEVER gated
+    /// here. Under the default `restartFreeOnly` this is `false` (scale out freely,
+    /// gate scale-in); set `allowRestart` to shed replicas.
+    pub scale_in_permitted: bool,
+    /// BREAK-GLASS: pin the count to exactly this (still floor/ceiling-clamped and
+    /// still gated), bypassing the band law but not the safety envelope. `None` ⇒
+    /// normal homeostasis via [`interpret_replica`].
+    pub force: Option<u32>,
+}
+
+/// The pure outcome of planning one horizontal tick — the DECISION plus what the
+/// actuator should do with it. The controller's async shell does the observe + the
+/// SSA write; this value tells it whether (and to what) to write.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ReplicaTickPlan {
+    /// The band law's (or break-glass) decision for this tick.
+    pub decision: ReplicaDecision,
+    /// `Some(to)` ⇒ SSA-write `.spec.replicas = to`; `None` ⇒ observe only (a
+    /// resting decision, or a carve withheld by shadow / cooldown / the scale-in gate).
+    pub actuate: Option<u32>,
+    /// A scale-IN the band law wanted but the `DisruptionPolicy` refused (a
+    /// pod-shedding crossing) — surfaced as `DeferredWouldRestart`, never written.
+    pub deferred: bool,
+}
+
+/// Plan one horizontal tick: run the band law (or the break-glass force), then apply
+/// the shadow / cooldown / scale-in-policy gate. **Pure + I/O-free** — the caller's
+/// async shell does the observe (through a real [`ReplicaEnvironment`]) and the SSA
+/// write; the DECISION and the GATE live here so both are unit-testable without a
+/// cluster (the TYPED-SPEC triplet's planning peer). A scale-OUT is `RestartFree` and
+/// is never gated; only a scale-IN can be deferred by policy.
+///
+/// # Errors
+/// Propagates every [`interpret_replica`] error (config invalid, bad/unreadable
+/// signal, unreadable replica count) — never panics.
+pub fn plan_replica_tick<E: ReplicaEnvironment>(
+    cfg: &ReplicaBandConfig,
+    env: &E,
+    gate: ReplicaGate,
+) -> Result<ReplicaTickPlan, ReplicaError> {
+    // parse-time gate first — a malformed band never plans a carve.
+    cfg.validate()?;
+    let decision = match gate.force {
+        Some(v) => {
+            // break-glass: pin to the forced count, still floor/ceiling-clamped.
+            let current = env.current_replicas()?;
+            let floor = cfg.effective_floor();
+            let ceiling = cfg.ceiling.max(floor);
+            let to = v.clamp(floor, ceiling);
+            if to > current {
+                ReplicaDecision::ScaleUp { from: current, to }
+            } else if to < current {
+                ReplicaDecision::ScaleDown { from: current, to }
+            } else {
+                ReplicaDecision::Hold { current }
+            }
+        }
+        None => interpret_replica(cfg, env)?,
+    };
+
+    // a scale-IN sheds a pod (RestartRequiring); it is DEFERRED when the policy
+    // refuses it AND the tick is otherwise live (not shadow, not cooling down). A
+    // scale-OUT / spot pre-drain never defers here.
+    let is_scale_in = matches!(decision, ReplicaDecision::ScaleDown { .. });
+    let deferred =
+        decision.is_carve() && is_scale_in && !gate.scale_in_permitted && !gate.dry_run && !gate.in_cooldown;
+    let actuate = if decision.is_carve() && !gate.dry_run && !gate.in_cooldown && !deferred {
+        Some(decision.target())
+    } else {
+        None
+    };
+    Ok(ReplicaTickPlan { decision, actuate, deferred })
 }
 
 /// A canned [`ReplicaEnvironment`] for tests + shadow dry-runs — every input is a
@@ -728,7 +832,102 @@ mod tests {
     fn decision_target_and_label_are_consistent() {
         assert_eq!(ReplicaDecision::Hold { current: 5 }.target(), 5);
         assert_eq!(ReplicaDecision::ScaleUp { from: 2, to: 6 }.target(), 6);
+        assert_eq!(ReplicaDecision::ScaleUp { from: 2, to: 6 }.current(), 2);
+        assert_eq!(ReplicaDecision::Hold { current: 5 }.current(), 5);
         assert_eq!(ReplicaDecision::ScaleUp { from: 2, to: 6 }.label(), "ScaleUp");
         assert_eq!(ReplicaDecision::SpotScaleOut { from: 3, to: 5, reclaim: 2 }.label(), "SpotScaleOut");
+    }
+
+    // ── the pure tick planner (shadow / cooldown / scale-in-policy / force gate) ──
+
+    fn gate(dry_run: bool, in_cooldown: bool, scale_in_permitted: bool) -> ReplicaGate {
+        ReplicaGate { dry_run, in_cooldown, scale_in_permitted, force: None }
+    }
+
+    #[test]
+    fn plan_holds_actuation_in_shadow_and_actuates_after_confirm() {
+        // the TYPED-SPEC test the runtime wiring must satisfy: a band decides the
+        // SAME thing in shadow and live, but only WRITES once confirmed (dry_run=false).
+        let c = cfg();
+        let env = MockReplicaEnvironment { current_replicas: 4, signal_value: 0.9, ..Default::default() };
+
+        // SHADOW: decides ScaleUp 4→5 but actuate is None (nothing written).
+        let shadow = plan_replica_tick(&c, &env, gate(true, false, true)).expect("plans");
+        assert_eq!(shadow.decision, ReplicaDecision::ScaleUp { from: 4, to: 5 });
+        assert_eq!(shadow.actuate, None, "shadow must never write");
+        assert!(!shadow.deferred);
+
+        // CONFIRMED (dry_run=false): the SAME decision now actuates to 5.
+        let live = plan_replica_tick(&c, &env, gate(false, false, true)).expect("plans");
+        assert_eq!(live.decision, ReplicaDecision::ScaleUp { from: 4, to: 5 });
+        assert_eq!(live.actuate, Some(5), "confirmed must write the target");
+    }
+
+    #[test]
+    fn plan_cooldown_suppresses_actuation_even_when_live() {
+        let c = cfg();
+        let env = MockReplicaEnvironment { current_replicas: 4, signal_value: 0.9, ..Default::default() };
+        let cooling = plan_replica_tick(&c, &env, gate(false, true, true)).expect("plans");
+        assert_eq!(cooling.decision, ReplicaDecision::ScaleUp { from: 4, to: 5 });
+        assert_eq!(cooling.actuate, None, "a cooldown holds the write");
+    }
+
+    #[test]
+    fn plan_defers_scale_in_under_restart_free_only_but_scales_out_freely() {
+        let c = cfg();
+        // idle signal → the law wants to scale IN (10 @ 0.4 → 9).
+        let shrink_env = MockReplicaEnvironment { current_replicas: 10, signal_value: 0.4, ..Default::default() };
+        // scale_in_permitted=false (the default restartFreeOnly posture): DEFERRED, no write.
+        let deferred = plan_replica_tick(&c, &shrink_env, gate(false, false, false)).expect("plans");
+        assert!(matches!(deferred.decision, ReplicaDecision::ScaleDown { from: 10, to: 9 }));
+        assert!(deferred.deferred, "a scale-in is a pod-shedding crossing");
+        assert_eq!(deferred.actuate, None, "restartFreeOnly refuses the scale-in");
+        // scale_in_permitted=true (allowRestart): now it writes.
+        let allowed = plan_replica_tick(&c, &shrink_env, gate(false, false, true)).expect("plans");
+        assert_eq!(allowed.actuate, Some(9));
+        assert!(!allowed.deferred);
+
+        // a scale-OUT is RestartFree — never gated by the scale-in policy.
+        let grow_env = MockReplicaEnvironment { current_replicas: 4, signal_value: 0.9, ..Default::default() };
+        let grow = plan_replica_tick(&c, &grow_env, gate(false, false, false)).expect("plans");
+        assert_eq!(grow.actuate, Some(5), "scale-out is never blocked by restartFreeOnly");
+        assert!(!grow.deferred);
+    }
+
+    #[test]
+    fn plan_break_glass_force_pins_the_count_clamped_and_gated() {
+        let c = cfg(); // ceiling 50, floor 2
+        let env = MockReplicaEnvironment { current_replicas: 4, signal_value: 0.05, ..Default::default() };
+        // force 8 (would otherwise idle-shrink) — live pins to 8.
+        let forced = plan_replica_tick(&c, &env, ReplicaGate { force: Some(8), ..gate(false, false, true) }).expect("plans");
+        assert_eq!(forced.decision, ReplicaDecision::ScaleUp { from: 4, to: 8 });
+        assert_eq!(forced.actuate, Some(8));
+        // force still respects the ceiling clamp.
+        let clamped = plan_replica_tick(&c, &env, ReplicaGate { force: Some(9999), ..gate(false, false, true) }).expect("plans");
+        assert_eq!(clamped.actuate, Some(50));
+        // force still honours shadow (no write).
+        let shadow = plan_replica_tick(&c, &env, ReplicaGate { force: Some(8), ..gate(true, false, true) }).expect("plans");
+        assert_eq!(shadow.actuate, None);
+    }
+
+    #[test]
+    fn plan_propagates_a_bad_signal_error_never_panics() {
+        let c = cfg();
+        let nan = MockReplicaEnvironment { current_replicas: 4, signal_value: f64::NAN, ..Default::default() };
+        assert_eq!(plan_replica_tick(&c, &nan, gate(false, false, true)), Err(ReplicaError::BadSignal));
+        let bad_cfg = ReplicaBandConfig { ceiling: 0, ..Default::default() };
+        let env = MockReplicaEnvironment { current_replicas: 4, signal_value: 0.9, ..Default::default() };
+        assert_eq!(plan_replica_tick(&bad_cfg, &env, gate(false, false, true)), Err(ReplicaError::ZeroCeiling));
+    }
+
+    #[test]
+    fn plan_resting_decision_never_actuates() {
+        let c = cfg();
+        // in-band (Hold) → no carve, no write, not deferred.
+        let env = MockReplicaEnvironment { current_replicas: 5, signal_value: 0.82, ..Default::default() };
+        let rest = plan_replica_tick(&c, &env, gate(false, false, true)).expect("plans");
+        assert_eq!(rest.decision, ReplicaDecision::Hold { current: 5 });
+        assert_eq!(rest.actuate, None);
+        assert!(!rest.deferred);
     }
 }

@@ -10,6 +10,7 @@
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use breathe_control::{BandConfig, Decision, Observation};
+use breathe_control::replica::{ReplicaDecision, ReplicaTickPlan};
 use breathe_core::{TickOutcome, TickReceipt};
 use breathe_crd::{Band, BandStatus, Condition, TrendSample};
 use breathe_provider::{ClassCooldowns, DisruptionPolicy, EdgeTier};
@@ -694,6 +695,287 @@ pub async fn patch_status<B: Band>(
     Ok(())
 }
 
+// ═════════════════════ HORIZONTAL (ReplicaBand) status mapping ═════════════════════
+//
+// The ReplicaBand does NOT produce a `TickOutcome` (that keystone models the
+// vertical (used,capacity) band); its typed tick is a `ReplicaReceipt`, and this
+// section is its `status_for`/`event_for`/`entry_for`/`next_requeue` peer. It reuses
+// the SAME condition semantics (`upsert_condition`) + the SAME phase strings
+// (Growing/Shrinking/ShadowWouldApply/DeferredWouldRestart/Cooldown/Holding/AtFloor/
+// AtCeiling/Stale/Conflict) so `kubectl wait --for=condition=Ready` AND the
+// `ShadowConfirmEffect` confirm gate (which reads status.conditions Ready∧¬Stale∧
+// ¬Conflict) work IDENTICALLY for a ReplicaBand — the whole point of riding the same
+// gate. Adding it here (not in the controller) keeps status mapping the runtime's one
+// job, so the brain can never drift in how a horizontal decision is reported.
+
+/// What ONE horizontal (replica) tick did — the `ReplicaBand` peer of
+/// [`TickReceipt`]. The controller folds the pure [`ReplicaTickPlan`] + the actuator
+/// result into this via [`ReplicaReceipt::resolve`] (or builds `Stale` directly when
+/// the driving sample is too old); [`replica_status_for`] renders it to a
+/// [`BandStatus`]. `from`/`to` are replica counts.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ReplicaReceipt {
+    /// A carve was APPLIED to `.spec.replicas` (`from -> to`). `to > from` is a
+    /// RestartFree scale-OUT; `to < from` a RestartRequiring scale-IN.
+    Applied { from: u32, to: u32 },
+    /// SHADOW: the band would carve (`from -> to`) but nothing was written (the
+    /// effective dry-run — `ShadowConfirmEffect` before its confirm window, or
+    /// explicit `mode: shadow`).
+    ShadowWouldApply { from: u32, to: u32 },
+    /// A scale-IN the band law wanted but the `DisruptionPolicy` REFUSED (a
+    /// pod-shedding crossing under `restartFreeOnly`) — reported, never written.
+    DeferredScaleIn { from: u32, to: u32 },
+    /// A carve is due but HELD in the post-carve cooldown window.
+    Cooldown { from: u32, to: u32 },
+    /// RESTING: within band / at the HA floor / at the ceiling — nothing to do.
+    Observed { decision: ReplicaDecision },
+    /// The driving metric sample was too STALE to act on — held.
+    Stale { staleness_secs: u64, current: u32 },
+    /// Yielded `.spec.replicas` to a competing writer (KEDA/HPA) on a 409 — the
+    /// cooperative-yield of the no-`.force()` SSA (the horizontal single-writer guard).
+    Conflict { current: u32 },
+}
+
+impl ReplicaReceipt {
+    /// Fold the pure [`ReplicaTickPlan`] + the actuator/observe results into a typed
+    /// receipt. Exhaustive, no panic. Precedence: conflict ▸ applied ▸ deferred ▸
+    /// resting ▸ shadow ▸ cooldown. (`Stale` is built by the caller BEFORE planning,
+    /// so it never reaches here.)
+    #[must_use]
+    pub fn resolve(plan: &ReplicaTickPlan, applied: bool, conflict: bool, dry_run: bool, in_cooldown: bool) -> Self {
+        let d = plan.decision;
+        let (from, to) = (d.current(), d.target());
+        if conflict {
+            return Self::Conflict { current: from };
+        }
+        if applied {
+            return Self::Applied { from, to };
+        }
+        if plan.deferred {
+            return Self::DeferredScaleIn { from, to };
+        }
+        if !d.is_carve() {
+            return Self::Observed { decision: d };
+        }
+        // a carve that was neither applied nor deferred was withheld by the gate.
+        if dry_run {
+            Self::ShadowWouldApply { from, to }
+        } else if in_cooldown {
+            Self::Cooldown { from, to }
+        } else {
+            // no remaining reason (defensive — not expected once actuation ran).
+            Self::Observed { decision: d }
+        }
+    }
+
+    /// A short, stable tag — the `decision_log` row's `receipt_kind`.
+    #[must_use]
+    pub fn kind_str(&self) -> &'static str {
+        match self {
+            Self::Applied { .. } => "Applied",
+            Self::ShadowWouldApply { .. } => "ShadowWouldApply",
+            Self::DeferredScaleIn { .. } => "DeferredScaleIn",
+            Self::Cooldown { .. } => "Cooldown",
+            Self::Observed { .. } => "Observed",
+            Self::Stale { .. } => "Stale",
+            Self::Conflict { .. } => "Conflict",
+        }
+    }
+}
+
+/// Render a horizontal [`ReplicaReceipt`] to a [`BandStatus`] — the `ReplicaBand`
+/// peer of [`status_for`]. `metric_ratio` is `currentMetric/targetMetric` (the
+/// headline "how far from setpoint", surfaced as `lastUtil`); `staleness_secs` is the
+/// driving sample age; `dry_run`/`policy` are the effective tick mode. Conditions +
+/// counters + cooldown-remaining + history are built exactly as the vertical path.
+#[must_use]
+#[allow(clippy::too_many_arguments)]
+pub fn replica_status_for(
+    receipt: &ReplicaReceipt,
+    metric_ratio: f64,
+    staleness_secs: u64,
+    dry_run: bool,
+    policy: DisruptionPolicy,
+    prior: Option<&BandStatus>,
+    cooldown_seconds: u64,
+    generation: Option<i64>,
+    counters: CumulativeCounters,
+) -> BandStatus {
+    let mut s = BandStatus::default();
+    s.effective_dry_run = Some(dry_run);
+    s.effective_policy = Some(policy_str(policy));
+    s.freshness_seconds = Some(staleness_secs as i64);
+    if metric_ratio.is_finite() {
+        // the metric ratio IS the horizontal "utilization" (1.0 == on setpoint).
+        s.observed_util = Some(metric_ratio);
+        s.last_util = Some(format!("{:.0}%", metric_ratio * 100.0));
+    }
+
+    // Observability booleans — the SAME five the vertical `conditions_for` derives.
+    // Every rendered receipt is observable (Ready=True); a pre-observe error takes
+    // the `error_status` path, not this one.
+    let mut converged = false;
+    let mut throttled = false;
+    let mut stale_c = false;
+    let mut conflict_c = false;
+
+    match receipt {
+        ReplicaReceipt::Applied { from, to } => {
+            let growing = to > from;
+            s.phase = Some(if growing { "Growing" } else { "Shrinking" }.into());
+            s.current_limit = Some(to.to_string());
+            s.observed_used = Some(i64::from(*to));
+            s.last_decision =
+                Some(format!("{from} -> {to} replicas ({})", if growing { "scale-out" } else { "scale-in" }));
+            s.last_action_class = Some(if growing { "RestartFree" } else { "RestartRequiring" }.into());
+            s.last_change_epoch = Some(now_secs());
+        }
+        ReplicaReceipt::ShadowWouldApply { from, to } => {
+            s.phase = Some("ShadowWouldApply".into());
+            s.current_limit = Some(from.to_string()); // shadow mutates nothing
+            s.observed_used = Some(i64::from(*from));
+            s.last_decision = Some(format!("shadow: would scale {from} -> {to} replicas (dryRun — nothing written)"));
+        }
+        ReplicaReceipt::DeferredScaleIn { from, to } => {
+            s.phase = Some("DeferredWouldRestart".into());
+            s.current_limit = Some(from.to_string()); // the crossing was refused
+            s.observed_used = Some(i64::from(*from));
+            s.last_decision = Some(format!(
+                "{from} -> {to} deferred: a scale-in sheds a pod (RestartRequiring) blocked by DisruptionPolicy (set allowRestart to permit)"
+            ));
+            s.last_action_class = Some("RestartRequiring".into());
+            throttled = true;
+        }
+        ReplicaReceipt::Cooldown { from, to } => {
+            s.phase = Some("Cooldown".into());
+            s.current_limit = Some(from.to_string());
+            s.observed_used = Some(i64::from(*from));
+            s.last_decision = Some(format!("cooling down after a carve (would scale {from} -> {to})"));
+            throttled = true;
+        }
+        ReplicaReceipt::Observed { decision } => {
+            let current = decision.current();
+            let (phase, note) = match decision {
+                ReplicaDecision::Hold { .. } => ("Holding", format!("within band — held at {current} replicas")),
+                ReplicaDecision::AtFloor { .. } => ("AtFloor", format!("at HA floor {current} — no safe scale-in")),
+                ReplicaDecision::AtCeiling { .. } => ("AtCeiling", format!("at ceiling {current} — would scale out")),
+                // a carve routed through Observed only defensively (resolve covers the
+                // real cases above); keep exhaustive, never panic.
+                other => ("Observed", other.to_string()),
+            };
+            s.phase = Some(phase.into());
+            s.last_decision = Some(note);
+            s.current_limit = Some(current.to_string());
+            s.observed_used = Some(i64::from(current));
+            // a resting horizontal decision is at rest → Converged.
+            converged = matches!(
+                decision,
+                ReplicaDecision::Hold { .. } | ReplicaDecision::AtFloor { .. } | ReplicaDecision::AtCeiling { .. }
+            );
+        }
+        ReplicaReceipt::Stale { staleness_secs, current } => {
+            s.phase = Some("Stale".into());
+            s.current_limit = Some(current.to_string());
+            s.observed_used = Some(i64::from(*current));
+            s.last_decision = Some(format!("metric {staleness_secs}s stale — held (never scale on a stale sample)"));
+            stale_c = true;
+            throttled = true;
+        }
+        ReplicaReceipt::Conflict { current } => {
+            s.phase = Some("Conflict".into());
+            s.current_limit = Some(current.to_string());
+            s.observed_used = Some(i64::from(*current));
+            s.last_decision =
+                Some("yielded .spec.replicas to a competing writer (KEDA/HPA) — will re-observe".into());
+            conflict_c = true;
+        }
+    }
+
+    // ── conditions: the SAME five the vertical path derives (so the confirm gate +
+    //    `kubectl wait` behave identically). ────────────────────────────────────
+    let now = now_rfc3339();
+    let prior_conds = prior.map_or(&[][..], |p| p.conditions.as_slice());
+    let mut conds = Vec::with_capacity(5);
+    upsert_condition(&mut conds, prior_conds, &now, "Ready", true, "Reconciling", "enrolled, config parses, signal observable", generation);
+    upsert_condition(&mut conds, prior_conds, &now, "Converged", converged,
+        if converged { "WithinBand" } else { "Adjusting" },
+        if converged { "replica count is within the deadband" } else { "scaling/waiting toward the setpoint" }, generation);
+    upsert_condition(&mut conds, prior_conds, &now, "Throttled", throttled,
+        if throttled { "Throttled" } else { "Free" }, "in cooldown / deferred scale-in / stale metric", generation);
+    upsert_condition(&mut conds, prior_conds, &now, "Stale", stale_c,
+        if stale_c { "StaleMetric" } else { "Fresh" }, "driving metric sample age vs maxStaleness", generation);
+    upsert_condition(&mut conds, prior_conds, &now, "Conflict", conflict_c,
+        if conflict_c { "FieldOwnedElsewhere" } else { "SoleWriter" }, "single-writer guard", generation);
+    s.conditions = conds;
+
+    // ── counters (projection), cooldown remaining, observedGeneration, history —
+    //    identical tail to `status_for`. ─────────────────────────────────────────
+    s.carves_total = Some(counters.carves);
+    s.deferrals_total = Some(counters.deferrals);
+    s.conflicts_total = Some(counters.conflicts);
+    let last_carve = s.last_change_epoch.or_else(|| prior.and_then(|p| p.last_change_epoch)).unwrap_or(0);
+    s.cooldown_remaining_seconds = Some((last_carve + cooldown_seconds as i64 - now_secs()).max(0));
+    s.observed_generation = generation;
+
+    const HISTORY_MAX: usize = 16;
+    let phase_changed = prior.and_then(|p| p.phase.as_deref()) != s.phase.as_deref();
+    let carved = matches!(receipt, ReplicaReceipt::Applied { .. });
+    let mut history = prior.map_or_else(Vec::new, |p| p.history.clone());
+    if carved || phase_changed {
+        history.push(TrendSample {
+            time: now_rfc3339(),
+            util: s.observed_util,
+            limit: s.current_limit.as_deref().and_then(|l| l.parse().ok()),
+            phase: s.phase.clone().unwrap_or_default(),
+            decision: s.last_decision.clone(),
+        });
+        if history.len() > HISTORY_MAX {
+            history.drain(0..history.len() - HISTORY_MAX);
+        }
+    }
+    s.history = history;
+    s
+}
+
+/// Classify a horizontal receipt into a [`DecisionEntry`] — the `ReplicaBand` peer of
+/// [`entry_for`], so the cumulative carve/deferral/conflict fold is driven the SAME
+/// way for the horizontal path. Applied ⇒ carve, `DeferredScaleIn` ⇒ deferral,
+/// Conflict ⇒ conflict, else no count.
+#[must_use]
+pub fn replica_entry_for(receipt: &ReplicaReceipt, dry_run: bool) -> DecisionEntry {
+    let (from_limit, to_limit) = match receipt {
+        ReplicaReceipt::Applied { from, to }
+        | ReplicaReceipt::ShadowWouldApply { from, to }
+        | ReplicaReceipt::DeferredScaleIn { from, to }
+        | ReplicaReceipt::Cooldown { from, to } => (Some(u64::from(*from)), Some(u64::from(*to))),
+        _ => (None, None),
+    };
+    let class = match receipt {
+        ReplicaReceipt::Applied { .. } => CounterClass::Carve,
+        ReplicaReceipt::DeferredScaleIn { .. } => CounterClass::Deferral,
+        ReplicaReceipt::Conflict { .. } => CounterClass::Conflict,
+        _ => CounterClass::NoCount,
+    };
+    DecisionEntry { receipt_kind: receipt.kind_str().to_string(), class, from_limit, to_limit, dry_run }
+}
+
+/// The next-tick requeue for the horizontal path, keyed on the receipt — the peer of
+/// [`next_requeue`]. A carve/shadow re-ticks at the fast RestartFree cadence (track
+/// the live band); a deferred scale-in backs off by the RestartRequiring class;
+/// everything else takes the mid window.
+#[must_use]
+pub fn replica_next_requeue(receipt: &ReplicaReceipt, cooldowns: &ClassCooldowns) -> Duration {
+    let secs = match receipt {
+        ReplicaReceipt::Applied { .. } | ReplicaReceipt::ShadowWouldApply { .. } => cooldowns.restart_free,
+        ReplicaReceipt::DeferredScaleIn { .. } => cooldowns.restart_requiring,
+        ReplicaReceipt::Observed { .. }
+        | ReplicaReceipt::Cooldown { .. }
+        | ReplicaReceipt::Stale { .. }
+        | ReplicaReceipt::Conflict { .. } => cooldowns.restart_conditional,
+    };
+    Duration::from_secs(secs)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -827,5 +1109,114 @@ mod tests {
         // never counts as a carve / deferral / conflict.
         assert_eq!(s.carves_total, Some(0));
         assert_eq!(s.deferrals_total, Some(0));
+    }
+}
+
+#[cfg(test)]
+mod replica_tests {
+    use super::*;
+    use breathe_control::replica::{ReplicaDecision, ReplicaTickPlan};
+
+    fn plan(decision: ReplicaDecision, actuate: Option<u32>, deferred: bool) -> ReplicaTickPlan {
+        ReplicaTickPlan { decision, actuate, deferred }
+    }
+
+    #[test]
+    fn resolve_precedence_conflict_applied_deferred_shadow_cooldown() {
+        let d = ReplicaDecision::ScaleUp { from: 4, to: 5 };
+        // conflict wins even if applied was attempted.
+        assert_eq!(
+            ReplicaReceipt::resolve(&plan(d, Some(5), false), true, true, false, false),
+            ReplicaReceipt::Conflict { current: 4 }
+        );
+        // applied.
+        assert_eq!(
+            ReplicaReceipt::resolve(&plan(d, Some(5), false), true, false, false, false),
+            ReplicaReceipt::Applied { from: 4, to: 5 }
+        );
+        // deferred scale-in.
+        let din = ReplicaDecision::ScaleDown { from: 10, to: 9 };
+        assert_eq!(
+            ReplicaReceipt::resolve(&plan(din, None, true), false, false, false, false),
+            ReplicaReceipt::DeferredScaleIn { from: 10, to: 9 }
+        );
+        // shadow (would carve, dry_run).
+        assert_eq!(
+            ReplicaReceipt::resolve(&plan(d, None, false), false, false, true, false),
+            ReplicaReceipt::ShadowWouldApply { from: 4, to: 5 }
+        );
+        // cooldown (would carve, live, in cooldown).
+        assert_eq!(
+            ReplicaReceipt::resolve(&plan(d, None, false), false, false, false, true),
+            ReplicaReceipt::Cooldown { from: 4, to: 5 }
+        );
+        // resting → Observed.
+        let hold = ReplicaDecision::Hold { current: 3 };
+        assert_eq!(
+            ReplicaReceipt::resolve(&plan(hold, None, false), false, false, false, false),
+            ReplicaReceipt::Observed { decision: hold }
+        );
+    }
+
+    #[test]
+    fn applied_status_reports_growing_and_stamps_a_carve() {
+        let r = ReplicaReceipt::Applied { from: 4, to: 6 };
+        let s = replica_status_for(&r, 1.3, 0, false, DisruptionPolicy::AllowRestart, None, 60, Some(2), CumulativeCounters::default());
+        assert_eq!(s.phase.as_deref(), Some("Growing"));
+        assert_eq!(s.current_limit.as_deref(), Some("6"));
+        assert_eq!(s.last_action_class.as_deref(), Some("RestartFree"));
+        assert!(s.last_change_epoch.is_some(), "an applied carve stamps the change epoch");
+        assert_eq!(s.observed_generation, Some(2));
+        // Ready=True so kubectl wait / the confirm gate see an observable band.
+        assert_eq!(s.conditions.iter().find(|c| c.type_ == "Ready").map(|c| c.status.as_str()), Some("True"));
+    }
+
+    #[test]
+    fn holding_status_is_confirm_gate_passable() {
+        // A resting Holding tick must present exactly the shape the ShadowConfirmEffect
+        // confirm gate keys on: Ready=True ∧ Stale=False ∧ Conflict=False.
+        let r = ReplicaReceipt::Observed { decision: ReplicaDecision::Hold { current: 3 } };
+        let s = replica_status_for(&r, 1.0, 0, true, DisruptionPolicy::RestartFreeOnly, None, 60, None, CumulativeCounters::default());
+        assert_eq!(s.phase.as_deref(), Some("Holding"));
+        let cond = |t: &str| s.conditions.iter().find(|c| c.type_ == t).map(|c| c.status.as_str());
+        assert_eq!(cond("Ready"), Some("True"));
+        assert_eq!(cond("Converged"), Some("True"));
+        assert_eq!(cond("Stale"), Some("False"));
+        assert_eq!(cond("Conflict"), Some("False"));
+        assert_eq!(s.effective_dry_run, Some(true));
+    }
+
+    #[test]
+    fn stale_status_holds_and_marks_stale() {
+        let r = ReplicaReceipt::Stale { staleness_secs: 120, current: 4 };
+        let s = replica_status_for(&r, 1.0, 120, false, DisruptionPolicy::AllowRestart, None, 60, None, CumulativeCounters::default());
+        assert_eq!(s.phase.as_deref(), Some("Stale"));
+        assert_eq!(s.current_limit.as_deref(), Some("4"), "a stale tick reports the live count, unchanged");
+        assert_eq!(s.conditions.iter().find(|c| c.type_ == "Stale").map(|c| c.status.as_str()), Some("True"));
+    }
+
+    #[test]
+    fn deferred_scale_in_reports_deferred_would_restart() {
+        let r = ReplicaReceipt::DeferredScaleIn { from: 10, to: 9 };
+        let s = replica_status_for(&r, 0.5, 0, false, DisruptionPolicy::RestartFreeOnly, None, 60, None, CumulativeCounters::default());
+        assert_eq!(s.phase.as_deref(), Some("DeferredWouldRestart"));
+        assert_eq!(s.current_limit.as_deref(), Some("10"), "the crossing was refused — count unchanged");
+        assert_eq!(s.conditions.iter().find(|c| c.type_ == "Throttled").map(|c| c.status.as_str()), Some("True"));
+    }
+
+    #[test]
+    fn entry_for_maps_receipts_to_counter_classes() {
+        assert_eq!(replica_entry_for(&ReplicaReceipt::Applied { from: 2, to: 3 }, false).class, CounterClass::Carve);
+        assert_eq!(replica_entry_for(&ReplicaReceipt::DeferredScaleIn { from: 3, to: 2 }, false).class, CounterClass::Deferral);
+        assert_eq!(replica_entry_for(&ReplicaReceipt::Conflict { current: 3 }, false).class, CounterClass::Conflict);
+        assert_eq!(replica_entry_for(&ReplicaReceipt::Stale { staleness_secs: 1, current: 3 }, false).class, CounterClass::NoCount);
+    }
+
+    #[test]
+    fn next_requeue_is_fast_for_carves_and_backs_off_a_deferral() {
+        let cd = ClassCooldowns::default();
+        assert_eq!(replica_next_requeue(&ReplicaReceipt::Applied { from: 2, to: 3 }, &cd), Duration::from_secs(cd.restart_free));
+        assert_eq!(replica_next_requeue(&ReplicaReceipt::DeferredScaleIn { from: 3, to: 2 }, &cd), Duration::from_secs(cd.restart_requiring));
+        assert_eq!(replica_next_requeue(&ReplicaReceipt::Stale { staleness_secs: 9, current: 2 }, &cd), Duration::from_secs(cd.restart_conditional));
     }
 }

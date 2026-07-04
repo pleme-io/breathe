@@ -17,11 +17,13 @@ mod node_forma;
 mod kube_param;
 mod quinhao;
 mod pod_memory_high;
+mod replica_band;
 
 use breathe_core::{reconcile_one, PredictiveInput, ReconcileInput};
 use breathe_crd::{
     AppBand, ArcBand, Band, BandSummary, BreatheCloudPool, BreatheConfig, BreatheConfigSpec, BreatheOverview,
-    CgroupBand, CgroupCpuBand, CpuBand, Densa, KubeParamBand, MemoryBand, OverviewStatus, QuinhaoPool, StorageBand,
+    CgroupBand, CgroupCpuBand, CpuBand, Densa, KubeParamBand, MemoryBand, OverviewStatus, QuinhaoPool, ReplicaBand,
+    StorageBand,
 };
 use breathe_dimensions::{CpuDescriptor, MemoryDescriptor, StorageDescriptor};
 use breathe_kube::KubeCluster;
@@ -546,6 +548,7 @@ async fn reconcile_overview(obj: Arc<BreatheOverview>, ctx: Arc<Ctx>) -> Result<
     summarize::<MemoryBand>(&ctx.client, "MemoryBand", &mut bands).await;
     summarize::<CpuBand>(&ctx.client, "CpuBand", &mut bands).await;
     summarize::<StorageBand>(&ctx.client, "StorageBand", &mut bands).await;
+    summarize::<ReplicaBand>(&ctx.client, "ReplicaBand", &mut bands).await;
     summarize::<ArcBand>(&ctx.client, "ArcBand", &mut bands).await;
     summarize::<CgroupBand>(&ctx.client, "CgroupBand", &mut bands).await;
     summarize::<CgroupCpuBand>(&ctx.client, "CgroupCpuBand", &mut bands).await;
@@ -810,7 +813,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .run(app_band::reconcile_app_band, app_band::error_policy_app_band, ctx.clone())
         .for_each(|_| async {});
 
-    tokio::join!(mem, cpu, sto, overview, cloud_pools, kube_params, quinhao_pools, app_bands);
+    // The HORIZONTAL band — ReplicaBand holds a workload's `.spec.replicas` at a
+    // work-rate band via the horizontal band law (`plan_replica_tick`), NOT the
+    // vertical decide loop, but rides the SAME shadow→confirm→effect gate + the SAME
+    // `.spec.replicas` SSA actuator + the SAME status machinery. Additive; every other
+    // reconcile is untouched.
+    let replica_bands = gen_controller!(Api::<ReplicaBand>::all(client.clone()))
+        .run(replica_band::reconcile_replica_band, replica_band::error_policy_replica_band, ctx.clone())
+        .for_each(|_| async {});
+
+    tokio::join!(mem, cpu, sto, overview, cloud_pools, kube_params, quinhao_pools, app_bands, replica_bands);
     Ok(())
 }
 
