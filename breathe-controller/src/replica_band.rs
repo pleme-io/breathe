@@ -66,8 +66,12 @@ pub async fn reconcile_replica_band(obj: Arc<ReplicaBand>, ctx: Arc<Ctx>) -> Res
     };
 
     // parse-time gate: a malformed band is a typed error status, never a silent scale.
+    // validate_for_target also enforces the topology ↔ target-kind coupling — a
+    // stateful topology (Persistent/MasterSlave/FullyDistributed) on a non-StatefulSet
+    // target is REFUSED here (a Deployment scale-down removes an arbitrary pod, so the
+    // ordinal-drain + never-scale-the-primary-away invariants can't hold).
     let cfg = obj.spec.replica_band_config();
-    if let Err(e) = cfg.validate() {
+    if let Err(e) = cfg.validate_for_target(&tr.kind) {
         patch_status::<ReplicaBand>(&ctx.client, &ns, &name, &error_status(e.to_string())).await?;
         return Ok(Action::requeue(ctx.requeue));
     }

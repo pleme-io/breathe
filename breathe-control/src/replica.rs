@@ -131,6 +131,16 @@ pub const MAX_REPLICAS: u32 = 100_000;
 /// [`ReplicaBandConfig::ha_floor`] to 3.
 pub const DEFAULT_FLOOR: u32 = 2;
 
+/// The k8s `kind` a STATEFUL topology REQUIRES as its target. Ordinal removal
+/// (the workload controller drains the HIGHEST ordinal first) + PVC-per-replica
+/// semantics — the two properties every stateful topology invariant rests on
+/// ("primary = ordinal-0", "never scale the primary away", the Persistent
+/// ordinal-drain) — hold ONLY on a StatefulSet. A Deployment scales down an
+/// ARBITRARY pod (possibly the primary / an un-drained ordinal), so a stateful
+/// band pointed at one is refused at the config/admission gate
+/// ([`ReplicaBandConfig::validate_for_target`]).
+pub const STATEFULSET_KIND: &str = "StatefulSet";
+
 /// A quorum size that is **provably odd and ≥ 3** — the resting membership of a
 /// consensus/Raft set. The field is private and the only constructors round to a
 /// legal rung, so an even count and a sub-3 count are *unconstructible*: no
@@ -288,6 +298,26 @@ impl Topology {
             _ => to,
         }
     }
+
+    /// `true` when this topology REQUIRES a StatefulSet target (see
+    /// [`STATEFULSET_KIND`]). The three STATEFUL arms — `Persistent` (PVC-per-
+    /// ordinal drain), `MasterSlave` (primary = ordinal-0, never scaled away),
+    /// `FullyDistributed` (ordinal-stable quorum membership) — all lean on
+    /// StatefulSet ordinal semantics; `NonPersistent` (interchangeable pods) does
+    /// not, so it scales on a Deployment OR a StatefulSet. The [topology ↔
+    /// target-kind] coupling gate ([`ReplicaBandConfig::validate_for_target`]) reads
+    /// this: a `true` here plus a non-StatefulSet target is a parse-time refusal.
+    #[must_use]
+    pub fn requires_statefulset(self) -> bool {
+        !matches!(self, Self::NonPersistent)
+    }
+
+    /// Every topology kind's stable [`Self::as_str`] label — the axis the catalog +
+    /// CRD reflection cross-checks against (CATALOG REFLECTION: a new arm cannot be
+    /// added to this enum without the catalog row + CRD kind agreeing). Kept in sync
+    /// with [`Self::as_str`] by `all_labels_match_as_str` in this crate's tests.
+    pub const ALL_LABELS: [&'static str; 4] =
+        ["non-persistent", "persistent", "master-slave", "fully-distributed"];
 }
 
 /// The typed HORIZONTAL band configuration — the replica peer of
@@ -370,6 +400,15 @@ pub enum ReplicaError {
     /// exceeds the ceiling, or a required parameter is zero. Rejected at the config
     /// gate before any decision runs (★★ UNREPRESENTABILITY: parse-time-rejected).
     TopologyUnsatisfiable(&'static str),
+    /// A STATEFUL [`Topology`] (`Persistent` / `MasterSlave` / `FullyDistributed`)
+    /// is bound to a target whose `kind` is not [`STATEFULSET_KIND`]. The stateful
+    /// invariants ("primary = ordinal-0, never scaled away", the ordinal-drain, the
+    /// ordinal-stable quorum) hold ONLY on a StatefulSet; a Deployment scale-down
+    /// removes an ARBITRARY pod (possibly the primary / an un-drained ordinal), so
+    /// the mismatch is refused at the config/admission gate — the topology ↔
+    /// target-kind coupling (★★ UNREPRESENTABILITY: parse-time-rejected). The field
+    /// is the offending topology's [`Topology::as_str`] label.
+    TopologyTargetMismatch(&'static str),
 }
 
 impl std::fmt::Display for ReplicaError {
@@ -381,6 +420,11 @@ impl std::fmt::Display for ReplicaError {
             Self::BadSignal => f.write_str("signal value must be finite and ≥ 0"),
             Self::Unreadable(what) => write!(f, "environment could not read {what}"),
             Self::TopologyUnsatisfiable(what) => write!(f, "topology invariant unsatisfiable: {what}"),
+            Self::TopologyTargetMismatch(topo) => write!(
+                f,
+                "topology '{topo}' requires targetRef.kind = {STATEFULSET_KIND} \
+                 (ordinal-drain + PVC-per-replica semantics); a non-StatefulSet target is refused"
+            ),
         }
     }
 }
@@ -457,6 +501,32 @@ impl ReplicaBandConfig {
                     return Err(ReplicaError::TopologyUnsatisfiable("quorum ceiling must be ≥ 3"));
                 }
             }
+        }
+        Ok(())
+    }
+
+    /// Parse-time validation INCLUDING the **topology ↔ target-kind coupling**: the
+    /// numeric [`Self::validate`] gate (reused, never forked), then a refusal of a
+    /// STATEFUL topology (`Persistent` / `MasterSlave` / `FullyDistributed`) bound to
+    /// a target whose `kind` is not [`STATEFULSET_KIND`]. `NonPersistent`
+    /// (interchangeable pods) is allowed on ANY workload kind. Matching is
+    /// ASCII-case-insensitive so `statefulset`/`StatefulSet` both pass.
+    ///
+    /// This is where the "never scale the primary away" + Persistent ordinal-drain
+    /// conventions become ENFORCED rather than assumed: a Deployment removes an
+    /// arbitrary pod on scale-down, so only a StatefulSet (highest-ordinal-first
+    /// removal + PVC-per-replica) makes the stateful invariants hold. The band's
+    /// `targetRef.kind` lives on the CRD, so this is the gate the CRD/admission path
+    /// calls (the control-layer numeric [`Self::validate`] alone cannot see the kind).
+    ///
+    /// # Errors
+    /// Every [`Self::validate`] error, plus [`ReplicaError::TopologyTargetMismatch`]
+    /// when a stateful topology targets a non-StatefulSet kind (★★ UNREPRESENTABILITY:
+    /// parse-time-rejected — a mismatch never reaches a scaling decision).
+    pub fn validate_for_target(&self, target_kind: &str) -> Result<(), ReplicaError> {
+        self.validate()?;
+        if self.topology.requires_statefulset() && !target_kind.eq_ignore_ascii_case(STATEFULSET_KIND) {
+            return Err(ReplicaError::TopologyTargetMismatch(self.topology.as_str()));
         }
         Ok(())
     }
@@ -1509,5 +1579,95 @@ mod tests {
         let penv = MockReplicaEnvironment { current_replicas: 5, signal_value: 0.5, ..Default::default() };
         let pf = plan_replica_tick(&p, &penv, ReplicaGate { force: Some(1), ..gate(false, false, true) }).expect("plans");
         assert_eq!(pf.actuate, Some(3), "a forced sub-factor count is floored at the replication factor");
+    }
+
+    // ── topology ↔ target-kind coupling (the stateful-needs-StatefulSet gate) ─────
+
+    #[test]
+    fn stateful_topologies_require_a_statefulset_target() {
+        // Persistent / MasterSlave / FullyDistributed on a Deployment are REFUSED —
+        // ordinal-drain + PVC-per-replica semantics don't hold on a Deployment (a
+        // scale-down there removes an arbitrary pod, possibly the primary).
+        let persistent = ReplicaBandConfig {
+            topology: Topology::Persistent { replication_factor: 3 },
+            ceiling: 10,
+            ..Default::default()
+        };
+        assert_eq!(
+            persistent.validate_for_target("Deployment"),
+            Err(ReplicaError::TopologyTargetMismatch("persistent"))
+        );
+        let master = ReplicaBandConfig {
+            topology: Topology::MasterSlave { primaries: 1 },
+            ceiling: 8,
+            ..Default::default()
+        };
+        assert_eq!(
+            master.validate_for_target("Deployment"),
+            Err(ReplicaError::TopologyTargetMismatch("master-slave"))
+        );
+        let quorum = ReplicaBandConfig { topology: Topology::FullyDistributed, ceiling: 9, ..Default::default() };
+        assert_eq!(
+            quorum.validate_for_target("Deployment"),
+            Err(ReplicaError::TopologyTargetMismatch("fully-distributed"))
+        );
+
+        // …but each validates on a StatefulSet target (case-insensitive kind match).
+        assert_eq!(persistent.validate_for_target("StatefulSet"), Ok(()));
+        assert_eq!(master.validate_for_target("StatefulSet"), Ok(()));
+        assert_eq!(quorum.validate_for_target("StatefulSet"), Ok(()));
+        assert_eq!(quorum.validate_for_target("statefulset"), Ok(()), "kind match is ASCII-case-insensitive");
+    }
+
+    #[test]
+    fn non_persistent_topology_validates_on_any_workload_kind() {
+        // Stateless pods are interchangeable — a NonPersistent band is legal on a
+        // Deployment OR a StatefulSet OR an owner-less pod group.
+        let c = ReplicaBandConfig { topology: Topology::NonPersistent, ceiling: 50, ..Default::default() };
+        assert_eq!(c.validate_for_target("Deployment"), Ok(()));
+        assert_eq!(c.validate_for_target("StatefulSet"), Ok(()));
+        assert_eq!(c.validate_for_target("Pod"), Ok(()));
+    }
+
+    #[test]
+    fn validate_for_target_still_enforces_the_numeric_gate_first() {
+        // The coupling gate REUSES validate(): a numerically-broken band fails on the
+        // numeric error even on a StatefulSet, before the kind is ever considered.
+        let empty = ReplicaBandConfig {
+            topology: Topology::Persistent { replication_factor: 2 },
+            floor: 9,
+            ceiling: 3,
+            ..Default::default()
+        };
+        assert_eq!(empty.validate_for_target("StatefulSet"), Err(ReplicaError::EmptyRange));
+    }
+
+    #[test]
+    fn only_stateful_topologies_require_statefulset() {
+        assert!(!Topology::NonPersistent.requires_statefulset());
+        assert!(Topology::Persistent { replication_factor: 1 }.requires_statefulset());
+        assert!(Topology::MasterSlave { primaries: 1 }.requires_statefulset());
+        assert!(Topology::FullyDistributed.requires_statefulset());
+    }
+
+    #[test]
+    fn all_labels_match_as_str() {
+        // ALL_LABELS is the reflection axis the catalog + CRD cross-check; it must
+        // stay a bijection with the four Topology arms' as_str().
+        let arms = [
+            Topology::NonPersistent,
+            Topology::Persistent { replication_factor: 1 },
+            Topology::MasterSlave { primaries: 1 },
+            Topology::FullyDistributed,
+        ];
+        assert_eq!(arms.len(), Topology::ALL_LABELS.len());
+        for a in arms {
+            assert!(Topology::ALL_LABELS.contains(&a.as_str()), "as_str {} missing from ALL_LABELS", a.as_str());
+        }
+        // and no duplicates / stray labels.
+        let mut seen = Topology::ALL_LABELS.to_vec();
+        seen.sort_unstable();
+        seen.dedup();
+        assert_eq!(seen.len(), 4, "ALL_LABELS has a duplicate or stray label");
     }
 }
