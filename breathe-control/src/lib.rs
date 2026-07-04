@@ -27,6 +27,12 @@
 /// band law it refines.
 pub mod lapidar;
 
+/// `replica` — the HORIZONTAL band law: how many replicas a workload should run
+/// given a work-rate signal, held in a typed count band with asymmetric anti-flap,
+/// an HA floor, and spot-reclaim-driven scale-OUT. The horizontal peer of the
+/// vertical [`decide`] limit law; pure + mockable (the TYPED-SPEC triplet).
+pub mod replica;
+
 /// Tunable band/step policy. Every knob is config-driven (a `MemoryBand` CR's
 /// spec → the watcher's args). Defaults encode the 80/20 setpoint with a
 /// What a band does when its working-set reading is UNTRUSTED — a `0` reading

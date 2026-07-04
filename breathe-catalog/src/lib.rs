@@ -144,12 +144,21 @@ pub const CATALOG: &[DimensionSpec] = &[
         id: DimensionId::Replica,
         name: "replica",
         authoring_keyword: "defdimension-replica",
-        maturity: Maturity::Informational,
-        directionality: Directionality::ObserveOnly,
-        resource_class: ResourceClass::Soft, // scaling is recoverable; never mutated anyway
-        suppressed_demand: SuppressedDemand::NotApplicable,
-        purpose: "observe replica count; compose with KEDA via disjoint fields (never write)",
-        upstream_mirror: Some("KEDA ScaledObject"),
+        maturity: Maturity::Working,
+        // HORIZONTAL: scale the workload's `.spec.replicas` both ways on a
+        // work-rate signal (breathe_control::replica). Composes with the vertical
+        // bands (a pod is right-SIZED and right-COUNTED) over a DISJOINT field, so
+        // a co-writing KEDA/HPA is a cooperative-yield 409, never a fight.
+        directionality: Directionality::Bidirectional,
+        resource_class: ResourceClass::Soft, // scaling is recoverable (a throttle/queue, never an OOM)
+        // The work-rate signal (queue depth / request rate / per-replica util) is
+        // NOT hard-capped by the replica count — when under-provisioned it keeps
+        // rising ABOVE the per-replica target, so suppressed demand is visible in
+        // the primary signal path (no separate throttle read), the same shape as
+        // memory's over-soft-limit spike.
+        suppressed_demand: SuppressedDemand::WorkingSetExceedsSoftLimit,
+        purpose: "hold a workload's replica COUNT at a work-rate band by carving spec.replicas (HPA ratio + asymmetric anti-flap + HA floor + spot scale-OUT); disjoint field ⇒ composes with KEDA/HPA",
+        upstream_mirror: Some("k8s Deployment/StatefulSet spec.replicas (HPA/KEDA peer)"),
         depends_on: &[],
     },
     // ── HOST dimensions (the HostCluster boundary; ride within nodeBudget L2) ──
@@ -308,6 +317,7 @@ pub const ACTIONS: &[ActionSpec] = &[
     ActionSpec { name: "pod-memory-grow",    knob: "pods/resize memory↑",  plane: Plane::Pod,  class: RestartFree, tickable: true, note: "in-place; a memory GROW never restarts" },
     ActionSpec { name: "pvc-expand",         knob: "CSI ExpandVolume",     plane: Plane::Pvc,  class: RestartFree, tickable: true, note: "online grow-only; no remount" },
     ActionSpec { name: "node-add",           knob: "NodePool/Karpenter",   plane: Plane::Node, class: RestartFree, tickable: true, note: "EXPLOIT (K2): grow the envelope; existing pods undisturbed" },
+    ActionSpec { name: "replica-scale-up",   knob: "spec.replicas ↑",      plane: Plane::Workload, class: RestartFree, tickable: true, note: "HORIZONTAL scale-OUT: adds a pod; every survivor is undisturbed (the retirada pre-drain path)" },
 
     // ── RESTART-CONDITIONAL — restart-gated in one direction ───────────────────
     ActionSpec { name: "pod-memory-shrink",  knob: "pods/resize memory↓",  plane: Plane::Pod,  class: RestartConditional, tickable: true, note: "in-place iff resizePolicy memory == NotRequired, else restarts" },
@@ -412,13 +422,14 @@ mod tests {
     }
 
     /// The directionality recorded in the catalog must match each provider's
-    /// contract (memory/cpu bidirectional, storage grow-only, replica observe-only).
+    /// contract (memory/cpu/replica bidirectional, storage grow-only).
     #[test]
     fn directionality_matches_dimension_semantics() {
         assert_eq!(lookup(DimensionId::Memory).unwrap().directionality, Directionality::Bidirectional);
         assert_eq!(lookup(DimensionId::Storage).unwrap().directionality, Directionality::GrowOnly);
         assert_eq!(lookup(DimensionId::Cpu).unwrap().directionality, Directionality::Bidirectional);
-        assert_eq!(lookup(DimensionId::Replica).unwrap().directionality, Directionality::ObserveOnly);
+        // Replica is now a first-class HORIZONTAL carve (scales spec.replicas both ways).
+        assert_eq!(lookup(DimensionId::Replica).unwrap().directionality, Directionality::Bidirectional);
         assert_eq!(lookup(DimensionId::Arc).unwrap().directionality, Directionality::Bidirectional);
         assert_eq!(lookup(DimensionId::Cgroup).unwrap().directionality, Directionality::Bidirectional);
     }

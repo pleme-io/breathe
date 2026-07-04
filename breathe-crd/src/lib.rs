@@ -19,8 +19,9 @@
 
 use std::collections::BTreeMap;
 
-use breathe_control::{BandConfig, Unit};
-use breathe_provider::DisruptionPolicy;
+use breathe_control::replica::{ReplicaBandConfig, ReplicaSignal};
+use breathe_control::{BandConfig, MetricMissingPolicy, Unit};
+use breathe_provider::{DisruptionPolicy, LimitLayout, MetricSource};
 use kube::CustomResource;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -1253,6 +1254,249 @@ impl crate::Band for AppBand {
     }
 }
 
+// ───────────── ReplicaBand — the HORIZONTAL band (workload replica count) ─────────────
+// The horizontal peer of the vertical MemoryBand/CpuBand: those hold a pod's
+// LIMIT at a utilization band; a ReplicaBand holds a workload's COUNT at a
+// work-rate band. It rides the SAME shadow→confirm→effect gate (the `Band` trait
+// default lifecycle) and the SAME SSA actuator (`LimitLayout::Replica` →
+// KubeCluster writes `.spec.replicas`), but its DECISION is the horizontal band
+// law (`breathe_control::replica::decide_replicas`: HPA ratio + asymmetric
+// anti-flap + HA floor + spot-reclaim scale-OUT), NOT the vertical `decide`. The
+// `used` signal is a PromQL (request-rate / queue-depth / utilization — never
+// memory, which does not shed with replicas). Floor defaults to 2 (HA).
+
+/// Which signal a [`ReplicaBand`] scales on (serde mirror of
+/// `breathe_control::replica::ReplicaSignal`). There is deliberately no `memory`
+/// arm — adding replicas does not reduce per-pod memory, so a memory-keyed
+/// horizontal signal runs away; the illegal signal is unrepresentable.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, JsonSchema, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub enum ReplicaSignalSpec {
+    /// A per-replica utilization RATIO vs its target (CPU% of request, concurrency
+    /// fraction). `desired = ceil(current × value/target)`.
+    #[default]
+    Utilization,
+    /// An ABSOLUTE total work rate (requests/sec). `desired = ceil(value/targetPerReplica)`.
+    RequestRate,
+    /// An ABSOLUTE backlog / queue depth (lag, pending). `desired = ceil(value/targetPerReplica)`.
+    QueueDepth,
+}
+
+impl ReplicaSignalSpec {
+    /// The control-layer signal this maps to.
+    #[must_use]
+    pub fn control(self) -> ReplicaSignal {
+        match self {
+            Self::Utilization => ReplicaSignal::Utilization,
+            Self::RequestRate => ReplicaSignal::RequestRate,
+            Self::QueueDepth => ReplicaSignal::QueueDepth,
+        }
+    }
+}
+
+/// The `used` signal for a [`ReplicaBand`] — a PromQL whose scalar is the driving
+/// work-rate metric (RPS, queue depth, per-replica utilization).
+#[derive(Serialize, Deserialize, Clone, Debug, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ReplicaMetricSpec {
+    pub prometheus: String,
+    /// An OPTIONAL PromQL whose scalar is the count of this workload's replicas
+    /// about to be lost to a pending node/spot reclaim (the `retirada` signal). A
+    /// non-zero value drives a pre-emptive scale-OUT before the doomed pods drain.
+    /// `None` ⇒ no spot-awareness (the reclaim count is always 0).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reclaim_prometheus: Option<String>,
+}
+
+#[derive(CustomResource, Serialize, Deserialize, Clone, Debug, JsonSchema)]
+#[kube(
+    group = "breathe.pleme.io",
+    version = "v1",
+    kind = "ReplicaBand",
+    namespaced,
+    status = "BandStatus",
+    shortname = "rband",
+    category = "breathe",
+    printcolumn = r#"{"name":"Target","type":"string","jsonPath":".spec.targetRef.kind"}"#,
+    printcolumn = r#"{"name":"Name","type":"string","jsonPath":".spec.targetRef.name"}"#,
+    printcolumn = r#"{"name":"Signal","type":"string","jsonPath":".spec.signal"}"#,
+    printcolumn = r#"{"name":"Replicas","type":"string","jsonPath":".status.currentLimit"}"#,
+    printcolumn = r#"{"name":"Last","type":"string","jsonPath":".status.lastDecision"}"#,
+    printcolumn = r#"{"name":"Phase","type":"string","jsonPath":".status.phase"}"#,
+    printcolumn = r#"{"name":"Ready","type":"string","jsonPath":".status.conditions[?(@.type=='Ready')].status"}"#
+)]
+#[serde(rename_all = "camelCase")]
+pub struct ReplicaBandSpec {
+    /// The workload whose `.spec.replicas` this band scales (`Deployment` /
+    /// `StatefulSet`).
+    pub target_ref: TargetRef,
+    /// Which signal drives scaling.
+    #[serde(default)]
+    pub signal: ReplicaSignalSpec,
+    /// Where to read the `used` signal (a PromQL) + the optional reclaim signal.
+    pub metric: ReplicaMetricSpec,
+    /// The setpoint: target per-replica utilization (`utilization`) or target work
+    /// PER replica (`requestRate` / `queueDepth`).
+    #[serde(default = "d_replica_target")]
+    pub target: f64,
+    /// The at-rest HA floor — never scale below this many replicas. Default 2 (a
+    /// single replica tolerates no disruption; floor 1 + a PDB blocks node drains).
+    #[serde(default = "d_replica_floor")]
+    pub floor: u32,
+    /// A stronger during-maintenance HA floor (e.g. 3) — survive one disruption
+    /// while still serving with 2. Effective floor = `max(floor, haFloor)`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ha_floor: Option<u32>,
+    /// Never scale above this many replicas (the L2 wall).
+    #[serde(default = "d_replica_ceiling")]
+    pub ceiling: u32,
+    /// SCALE-UP dead-band — scale up only when the metric ratio exceeds `1 + this`.
+    /// Small (react fast to spikes). Default 0.10.
+    #[serde(default = "d_replica_tol_up")]
+    pub tolerance_up: f64,
+    /// SCALE-DOWN dead-band — scale down only below `1 - this`. Large (resist
+    /// churn). Default 0.20.
+    #[serde(default = "d_replica_tol_down")]
+    pub tolerance_down: f64,
+    /// Velocity cap UP (percent of current per tick). Default 100%.
+    #[serde(default = "d_replica_up_pct")]
+    pub max_scale_up_pct: u32,
+    /// Velocity cap UP (absolute pods per tick). Default 4.
+    #[serde(default = "d_replica_up_pods")]
+    pub max_scale_up_pods: u32,
+    /// Velocity cap DOWN (percent of current per tick). Default 10%.
+    #[serde(default = "d_replica_down_pct")]
+    pub max_scale_down_pct: u32,
+    /// Velocity cap DOWN (absolute pods per tick). Default 1.
+    #[serde(default = "d_replica_down_pods")]
+    pub max_scale_down_pods: u32,
+    #[serde(default = "d_cooldown")]
+    pub cooldown_seconds: u64,
+    #[serde(default = "d_max_staleness")]
+    pub max_staleness_seconds: u64,
+    #[serde(default)]
+    pub dry_run: bool,
+    /// The PROMOTION LIFECYCLE (unset ⇒ the fleet default `ShadowConfirmEffect`:
+    /// shadow, then auto-promote once the clean-observation window proves it safe).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<PromotionMode>,
+    #[serde(default = "d_confirm_after")]
+    pub confirm_after_seconds: u64,
+    /// The golden/ceiling gate. Because a scale-IN sheds a pod (`RestartRequiring`),
+    /// the default `restartFreeOnly` scales OUT freely but GATES scale-in; set
+    /// `allowRestart` to let the band shed replicas (the usual autoscaler posture).
+    #[serde(default, skip_serializing_if = "breathe_provider::DisruptionPolicy::is_restart_free_only")]
+    pub disruption_policy: DisruptionPolicy,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub suspend: bool,
+    /// BREAK-GLASS: pin the replica count to exactly this value (still through the
+    /// gate + single-writer guard).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub force_limit: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub force_limit_expiry: Option<String>,
+}
+
+impl ReplicaBandSpec {
+    /// The typed horizontal band config the decision (`decide_replicas`) runs on.
+    #[must_use]
+    pub fn replica_band_config(&self) -> ReplicaBandConfig {
+        ReplicaBandConfig {
+            floor: self.floor,
+            ha_floor: self.ha_floor,
+            ceiling: self.ceiling,
+            signal: self.signal.control(),
+            target: self.target,
+            tolerance_up: self.tolerance_up,
+            tolerance_down: self.tolerance_down,
+            max_scale_up_pct: self.max_scale_up_pct,
+            max_scale_up_pods: self.max_scale_up_pods,
+            max_scale_down_pct: self.max_scale_down_pct,
+            max_scale_down_pods: self.max_scale_down_pods,
+        }
+    }
+    /// The typed actuator layout — SSA-write `.spec.replicas` on the owner kind.
+    #[must_use]
+    pub fn provider_layout(&self) -> LimitLayout {
+        LimitLayout::Replica { kind: self.target_ref.kind.clone() }
+    }
+    /// The provider-typed driving metric source (a PromQL).
+    #[must_use]
+    pub fn provider_metric(&self) -> MetricSource {
+        MetricSource::Prometheus(self.metric.prometheus.clone())
+    }
+    /// The provider-typed reclaim (spot) metric source, if spot-aware.
+    #[must_use]
+    pub fn provider_reclaim_metric(&self) -> Option<MetricSource> {
+        self.metric.reclaim_prometheus.clone().map(MetricSource::Prometheus)
+    }
+}
+
+impl crate::Band for ReplicaBand {
+    fn target_ref(&self) -> &TargetRef {
+        &self.spec.target_ref
+    }
+    /// The vertical `BandConfig` is provided ONLY so the ReplicaBand rides the same
+    /// `Band` gate (shadow/confirm/effect, force-limit, status) uniformly — the
+    /// horizontal DECISION uses [`ReplicaBandSpec::replica_band_config`], never this.
+    /// Counts live in the unit-blind floor/ceiling fields (`Unit::Count`), exactly
+    /// as `BreatheCloudPool` holds node counts. `Trust` metric policy: a replica
+    /// count of 0 is a real value, not a broken metric.
+    fn band_config(&self) -> anyhow::Result<BandConfig> {
+        let rc = self.spec.replica_band_config();
+        Ok(BandConfig {
+            grow_above: 0.85,
+            shrink_below: 0.70,
+            setpoint: 0.80,
+            grow_factor: 1.25,
+            shrink_factor: 0.90,
+            floor_bytes: u64::from(rc.effective_floor()),
+            ceiling_bytes: u64::from(rc.ceiling.max(rc.effective_floor())),
+            request_floor_bytes: 0,
+            warmup_seconds: 0,
+            metric_missing_policy: MetricMissingPolicy::Trust,
+        })
+    }
+    fn max_staleness_seconds(&self) -> u64 {
+        self.spec.max_staleness_seconds
+    }
+    fn cooldown_seconds(&self) -> u64 {
+        self.spec.cooldown_seconds
+    }
+    fn dry_run(&self) -> bool {
+        self.spec.dry_run
+    }
+    fn mode_spec(&self) -> Option<PromotionMode> {
+        self.spec.mode
+    }
+    fn confirm_after_seconds(&self) -> u64 {
+        self.spec.confirm_after_seconds
+    }
+    fn last_change_epoch(&self) -> Option<i64> {
+        self.status.as_ref().and_then(|s| s.last_change_epoch)
+    }
+    fn disruption_policy(&self) -> DisruptionPolicy {
+        self.spec.disruption_policy
+    }
+    fn suspended(&self) -> bool {
+        self.spec.suspend
+    }
+    fn force_limit_value(&self) -> Option<u64> {
+        self.spec.force_limit.as_deref().and_then(|q| Unit::Count.parse(q))
+    }
+    fn force_limit_expiry(&self) -> Option<&str> {
+        self.spec.force_limit_expiry.as_deref()
+    }
+    fn predictive(&self) -> Option<f64> {
+        // Predictive horizontal pre-scaling is a documented follow-on (shadow-first
+        // forecast that only raises the reactive floor); reactive today.
+        None
+    }
+    fn status(&self) -> Option<&BandStatus> {
+        self.status.as_ref()
+    }
+}
+
 // ─────────────────── BreatheNodePool — host enrollment ──────────────────
 
 /// A GiB quantity bounded to a sane node maximum (1 PiB) so that `value * 2^30`
@@ -2294,6 +2538,15 @@ fn d_predictive_lookahead() -> u64 { 60 }
 fn d_peak_decay() -> f64 { 0.98 } // trailing-window peak holds a spike for ~tens of ticks
 fn d_warmup_seconds() -> u64 { 600 } // hold a shrink for 10 min after a (re)start (boot-spike window)
 fn d_relief_latency() -> u64 { 180 } // ~3min node boot→Ready (the NodeOnDemand dead-time)
+fn d_replica_floor() -> u32 { 2 } // HA floor: a single replica tolerates no disruption
+fn d_replica_ceiling() -> u32 { 10 }
+fn d_replica_target() -> f64 { 0.80 }
+fn d_replica_tol_up() -> f64 { 0.10 } // small up → react fast to spikes
+fn d_replica_tol_down() -> f64 { 0.20 } // large down → resist churn (asymmetric)
+fn d_replica_up_pct() -> u32 { 100 }
+fn d_replica_up_pods() -> u32 { 4 }
+fn d_replica_down_pct() -> u32 { 10 }
+fn d_replica_down_pods() -> u32 { 1 }
 
 #[cfg(test)]
 mod tests {
@@ -2877,5 +3130,63 @@ mod tests {
             Some(serde_json::json!({ "breathe.pleme.io/confirmed": "true" })),
         );
         assert!(!b.effective_dry_run(0), "the operator fast-path confirms immediately");
+    }
+
+    // ── ReplicaBand (the HORIZONTAL band) ─────────────────────────────────────
+
+    #[test]
+    fn replica_band_defaults_ha_floor_two_and_bridges_to_the_control_config() {
+        // A minimal ReplicaBand: only targetRef + metric are required.
+        let rb: ReplicaBand = serde_json::from_value(serde_json::json!({
+            "apiVersion": "breathe.pleme.io/v1", "kind": "ReplicaBand",
+            "metadata": { "name": "web", "namespace": "prod" },
+            "spec": {
+                "targetRef": { "kind": "Deployment", "name": "web", "apiVersion": "apps/v1" },
+                "metric": { "prometheus": "sum(rate(http_requests_total{app='web'}[1m]))" }
+            }
+        })).expect("a minimal ReplicaBand must deserialize");
+        // Floor defaults to 2 (HA) and the signal defaults to utilization.
+        assert_eq!(rb.spec.floor, 2, "HA floor default is 2");
+        assert_eq!(rb.spec.signal, ReplicaSignalSpec::Utilization);
+        // The CRD bridges to the tested control-layer config…
+        let rc = rb.spec.replica_band_config();
+        assert_eq!(rc.effective_floor(), 2);
+        assert_eq!(rc.signal, ReplicaSignal::Utilization);
+        // …and its actuator addresses `.spec.replicas` on the owner kind.
+        assert_eq!(rb.spec.provider_layout(), LimitLayout::Replica { kind: "Deployment".into() });
+        // No reclaim metric ⇒ not spot-aware by default.
+        assert!(rb.spec.provider_reclaim_metric().is_none());
+    }
+
+    #[test]
+    fn replica_band_rides_the_same_shadow_confirm_effect_gate() {
+        // Same lifecycle default as MemoryBand: shadow until a clean window holds.
+        let rb: ReplicaBand = serde_json::from_value(serde_json::json!({
+            "apiVersion": "breathe.pleme.io/v1", "kind": "ReplicaBand",
+            "metadata": { "name": "web", "namespace": "prod" },
+            "spec": {
+                "targetRef": { "kind": "Deployment", "name": "web", "apiVersion": "apps/v1" },
+                "metric": { "prometheus": "q" },
+                "haFloor": 3, "ceiling": 20, "signal": "queueDepth", "target": 10.0
+            }
+        })).expect("deserialize");
+        // starts shadowed (no status) — the horizontal band is never live-unconfirmed.
+        assert!(rb.effective_dry_run(0), "ReplicaBand starts in shadow (ShadowConfirmEffect)");
+        // haFloor raises the effective floor to 3.
+        assert_eq!(rb.spec.replica_band_config().effective_floor(), 3);
+        // and the vertical band_config it exposes for the gate carries the counts.
+        let bc = crate::Band::band_config(&rb).unwrap();
+        assert_eq!(bc.floor_bytes, 3);
+        assert_eq!(bc.ceiling_bytes, 20);
+    }
+
+    #[test]
+    fn replica_band_crd_advertises_its_camelcase_surface() {
+        let crd = <ReplicaBand as kube::CustomResourceExt>::crd();
+        let yaml = serde_yaml::to_string(&crd).unwrap();
+        assert!(yaml.contains("haFloor"), "the CRD must advertise haFloor (camelCase)");
+        assert!(yaml.contains("toleranceUp"));
+        assert!(yaml.contains("maxScaleDownPods"));
+        assert!(yaml.contains("rband"), "the shortname is registered");
     }
 }
