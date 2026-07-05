@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "cargo_lock_sha256": "49adf7e5da809d7f12c18855eab171f1dd9bf0a033208dc21d52cf3d8d590cc2",
+  "cargo_lock_sha256": "25b9a684dc61a02257194b1595c28f5f5869083d7027e1b1256d0f4440772d01",
   "target_resolves": {
     "base": {
       "Inflector-0.11.4": {
