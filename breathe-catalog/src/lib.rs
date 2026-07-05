@@ -28,6 +28,12 @@ pub mod db_matrix;
 /// arms a whole fleet's band-set from one typed row (Pillar 12). See [`preset`].
 pub mod preset;
 
+/// The typed RENDERER that turns a [`preset`] into the chart's `global.breathe`
+/// band values — the SINGLE SOURCE that removes the preset-vs-chart duplication.
+/// Renders the whole band-set (MemoryBand + CpuBand + ReplicaBand) and pins it to
+/// a golden the chart carries verbatim (the kata parity oracle). See [`render`].
+pub mod render;
+
 /// The complete breathability HANDLE control surface — every cgroup-v2 / k8s /
 /// host resource lever, typed with its control semantics (breathed vs steered),
 /// plus the `steer_diff` for adjusting a workload's resource map + weights on the
