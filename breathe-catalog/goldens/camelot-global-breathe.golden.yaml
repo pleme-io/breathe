@@ -1,0 +1,17 @@
+preset: camelot
+enabled: true
+memory:
+  setpoint: 0.8
+  dryRun: true
+  mode: shadow
+cpu:
+  enabled: true
+  setpoint: 0.8
+  dryRun: true
+  mode: shadow
+replica:
+  enabled: true
+  floor: 2
+  topology: nonPersistent
+  dryRun: true
+  mode: shadow
