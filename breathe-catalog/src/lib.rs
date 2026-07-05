@@ -16,6 +16,18 @@ use breathe_provider::{DimensionId, Directionality, DisruptionClass, SuppressedD
 /// catalog (resource SHAPES + the `Densa` envelope). See docs/PROVISIONING.md §2.2.
 pub mod forma;
 
+/// The 100%-spot flex-window COST envelope (offline half) — the diversified
+/// instance-family menu + the Viggy `CostBudget` promessa template. See [`cost`].
+pub mod cost;
+
+/// The per-engine DATABASE breathe matrix — MySQL/Neo4j knobs declared as typed
+/// `AppParam` instances (BREATHABILITY §II.5). See [`db_matrix`].
+pub mod db_matrix;
+
+/// The breathe-posture PRESET (`CamelotBreatheDefaults`) — a named bundle that
+/// arms a whole fleet's band-set from one typed row (Pillar 12). See [`preset`].
+pub mod preset;
+
 /// The complete breathability HANDLE control surface — every cgroup-v2 / k8s /
 /// host resource lever, typed with its control semantics (breathed vs steered),
 /// plus the `steer_diff` for adjusting a workload's resource map + weights on the
