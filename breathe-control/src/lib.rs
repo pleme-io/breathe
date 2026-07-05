@@ -33,6 +33,15 @@ pub mod lapidar;
 /// vertical [`decide`] limit law; pure + mockable (the TYPED-SPEC triplet).
 pub mod replica;
 
+/// `lifecycle` — the LIFECYCLE BREATH: a workload breathes through a five-phase
+/// lifecycle (Zero → Wake+expansion → Settle+shadow-tighten → Steady → Idle→Zero),
+/// not just a held setpoint (theory/BREATHABILITY.md §II.5 default #6). The
+/// ORCHESTRATOR that composes [`decide`]/[`safe_min`]/[`soft_min`]/[`lapidar`] into
+/// the lifecycle, with the never-stuck invariant encoded in the type system where it
+/// can be (a phantom-typestate FSM + a parse-don't-validate `Confirmed` witness) and
+/// property-tested where it cannot. Pure + mockable (the TYPED-SPEC triplet).
+pub mod lifecycle;
+
 /// Tunable band/step policy. Every knob is config-driven (a `MemoryBand` CR's
 /// spec → the watcher's args). Defaults encode the 80/20 setpoint with a
 /// What a band does when its working-set reading is UNTRUSTED — a `0` reading
