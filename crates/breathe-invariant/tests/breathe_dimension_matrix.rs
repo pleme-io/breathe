@@ -40,7 +40,10 @@ const MATRIX: &[MatrixRow] = &[
     MatrixRow { dimension: DimensionId::Replica, expected_maturity: Maturity::Shipped },
     MatrixRow { dimension: DimensionId::Storage, expected_maturity: Maturity::Landing },
     MatrixRow { dimension: DimensionId::Isolation, expected_maturity: Maturity::Landing },
-    MatrixRow { dimension: DimensionId::Database, expected_maturity: Maturity::Gap },
+    // DatabaseBand promoted Gap→Landing: breathe-invariant::database ships the
+    // architecture-aware contract (ReplicationTopology + discovery seam +
+    // FailoverMachine + 5-engine DB_ARCHITECTURES + DatabasePermutation lattice).
+    MatrixRow { dimension: DimensionId::Database, expected_maturity: Maturity::Landing },
 ];
 
 #[test]

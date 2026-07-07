@@ -51,11 +51,54 @@
   :cost "scale-down-when-idle to the floor — no idle replicas billed"
   :resiliency "floor-2 HA + topology-correct scale — survive a node loss")
 
+;; DatabaseBand — LANDING. The architecture-aware, discovery-molded,
+;; failover-safe-100%-spot carve. The typed contract ships in
+;; breathe-invariant::database (the (defreplication-topology) forms below); the
+;; live metric reader + promote/drain actuator are the C2 destination.
 (defband-database DatabaseBand
-  :setpoint 0.80 :carve architecture-aware-engine :discovery architecture-discovered :maturity gap
-  :pending "architecture-aware discovering DatabaseBand is a Gap — db_matrix carves engine knobs as AppParam instances; the discovery+failover-safe-spot Band is unbuilt"
-  :cost "right-size per-engine caches + connection headroom"
-  :resiliency "discover + hold failover-safe replicas + never-starve the buffer pool")
+  :setpoint 0.80 :carve architecture-aware-engine :discovery architecture-discovered :maturity landing
+  :cost "right-size per-engine caches + connection headroom + 100% spot even the primary (safely)"
+  :resiliency "discover the live topology + hold failover-safe replicas (never scale the primary; promote-before-reclaim on a primary's spot loss; never cross a quorum majority) + never-starve the buffer pool")
+
+;; ── the DatabaseBand architecture vocabulary (the /vocabulary-bridging surface) ──
+;; The typed border (src/database.rs) is authoritative; these forms are the lisp
+;; vocabulary bridge. The database module's `the_database_contract_is_declared_in_the_lisp`
+;; test include_str!'s this file and asserts every engine, class kind, failover
+;; state, and permutation axis appears — so the Rust border and the lisp cannot drift.
+
+;; The four coupled properties (BREATHABILITY.md §II.5):
+;;   1. architecture-aware  — which pod is primary / reader / voter
+;;   2. discovery-molded    — read the live engine topology, mold the carve
+;;   3. failover-safe spot  — promote-before-reclaim even the primary
+;;   4. configurable perms  — topology × placement × spot × replica × failover
+(defreplication-topology database-architecture
+  ;; the three stateful classes (couple to REPLICA_TOPOLOGY_AXIS crd_kind)
+  :classes ((:class master-slave      :crd-kind "masterSlave"      :primary designated :scales read-replicas)
+            (:class fully-distributed :crd-kind "fullyDistributed" :primary elected    :scales quorum-odd-steps)
+            (:class persistent        :crd-kind "persistent"       :primary ordinal-0  :scales never))
+  ;; the discovered live shapes (which pod is primary vs readers vs voters)
+  :discovered-shapes (single-writer primary-readers quorum)
+  ;; the discovered per-pod role
+  :roles (primary reader voter)
+  ;; the failover-safe-spot FSM — the promote-before-reclaim closed loop; the
+  ;; old-primary reclaim is authorized ONLY through a promotion-receipt witness.
+  :failover-fsm
+    (:states (steady primary-reclaim-signaled promoting-replica failed-over old-primary-reclaimed reclaim-blocked)
+     :good-terminals (steady old-primary-reclaimed)
+     :load-bearing-edge (promoting-replica promotion-succeeded -> failed-over reclaim-old-primary)
+     :never-lose-primary "reclaim-old-primary is emitted ONLY after a promotion; a single-writer / no-target reclaim is BLOCKED (retirada holds the node)")
+  ;; the configurable permutation lattice axes (CSP-gated legality)
+  :permutation-axes
+    (:spot     (no-spot spot-readers-only spot-even-primary)
+     :replica  (never-scale scale-readers-freely quorum-odd-steps)
+     :failover (no-failover promote-before-reclaim quorum-re-elect)
+     :constraint "spot-even-primary REQUIRES a failover-safe policy (else the primary is lost un-gracefully)")
+  ;; the 5-engine architecture matrix (5/5 — MySQL/Postgres/Redis/Mongo/Neo4j)
+  :engines ((:engine mysql    :class master-slave      :cache "innodb_buffer_pool_size"     :pool "max_connections")
+            (:engine postgres :class master-slave      :cache "shared_buffers"             :pool "max_connections")
+            (:engine redis    :class master-slave      :cache "maxmemory"                  :pool "maxclients")
+            (:engine mongo    :class fully-distributed :cache "wiredTigerEngineRuntimeConfig" :pool "net.maxIncomingConnections")
+            (:engine neo4j    :class persistent        :cache "dbms.memory.pagecache.size" :pool "dbms.connector.bolt.thread_pool_max_size")))
 
 ;; The ISOLATION posture — the SEAL that BOUNDS the carve. requests-floor /
 ;; limits-ceiling / QoS-class / placement-isolation carved per workload-class.
