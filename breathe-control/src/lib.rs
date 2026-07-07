@@ -42,6 +42,16 @@ pub mod replica;
 /// property-tested where it cannot. Pure + mockable (the TYPED-SPEC triplet).
 pub mod lifecycle;
 
+/// `carve_safety` — the STRUCTURAL storage-carve safety triad: footprint
+/// ownership ([`carve_safety::OwnedPvc`] — a resident volume is unownable),
+/// release witnesses ([`carve_safety::DurableVolume`] has no release method;
+/// [`carve_safety::NotInUse`] gates a regenerable release), and the grow-only
+/// autonomous typestate ([`carve_safety::AutonomousStorageCarve`] emits only a
+/// bounded, atomic [`carve_safety::SmallAtomicGrow`]). Every witness is re-minted
+/// from live state and re-verified per tick at the atomic commit. Pure, like the
+/// band law it guards.
+pub mod carve_safety;
+
 /// Tunable band/step policy. Every knob is config-driven (a `MemoryBand` CR's
 /// spec → the watcher's args). Defaults encode the 80/20 setpoint with a
 /// What a band does when its working-set reading is UNTRUSTED — a `0` reading
