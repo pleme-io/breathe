@@ -56,3 +56,19 @@
   :pending "architecture-aware discovering DatabaseBand is a Gap — db_matrix carves engine knobs as AppParam instances; the discovery+failover-safe-spot Band is unbuilt"
   :cost "right-size per-engine caches + connection headroom"
   :resiliency "discover + hold failover-safe replicas + never-starve the buffer pool")
+
+;; The ISOLATION posture — the SEAL that BOUNDS the carve. requests-floor /
+;; limits-ceiling / QoS-class / placement-isolation carved per workload-class.
+;; Unlike the others this dimension is BOTH carved AND a constraint on the other
+;; carves: the seal-floor lower-bounds mem/cpu (carve never strips the seal).
+;; The critical-must-be-sealed invariant is the isolation analog of the 155GB
+;; models-stay-current gate — a critical workload cannot be BestEffort/no-floor.
+(defband-isolation IsolationBand
+  :setpoint 0.80 :carve constrained-isolation-assignment :discovery interference-discovered :maturity landing
+  :variants ((:class critical :qos guaranteed  :placement anti-affinity :seal required)
+             (:class standard :qos burstable   :placement co-locate     :seal reserved-floor)
+             (:class batch    :qos best-effort :placement co-locate     :seal none)
+             (:class noisy    :qos burstable   :placement anti-affinity :seal capped-isolated-away))
+  :overlays (default kanchi-discovered contextual override)
+  :cost "right-size requests/limits toward the working set without over-reserving isolation — batch bin-packs BestEffort, standard runs Burstable"
+  :resiliency "seal a critical / interference-sensitive workload (guaranteed floor + Guaranteed QoS + anti-affinity) so a noisy neighbor can never throttle or evict it, and the floor bounds the carve so cost never strips the seal")

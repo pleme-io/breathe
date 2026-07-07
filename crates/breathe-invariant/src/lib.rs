@@ -61,6 +61,7 @@ pub mod check;
 pub mod clause;
 pub mod dimension;
 pub mod fixture;
+pub mod isolation;
 pub mod setpoint;
 
 pub use carve::{
@@ -72,6 +73,11 @@ pub use check::{check, BreatheCheckOutcome, BreatheViolation, DimensionUse, Work
 pub use clause::{BreatheClause, UnrepTier};
 pub use dimension::{
     BreatheDimension, CarveAlgorithm, ClauseStatus, DimensionId, DiscoveryStrategy, Maturity,
+};
+pub use isolation::{
+    all_critical_sealed, carve_respecting_seal, optimize_reserved, resolve_posture,
+    total_reserved_cost, unsealed_critical_workloads, InterferenceSensitivity, IsolationOverlay,
+    IsolationPosture, PlacementIsolation, QosClass, SealError, SealedCarve, WorkloadClass,
 };
 pub use setpoint::{SetpointError, UtilizationSetpoint};
 
