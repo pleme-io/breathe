@@ -59,6 +59,7 @@ pub mod carve;
 pub mod catalog;
 pub mod check;
 pub mod clause;
+pub mod database;
 pub mod dimension;
 pub mod fixture;
 pub mod isolation;
@@ -71,6 +72,13 @@ pub use carve::{
 pub use catalog::{dimension, maturity_histogram, CATALOG};
 pub use check::{check, BreatheCheckOutcome, BreatheViolation, DimensionUse, WorkloadProfile};
 pub use clause::{BreatheClause, UnrepTier};
+pub use database::{
+    architecture_for, failover_step, legal_permutations, resolve_permutation, DatabasePermutation,
+    DbArchitecture, DbEngine, DbRole, DiscoveryError, FailoverAction, FailoverEvent, FailoverMachine,
+    FailoverPolicy, FailoverState, IllegalTransition, MockReplicationDiscovery, PermutationError,
+    PrimaryReclaimAuthorization, PromotionReceipt, ReplicaId, ReplicaScalePolicy, ReplicationClass,
+    ReplicationDiscovery, ReplicationOverlay, ReplicationTopology, SpotPosture, DB_ARCHITECTURES,
+};
 pub use dimension::{
     BreatheDimension, CarveAlgorithm, ClauseStatus, DimensionId, DiscoveryStrategy, Maturity,
 };

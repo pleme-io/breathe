@@ -16,11 +16,21 @@
 
 use breathe_provider::{DimensionId, Directionality};
 
-/// A database engine breathe supports as a first-class tier.
+/// A database engine breathe supports as a first-class tier. The ARCHITECTURE
+/// view (topology class, discovery, failover) lives in
+/// `breathe_invariant::database::DbEngine`; this is the ACTUATOR view (the concrete
+/// per-engine `SET GLOBAL`/`CONFIG SET`/`setParameter` knobs). Both code the same
+/// five engines — 5/5, closing the former 2/5 gap.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DbEngine {
     /// MySQL / InnoDB — a primary + read-replicas tier (`masterSlave` topology).
     MySql,
+    /// PostgreSQL — a primary + streaming read-replicas tier (`masterSlave` topology).
+    Postgres,
+    /// Redis — a master + replicas cache tier under Sentinel HA (`masterSlave` topology).
+    Redis,
+    /// MongoDB — a replica set with majority election (`fullyDistributed` topology).
+    Mongo,
     /// Neo4j — a single-writer graph store, PVC-per-ordinal (`persistent` topology).
     Neo4j,
 }
@@ -31,6 +41,9 @@ impl DbEngine {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::MySql => "mysql",
+            Self::Postgres => "postgres",
+            Self::Redis => "redis",
+            Self::Mongo => "mongo",
             Self::Neo4j => "neo4j",
         }
     }
@@ -88,6 +101,75 @@ pub const DB_MATRIX: &[DbKnobSpec] = &[
         observe: "mysql_global_status_threads_connected / mysql_global_variables_max_connections",
         purpose: "hold the connection headroom at the band (live SET GLOBAL)",
     },
+    // ── PostgreSQL — primary + streaming read-replicas (masterSlave) ────────────
+    DbKnobSpec {
+        engine: DbEngine::Postgres,
+        knob: "shared_buffers",
+        dimension: DimensionId::AppParam,
+        directionality: Directionality::Bidirectional,
+        actuator: "config-file + rolling restart (postgresql.conf shared_buffers)",
+        requires_roll: true, // shared_buffers is set at boot — the carve needs a roll
+        topology_kind: "masterSlave",
+        observe: "pg_stat_bgwriter buffers_backend / cache-hit ratio (rising backend reads ⇒ buffers too small)",
+        purpose: "hold PostgreSQL shared_buffers at the working-set band (rolling restart)",
+    },
+    DbKnobSpec {
+        engine: DbEngine::Postgres,
+        knob: "max_connections",
+        dimension: DimensionId::AppParam,
+        directionality: Directionality::Bidirectional,
+        actuator: "config-file + rolling restart (postgresql.conf max_connections)",
+        requires_roll: true, // max_connections is a boot-time GUC — needs a roll
+        topology_kind: "masterSlave",
+        observe: "pg_stat_activity count / current_setting('max_connections')",
+        purpose: "hold the PostgreSQL connection headroom at the band (rolling restart)",
+    },
+    // ── Redis — master + replicas under Sentinel HA (masterSlave) ───────────────
+    DbKnobSpec {
+        engine: DbEngine::Redis,
+        knob: "maxmemory",
+        dimension: DimensionId::AppParam,
+        directionality: Directionality::Bidirectional,
+        actuator: "redis-admin-rpc (CONFIG SET maxmemory)",
+        requires_roll: false, // CONFIG SET maxmemory is a live write
+        topology_kind: "masterSlave",
+        observe: "redis_memory_used_bytes / redis_memory_max_bytes + evicted_keys (rising evictions ⇒ maxmemory too small)",
+        purpose: "hold the Redis maxmemory cache ceiling at the band (live CONFIG SET)",
+    },
+    DbKnobSpec {
+        engine: DbEngine::Redis,
+        knob: "maxclients",
+        dimension: DimensionId::AppParam,
+        directionality: Directionality::Bidirectional,
+        actuator: "redis-admin-rpc (CONFIG SET maxclients)",
+        requires_roll: false, // maxclients is a live CONFIG SET
+        topology_kind: "masterSlave",
+        observe: "redis_connected_clients / redis_config_maxclients",
+        purpose: "hold the Redis connection headroom at the band (live CONFIG SET)",
+    },
+    // ── MongoDB — replica-set majority election (fullyDistributed) ──────────────
+    DbKnobSpec {
+        engine: DbEngine::Mongo,
+        knob: "wiredTigerEngineRuntimeConfig",
+        dimension: DimensionId::AppParam,
+        directionality: Directionality::Bidirectional,
+        actuator: "mongo-admin-rpc (setParameter wiredTigerEngineRuntimeConfig cache_size — live SET)",
+        requires_roll: false, // wiredTiger cache_size is a live runtime setParameter
+        topology_kind: "fullyDistributed",
+        observe: "wiredTiger bytes-currently-in-cache / maximum-bytes-configured (rising ratio ⇒ cache too small)",
+        purpose: "hold the WiredTiger cache at the working-set band (live setParameter)",
+    },
+    DbKnobSpec {
+        engine: DbEngine::Mongo,
+        knob: "net.maxIncomingConnections",
+        dimension: DimensionId::AppParam,
+        directionality: Directionality::Bidirectional,
+        actuator: "config-file + rolling restart (mongod.conf net.maxIncomingConnections)",
+        requires_roll: true, // maxIncomingConnections is a boot-time setting — needs a roll
+        topology_kind: "fullyDistributed",
+        observe: "mongodb_connections{state=current} / {state=available}",
+        purpose: "hold the MongoDB connection headroom at the band (rolling restart)",
+    },
     // ── Neo4j — single-writer graph store, PVC-per-ordinal (persistent) ─────────
     DbKnobSpec {
         engine: DbEngine::Neo4j,
@@ -102,8 +184,10 @@ pub const DB_MATRIX: &[DbKnobSpec] = &[
     },
 ];
 
-/// Every engine the matrix covers (the domain side of the coverage check).
-pub const ALL_DB_ENGINES: [DbEngine; 2] = [DbEngine::MySql, DbEngine::Neo4j];
+/// Every engine the matrix covers (the domain side of the coverage check). 5/5 —
+/// MySQL, PostgreSQL, Redis, MongoDB, Neo4j.
+pub const ALL_DB_ENGINES: [DbEngine; 5] =
+    [DbEngine::MySql, DbEngine::Postgres, DbEngine::Redis, DbEngine::Mongo, DbEngine::Neo4j];
 
 /// The rows for one engine.
 #[must_use]
@@ -127,12 +211,14 @@ mod tests {
         }
     }
 
-    /// Both engines are covered — the matrix is not half-authored.
+    /// All five engines are covered — the matrix is 5/5, not half-authored (the
+    /// former 2/5 MySQL+Neo4j gap is closed).
     #[test]
-    fn both_engines_are_covered() {
+    fn all_engines_are_covered() {
         for e in ALL_DB_ENGINES {
             assert!(rows_for(e).next().is_some(), "no matrix rows for {}", e.as_str());
         }
+        assert_eq!(ALL_DB_ENGINES.len(), 5, "the db_matrix codes 5/5 engines");
     }
 
     /// (engine, knob) is unique — no duplicate knob for the same engine.
@@ -164,12 +250,19 @@ mod tests {
         }
     }
 
-    /// MySQL is a primary+replicas tier (masterSlave); Neo4j is a single-writer
-    /// store (persistent). Pins the per-engine algorithm to the right arm.
+    /// Each engine breathes under the right topology arm: MySQL/PostgreSQL/Redis are
+    /// primary+replicas tiers (masterSlave), MongoDB is a majority-election replica
+    /// set (fullyDistributed), Neo4j is a single-writer store (persistent). Pins the
+    /// per-engine algorithm to the right arm.
     #[test]
     fn engines_use_the_expected_topology() {
-        for r in rows_for(DbEngine::MySql) {
-            assert_eq!(r.topology_kind, "masterSlave", "MySQL breathes the read-replicas (masterSlave)");
+        for e in [DbEngine::MySql, DbEngine::Postgres, DbEngine::Redis] {
+            for r in rows_for(e) {
+                assert_eq!(r.topology_kind, "masterSlave", "{} breathes the read-replicas (masterSlave)", e.as_str());
+            }
+        }
+        for r in rows_for(DbEngine::Mongo) {
+            assert_eq!(r.topology_kind, "fullyDistributed", "MongoDB is a majority-election replica set (fullyDistributed)");
         }
         for r in rows_for(DbEngine::Neo4j) {
             assert_eq!(r.topology_kind, "persistent", "Neo4j is a persistent single-writer store");

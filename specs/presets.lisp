@@ -80,6 +80,40 @@
       :actuator "mysql-admin-rpc (SET GLOBAL max_connections)"
       :observe  "mysql_global_status_threads_connected / max_connections"
       :purpose  "hold the connection headroom at the band (live SET GLOBAL)")
+    ;; ── PostgreSQL — primary + streaming read-replicas (masterSlave) ────────────
+    (:engine "postgres" :knob "shared_buffers" :dimension :app-param
+      :directionality :bidirectional :topology "masterSlave" :requires-roll t
+      :actuator "config-file + rolling restart (postgresql.conf shared_buffers)"
+      :observe  "pg_stat_bgwriter buffers_backend / cache-hit ratio"
+      :purpose  "hold PostgreSQL shared_buffers at the working-set band (rolling restart)")
+    (:engine "postgres" :knob "max_connections" :dimension :app-param
+      :directionality :bidirectional :topology "masterSlave" :requires-roll t
+      :actuator "config-file + rolling restart (postgresql.conf max_connections)"
+      :observe  "pg_stat_activity count / max_connections"
+      :purpose  "hold the PostgreSQL connection headroom at the band (rolling restart)")
+    ;; ── Redis — master + replicas under Sentinel HA (masterSlave) ───────────────
+    (:engine "redis" :knob "maxmemory" :dimension :app-param
+      :directionality :bidirectional :topology "masterSlave" :requires-roll nil
+      :actuator "redis-admin-rpc (CONFIG SET maxmemory)"
+      :observe  "redis_memory_used_bytes / redis_memory_max_bytes + evicted_keys"
+      :purpose  "hold the Redis maxmemory cache ceiling at the band (live CONFIG SET)")
+    (:engine "redis" :knob "maxclients" :dimension :app-param
+      :directionality :bidirectional :topology "masterSlave" :requires-roll nil
+      :actuator "redis-admin-rpc (CONFIG SET maxclients)"
+      :observe  "redis_connected_clients / redis_config_maxclients"
+      :purpose  "hold the Redis connection headroom at the band (live CONFIG SET)")
+    ;; ── MongoDB — replica-set majority election (fullyDistributed) ──────────────
+    (:engine "mongo" :knob "wiredTigerEngineRuntimeConfig" :dimension :app-param
+      :directionality :bidirectional :topology "fullyDistributed" :requires-roll nil
+      :actuator "mongo-admin-rpc (setParameter wiredTigerEngineRuntimeConfig cache_size — live SET)"
+      :observe  "wiredTiger bytes-in-cache / maximum-bytes-configured"
+      :purpose  "hold the WiredTiger cache at the working-set band (live setParameter)")
+    (:engine "mongo" :knob "net.maxIncomingConnections" :dimension :app-param
+      :directionality :bidirectional :topology "fullyDistributed" :requires-roll t
+      :actuator "config-file + rolling restart (mongod.conf net.maxIncomingConnections)"
+      :observe  "mongodb_connections{state=current} / {state=available}"
+      :purpose  "hold the MongoDB connection headroom at the band (rolling restart)")
+    ;; ── Neo4j — single-writer graph store, PVC-per-ordinal (persistent) ─────────
     (:engine "neo4j" :knob "dbms.memory.pagecache.size" :dimension :app-param
       :directionality :bidirectional :topology "persistent" :requires-roll t
       :actuator "config-file + rolling restart (neo4j.conf pagecache)"

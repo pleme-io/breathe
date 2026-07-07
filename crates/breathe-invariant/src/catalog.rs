@@ -13,13 +13,14 @@
 //! catalog IS the doc; the matrix IS the proof.
 //!
 //! **Tier-honest maturity (2026-07):** MemoryBand + CpuBand + ReplicaBand are
-//! SHIPPED (live CRD kinds + carve laws in the breathe substrate); StorageBand
-//! is LANDING (CRD kind ships; the provision-minimal + grow-on-demand
-//! elasticity carve is under construction); DatabaseBand is a GAP (per-engine
-//! knobs ride the generic `AppParam` family via `breathe-catalog::db_matrix`,
-//! but the architecture-aware discovering DatabaseBand does not exist as a
-//! first-class Band) — tracked with an explicit `pending-breathe` note so the
-//! models-stay-current gate stays green honestly.
+//! SHIPPED (live CRD kinds + carve laws in the breathe substrate); StorageBand,
+//! IsolationBand, and DatabaseBand are LANDING (the typed contract ships +
+//! CI-tested; the live in-cluster carve/actuator is the C2 destination).
+//! DatabaseBand promoted Gap→Landing when `breathe-invariant::database` landed
+//! the architecture-aware contract — the discovered `ReplicationTopology` +
+//! discovery seam, the `FailoverMachine` promote-before-reclaim FSM, the 5-engine
+//! `DB_ARCHITECTURES` matrix, and the `DatabasePermutation` legality lattice — so
+//! the dimension is carved, not a claimed-but-uncarved gap.
 
 use crate::clause::{BreatheClause, UnrepTier};
 use crate::dimension::{
@@ -37,6 +38,12 @@ use UnrepTier::{CeilingC1, CeilingC2, OnlyMitigated, ParseTimeRejected};
 const fn cs(clause: BreatheClause, tier: UnrepTier) -> ClauseStatus {
     ClauseStatus { clause, tier: Some(tier) }
 }
+/// The undischarged-clause shorthand — a clause a Gap dimension does not discharge
+/// at all (`tier: None`). Retained now that DatabaseBand promoted Gap→Landing (no
+/// dimension is a Gap today): the catalog stays honest that a Gap IS representable,
+/// so the next claimed-but-uncarved dimension declares its clauses with this rather
+/// than rounding a tier up.
+#[allow(dead_code)]
 const fn gap(clause: BreatheClause) -> ClauseStatus {
     ClauseStatus { clause, tier: None }
 }
@@ -154,13 +161,18 @@ const REPLICA: BreatheDimension = BreatheDimension {
     note: "The topology sub-axis (stateless free-scale / masterSlave read-replicas / distributed odd-quorum / persistent ordinal) picks the per-topology algorithm; validate_for_target gates target-kind coupling.",
 };
 
-/// DatabaseBand — GAP. There is NO first-class architecture-aware DatabaseBand:
-/// per-engine knobs (InnoDB buffer pool, Neo4j page cache, max_connections)
-/// ride the generic `AppParam` family via `breathe-catalog::db_matrix`, but a
-/// Band that DISCOVERS master/multi-reader/distributed topology + molds a
-/// failover-safe 100%-spot permutation does not exist. Doctrine-claimed →
-/// tracked with an explicit `pending-breathe` note (models-stay-current
-/// honesty).
+/// DatabaseBand — LANDING. The architecture-aware DatabaseBand ships as typed
+/// contract in `breathe-invariant::database`: the discovered `ReplicationTopology`
+/// (single-writer / primary+readers / distributed-quorum) + a `ReplicationDiscovery`
+/// seam (mockable, `default ← discovered ← override`); the `FailoverMachine` FSM
+/// (the promote-before-reclaim closed loop, whose primary-node reclaim is authorized
+/// ONLY through a `PromotionReceipt` witness — truly-unrepresentable never-lose-the-
+/// primary); the 5-engine `DB_ARCHITECTURES` matrix (MySQL/Postgres/Redis/Mongo/Neo4j,
+/// 5/5, closing the former 2/5); and the `DatabasePermutation` legality lattice
+/// (topology × placement × spot × replica × failover, CSP-gated). The LIVE metric
+/// reader (reading a running engine's replication status) + the LIVE promote/drain
+/// actuator are the C2 destination — hence LANDING, not Shipped (the isolation-band
+/// tier). No longer a Gap: the typed contract is carved + CI-tested.
 const DATABASE: BreatheDimension = BreatheDimension {
     id: DimensionId::Database,
     band: "DatabaseBand",
@@ -168,23 +180,26 @@ const DATABASE: BreatheDimension = BreatheDimension {
     setpoint: SP80,
     carve_algorithm: CarveAlgorithm::ArchitectureAwareEngine,
     discovery: DiscoveryStrategy::ArchitectureDiscovered,
-    maturity: Maturity::Gap,
+    maturity: Maturity::Landing,
     claimed_by_doctrine: true,
-    cost_effect: "right-size the per-engine caches + connection headroom (buffer pool / page cache) — no over-sized DB nodes billed",
-    resiliency_effect: "discover + hold failover-safe replicas (never scale the primary, never cross a quorum majority) + never-starve the buffer pool (resiliency)",
-    doctrine_ref: "BREATHABILITY.md §II.5 (per-engine database matrix)",
-    pending: Some(
-        "pending-breathe: architecture-aware discovering DatabaseBand is a Gap — db_matrix carves per-engine knobs as AppParam instances, but the master/multi-reader/distributed discovery + failover-safe-spot permutation Band is unbuilt",
-    ),
+    cost_effect: "right-size the per-engine caches + connection headroom (buffer pool / page cache) + run the tier 100% spot (even the primary, safely) — no over-sized on-demand DB nodes billed",
+    resiliency_effect: "discover the live topology + hold failover-safe replicas (never scale the primary, promote-before-reclaim on a primary's spot loss, never cross a quorum majority) + never-starve the buffer pool (resiliency)",
+    doctrine_ref: "BREATHABILITY.md §II.5 (database-architecture awareness — discover/mold/failover-safe-spot)",
+    pending: None,
     clauses: &[
-        gap(CarvedByABand),
-        gap(CarveToSetpoint),
-        gap(DefaultOnFleetWide),
-        gap(ModelsStayCurrent),
-        gap(DiscoveryMolded),
-        gap(DualPurpose),
+        // Typed DatabaseBand contract ships (discovery seam + FSM + matrix +
+        // permutation lattice); the live in-cluster carve is landing → partial.
+        cs(CarvedByABand, OnlyMitigated),
+        cs(CarveToSetpoint, OnlyMitigated),
+        cs(DefaultOnFleetWide, OnlyMitigated),
+        // The 5/5 matrix + permutation-legality forcing-functions ARE shipped (CI).
+        cs(ModelsStayCurrent, CeilingC1),
+        // Discovery reads the live engine topology — external-world observation;
+        // the seam is typed, the live status reader is the C2 destination.
+        cs(DiscoveryMolded, CeilingC2),
+        cs(DualPurpose, OnlyMitigated),
     ],
-    note: "Per-engine knobs breathe TODAY via breathe-catalog::db_matrix (AppParam instances, MySQL/Neo4j); the first-class discovering DatabaseBand is the named Gap.",
+    note: "The DatabaseBand typed contract (ReplicationTopology + discovery seam + FailoverMachine + 5-engine DB_ARCHITECTURES + DatabasePermutation lattice) ships in breathe-invariant::database; per-engine knobs actuate via breathe-catalog::db_matrix (5/5). The LIVE metric reader + promote/drain actuator are the C2 destination — hence Landing.",
 };
 
 /// IsolationBand — LANDING. The ISOLATION posture that BOUNDS the carve. The
@@ -308,9 +323,11 @@ mod tests {
         let (g, l, s) = maturity_histogram();
         assert_eq!(g + l + s, CATALOG.len(), "maturity histogram must sum to catalog size");
         // Tier-honest snapshot of the CURRENT fleet state (2026-07):
-        // memory/cpu/replica SHIPPED, storage+isolation LANDING, database GAP.
+        // memory/cpu/replica SHIPPED, storage+isolation+database LANDING, 0 GAP.
+        // DatabaseBand promoted Gap→Landing with breathe-invariant::database (the
+        // architecture-aware discovery + failover FSM + 5-engine matrix + lattice).
         // Update deliberately when a dimension advances — this line IS the ledger.
-        assert_eq!((g, l, s), (1, 2, 3), "breathe dimension maturity ledger drifted — update deliberately, never round up");
+        assert_eq!((g, l, s), (0, 3, 3), "breathe dimension maturity ledger drifted — update deliberately, never round up");
     }
 
     #[test]
