@@ -1,15 +1,23 @@
 # Build + push EVERY breathe OCI image on merge to main.
 #
-# Runs on the SELF-HOSTED rio-builder (x86_64) via substrate's image-push.yml —
-# the same proven path hanabi / pangea-operator use. This is BILLING-INDEPENDENT
-# (self-hosted runners do not consume GitHub-hosted minutes), which matters: the
-# old `ubuntu-latest` jobs were dead-on-arrival whenever org GitHub-Actions
-# billing lapsed. rio-builder has a working nix + network (the historical
-# FOD-DNS-in-sandbox blocker is resolved — hanabi/pangea-operator build heavy nix
-# images here daily), so the controller, host-agent, AND api-server all ship via
-# the one reusable. breathe images stay PRIVATE (package visibility set
-# out-of-band, unchanged). :latest is the moving pointer the rio HelmRelease pulls
-# (pullPolicy: Always) — a new build needs a `kubectl rollout restart` to pick up.
+# RUNNER IS A CONFIG CHOICE, NOT A HARDCODED BOX. `runner:` resolves from the
+# repo/org Actions VARIABLE `CAMELOT_IMAGE_RUNNER`, falling back to `rio-build-01`
+# when the variable is unset. This retires the rio SPOF for camelot image builds:
+# set `CAMELOT_IMAGE_RUNNER=camelot-builder-pleme` (the pleme-io-org ARC scale set on
+# camelot's own 100%-spot builder floor — akeylesslabs/k8s clusters/camelot/ci/
+# runner-scale-set-pleme.yaml) and every breathe image builds in-cluster, scale-to-
+# zero, no rio. Until the variable is set (and its scale set is live), the rio
+# fallback keeps builds working — a clean, reversible cutover, never a hard break.
+#
+# WARM CACHE: when running on the camelot builder floor, `CAMELOT_SUI_SUBSTITUTER`
+# (= http://sui.camelot-build.svc) wires the in-cluster sui super-cache daemon as a
+# Nix substituter so heavy crates SUBSTITUTE instead of compiling; the daemon serves
+# unsigned NARs, so `CAMELOT_SUI_REQUIRE_SIGS=false` accepts them. Empty on any
+# non-cluster runner (rio can't reach a ClusterIP) — zero effect there.
+#
+# breathe images stay PRIVATE (package visibility set out-of-band). :latest is the
+# moving pointer the rio HelmRelease pulls (pullPolicy: Always) — a new build needs a
+# `kubectl rollout restart` to pick up.
 name: image
 
 on:
@@ -30,29 +38,35 @@ permissions:
 
 jobs:
   controller:
-    name: breathe-controller image → ghcr.io (rio-builder)
+    name: breathe-controller image → ghcr.io
     uses: pleme-io/substrate/.github/workflows/image-push.yml@main
     with:
       imageAttr: image
       imageName: pleme-io/breathe-controller
       tag: latest
-      runner: rio-build-01
+      runner: ${{ vars.CAMELOT_IMAGE_RUNNER || 'rio-build-01' }}
+      extraSubstituters: ${{ vars.CAMELOT_SUI_SUBSTITUTER }}
+      requireSigs: ${{ vars.CAMELOT_SUI_REQUIRE_SIGS }}
     secrets: inherit
   host-agent:
-    name: breathe-host-agent image → ghcr.io (rio-builder)
+    name: breathe-host-agent image → ghcr.io
     uses: pleme-io/substrate/.github/workflows/image-push.yml@main
     with:
       imageAttr: agent-image
       imageName: pleme-io/breathe-host-agent
       tag: latest
-      runner: rio-build-01
+      runner: ${{ vars.CAMELOT_IMAGE_RUNNER || 'rio-build-01' }}
+      extraSubstituters: ${{ vars.CAMELOT_SUI_SUBSTITUTER }}
+      requireSigs: ${{ vars.CAMELOT_SUI_REQUIRE_SIGS }}
     secrets: inherit
   api-server:
-    name: breathe-api-server image → ghcr.io (rio-builder)
+    name: breathe-api-server image → ghcr.io
     uses: pleme-io/substrate/.github/workflows/image-push.yml@main
     with:
       imageAttr: api-server-image
       imageName: pleme-io/breathe-api-server
       tag: latest
-      runner: rio-build-01
+      runner: ${{ vars.CAMELOT_IMAGE_RUNNER || 'rio-build-01' }}
+      extraSubstituters: ${{ vars.CAMELOT_SUI_SUBSTITUTER }}
+      requireSigs: ${{ vars.CAMELOT_SUI_REQUIRE_SIGS }}
     secrets: inherit
