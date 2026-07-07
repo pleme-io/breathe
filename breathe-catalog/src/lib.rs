@@ -28,6 +28,13 @@ pub mod db_matrix;
 /// arms a whole fleet's band-set from one typed row (Pillar 12). See [`preset`].
 pub mod preset;
 
+/// The DEFAULT breathe posture for the SUPER-CACHE-CI BUILD use-case class — the
+/// bursty peer of [`preset`] (floor 0, big RAMDISK, max-parallel, 100%-spot with
+/// an EVOLVING-DEGRADE instance ladder that always places, never on-demand). One
+/// typed row so any super-cache-ci build inherits the best-build-times posture by
+/// default (Pillar 12). See [`builder`].
+pub mod builder;
+
 /// The typed RENDERER that turns a [`preset`] into the chart's `global.breathe`
 /// band values — the SINGLE SOURCE that removes the preset-vs-chart duplication.
 /// Renders the whole band-set (MemoryBand + CpuBand + ReplicaBand) and pins it to
