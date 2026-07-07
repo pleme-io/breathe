@@ -30,16 +30,24 @@ pub enum DimensionId {
     /// (`DatabaseBand`): discover master/multi-reader/distributed + carve the
     /// engine knobs (buffer pool, page cache, connection headroom).
     Database,
+    /// The ISOLATION posture — the SEAL that bounds the carve (`IsolationBand`):
+    /// requests-floor / limits-ceiling / QoS-class / placement-isolation carved
+    /// per workload-class so a critical workload is never disturbed. Unlike the
+    /// other dimensions this one is BOTH carved AND a *constraint* on the other
+    /// carves — the isolation floor is a lower bound the cost carve may never
+    /// cross (see [`crate::isolation`]).
+    Isolation,
 }
 
 impl DimensionId {
     /// Every dimension, in canonical order. The partition the matrix covers.
-    pub const ALL: [DimensionId; 5] = [
+    pub const ALL: [DimensionId; 6] = [
         DimensionId::Memory,
         DimensionId::Cpu,
         DimensionId::Storage,
         DimensionId::Replica,
         DimensionId::Database,
+        DimensionId::Isolation,
     ];
 
     /// The stable kebab-case label (the axis the catalog + lisp key on).
@@ -51,6 +59,7 @@ impl DimensionId {
             DimensionId::Storage => "storage",
             DimensionId::Replica => "replica",
             DimensionId::Database => "database",
+            DimensionId::Isolation => "isolation",
         }
     }
 }
@@ -72,6 +81,12 @@ pub enum CarveAlgorithm {
     /// Architecture-aware per-engine knob carving under the discovered
     /// replica topology. Database.
     ArchitectureAwareEngine,
+    /// Constrained isolation assignment: the seal-floor (guaranteed reservation)
+    /// bounds the cost carve from below (`max(carve, floor)`), the QoS class +
+    /// placement isolation are assigned per workload-class, and the whole is a
+    /// constrained cost minimization (bin-packing / QoS-assignment) whose seal is
+    /// a HARD constraint — classical, no ML. Isolation.
+    ConstrainedIsolationAssignment,
 }
 
 impl CarveAlgorithm {
@@ -82,6 +97,7 @@ impl CarveAlgorithm {
             CarveAlgorithm::GrowOnlyPredictive => "grow-only-predictive",
             CarveAlgorithm::ReplicaTopologyScale => "replica-topology-scale",
             CarveAlgorithm::ArchitectureAwareEngine => "architecture-aware-engine",
+            CarveAlgorithm::ConstrainedIsolationAssignment => "constrained-isolation-assignment",
         }
     }
 }
@@ -95,6 +111,11 @@ pub enum DiscoveryStrategy {
     /// The full architecture is discovered (master / multi-reader /
     /// distributed topology) and molded into the carve. Database.
     ArchitectureDiscovered,
+    /// The workload's interference-SENSITIVITY (throttle ratio, eviction events,
+    /// contention-induced latency) is discovered from live metrics and molds the
+    /// isolation posture — a highly-sensitive workload is sealed regardless of
+    /// its declared class. Isolation.
+    InterferenceDiscovered,
 }
 
 impl DiscoveryStrategy {
@@ -103,6 +124,7 @@ impl DiscoveryStrategy {
         match self {
             DiscoveryStrategy::KanchiDiscovered => "kanchi-discovered",
             DiscoveryStrategy::ArchitectureDiscovered => "architecture-discovered",
+            DiscoveryStrategy::InterferenceDiscovered => "interference-discovered",
         }
     }
 }

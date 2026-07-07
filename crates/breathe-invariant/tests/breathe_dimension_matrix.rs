@@ -39,6 +39,7 @@ const MATRIX: &[MatrixRow] = &[
     MatrixRow { dimension: DimensionId::Cpu, expected_maturity: Maturity::Shipped },
     MatrixRow { dimension: DimensionId::Replica, expected_maturity: Maturity::Shipped },
     MatrixRow { dimension: DimensionId::Storage, expected_maturity: Maturity::Landing },
+    MatrixRow { dimension: DimensionId::Isolation, expected_maturity: Maturity::Landing },
     MatrixRow { dimension: DimensionId::Database, expected_maturity: Maturity::Gap },
 ];
 
@@ -54,7 +55,7 @@ fn matrix_covers_every_dimension() {
         catalog_ids, matrix_ids,
         "matrix ⇄ catalog drift: every catalogued dimension needs exactly one matrix row"
     );
-    assert!(MATRIX.len() >= 5, "matrix regressed below the five known dimensions");
+    assert!(MATRIX.len() >= 6, "matrix regressed below the six known dimensions");
 }
 
 #[test]
@@ -181,4 +182,70 @@ fn every_dimension_is_dual_purpose() {
         "dimension(s) not dual-purpose (must name cost AND resiliency, achieved together):\n  - {}",
         failures.join("\n  - ")
     );
+}
+
+#[test]
+fn critical_workload_must_be_sealed() {
+    // ★ THE ISOLATION-DIMENSION LOAD-BEARING TEST — the analog of
+    // `no_dimension_claimed_but_uncarved` for the seal. A critical /
+    // interference-sensitive workload CANNOT carry a no-isolation posture
+    // (BestEffort / zero requests-floor). The per-workload seal is
+    // parse-time-rejected; this is the fleet-coverage forcing-function
+    // (CeilingC1): the class is CI-caught, not discovered live (the
+    // victoria-logs-422 receipt).
+    use breathe_invariant::isolation::{
+        all_critical_sealed, IsolationPosture, PlacementIsolation, QosClass, SealError,
+        WorkloadClass,
+    };
+
+    // (a) A Critical-with-BestEffort posture is rejected at construction — the
+    //     no-seal posture for a critical workload is unrepresentable.
+    let unsealed = IsolationPosture::try_seal(
+        WorkloadClass::Critical,
+        QosClass::BestEffort,
+        0,
+        0,
+        PlacementIsolation::AntiAffinity,
+        false,
+    );
+    assert_eq!(
+        unsealed,
+        Err(SealError::CriticalIsBestEffort),
+        "a critical workload with BestEffort QoS must be rejected (the victoria-logs-422 class)"
+    );
+
+    // (b) A Critical-with-zero-floor is rejected too — no guaranteed reservation.
+    assert_eq!(
+        IsolationPosture::try_seal(
+            WorkloadClass::Critical,
+            QosClass::Guaranteed,
+            0,
+            512,
+            PlacementIsolation::AntiAffinity,
+            false,
+        ),
+        Err(SealError::CriticalHasNoFloor),
+        "a critical workload with no requests-floor must be rejected"
+    );
+
+    // (c) A fleet of sealed criticals is feasible (the fleet-coverage predicate).
+    let sealed_critical = IsolationPosture::for_class(WorkloadClass::Critical, 512, 512).unwrap();
+    let batch = IsolationPosture::for_class(WorkloadClass::Batch, 0, 0).unwrap();
+    assert!(
+        all_critical_sealed(&[sealed_critical, batch]),
+        "every constructed critical workload is sealed; batch may be unsealed"
+    );
+}
+
+#[test]
+fn the_carve_never_strips_the_seal_of_a_critical_workload() {
+    // The carve-preserves-the-seal constraint, at the matrix layer: even when the
+    // cost carve wants to right-size a critical workload's reservation DOWN, the
+    // seal floor is the lower bound — isolation is preserved THROUGH the carve.
+    use breathe_invariant::isolation::{carve_respecting_seal, IsolationPosture, WorkloadClass};
+    let critical = IsolationPosture::for_class(WorkloadClass::Critical, 1024, 1024).unwrap();
+    // The workload idles; the cost carve would drop to 64 — the seal holds 1024.
+    let carved = carve_respecting_seal(64, &critical);
+    assert_eq!(carved.target(), 1024, "cost cannot carve a critical reservation below its seal");
+    assert!(carved.seal_bound(), "the seal bound the carve (isolation preserved over cost)");
 }

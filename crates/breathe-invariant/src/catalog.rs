@@ -187,10 +187,49 @@ const DATABASE: BreatheDimension = BreatheDimension {
     note: "Per-engine knobs breathe TODAY via breathe-catalog::db_matrix (AppParam instances, MySQL/Neo4j); the first-class discovering DatabaseBand is the named Gap.",
 };
 
+/// IsolationBand — LANDING. The ISOLATION posture that BOUNDS the carve. The
+/// typed posture surface (QoS class + requests-floor + limits-ceiling +
+/// placement) + the seal-floor carve constraint (`carve_respecting_seal` /
+/// `SealedCarve`) + the critical-must-be-sealed forcing-function + the overlay
+/// precedence + the constrained optimization all SHIP as typed contract in
+/// `breathe-invariant::isolation` (CI-tested). The live in-cluster `IsolationBand`
+/// CRD reconcile (interference-sensitivity discovery from live throttle/eviction
+/// metrics + auto re-placement) is the C2 destination. This is the dimension
+/// whose ABSENCE produced the victoria-logs-422 receipt (a BestEffort pod with
+/// no isolation floor) — now a first-class landing Band.
+const ISOLATION: BreatheDimension = BreatheDimension {
+    id: DimensionId::Isolation,
+    band: "IsolationBand",
+    band_keyword: "defband-isolation",
+    setpoint: SP80,
+    carve_algorithm: CarveAlgorithm::ConstrainedIsolationAssignment,
+    discovery: DiscoveryStrategy::InterferenceDiscovered,
+    maturity: Maturity::Landing,
+    claimed_by_doctrine: true,
+    cost_effect: "right-size requests/limits toward the working set WITHOUT over-reserving isolation — Batch bin-packs BestEffort, Standard runs Burstable; no capacity wasted sealing a workload that needs no seal",
+    resiliency_effect: "SEAL a critical / interference-sensitive workload — guaranteed requests-floor + Guaranteed QoS + anti-affinity so a noisy neighbor can never throttle or evict it (the victoria-logs-422 class is unrepresentable), and the floor BOUNDS the carve so cost never strips the seal",
+    doctrine_ref: "BREATHABILITY.md §II.7 (isolation/interference — the seal dimension)",
+    pending: None,
+    clauses: &[
+        // Typed posture surface ships; the live in-cluster IsolationBand carve is landing → partial.
+        cs(CarvedByABand, OnlyMitigated),
+        cs(CarveToSetpoint, OnlyMitigated),
+        cs(DefaultOnFleetWide, OnlyMitigated),
+        // The critical-must-be-sealed CI forcing-function IS shipped (the seal gate).
+        cs(ModelsStayCurrent, CeilingC1),
+        // Interference-sensitivity discovery is the InterferenceDiscovered strategy;
+        // the overlay precedence is typed, live metric-reading is the C2 destination.
+        cs(DiscoveryMolded, OnlyMitigated),
+        cs(DualPurpose, OnlyMitigated),
+    ],
+    note: "Isolation is BOTH carved (the posture) AND a CONSTRAINT on the other carves (the seal-floor lower-bounds mem/cpu). The per-workload seal is parse-time-rejected (IsolationPosture::try_seal); fleet coverage is the CeilingC1 critical_workload_must_be_sealed matrix gate; the live IsolationBand CRD reconcile is the destination.",
+};
+
 /// The full breathe dimension catalog. Order: strongest maturity first, then
 /// canonical. Adding a dimension = a `const` + one entry here + one matrix row
 /// (same commit; the matrix enforces it).
-pub const CATALOG: &[&BreatheDimension] = &[&MEMORY, &CPU, &REPLICA, &STORAGE, &DATABASE];
+pub const CATALOG: &[&BreatheDimension] =
+    &[&MEMORY, &CPU, &REPLICA, &STORAGE, &ISOLATION, &DATABASE];
 
 /// Look up a dimension by id.
 #[must_use]
@@ -269,9 +308,9 @@ mod tests {
         let (g, l, s) = maturity_histogram();
         assert_eq!(g + l + s, CATALOG.len(), "maturity histogram must sum to catalog size");
         // Tier-honest snapshot of the CURRENT fleet state (2026-07):
-        // memory/cpu/replica SHIPPED, storage LANDING, database GAP. Update
-        // deliberately when a dimension advances — this line IS the ledger.
-        assert_eq!((g, l, s), (1, 1, 3), "breathe dimension maturity ledger drifted — update deliberately, never round up");
+        // memory/cpu/replica SHIPPED, storage+isolation LANDING, database GAP.
+        // Update deliberately when a dimension advances — this line IS the ledger.
+        assert_eq!((g, l, s), (1, 2, 3), "breathe dimension maturity ledger drifted — update deliberately, never round up");
     }
 
     #[test]
