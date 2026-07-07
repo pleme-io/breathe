@@ -90,6 +90,27 @@ pub struct ReplicaBand {
     pub mode: &'static str,
 }
 
+/// The grow-only StorageBand values — the PROVISION-MINIMAL + grow-on-demand
+/// dimension. Mirrors the chart's `global.breathe.storage` sub-block. Emitted
+/// ONLY for a workload class that carries persistent data (`posture.storage_band`);
+/// a stateless service has no PVC to carve, so its render omits this block
+/// entirely (an `Option::None` — a typed absence, never a `storage: {}` stub).
+/// The band is born at `provision_floor` (a small floor) and grows online toward
+/// the setpoint as real data lands — so an over-provisioned volume is never the
+/// default posture.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct StorageBand {
+    pub enabled: bool,
+    /// The utilization the grow-on-demand carve holds the volume at (the same
+    /// aggressive setpoint the vertical bands use — 80% used / 20% headroom).
+    pub setpoint: f64,
+    /// The provision-minimal floor the volume is born at (a quantity string,
+    /// e.g. `2Gi`). The grow-on-demand starting size.
+    pub provision_floor: &'static str,
+    pub dry_run: bool,
+    pub mode: &'static str,
+}
+
 /// The rendered `global.breathe` value block — the typed materialization of a
 /// preset for one workload class. Its [`Display`] is the canonical YAML the chart
 /// carries under `global.breathe`.
@@ -106,6 +127,10 @@ pub struct GlobalBreatheValues {
     pub memory: MemoryBand,
     pub cpu: CpuBand,
     pub replica: ReplicaBand,
+    /// The grow-only StorageBand — `Some` for a stateful class (it carries data to
+    /// carve), `None` for a stateless one (nothing to carve). Storage carving is a
+    /// FLEET-WIDE default for every workload that HAS storage, not an opt-in.
+    pub storage: Option<StorageBand>,
 }
 
 /// Render a preset's fleet-DEFAULT `global.breathe` block (the stateless-service
@@ -152,6 +177,15 @@ pub fn render_workload_breathe(
             dry_run: posture.dry_run,
             mode: posture.mode,
         },
+        // Provision-minimal + grow-on-demand: emitted only for a class that
+        // carries data. Same setpoint, shadow-first, born at the provision floor.
+        storage: posture.storage_band.then_some(StorageBand {
+            enabled: true,
+            setpoint: posture.vertical_setpoint,
+            provision_floor: posture.storage_provision_floor,
+            dry_run: posture.dry_run,
+            mode: posture.mode,
+        }),
     })
 }
 
@@ -185,7 +219,21 @@ impl fmt::Display for GlobalBreatheValues {
         writeln!(f, "  floor: {}", self.replica.floor)?;
         writeln!(f, "  topology: {}", self.replica.topology)?;
         writeln!(f, "  dryRun: {}", yaml_bool(self.replica.dry_run))?;
-        write!(f, "  mode: {}", self.replica.mode)
+        // The storage block is emitted ONLY for a stateful class (Some). A
+        // stateless class omits it — no trailing `storage:` stub. The replica
+        // block's `mode` therefore has to know whether it is the last line.
+        match &self.storage {
+            None => write!(f, "  mode: {}", self.replica.mode),
+            Some(s) => {
+                writeln!(f, "  mode: {}", self.replica.mode)?;
+                writeln!(f, "storage:")?;
+                writeln!(f, "  enabled: {}", yaml_bool(s.enabled))?;
+                writeln!(f, "  setpoint: {}", s.setpoint)?;
+                writeln!(f, "  provisionFloor: {}", s.provision_floor)?;
+                writeln!(f, "  dryRun: {}", yaml_bool(s.dry_run))?;
+                write!(f, "  mode: {}", s.mode)
+            }
+        }
     }
 }
 
@@ -286,6 +334,44 @@ mod tests {
                 .unwrap_or_else(|| panic!("no render for {}", class.as_str()));
             assert_eq!(v.replica.topology, topology, "{} topology", class.as_str());
             assert_eq!(v.replica.floor, floor, "{} floor", class.as_str());
+        }
+    }
+
+    /// The fleet-DEFAULT (stateless) render emits NO storage block — a stateless
+    /// service has no PVC to carve, so `storage` is a typed `None`, not a
+    /// `storage: {}` stub. This is why the committed golden carries no storage
+    /// block (it is the stateless default).
+    #[test]
+    fn stateless_default_omits_storage() {
+        let v = render_global_breathe(&CAMELOT);
+        assert!(v.storage.is_none(), "the stateless default has no storage to carve");
+        assert!(!v.to_string().contains("storage:"), "no storage block rendered for stateless");
+    }
+
+    /// EVERY STATEFUL class carves storage by default — provision-minimal (born at
+    /// the 2Gi floor), same aggressive setpoint, shadow-first. This is the
+    /// fleet-wide storage-carving default made concrete: a workload that HAS data
+    /// gets a StorageBand with no operator action, and it is born minimal so an
+    /// over-provisioned volume is never the default.
+    #[test]
+    fn stateful_classes_carve_storage_provision_minimal() {
+        use crate::preset::WorkloadClass;
+        for class in [
+            WorkloadClass::RelationalDatabase,
+            WorkloadClass::PersistentStore,
+            WorkloadClass::QuorumStore,
+        ] {
+            let v = render_workload_breathe(&CAMELOT, class)
+                .unwrap_or_else(|| panic!("no render for {}", class.as_str()));
+            let s = v.storage.unwrap_or_else(|| panic!("{} must carve storage", class.as_str()));
+            assert!(s.enabled, "{}: storage band enabled", class.as_str());
+            assert_eq!(s.provision_floor, "2Gi", "{}: provision-minimal floor", class.as_str());
+            assert!((s.setpoint - 0.8).abs() < f64::EPSILON, "{}: 80% setpoint", class.as_str());
+            assert!(s.dry_run, "{}: storage born shadow-first", class.as_str());
+            assert_eq!(s.mode, "shadow", "{}: storage mode shadow", class.as_str());
+            let block = v.to_string();
+            assert!(block.contains("storage:"), "{}: storage block rendered", class.as_str());
+            assert!(block.contains("provisionFloor: 2Gi"), "{}: provision floor rendered", class.as_str());
         }
     }
 
