@@ -149,7 +149,7 @@ pub const CATALOG: &[DimensionSpec] = &[
         directionality: Directionality::GrowOnly,
         resource_class: ResourceClass::HardDownSoftUp, // CSI grow-only; the down-cliff is unrepresentable
         suppressed_demand: SuppressedDemand::GrowOnly,
-        purpose: "grow PVC capacity at 80% (data persists; never shrink)",
+        purpose: "provision-minimal + grow-on-demand: born at a small floor, grow PVC capacity online toward 80% as data lands (never shrink; over-provisioning is unrepresentable in the carve)",
         upstream_mirror: None,
         depends_on: &[],
     },

@@ -145,6 +145,13 @@ pub struct BreatheDefaults {
     /// The HA replica floor every armed workload never rests below (`2`). A
     /// per-class profile MAY raise it (a quorum class → `3`), never lower it.
     pub ha_replica_floor: u32,
+    /// The PROVISION-MINIMAL storage floor every armed STORAGE band is born at (a
+    /// quantity string, e.g. `2Gi`). Storage carves grow-only: a stateful
+    /// workload's PVC is provisioned at this small floor and grows online toward
+    /// the setpoint as real data lands, so an over-provisioned volume (a fixed
+    /// `50Gi` holding a few hundred MiB) is never the default posture — it is only
+    /// ever an external over-declaration. Mirrors the `StorageBand` CRD default.
+    pub storage_provision_floor: &'static str,
     /// The 100%-spot placement stamped on every armed workload.
     pub placement: SpotPlacement,
     /// The flex-window cost envelope (diversified instance families + `$`/mo budget).
@@ -161,6 +168,7 @@ pub const CAMELOT: BreatheDefaults = BreatheDefaults {
     dry_run: true,
     mode: "shadow",
     ha_replica_floor: 2,
+    storage_provision_floor: "2Gi",
     placement: SpotPlacement {
         node_selector_role: "camelot",
         toleration_key: "camelot-only",
@@ -187,6 +195,10 @@ pub struct ResolvedBandPosture {
     pub replica_floor: u32,
     /// Whether a StorageBand is emitted for this class.
     pub storage_band: bool,
+    /// The provision-minimal floor a StorageBand (when emitted) is born at — the
+    /// grow-on-demand starting size. Carried on every posture so the render never
+    /// hard-codes it; inert for a class with `storage_band == false`.
+    pub storage_provision_floor: &'static str,
     /// The 100%-spot placement.
     pub placement: SpotPlacement,
 }
@@ -214,6 +226,7 @@ impl BreatheDefaults {
             replica_topology: p.topology_kind,
             replica_floor: p.replica_floor.max(self.ha_replica_floor),
             storage_band: p.has_storage,
+            storage_provision_floor: self.storage_provision_floor,
             placement: self.placement,
         })
     }
@@ -297,6 +310,7 @@ mod tests {
         assert!(CAMELOT.dry_run, "shadow-first: born dryRun");
         assert_eq!(CAMELOT.mode, "shadow", "shadow-first: mode shadow");
         assert_eq!(CAMELOT.ha_replica_floor, 2, "HA floor 2");
+        assert_eq!(CAMELOT.storage_provision_floor, "2Gi", "provision-minimal storage floor");
         assert_eq!(CAMELOT.placement.node_selector_role, "camelot");
         assert_eq!(CAMELOT.placement.toleration_key, "camelot-only");
         assert!((CAMELOT.placement.spot_fraction - 1.0).abs() < f64::EPSILON, "100% spot");

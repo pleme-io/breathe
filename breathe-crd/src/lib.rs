@@ -565,7 +565,7 @@ macro_rules! band_kind {
 
 band_kind!(MemoryBandSpec, MemoryBand, "MemoryBand", "mband", Unit::Bytes, "d_floor_bytes", "d_ceiling_bytes");
 band_kind!(CpuBandSpec, CpuBand, "CpuBand", "cband", Unit::Millicores, "d_floor_milli", "d_ceiling_milli");
-band_kind!(StorageBandSpec, StorageBand, "StorageBand", "sband", Unit::Bytes, "d_floor_bytes", "d_ceiling_bytes");
+band_kind!(StorageBandSpec, StorageBand, "StorageBand", "sband", Unit::Bytes, "d_storage_floor_bytes", "d_storage_ceiling_bytes");
 // HOST bands — the descriptor (breathe-host) encodes the host addressing; the
 // CRD shape is identical to the byte-valued k8s bands, so the same macro stamps
 // them. targetRef.name carries the systemd unit (CgroupBand) or the node
@@ -2622,6 +2622,16 @@ fn d_floor_bytes() -> String { "256Mi".into() }
 fn d_ceiling_bytes() -> String { "16Gi".into() }
 fn d_floor_milli() -> String { "250m".into() }
 fn d_ceiling_milli() -> String { "2".into() }
+// StorageBand PROVISION-MINIMAL defaults. Storage carves grow-only
+// (provision-minimal + grow-on-demand): a fresh volume is born at this small
+// floor and expands online toward the setpoint as real data lands, so an
+// over-provisioned volume (a fixed `50Gi` holding a few hundred MiB) is a state
+// breathe's own carve never constructs (breathe_control::classify_provision). The
+// floor is a fresh-PVC minimum, NOT memory's 256Mi (a PVC below ~1Gi is rarely
+// useful and CSI minimums bite); the ceiling is a generous grow headroom a data
+// tier reaches only with real data.
+fn d_storage_floor_bytes() -> String { "2Gi".into() }
+fn d_storage_ceiling_bytes() -> String { "200Gi".into() }
 fn d_setpoint() -> f64 { 0.80 }
 fn d_grow_above() -> f64 { 0.85 }
 fn d_shrink_below() -> f64 { 0.70 }
@@ -2731,6 +2741,32 @@ mod tests {
         assert_eq!(cfg.floor_bytes, 250);
         assert_eq!(cfg.ceiling_bytes, 2000);
         assert_eq!(cfg.request_floor_bytes, 0, "empty request_floor ⇒ no floor");
+    }
+
+    #[test]
+    fn storage_band_defaults_to_the_provision_minimal_floor() {
+        // PROVISION-MINIMAL: a StorageBand authored with ONLY a targetRef (every
+        // other field defaulted) is born at the small 2Gi floor with a generous
+        // 200Gi grow ceiling — NOT memory's 256Mi and NOT a fixed large size. A
+        // fresh PVC therefore starts minimal and grows on demand; a 50Gi-declared
+        // volume is an EXTERNAL over-declaration, never breathe's default.
+        let spec: StorageBandSpec = serde_json::from_value(serde_json::json!({
+            "targetRef": { "kind": "PersistentVolumeClaim", "name": "data-x" }
+        }))
+        .expect("a minimal StorageBandSpec must deserialize on defaults");
+        assert_eq!(spec.floor, "2Gi", "the provision-minimal floor default");
+        assert_eq!(spec.ceiling, "200Gi", "the grow-on-demand ceiling default");
+        let band = StorageBand::new("data-x", spec);
+        let cfg = Band::band_config(&band).unwrap();
+        assert_eq!(cfg.floor_bytes, 2 * (1 << 30), "2Gi provision floor in bytes");
+        assert_eq!(cfg.ceiling_bytes, 200 * (1 << 30), "200Gi grow ceiling in bytes");
+        // The carve target for a nearly-empty volume is the floor — the grow-on-
+        // demand contract: breathe would provision ~2Gi, never a fixed 50Gi.
+        assert_eq!(
+            breathe_control::provision_target(890 << 20, 890 << 20, &cfg),
+            2 * (1 << 30),
+            "an 890MiB volume carves to the 2Gi provision floor",
+        );
     }
 
     #[test]

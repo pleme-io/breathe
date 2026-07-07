@@ -47,7 +47,7 @@ Full adversarial prior-art ledger + the must-not-claim caveats:
 
 | Crate | Owns |
 |---|---|
-| `breathe-control` | the band law (`decide`/`plan_tick`), single-writer guard, directionality clamp, **`Unit`/`Quantity` codec**. **Dependency-free, pure, fully unit-tested.** |
+| `breathe-control` | the band law (`decide`/`plan_tick`), single-writer guard, directionality clamp, **`Unit`/`Quantity` codec**, the **provision-minimal + grow-on-demand storage carve** (`provision_target`/`classify_provision`/`ProvisionVerdict` + the over-provisioning theorem `breathe_carve_never_over_provisions`). **Dependency-free, pure, fully unit-tested.** |
 | `breathe-provider` | `Cluster` + `DimensionDescriptor` traits, the one generic `BandProvider`, `MockCluster` |
 | `breathe-core` | the composed `reconcile_one` seven-beat loop |
 | `breathe-dimensions` | the concrete descriptors (memory/cpu → metrics-server; storage → PromQL) |
@@ -119,7 +119,20 @@ A band resolves the pods it carves two ways, on one seam (`KubeCluster::owner_po
   `safety_gate_contains_the_predictive_law`). Default off fleet-wide.
 - **cpu — LIVE on pangea-database** (floor 500m / ceiling 2). Same CNPG Cluster,
   `limits.cpu`, `breathe/cpu` field manager (disjoint from `breathe/memory`).
-- **storage — code-complete + CLUSTER-AWARE, correctly PARKED on rio.** The
+- **storage — FIRST-CLASS provision-minimal dimension (peer of mem/cpu), correctly PARKED-live on rio.**
+  Storage is the fleet-wide grow-only carve: **provision-minimal + grow-on-demand**.
+  The `StorageBand` is born at a small **2Gi provision floor** (`d_storage_floor_bytes`,
+  not memory's 256Mi) with a 200Gi grow ceiling, and `breathe-control`'s
+  `classify_provision`/`ProvisionVerdict` make an over-provisioned volume (a fixed
+  `50Gi` holding a few hundred MiB — the 155GiB-provisioned/5GiB-used camelot receipt)
+  a *typed, observable* `OverProvisioned{waste}` — while the carve's own output
+  provably excludes that arm (`breathe_carve_never_over_provisions`), so
+  over-provisioning is **unrepresentable in breathe's actuation** and only ever an
+  external over-declaration (grow-only can't shrink it — a one-time recreate reclaims).
+  The render arms a StorageBand by default for every stateful class (shadow-first).
+  Live carving on a workload is still gated on a per-volume-accounting CSI (met on
+  EBS; parked on rio's local-path). The prior status stands below.
+- **storage (rio local-path detail) — code-complete + CLUSTER-AWARE, correctly PARKED on rio.** The
   `ClusterStorage` layout carves a CNPG `Cluster`'s `spec.storage.size` (the one
   declarative field the operator owns + reconciles to every instance PVC) and
   aggregates the instance-PVC metric (`<name>-[0-9]+`); the pangea-database band

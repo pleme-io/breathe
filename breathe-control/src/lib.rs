@@ -397,6 +397,251 @@ pub fn soft_min(working_set: u64, cfg: &BandConfig) -> u64 {
     from_ws.max(cfg.request_floor_bytes).max(cfg.floor_bytes)
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// PROVISION-MINIMAL + GROW-ON-DEMAND — the storage carve, and the
+// over-provisioning invariant it makes unrepresentable.
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// Storage is the `GrowOnly` dimension: a PVC / EBS volume expands ONLINE (CSI
+// resize / EBS `ModifyVolume`) but can never shrink in place. The breathability
+// law — "carve every resource dimension to its setpoint" — is a two-sided clamp
+// for a `Bidirectional` dimension (memory / cpu) and a ONE-SIDED carve for
+// storage: **provision-minimal + grow-on-demand**. A `StorageBand` starts a
+// volume at a small floor and grows it online as demonstrated usage climbs toward
+// the setpoint. The size breathe would ever set is exactly [`safe_min`] —
+//
+//   `target = max( ceil(peak_used / setpoint), request_floor_bytes, floor_bytes )`
+//
+// so a 50 GiB volume holding 890 MiB is a state breathe's OWN carve can never
+// construct: it would have provisioned ~2 GiB and grown only with real data. That
+// exact receipt — 155 GiB provisioned across camelot, ~5 GiB used — is the
+// signature of the missing carve, not a leak to detect after the fact. The carve
+// removes the whole waste class.
+
+/// The provision-minimal + grow-on-demand carve TARGET — the size breathe would
+/// set for a `GrowOnly` volume given its demonstrated peak usage. It is
+/// [`safe_min`] under the storage-carve name: ONE dimension-agnostic setpoint
+/// carve, two names (`safe_min` is the never-OOM hard floor a memory band never
+/// drops below; `provision_target` is the grow-on-demand size a storage band
+/// grows toward). The setpoint-carve `max(ceil(peak/setpoint), request_floor,
+/// floor)` is identical because the band law is unit- and dimension-agnostic.
+#[must_use]
+pub fn provision_target(peak_used: u64, used: u64, cfg: &BandConfig) -> u64 {
+    safe_min(peak_used, used, cfg)
+}
+
+/// The verdict of classifying a CURRENTLY-provisioned size against the
+/// provision-minimal carve target. Total: every `(provisioned, target)` pair maps
+/// to exactly one arm. The whole point is the codomain of breathe's own carve —
+/// [`carve_output_verdict`]'s theorem proves the carve can only ever emit
+/// `{RightSized, UnderProvisioned}`, so [`OverProvisioned`](Self::OverProvisioned)
+/// is *unrepresentable in breathe's actuation output*.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProvisionVerdict {
+    /// `provisioned` sits within one grow-step of `target` — the size breathe's
+    /// own carve converges to. The steady state.
+    RightSized { provisioned: u64, target: u64 },
+    /// `provisioned < target`: demonstrated usage has climbed past what the
+    /// current size holds at the setpoint. Grow-on-demand raises it to `target`
+    /// this / next tick — the NORMAL grow path, never waste.
+    UnderProvisioned { provisioned: u64, target: u64, deficit: u64 },
+    /// `provisioned ≫ target`: more capacity than the carve would EVER set for
+    /// this usage — reclaimable waste. UNREACHABLE via breathe's grow-only
+    /// actuation (breathe never sets a size above the carve target); only
+    /// constructible by an EXTERNAL over-declaration (a chart's fixed `50Gi`, a
+    /// hand-provisioned PVC). Grow-only cannot shrink it, so the reclaim is a
+    /// one-time recreate — surfaced here so it is a typed, observable anomaly and
+    /// never a silent 30×-idle volume.
+    OverProvisioned { provisioned: u64, target: u64, waste: u64 },
+}
+
+impl ProvisionVerdict {
+    /// `true` iff this is the reclaimable-waste arm — the only verdict breathe's
+    /// own carve can never produce (proved by [`carve_output_verdict`]).
+    #[must_use]
+    pub fn is_over_provisioned(self) -> bool {
+        matches!(self, Self::OverProvisioned { .. })
+    }
+    /// The reclaimable waste in bytes (`0` for the two non-waste arms).
+    #[must_use]
+    pub fn waste_bytes(self) -> u64 {
+        match self {
+            Self::OverProvisioned { waste, .. } => waste,
+            _ => 0,
+        }
+    }
+}
+
+/// The largest size the grow-only carve would ever HOLD for a given target: the
+/// carve target plus at most one transient grow-step of headroom (a grow lands at
+/// `ceil(limit * grow_factor)`, then converges as the bigger denominator drops
+/// utilization back inside the band). A provisioned size above this ceiling is
+/// slack the carve does not create — the over-provisioning boundary.
+#[must_use]
+#[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+fn carve_grow_ceiling(target: u64, cfg: &BandConfig) -> u64 {
+    let factor = if cfg.grow_factor <= 1.0 { 1.0 } else { cfg.grow_factor };
+    ((target as f64) * factor).ceil() as u64
+}
+
+/// Classify a CURRENTLY-provisioned size against the provision-minimal carve
+/// target for its demonstrated usage. Pure + total. This is the typed detector
+/// that turns "155 GiB provisioned / 5 GiB used" from an invisible waste into a
+/// [`ProvisionVerdict::OverProvisioned`] with an exact `waste` figure a posture
+/// controller can act on.
+#[must_use]
+pub fn classify_provision(
+    provisioned: u64,
+    peak_used: u64,
+    used: u64,
+    cfg: &BandConfig,
+) -> ProvisionVerdict {
+    let target = provision_target(peak_used, used, cfg);
+    if provisioned < target {
+        ProvisionVerdict::UnderProvisioned { provisioned, target, deficit: target - provisioned }
+    } else if provisioned <= carve_grow_ceiling(target, cfg) {
+        ProvisionVerdict::RightSized { provisioned, target }
+    } else {
+        ProvisionVerdict::OverProvisioned { provisioned, target, waste: provisioned - target }
+    }
+}
+
+/// The FIXPOINT of the grow-only carve started from the band floor for a workload
+/// whose demonstrated usage is `used`: repeatedly apply the grow decision under
+/// the `GrowOnly` directionality clamp until it stops growing. This is the size
+/// breathe's own actuation converges a volume to — the codomain sample the
+/// over-provisioning theorem quantifies over. Pure; bounded (a grow strictly
+/// raises the limit and the ceiling bounds it, so it converges).
+#[must_use]
+pub fn carve_fixpoint(used: u64, cfg: &BandConfig) -> u64 {
+    let mut current = cfg.floor_bytes.max(1);
+    // The ceiling bounds the number of grow steps; 128 is far above any realistic
+    // floor→ceiling ratio for the default config, and the loop breaks on Hold.
+    for _ in 0..128 {
+        match clamp_to_directionality(decide(used, current, cfg), Directionality::GrowOnly) {
+            Decision::Grow { to, .. } if to > current => current = to,
+            // Hold / NoSafeShrink / AtCeiling / NoLimit / warmup / throttle → converged.
+            _ => break,
+        }
+    }
+    current
+}
+
+/// The verdict of the carve's OWN OUTPUT for a demonstrated usage — the size
+/// breathe converges a volume to, classified against the target. The
+/// over-provisioning theorem ([`breathe_carve_never_over_provisions`]) asserts
+/// this is NEVER [`ProvisionVerdict::OverProvisioned`], for any usage — the
+/// constructive proof that over-provisioning is unrepresentable in breathe's
+/// actuation. Peak == usage (steady state) is the worst case for the bound.
+#[must_use]
+pub fn carve_output_verdict(used: u64, cfg: &BandConfig) -> ProvisionVerdict {
+    let provisioned = carve_fixpoint(used, cfg);
+    classify_provision(provisioned, used, used, cfg)
+}
+
+#[cfg(test)]
+mod provision_tests {
+    use super::{
+        carve_fixpoint, carve_output_verdict, classify_provision, provision_target, BandConfig,
+        ProvisionVerdict,
+    };
+
+    const MI: u64 = 1 << 20;
+    const GI: u64 = 1 << 30;
+
+    /// A provision-minimal storage band: a small 2 GiB floor, a large ceiling, the
+    /// aggressive 80% setpoint — the fleet-default `StorageBand` shape.
+    fn storage_cfg() -> BandConfig {
+        BandConfig { floor_bytes: 2 * GI, ceiling_bytes: 200 * GI, ..BandConfig::default() }
+    }
+
+    /// The carve target IS the provision-minimal size: for tiny usage it floors at
+    /// the (small) provision floor; for real usage it is `ceil(peak/setpoint)`.
+    #[test]
+    fn provision_target_is_floor_bounded_setpoint_carve() {
+        let c = storage_cfg();
+        // 890 MiB used → ceil(890/0.8) ≈ 1113 MiB, but the 2 GiB floor binds.
+        assert_eq!(provision_target(890 * MI, 890 * MI, &c), 2 * GI);
+        // 40 GiB used → ceil(40/0.8) = 50 GiB, above the floor.
+        assert_eq!(provision_target(40 * GI, 40 * GI, &c), 50 * GI);
+    }
+
+    /// THE 155 GiB RECEIPT: a 50 GiB volume holding 890 MiB is `OverProvisioned`
+    /// with an exact ~48 GiB waste — the typed detection of the class the missing
+    /// carve produced. A posture controller reads `waste_bytes()` and acts.
+    #[test]
+    fn a_50gib_volume_holding_890mib_is_over_provisioned() {
+        let c = storage_cfg();
+        let v = classify_provision(50 * GI, 890 * MI, 890 * MI, &c);
+        assert!(v.is_over_provisioned(), "50GiB/890MiB must be over-provisioned, got {v:?}");
+        match v {
+            ProvisionVerdict::OverProvisioned { target, waste, .. } => {
+                assert_eq!(target, 2 * GI, "carve would have provisioned the 2 GiB floor");
+                assert_eq!(waste, 50 * GI - 2 * GI, "≈48 GiB reclaimable");
+            }
+            other => panic!("expected OverProvisioned, got {other:?}"),
+        }
+    }
+
+    /// A volume the carve itself grew (a full 2 GiB PVC → grows) classifies
+    /// `RightSized` or `UnderProvisioned`, never waste — the steady-state carve is
+    /// not mistaken for over-provisioning.
+    #[test]
+    fn a_carve_grown_volume_is_not_flagged_as_waste() {
+        let c = storage_cfg();
+        // 8 GiB used in a 10 GiB volume (80% — exactly the setpoint) → RightSized.
+        let v = classify_provision(10 * GI, 8 * GI, 8 * GI, &c);
+        assert!(!v.is_over_provisioned(), "an at-setpoint volume is not waste: {v:?}");
+    }
+
+    /// A volume that has FILLED past its setpoint is `UnderProvisioned` (grow path),
+    /// not waste — the grow-on-demand direction.
+    #[test]
+    fn a_filling_volume_is_under_provisioned() {
+        let c = storage_cfg();
+        // 9.5 GiB used in a 10 GiB volume (95%) → target ceil(9.5/0.8) ≈ 11.9 GiB > 10.
+        match classify_provision(10 * GI, 95 * GI / 10, 95 * GI / 10, &c) {
+            ProvisionVerdict::UnderProvisioned { deficit, .. } => assert!(deficit > 0),
+            other => panic!("a filling volume must be UnderProvisioned (grow), got {other:?}"),
+        }
+    }
+
+    /// THE OVER-PROVISIONING THEOREM (the seal): for EVERY demonstrated usage, the
+    /// size breathe's own grow-only carve converges to is `RightSized` or
+    /// `UnderProvisioned` — NEVER `OverProvisioned`. The codomain of the carve
+    /// excludes the waste arm, so over-provisioning is unrepresentable in breathe's
+    /// actuation output (tier: mechanical CI forcing-function — Rust has no
+    /// dependent-type quantifier — proven over a dense usage sweep; the residual
+    /// over-provision is only ever an EXTERNAL over-declaration, which grow-only
+    /// surfaces but cannot shrink).
+    #[test]
+    fn breathe_carve_never_over_provisions() {
+        let c = storage_cfg();
+        // A dense sweep from sub-floor to well above the floor, plus the awkward
+        // just-crossed-a-grow-step usages.
+        let mut usages: Vec<u64> = vec![0, MI, 100 * MI, 890 * MI, GI, 2 * GI, 3 * GI, 7 * GI, 40 * GI, 120 * GI];
+        for step in 1..=64u64 {
+            usages.push(step * 512 * MI);
+        }
+        for used in usages {
+            let v = carve_output_verdict(used, &c);
+            assert!(
+                !v.is_over_provisioned(),
+                "breathe's carve over-provisioned at used={used}: {v:?} — the carve codomain must exclude OverProvisioned",
+            );
+        }
+    }
+
+    /// The carve fixpoint never exceeds the ceiling and never sits below the floor —
+    /// the provision-minimal bounds hold at both ends.
+    #[test]
+    fn carve_fixpoint_respects_floor_and_ceiling() {
+        let c = storage_cfg();
+        assert_eq!(carve_fixpoint(1, &c), c.floor_bytes, "tiny usage stays at the provision floor");
+        assert!(carve_fixpoint(500 * GI, &c) <= c.ceiling_bytes, "huge usage is bounded by the ceiling");
+    }
+}
+
 /// The typed two-target plan for ONE memory tick under the soft/hard split — the
 /// OOM-impossible-by-construction shape. An efficiency shrink writes a SOFT target
 /// (`memory.high`, reclaim) while the HARD ceiling (`memory.max` / the k8s limit)
