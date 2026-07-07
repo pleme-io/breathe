@@ -147,22 +147,41 @@ pub const ARM64_DEGRADE_LADDER: &[DegradeTier] = &[
 
 /// The MAX-PARALLEL contract every super-cache-ci build obeys — two levels:
 /// ACROSS-IMAGES (all N services build concurrently, so wall-clock ≈
-/// shared-closure-once + slowest-service, not the SUM) and WITHIN-DERIVATION (nix
-/// `--max-jobs` + `--cores` auto-tuned to the node's ACTUAL vCPU count, never
-/// hardcoded — a 48xl = 192 vCPU must be saturated).
+/// shared-closure-once + slowest-service, not the SUM) and WITHIN-NODE (nix
+/// `--max-jobs`/`--cores` DYNAMICALLY PARTITIONED across the N concurrent builds
+/// so total planned concurrency ≈ V vCPU WITHOUT over-subscribing it).
 ///
-/// The values are the DEFAULTS the build Job/pipeline reads; `auto`/`0` are nix's
-/// "detect from the box" sentinels, which is exactly the "saturate the ACTUAL
-/// vCPU count" requirement — a hardcoded number would UNDER-saturate a bigger box.
+/// ── THE MODEL UPDATE (measured 2026-07-07) ─────────────────────────────
+/// The prior belief was that nix `--max-jobs auto --cores 0` "saturates ANY box".
+/// A cold fleet build MEASURED that this OVER-subscribes: when N images build
+/// concurrently, each nix build fans out to ALL V cores, so demand is N×V ≫ V.
+/// On a 96-vCPU node the 9-service fleet peaked at load 300 (3.1×); on 32-vCPU,
+/// 155 (4.8×). The wall-clock was pinned at 124s and did NOT improve when cores
+/// were bounded, and the load did NOT drop, because the raw `go install` in
+/// substrate's service-flake ignored nix `--cores` (it defaulted `-p` to the host
+/// cpu count). The load-bearing fix is TWO-part: (1) partition V across N so
+/// planned = max-jobs×cores ≤ V (the tuner, `nix-image/run.tlisp`); (2) make the
+/// Go build honor `--cores` (`-p $NIX_BUILD_CORES` in service-flake.nix). This
+/// contract encodes the PARTITION, not the blind-saturate sentinels.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ParallelismContract {
-    /// nix `--max-jobs`: how many derivations build in parallel WITHIN one build.
-    /// `"auto"` = one per core = full within-derivation fan (the correct saturating
-    /// value on ANY box size). Never a fixed integer (that under-fills a bigger node).
+    /// nix `--max-jobs` DEFAULT sentinel the tuner reads. `"auto"` hands control to
+    /// the `nix-image` tuner, which computes `--max-jobs = N` (the parallel target
+    /// count) rather than one-per-core. A hardcoded integer here is an explicit
+    /// quota cap; the sentinel is the adaptive path.
     pub nix_max_jobs: &'static str,
-    /// nix `--cores`: cores PER derivation build. `0` = all available (let the
-    /// individual build's `-j$(nproc)` see the whole box). The saturating value.
+    /// nix `--cores` DEFAULT sentinel. `0` hands control to the tuner, which
+    /// computes `--cores = max(1, floor(V/N))` from the discovered vCPU count so
+    /// N×cores ≤ V. `0` is NOT "all cores per build" anymore — it is "let the
+    /// tuner partition"; the tuner also bounds Go's own `-p`/GOMAXPROCS to it.
     pub nix_cores: u32,
+    /// `true` ⇒ the tuner DISCOVERS V=nproc + PARTITIONS across N by default (the
+    /// adaptive path). `false` ⇒ raw passthrough of the sentinels (legacy).
+    pub auto_tune: bool,
+    /// The DAG shape the tuner partitions for. `"narrow"` (the monolithic
+    /// buildGoModule fleet) ⇒ max-jobs N, cores V/N. `"wide"` (per-package /
+    /// gen-gomod) ⇒ max-jobs V, cores 1.
+    pub dag_shape: &'static str,
     /// ACROSS-IMAGES: build all services concurrently (a GHA `strategy.matrix`
     /// fan over the (svc,arch) rows, OR one nix invocation over all image attrs).
     /// `true` ⇒ wall-clock ≈ slowest-service, not the sum. The whole speed thesis.
@@ -173,15 +192,41 @@ pub struct ParallelismContract {
     pub matrix_max_parallel: u32,
 }
 
-/// The saturating parallelism contract — auto/all-cores, across-images concurrent,
-/// uncapped matrix. This is the "absolute-best build times" default; nothing here
-/// under-fills a big node or serializes the service fan.
-pub const SATURATING_PARALLELISM: ParallelismContract = ParallelismContract {
+/// The ADAPTIVE-PARTITION parallelism contract — the tuner discovers V=nproc and
+/// partitions it across the N concurrent builds so planned concurrency ≈ V without
+/// over-subscription. Across-images concurrent, uncapped matrix. This is the
+/// "absolute-best build times" default that ADAPTS to whatever spot instance the
+/// evolving-degrade ladder placed (32/96/192 vCPU) — it neither under-fills a big
+/// node nor thrashes a small one.
+pub const ADAPTIVE_PARTITION: ParallelismContract = ParallelismContract {
     nix_max_jobs: "auto",
     nix_cores: 0,
+    auto_tune: true,
+    dag_shape: "narrow",
     across_images_concurrent: true,
     matrix_max_parallel: 0,
 };
+
+/// Pure PARTITION MATH mirroring `nix-image/run.tlisp`'s `ni:tune-partition`.
+/// Given the discovered vCPU count `v` and `n` parallel targets, return
+/// `(max_jobs, cores)` for a narrow (monolithic) DAG: `n` jobs × `floor(v/n)`
+/// cores (clamped to ≥ 1). `n == 0` degenerates to a lone build owning the box.
+/// The sealed invariant: `max_jobs * cores <= v` for every `v >= n >= 1` (no
+/// over-subscription) and the slack `v - planned < n` (saturating).
+#[must_use]
+pub fn partition_narrow(v: u32, n: u32) -> (u32, u32) {
+    if n == 0 {
+        (1, v.max(1))
+    } else {
+        (n, (v / n).max(1))
+    }
+}
+
+/// Planned concurrency of a partition: `max_jobs * cores`.
+#[must_use]
+pub fn planned_concurrency((max_jobs, cores): (u32, u32)) -> u32 {
+    max_jobs * cores
+}
 
 /// The DEFAULT breathe posture for the super-cache-ci BUILD use-case class — the
 /// bursty peer of [`crate::preset::CAMELOT`] (which arms the SaaS workloads). One
@@ -229,7 +274,7 @@ pub const SUPER_CACHE_CI_BUILD: BuilderBreatheClass = BuilderBreatheClass {
     floor: 0,
     scale_to_zero_idle_secs: 120,
     ramdisk_gib: 64,
-    parallelism: SATURATING_PARALLELISM,
+    parallelism: ADAPTIVE_PARTITION,
     degrade_ladder_amd64: AMD64_DEGRADE_LADDER,
     retry_on_spot_reclaim: true,
     spot_fraction: 1.0,
@@ -268,8 +313,9 @@ pub fn ladder_family_union(ladder: &'static [DegradeTier]) -> Vec<&'static str> 
 #[cfg(test)]
 mod tests {
     use super::{
-        floor_tier, fastest_tier, ladder_family_union, BuilderObjective, AMD64_DEGRADE_LADDER,
-        ARM64_DEGRADE_LADDER, SATURATING_PARALLELISM, SUPER_CACHE_CI_BUILD,
+        floor_tier, fastest_tier, ladder_family_union, partition_narrow, planned_concurrency,
+        BuilderObjective, ADAPTIVE_PARTITION, AMD64_DEGRADE_LADDER,
+        ARM64_DEGRADE_LADDER, SUPER_CACHE_CI_BUILD,
     };
     use crate::cost::{CAMELOT_INSTANCE_FAMILIES, MIN_DIVERSIFIED_FAMILIES};
 
@@ -366,26 +412,40 @@ mod tests {
     }
 
     /// THE parallelism contract SATURATES the box: max-jobs is the auto sentinel
-    /// (never a fixed integer that under-fills a bigger node), cores is 0 (all),
-    /// across-images is concurrent, and the matrix is uncapped by default.
+    /// The adaptive-partition contract: the tuner is armed (`auto_tune`), the
+    /// sentinels hand control to it, across-images is concurrent, matrix uncapped.
     #[test]
-    fn parallelism_saturates_the_box() {
-        let p = SATURATING_PARALLELISM;
-        assert_eq!(p.nix_max_jobs, "auto", "max-jobs must be the auto sentinel (saturate ANY box)");
-        assert_eq!(p.nix_cores, 0, "cores must be 0 (all available cores per derivation)");
+    fn parallelism_is_the_adaptive_partition() {
+        let p = ADAPTIVE_PARTITION;
+        assert!(p.auto_tune, "the tuner must be armed (discover V + partition over N)");
+        assert_eq!(p.nix_max_jobs, "auto", "max-jobs sentinel hands control to the tuner");
+        assert_eq!(p.nix_cores, 0, "cores sentinel hands control to the tuner");
+        assert_eq!(p.dag_shape, "narrow", "the akeyless fleet is a narrow (monolithic) DAG");
         assert!(p.across_images_concurrent, "the service fan must be concurrent (wall-clock = slowest, not sum)");
         assert_eq!(p.matrix_max_parallel, 0, "the matrix is uncapped by default (scale-to-zero absorbs the burst)");
     }
 
-    /// A hardcoded max-jobs INTEGER is the anti-pattern this seals against: the auto
-    /// sentinel is NOT parseable as a fixed count, so it can only mean "detect the
-    /// box" — a future edit to a fixed number would fail to parse here.
+    /// THE SEALED INVARIANT: the partition never OVER-subscribes the box
+    /// (planned = max-jobs×cores ≤ V) AND saturates it (slack < N), over the full
+    /// realistic (V, N) grid. The blind auto/0 default this replaces FAILED this —
+    /// N images × all-V-cores = N×V ≫ V (MEASURED load 300 on 96 vCPU / N=9).
     #[test]
-    fn max_jobs_is_not_a_hardcoded_integer() {
-        assert!(
-            SATURATING_PARALLELISM.nix_max_jobs.parse::<u32>().is_err(),
-            "max-jobs must be 'auto' (box-detected), never a hardcoded integer that under-fills a bigger node"
-        );
+    fn partition_never_oversubscribes_and_saturates() {
+        for &v in &[32u32, 48, 64, 96, 128, 192] {
+            for &n in &[4u32, 6, 8, 9, 12, 16] {
+                let p = partition_narrow(v, n);
+                let planned = planned_concurrency(p);
+                assert!(planned <= v, "planned {planned} must not exceed V {v} (N={n})");
+                assert!(v - planned < n, "slack {} must be < N {n} (saturating; V={v})", v - planned);
+                assert!(p.1 >= 1, "cores must clamp to >= 1 (never a 0-core build)");
+            }
+        }
+        // the prompt's worked cases
+        assert_eq!(partition_narrow(96, 9), (9, 10), "V=96,N=9 → 9 jobs × 10 cores (90 ≤ 96)");
+        assert_eq!(partition_narrow(192, 9), (9, 21), "V=192,N=9 → 9 × 21 (189 ≤ 192)");
+        assert_eq!(partition_narrow(32, 9), (9, 3), "V=32,N=9 → 9 × 3 (27 ≤ 32)");
+        // a lone build owns the box
+        assert_eq!(partition_narrow(96, 0), (1, 96), "N=0 → lone build, all cores");
     }
 
     /// THE super-cache-ci build posture: time-floor-preferred, floor 0, big RAMDISK,
@@ -400,7 +460,7 @@ mod tests {
         assert!(b.ramdisk_gib >= 32, "the RAMDISK must hold the build tree in RAM (never-touch-disk)");
         assert!(b.retry_on_spot_reclaim, "a mid-build reclaim must be survived, not fatal");
         assert!((b.spot_fraction - 1.0).abs() < f64::EPSILON, "100% spot — never on-demand");
-        assert_eq!(b.parallelism, SATURATING_PARALLELISM, "the build inherits the saturating parallelism contract");
+        assert_eq!(b.parallelism, ADAPTIVE_PARTITION, "the build inherits the adaptive-partition contract");
         assert!(b.scale_to_zero_idle_secs > 0, "aggressive scale-to-zero keeps it near-free at idle");
     }
 
