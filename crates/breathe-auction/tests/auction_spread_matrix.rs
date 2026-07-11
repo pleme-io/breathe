@@ -151,6 +151,40 @@ fn the_managed_ng_strategy_gap_is_expressible_and_enforced() {
     assert!(honest.is_valid(), "marking the gap ignored-on-managed-ng is honest + valid");
 }
 
+// ── row 7b: the standalone-single-instance lane has NO strategy axis to bind ────
+
+#[test]
+fn the_standalone_instance_lane_has_no_strategy_axis_and_is_expressible() {
+    // The progressive-platform-discovery axis: a lone hand-launched EC2 instance
+    // (no ASG, no Fleet, no EKS node group) is a THIRD lane, distinct from both
+    // pool lanes above. Claiming its strategy Effective or (wrongly) marking it
+    // the managed-NG GAP shape are both invalid; only the honest
+    // not-applicable-single-instance wiring is a valid permutation.
+    let claims_effective = AuctionSpread {
+        lane: Lane::StandaloneEc2Instance,
+        strategy_wiring: StrategyWiring::Effective,
+        ..BUILD_BURST
+    };
+    assert!(!claims_effective.is_valid(), "a standalone instance has nothing to wire the strategy through");
+
+    let conflates_with_managed_ng_gap = AuctionSpread {
+        lane: Lane::StandaloneEc2Instance,
+        strategy_wiring: StrategyWiring::IgnoredOnManagedNg,
+        ..BUILD_BURST
+    };
+    assert!(
+        !conflates_with_managed_ng_gap.is_valid(),
+        "a standalone instance is not a managed-NG — the computed-then-dropped GAP shape does not apply"
+    );
+
+    let honest = AuctionSpread {
+        lane: Lane::StandaloneEc2Instance,
+        strategy_wiring: StrategyWiring::NotApplicableSingleInstance,
+        ..BUILD_BURST
+    };
+    assert!(honest.is_valid(), "not-applicable-single-instance is the one honest wiring for this lane");
+}
+
 // ── row 8: placement-safe (single-instance-EBS ⇒ single-AZ) ─────────────────────
 
 #[test]
