@@ -20,6 +20,14 @@ metadata:
   labels:
     app.kubernetes.io/name: pleme-breathe
 rules:
+  # NOTE (2026-07-11): kubeparambands/breathecloudpools/quinhaopools were
+  # MISSING from this checked-in list despite being live-granted (confirmed
+  # absent by re-reading this file before this change, same class of drift
+  # as the "nodes" grant below) — the live ClusterRole carries them only
+  # because they were hand-patched onto the cluster out of band, alongside
+  # isolationbands (task #91/#92/#94's live verification pass). Landing all
+  # four here closes that drift so a future `helm upgrade`/reinstall from
+  # this chart cannot silently revoke a currently-working grant.
   - apiGroups: ["breathe.pleme.io"]
     resources:
       - "memorybands"
@@ -28,6 +36,12 @@ rules:
       - "cpubands/status"
       - "storagebands"
       - "storagebands/status"
+      - "kubeparambands"
+      - "kubeparambands/status"
+      - "breathecloudpools"
+      - "breathecloudpools/status"
+      - "quinhaopools"
+      - "quinhaopools/status"
       - "isolationbands"
       - "isolationbands/status"
     verbs: ["get", "list", "watch", "patch", "update"]
@@ -70,10 +84,15 @@ rules:
   - apiGroups: [""]
     resources: ["persistentvolumeclaims"]
     verbs: ["get", "list", "watch", "patch"]
-  # Read pods for owner→pod resolution (metric label scoping); no mutation.
+  # Read pods for owner→pod resolution (metric label scoping); the
+  # pods/resize subresource + patch verb close the same class of live-but-
+  # uncommitted drift as the block above — in-place pod vertical resize
+  # (k8s 1.33+ InPlacePodVerticalScaling) was already hand-patched onto the
+  # live ClusterRole and is exercised by the memory.high routing path
+  # (breathe-control commit 986f3ea).
   - apiGroups: [""]
-    resources: ["pods"]
-    verbs: ["get", "list"]
+    resources: ["pods", "pods/resize"]
+    verbs: ["get", "list", "patch"]
   # correnteza node-tier: the OPENING claim path (node_forma.rs — patches a
   # node's taints/labels to claim it into a BreatheCloudPool on a Grew tick,
   # task #84 proven live) AND the CLOSING origin_guard path (isolation_band.rs

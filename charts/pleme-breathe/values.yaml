@@ -48,6 +48,13 @@ serviceAccount:
   create: true
   name: breathe-controller
 
+# Self-observability: prometheus.io/* scrape annotations + the metrics
+# containerPort on the controller pod. The controller's own :9100 /metrics
+# listener always binds regardless of this flag (main.rs) — this only gates
+# whether it's discoverable via annotation-based scrape config.
+metrics:
+  enabled: false
+
 logLevel: "info,breathe_controller=info"
 
 # Image pull secret(s) for the private ghcr image.
