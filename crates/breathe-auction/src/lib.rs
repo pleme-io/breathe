@@ -100,7 +100,7 @@ pub const AXIS_LEDGER: &[AxisLedgerRow] = &[
         axis: "spot-strategy",
         maturity: spread::Maturity::Design,
         tier: UnrepTier::CeilingC1,
-        note: "3 strategies configurable + EFFECTIVE on the ASG/EC2-Fleet lane; DROPPED on the EKS-managed-NG lane (IgnoredOnManagedNg) — the operator-flagged gap, now CI-visible",
+        note: "3 strategies configurable + EFFECTIVE on the ASG/EC2-Fleet lane; DROPPED on the EKS-managed-NG lane (IgnoredOnManagedNg) — the operator-flagged gap, now CI-visible; NOT-APPLICABLE (not a gap) on the standalone single-instance lane — no distribution-among-launch-specs decision exists for a lone instance",
     },
     AxisLedgerRow {
         axis: "auction-ladder (evolving-degrade)",

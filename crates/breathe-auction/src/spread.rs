@@ -40,9 +40,13 @@ impl UseCase {
     pub const ALL: [UseCase; 3] = [Self::SaasSteady, Self::BuildBurst, Self::EyesTiny];
 }
 
-/// The AWS lane a pool realizes on — the two shipped substrates. This is what
-/// decides whether the spot-strategy axis is EFFECTIVE or DROPPED
-/// ([`StrategyWiring`]).
+/// The AWS lane a pool realizes on — the shipped substrates + the progressively-
+/// discovered platform shape. This is what decides whether the spot-strategy
+/// axis is EFFECTIVE, DROPPED, or structurally NOT-APPLICABLE
+/// ([`StrategyWiring`]) — the typed answer to "discover whether we're on an ASG,
+/// an EKS managed node group, or a lone self-managed instance, and load the
+/// matching config matrix" (the progressive-platform-discovery axis correnteza's
+/// M0 extends; see `theory/CORRENTEZA.md`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Lane {
     /// A standalone mixed-instances ASG / EC2 Fleet (`Spot::MixedInstancesAsg`) —
@@ -51,6 +55,15 @@ pub enum Lane {
     /// An EKS managed node group (`EksDrillNodeGroup`) — takes `capacity_type` but
     /// does NOT expose `SpotAllocationStrategy`. The operator-flagged gap surface.
     EksManagedNodeGroup,
+    /// A single, hand-provisioned EC2 instance running self-managed k3s directly
+    /// — no ASG, no EC2 Fleet, no EKS node group wrapping it (e.g. Camelot's
+    /// bootstrap/control-plane node, brought up outside the
+    /// `CamelotNodeGroup`/`CamelotBuilderNodeGroup` EKS-managed-node-group
+    /// architectures). Distinct from both pool lanes above: a lone instance has
+    /// no *distribution-among-launch-specs* decision to make, so the
+    /// spot-strategy axis has no field to bind on this lane at all — see
+    /// [`StrategyWiring::NotApplicableSingleInstance`].
+    StandaloneEc2Instance,
 }
 
 impl Lane {
@@ -59,13 +72,19 @@ impl Lane {
         match self {
             Self::MixedInstancesAsg => "mixed-instances-asg",
             Self::EksManagedNodeGroup => "eks-managed-node-group",
+            Self::StandaloneEc2Instance => "standalone-ec2-instance",
         }
     }
+
+    pub const ALL: [Lane; 3] =
+        [Self::MixedInstancesAsg, Self::EksManagedNodeGroup, Self::StandaloneEc2Instance];
 }
 
 /// How the spot ALLOCATION strategy is wired on this pool's lane — the tier-honest
 /// encoding of the operator-flagged gap: `Pangea::Spot::Allocation` is ASG /
-/// EC2-Fleet-wired, NOT managed-node-group-wired.
+/// EC2-Fleet-wired, NOT managed-node-group-wired — plus the structurally
+/// DIFFERENT single-instance case (there is no gap to name there; there is no
+/// axis to bind at all).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum StrategyWiring {
     /// The strategy takes effect: the ASG lane passes `spot_allocation_strategy`
@@ -78,6 +97,16 @@ pub enum StrategyWiring {
     /// EKS's internal fixed strategy. Carried on the spread so the gap is
     /// CI-VISIBLE, never a silent computed-but-ignored field.
     IgnoredOnManagedNg,
+    /// **NOT A GAP — structurally inapplicable.** A lone EC2 instance's spot
+    /// request (`RunInstances` + `InstanceMarketOptions.SpotOptions`) has no
+    /// `AllocationStrategy` field at all — that concept exists only for a POOL
+    /// choosing AMONG MULTIPLE launch specs (an ASG/Fleet). There is nothing
+    /// computed-then-dropped here, unlike [`Self::IgnoredOnManagedNg`]: a
+    /// `StandaloneEc2Instance` lane has no distribution decision to make, ever,
+    /// unless the topology itself becomes a pool. Named distinctly so the two
+    /// honestly-different shapes (a live platform gap vs. a structural
+    /// non-applicability) are never conflated in a report.
+    NotApplicableSingleInstance,
 }
 
 impl StrategyWiring {
@@ -86,6 +115,7 @@ impl StrategyWiring {
         match self {
             Self::Effective => "effective",
             Self::IgnoredOnManagedNg => "ignored-on-managed-ng",
+            Self::NotApplicableSingleInstance => "not-applicable-single-instance",
         }
     }
 }
@@ -265,7 +295,11 @@ impl AuctionSpread {
 
         // Strategy-wiring honesty (the operator gap): managed-NG + a non-capacity-
         // optimized strategy MUST be marked IgnoredOnManagedNg; the ASG lane is
-        // always Effective.
+        // always Effective; a lone standalone instance has no axis to bind at
+        // all, so it must always be marked NotApplicableSingleInstance — never
+        // Effective (nothing to wire) and never IgnoredOnManagedNg (that names a
+        // different, GAP shape — a computed-then-dropped preference — which does
+        // not apply here).
         match self.lane {
             Lane::EksManagedNodeGroup => {
                 if self.spot_strategy != SpotStrategy::CapacityOptimized
@@ -277,6 +311,11 @@ impl AuctionSpread {
             Lane::MixedInstancesAsg => {
                 if self.strategy_wiring != StrategyWiring::Effective {
                     v.push("auction-strategy-wiring: the ASG lane wires the strategy — must be effective");
+                }
+            }
+            Lane::StandaloneEc2Instance => {
+                if self.strategy_wiring != StrategyWiring::NotApplicableSingleInstance {
+                    v.push("auction-strategy-wiring: a standalone single-instance lane has no allocation-strategy axis to bind — strategy_wiring must be not-applicable-single-instance");
                 }
             }
         }
@@ -558,6 +597,47 @@ mod tests {
         assert!(!pinned.is_valid(), "a pin must name a reason");
         pinned.arch_pin_reason = Some(ArchPinReason::CgoFipsSingleArch);
         assert!(pinned.is_valid(), "a pin with a reason is valid");
+    }
+
+    #[test]
+    fn standalone_instance_lane_has_no_strategy_axis_and_is_never_effective_or_ignored() {
+        // A lone hand-launched EC2 instance (Camelot's bootstrap/control-plane
+        // node, or any self-managed-k3s single instance) has no ASG/Fleet
+        // distribution decision to make — the strategy axis has no field to bind.
+        // Claiming Effective (nothing wired it) OR IgnoredOnManagedNg (that names
+        // a DIFFERENT shape — a computed-then-dropped preference) must both be
+        // rejected; only NotApplicableSingleInstance is honest.
+        let claims_effective = AuctionSpread {
+            lane: Lane::StandaloneEc2Instance,
+            strategy_wiring: StrategyWiring::Effective,
+            ..BUILD_BURST
+        };
+        assert!(!claims_effective.is_valid(), "a standalone instance has no strategy axis to be Effective");
+
+        let claims_ignored = AuctionSpread {
+            lane: Lane::StandaloneEc2Instance,
+            strategy_wiring: StrategyWiring::IgnoredOnManagedNg,
+            ..BUILD_BURST
+        };
+        assert!(!claims_ignored.is_valid(), "a standalone instance is not a managed-NG — the gap shape does not apply");
+
+        let honest = AuctionSpread {
+            lane: Lane::StandaloneEc2Instance,
+            strategy_wiring: StrategyWiring::NotApplicableSingleInstance,
+            ..BUILD_BURST
+        };
+        assert!(honest.is_valid(), "marking the lane not-applicable-single-instance is honest + valid");
+    }
+
+    #[test]
+    fn lane_labels_are_stable_and_unique() {
+        fn uniq(v: &[&str]) -> bool {
+            let mut s: Vec<&str> = v.to_vec();
+            s.sort_unstable();
+            s.dedup();
+            s.len() == v.len()
+        }
+        assert!(uniq(&Lane::ALL.map(Lane::as_str)));
     }
 
     #[test]
