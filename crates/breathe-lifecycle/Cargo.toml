@@ -34,6 +34,16 @@ serde = { version = "1", features = ["derive"] }
 # (confirmed by an org-wide grep before reaching for it), so it is not
 # introduced here.
 serde_json = "1"
+# Real-AWS shadow-mode proof harness only (tests/camelot_shadow_integration.rs).
+# Dev-dependencies never affect the published lib's own dependency tree (the
+# lib itself stays tokio-free, per src/drift/tests.rs's own block_on
+# convention) — this is scoped strictly to the one integration test that
+# proves OrphanTracker against real AWS reality, gated behind
+# RUN_CAMELOT_AWS_INTEGRATION=1 so it never runs unattended / in CI without
+# real akeyless-development credentials.
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+aws-config = { version = "1", features = ["behavior-version-latest"] }
+aws-sdk-ec2 = "1"
 
 [lints.clippy]
 pedantic = { level = "warn", priority = -1 }
