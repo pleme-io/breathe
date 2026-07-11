@@ -28,9 +28,13 @@
       url = "github:pleme-io/substrate";
       inputs.nixpkgs.follows = "nixpkgs";
     };
+    forge = {
+      url = "github:pleme-io/forge";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
   };
 
-  outputs = { self, nixpkgs, flake-utils, substrate }:
+  outputs = { self, nixpkgs, flake-utils, substrate, forge }:
     flake-utils.lib.eachSystem [
       "x86_64-linux"
       "aarch64-linux"
@@ -47,6 +51,20 @@
       # AND the fleet plemeCrateOverrides both apply.
       plemeCrateOverrides = import "${substrate}/lib/build/rust/pleme-crate-overrides.nix";
       lockfileBuilder = import "${substrate}/lib/build/rust/lockfile-builder.nix" { inherit pkgs; };
+
+      # Chart lifecycle apps (lint/release/mirror/template/bump) for the ONE
+      # chart in this repo — the helm-monorepo-auto-release.yml reusable calls
+      # `nix run .#release`, which is `apps.release` below.
+      substrateLib = substrate.libFor {
+        inherit pkgs system;
+        forge = forge.packages.${system}.default;
+      };
+      helmApps = substrateLib.mkHelmAllApps {
+        charts = [
+          { name = "pleme-breathe"; chartDir = ./charts/pleme-breathe; }
+        ];
+        registry = "oci://ghcr.io/pleme-io/charts";
+      };
       # Per-member build accommodations for gen's src=workspaceSrc model.
       memberOverrides = {
         # breathe-api-server's build.rs compiles proto/breathe.proto via
@@ -145,9 +163,11 @@
         agent-image = agentImage;
         api-server-image = apiServerImage;
       };
-      apps.default = { type = "app"; program = "${controller}/bin/breathe-controller"; };
-      apps.breathe-mcp = { type = "app"; program = "${mcp}/bin/breathe-mcp"; };
-      apps.breathe-api-server = { type = "app"; program = "${apiServer}/bin/breathe-api-server"; };
+      apps = helmApps // {
+        default = { type = "app"; program = "${controller}/bin/breathe-controller"; };
+        breathe-mcp = { type = "app"; program = "${mcp}/bin/breathe-mcp"; };
+        breathe-api-server = { type = "app"; program = "${apiServer}/bin/breathe-api-server"; };
+      };
       devShells.default = pkgs.mkShellNoCC {
         buildInputs = with pkgs; [ cargo rustc pkg-config cmake skopeo kubectl helm ];
       };
