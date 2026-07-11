@@ -4,6 +4,7 @@ replicaCount: 1
 image:
   repository: ghcr.io/pleme-io/breathe-controller
   tag: ""              # falls back to appVersion
+  digest: ""            # "sha256:..." — when set, wins over tag (see deployment.yaml)
   pullPolicy: IfNotPresent
 
 # Prometheus/VictoriaMetrics base for working-set scrapes.
