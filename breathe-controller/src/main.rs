@@ -14,6 +14,7 @@ use std::{sync::Arc, time::Duration};
 
 mod app_band;
 mod karpenter_provedor;
+mod nats_trigger;
 mod node_forma;
 mod origin_guard;
 mod kube_param;
@@ -773,12 +774,62 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "breathe-controller starting — golden-edge gate active, per-band DisruptionPolicy (default RestartFreeOnly)"
     );
 
-    let mem = gen_controller!(Api::<MemoryBand>::all(client.clone()))
+    // ── NATS reactive-reconcile trigger (task #90, nervous-system integration).
+    // ADDITIVE, default-OFF, zero regression on the proven-live correnteza path:
+    // `kube_runtime::Controller::reconcile_all_on` is additive by construction
+    // (see nats_trigger.rs's module docs, verified against the exact pinned
+    // kube-runtime 0.96.0 source) — it is called ONLY when
+    // `nats_trigger::resolve_trigger` (the tested two-gate decision point)
+    // returns `Some`. Both gates unmet (the default: no `BREATHE_NATS_URL`, no
+    // `BREATHE_NATS_RECONCILE_ENABLED`) ⇒ `nats_client` stays `None` ⇒ every
+    // `.reconcile_all_on()` call below is skipped entirely ⇒ each `Controller`
+    // value is the LITERAL SAME object `gen_controller!` alone already produces
+    // — structurally, not just behaviorally, byte-identical to before this
+    // change. escuta-breathe-bridge (Piece 2) is what would publish onto these
+    // subjects; until it's deployed (see its own named blocker) this trigger has
+    // nothing to subscribe to even when enabled — the primary kube watch is the
+    // standing safety net regardless, this only ever makes a reconcile happen
+    // SOONER, never instead-of.
+    let nats_url = std::env::var("BREATHE_NATS_URL").ok();
+    let nats_enabled = std::env::var("BREATHE_NATS_RECONCILE_ENABLED").as_deref() == Ok("true");
+    let nats_client: Option<nats_trigger::LiveNats> = if let (Some(url), true) = (&nats_url, nats_enabled) {
+        match async_nats::connect(url).await {
+            Ok(c) => Some(nats_trigger::LiveNats(c)),
+            Err(e) => {
+                warn!(error = %e, url, "NATS connect failed at startup — every band controller stays watch-only");
+                None
+            }
+        }
+    } else {
+        None
+    };
+
+    let mem_ctrl = gen_controller!(Api::<MemoryBand>::all(client.clone()));
+    let mem_ctrl = match &nats_client {
+        Some(nc) => match nats_trigger::resolve_trigger(nats_url.clone(), nats_enabled, nc, "escuta.*.memoryband.>").await {
+            Some(trigger) => mem_ctrl.reconcile_all_on(trigger),
+            None => mem_ctrl,
+        },
+        None => mem_ctrl,
+    };
+    let mem = mem_ctrl
         .run(reconcile_memory, error_policy::<MemoryBand>, ctx.clone())
         .for_each(|_| async {});
-    let cpu = gen_controller!(Api::<CpuBand>::all(client.clone()))
+
+    let cpu_ctrl = gen_controller!(Api::<CpuBand>::all(client.clone()));
+    let cpu_ctrl = match &nats_client {
+        Some(nc) => match nats_trigger::resolve_trigger(nats_url.clone(), nats_enabled, nc, "escuta.*.cpuband.>").await {
+            Some(trigger) => cpu_ctrl.reconcile_all_on(trigger),
+            None => cpu_ctrl,
+        },
+        None => cpu_ctrl,
+    };
+    let cpu = cpu_ctrl
         .run(reconcile::<CpuBand, CpuDescriptor>, error_policy::<CpuBand>, ctx.clone())
         .for_each(|_| async {});
+
+    // StorageBand is NOT wired to the NATS trigger — a named follow-up (a
+    // one-line addition identical in shape to mem/cpu above), not scoped here.
     let sto = gen_controller!(Api::<StorageBand>::all(client.clone()))
         .run(reconcile::<StorageBand, StorageDescriptor>, error_policy::<StorageBand>, ctx.clone())
         .for_each(|_| async {});
@@ -792,7 +843,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // observe-only (provision = DryRun). Each pool binds a Forma to a Densa-style
     // envelope; the shape-blind band law holds the node COUNT at the 80/20 band
     // exactly as it holds a pod's bytes.
-    let cloud_pools = gen_controller!(Api::<BreatheCloudPool>::all(client.clone()))
+    //
+    // BreatheCloudPool is CLUSTER-SCOPED (no `namespaced` in its `#[kube(...)]`
+    // attrs, breathe-crd/src/lib.rs — confirmed by reading the source) — the
+    // subject wildcard `escuta.*.breathecloudpool.>` already matches escuta's
+    // own cluster-scoped sentinel schema (`escuta._cluster.breathecloudpool.*`,
+    // `_cluster` is one NATS token, matched by the single-token `*`), no
+    // special-casing needed here vs the two namespaced kinds above.
+    let cloud_pools_ctrl = gen_controller!(Api::<BreatheCloudPool>::all(client.clone()));
+    let cloud_pools_ctrl = match &nats_client {
+        Some(nc) => match nats_trigger::resolve_trigger(nats_url.clone(), nats_enabled, nc, "escuta.*.breathecloudpool.>").await {
+            Some(trigger) => cloud_pools_ctrl.reconcile_all_on(trigger),
+            None => cloud_pools_ctrl,
+        },
+        None => cloud_pools_ctrl,
+    };
+    let cloud_pools = cloud_pools_ctrl
         .run(node_forma::reconcile_cloud_pool, node_forma::error_policy_cloud_pool, ctx.clone())
         .for_each(|_| async {});
     // The membership-CLOSING peer of the correnteza claim path above: watches
