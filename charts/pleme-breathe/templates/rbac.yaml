@@ -20,14 +20,20 @@ metadata:
   labels:
     app.kubernetes.io/name: pleme-breathe
 rules:
-  # NOTE (2026-07-11): kubeparambands/breathecloudpools/quinhaopools were
-  # MISSING from this checked-in list despite being live-granted (confirmed
-  # absent by re-reading this file before this change, same class of drift
-  # as the "nodes" grant below) — the live ClusterRole carries them only
-  # because they were hand-patched onto the cluster out of band, alongside
-  # isolationbands (task #91/#92/#94's live verification pass). Landing all
-  # four here closes that drift so a future `helm upgrade`/reinstall from
-  # this chart cannot silently revoke a currently-working grant.
+  # NOTE (2026-07-11): kubeparambands/breathecloudpools/quinhaopools/
+  # replicabands/appbands were MISSING from this checked-in list despite
+  # being live-granted at various points (confirmed absent by re-reading
+  # this file before this change, same class of drift as the "nodes" grant
+  # below) — the live ClusterRole carried them only because they were
+  # hand-patched onto the cluster out of band. The first pass here (task
+  # #91/#92/#94) landed isolationbands + the other three but MISSED
+  # replicabands/appbands despite task #92's own title naming them —
+  # caught live 2026-07-11 when FluxCD did its first genuine fresh apply
+  # from this OCI-published chart and the 403s came right back (the
+  # earlier "fix" was a live hand-patch that never made it into this
+  # template). Landing all six here closes that drift so a future `helm
+  # upgrade`/reinstall from this chart cannot silently revoke a
+  # currently-working grant.
   - apiGroups: ["breathe.pleme.io"]
     resources:
       - "memorybands"
@@ -44,6 +50,10 @@ rules:
       - "quinhaopools/status"
       - "isolationbands"
       - "isolationbands/status"
+      - "replicabands"
+      - "replicabands/status"
+      - "appbands"
+      - "appbands/status"
     verbs: ["get", "list", "watch", "patch", "update"]
   # Host-dim bands: READ-ONLY. The controller lists these only to aggregate the
   # fleet BreatheOverview — the host-agent owns their status (no patch here).
