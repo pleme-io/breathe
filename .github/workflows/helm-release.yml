@@ -1,7 +1,10 @@
-# AUTO-RELEASE (default-on) for the pleme-breathe chart. Publishes to the SAME
-# registry every other fleet chart ships to (oci://ghcr.io/pleme-io/charts) --
-# NOT the substrate reusable's own default (ghcr.io/pleme-io/helm), which is a
-# different registry the fleet's HelmRepository objects don't point at.
+# AUTO-RELEASE (default-on) for the pleme-breathe chart, under charts/pleme-breathe
+# (no root Chart.yaml -- that's the single-chart shim's assumption). Uses the
+# MONOREPO reusable instead (same shape as helmworks/akeyless-dev): it wraps
+# `nix run .#release` = forge helm release-all, which discovers charts under
+# charts/*, publishes any (name, version) not yet on the registry, and skips
+# what's already there. No auto-bump here -- bump Chart.yaml's version by hand
+# in the commit that changes the chart; merging is what ships it.
 name: helm-release
 
 on:
@@ -9,19 +12,9 @@ on:
     branches: [main]
     paths:
       - "charts/pleme-breathe/**"
-  workflow_dispatch:
-    inputs:
-      bump-type:
-        description: "patch | minor | major"
-        required: false
-        default: patch
+  workflow_dispatch: {}
 
 jobs:
   release:
-    uses: pleme-io/substrate/.github/workflows/helm-auto-release.yml@main
-    with:
-      bump-type: ${{ inputs.bump-type || 'patch' }}
-      registry: "ghcr.io/pleme-io/charts"
-      source-paths: "charts/pleme-breathe/templates charts/pleme-breathe/values.yaml charts/pleme-breathe/Chart.yaml"
-      add-paths: "charts/pleme-breathe/Chart.yaml"
+    uses: pleme-io/substrate/.github/workflows/helm-monorepo-auto-release.yml@main
     secrets: inherit
