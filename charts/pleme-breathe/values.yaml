@@ -11,6 +11,19 @@ prometheusUrl: "http://vmsingle-victoria-metrics-k8s-stack.monitoring.svc.cluste
 # Level-triggered refresh interval (seconds) — the steady tick cadence.
 requeueSeconds: 60
 
+# NATS reactive-reconcile trigger (task #90, nervous-system integration) — an
+# ADDITIVE, default-OFF event nudge from escuta-breathe-bridge's publications
+# on top of the always-on kube watch (breathe-controller/src/nats_trigger.rs).
+# natsReactiveEnabled=false (the default here) means BREATHE_NATS_RECONCILE_
+# ENABLED is unset in the pod env, so nats_trigger::resolve_trigger's gate 2
+# is unmet regardless of natsReactiveUrl — the controller stays watch-only,
+# byte-identical to before this feature existed. Flip to true only once
+# Pieces 1 (NATS on Camelot) and 2 (escuta-breathe-bridge deployed) are proven
+# live — until Piece 2's own named blocker closes there is nothing publishing
+# on these subjects even when this is enabled.
+natsReactiveUrl: "nats://pleme-nats.nats.svc:4222"
+natsReactiveEnabled: false
+
 # Tight bound — the controller observes + patches, no heavy work. Per the
 # breathe "contained, never-die" invariant: a single-shot-style reconcile loop
 # with a hard ceiling so the controller can never become the problem.

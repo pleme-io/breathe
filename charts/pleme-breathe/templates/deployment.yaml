@@ -48,6 +48,15 @@ spec:
               value: {{ .Values.requeueSeconds | quote }}
             - name: RUST_LOG
               value: {{ .Values.logLevel | quote }}
+            # NATS reactive-reconcile trigger (task #90) — additive, default-OFF.
+            # natsReactiveEnabled=false (the chart default) ⇒
+            # BREATHE_NATS_RECONCILE_ENABLED="false" ⇒ nats_trigger::resolve_trigger's
+            # gate 2 is unmet ⇒ reconcile_all_on is never called, regardless of
+            # natsReactiveUrl. See values.yaml's own comment for the flip conditions.
+            - name: BREATHE_NATS_URL
+              value: {{ .Values.natsReactiveUrl | quote }}
+            - name: BREATHE_NATS_RECONCILE_ENABLED
+              value: {{ .Values.natsReactiveEnabled | quote }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
           securityContext:
