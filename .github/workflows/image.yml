@@ -15,14 +15,28 @@
 # unsigned NARs, so `CAMELOT_SUI_REQUIRE_SIGS=false` accepts them. Empty on any
 # non-cluster runner (rio can't reach a ClusterIP) — zero effect there.
 #
-# breathe images stay PRIVATE (package visibility set out-of-band). :latest is the
-# moving pointer the rio HelmRelease pulls (pullPolicy: Always) — a new build needs a
-# `kubectl rollout restart` to pick up.
+# breathe images stay PRIVATE (package visibility set out-of-band).
+#
+# ★ AUTOBUMP + the camelot CHANNEL extension (2026-07-11). Every push emits a
+# sortable, exact, immutable tag — never :latest as a deploy source (org ★
+# AUTOBUMP directive). Two channels share one image (one ghcr package, one
+# ImageRepository per app):
+#   main         -> amd64-r<run>-<sha>          (the fleet-wide stream)
+#   camelot/**   -> amd64-camelot-r<run>-<sha>  (Camelot-only stream)
+# A camelot/* branch build never touches main's tag lineage or any other
+# cluster's ImagePolicy (its pattern requires the "camelot-" infix main's
+# never carries, and vice versa) -- so Camelot can run ahead of / diverged
+# from the fleet by pushing to a camelot/* branch, with zero risk to rio or
+# any other subscriber. See k8s/clusters/rio/infrastructure/flux-image-
+# automation/RUNBOOK.md for the ImageRepository/ImagePolicy/
+# ImageUpdateAutomation shape this tag scheme is designed to feed; Camelot's
+# own equivalent lives in akeyless-k8s/clusters/camelot-mode1/infrastructure/
+# flux-image-automation/.
 name: image
 
 on:
   push:
-    branches: [main]
+    branches: [main, "camelot/**"]
     paths:
       - "**/*.rs"
       - "**/Cargo.*"
@@ -43,7 +57,8 @@ jobs:
     with:
       imageAttr: image
       imageName: pleme-io/breathe-controller
-      tag: latest
+      tag: amd64-${{ startsWith(github.ref_name, 'camelot/') && 'camelot-' || '' }}r${{ github.run_number }}-${{ github.sha }}
+      additionalTags: ${{ startsWith(github.ref_name, 'camelot/') && 'amd64-camelot-latest' || 'amd64-latest' }}
       runner: ${{ vars.CAMELOT_IMAGE_RUNNER || 'rio-build-01' }}
       extraSubstituters: ${{ vars.CAMELOT_SUI_SUBSTITUTER }}
       requireSigs: ${{ vars.CAMELOT_SUI_REQUIRE_SIGS }}
@@ -54,7 +69,8 @@ jobs:
     with:
       imageAttr: agent-image
       imageName: pleme-io/breathe-host-agent
-      tag: latest
+      tag: amd64-${{ startsWith(github.ref_name, 'camelot/') && 'camelot-' || '' }}r${{ github.run_number }}-${{ github.sha }}
+      additionalTags: ${{ startsWith(github.ref_name, 'camelot/') && 'amd64-camelot-latest' || 'amd64-latest' }}
       runner: ${{ vars.CAMELOT_IMAGE_RUNNER || 'rio-build-01' }}
       extraSubstituters: ${{ vars.CAMELOT_SUI_SUBSTITUTER }}
       requireSigs: ${{ vars.CAMELOT_SUI_REQUIRE_SIGS }}
@@ -65,7 +81,8 @@ jobs:
     with:
       imageAttr: api-server-image
       imageName: pleme-io/breathe-api-server
-      tag: latest
+      tag: amd64-${{ startsWith(github.ref_name, 'camelot/') && 'camelot-' || '' }}r${{ github.run_number }}-${{ github.sha }}
+      additionalTags: ${{ startsWith(github.ref_name, 'camelot/') && 'amd64-camelot-latest' || 'amd64-latest' }}
       runner: ${{ vars.CAMELOT_IMAGE_RUNNER || 'rio-build-01' }}
       extraSubstituters: ${{ vars.CAMELOT_SUI_SUBSTITUTER }}
       requireSigs: ${{ vars.CAMELOT_SUI_REQUIRE_SIGS }}
