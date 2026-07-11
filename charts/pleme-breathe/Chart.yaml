@@ -7,7 +7,7 @@ description: |
   SSA, every change observable in the CR status. Private during akeyless
   ephemeral-environment integration; self-contained (no pleme-lib dep yet).
 type: application
-version: 0.1.18
+version: 0.1.19
 appVersion: "0.1.2"
 keywords:
   - breathe

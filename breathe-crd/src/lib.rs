@@ -2050,6 +2050,184 @@ pub struct CloudPoolStatus {
     pub tainted_node: Option<String>,
 }
 
+// ─────────────────── IsolationBand — membership-CLOSING node reservation ────────
+//
+// The node-claim family in `BreatheCloudPool` (above) OPENS membership: a
+// `Grew` tick claims one Ready node INTO a pool. `IsolationBand` is the
+// membership-CLOSING peer: it PROTECTS a named node (its first use: the
+// Camelot origin/control-plane node) by keeping it tainted against every
+// workload except an explicit allowlist. theory/CORRENTEZA.md §4/§11.3 names
+// this shape as a degenerate N=1 instance of the not-yet-built generic
+// `IsolationBand` — this type is exactly that, scoped to what origin-guard
+// needs today (`targetNodes` carrying one hostname).
+//
+// `PlacementIsolationKind` below intentionally does NOT depend on
+// `breathe-invariant::isolation::PlacementIsolation`, even though the two are
+// semantically identical (CoLocate/AntiAffinity/TopologySpread/Dedicated).
+// `breathe-invariant` deliberately declares its own `[workspace]` root (see
+// its Cargo.toml header) so it composes the breathe substrate BY REFERENCE
+// without coupling to breathe's in-flight band-crate churn — verified
+// empirically (`cargo check -p breathe-crd` with a path dep onto
+// `crates/breathe-invariant` fails with "multiple workspace roots found in
+// the same workspace", the exact error `crates/breathe-spread`'s own header
+// already named and had to be folded out of its nested `[workspace]` to
+// avoid). Folding `breathe-invariant` into the parent workspace the same way
+// would unify these two enums, but is a bigger, separately-scoped move (it
+// touches an existing crate's deliberate build isolation) — out of scope for
+// this type. Tracked as a follow-up, not silently worked around.
+#[allow(clippy::doc_markdown)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "kebab-case")]
+pub enum PlacementIsolationKind {
+    /// Co-locate freely — bin-pack. Not a meaningful choice for origin-guard
+    /// (a co-located posture would be no isolation at all) but kept so the
+    /// enum mirrors `breathe_invariant::isolation::PlacementIsolation`'s full
+    /// variant set for the future multi-node placement engine.
+    CoLocate,
+    AntiAffinity,
+    TopologySpread,
+    /// The origin-guard posture: a dedicated, tainted node the workload runs
+    /// alone on (or, for origin-guard, that ONLY the allowlist may run on).
+    Dedicated,
+}
+
+impl Default for PlacementIsolationKind {
+    fn default() -> Self {
+        Self::Dedicated
+    }
+}
+
+/// The taint `IsolationBand` ensures is present on every `targetNodes` entry.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct TaintSpec {
+    pub key: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub value: Option<String>,
+    /// `NoSchedule` / `PreferNoSchedule` / `NoExecute` — the raw k8s taint
+    /// effect string (validated by the apiserver against `Taint`'s own enum,
+    /// not re-validated here).
+    pub effect: String,
+}
+
+fn d_origin_taint_key() -> String {
+    ORIGIN_TAINT_KEY.to_string()
+}
+
+fn d_no_schedule() -> String {
+    "NoSchedule".to_string()
+}
+
+impl Default for TaintSpec {
+    fn default() -> Self {
+        Self { key: d_origin_taint_key(), value: None, effect: d_no_schedule() }
+    }
+}
+
+/// A workload this band's `targetNodes` MAY run — matched against a pod's
+/// namespace + (its own name, for a bare/unmanaged pod, OR an owner
+/// reference's name, allowing the standard ReplicaSet `<name>-<hash>` prefix
+/// so a Deployment's `WorkloadRef` matches its pods without an extra
+/// apiserver hop to resolve the ReplicaSet's own owner — see
+/// `origin_guard::is_authorized_pod` in breathe-controller).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkloadRef {
+    pub namespace: String,
+    pub name: String,
+}
+
+/// The taint key `IsolationBand` uses by default — the origin-guard posture.
+pub const ORIGIN_TAINT_KEY: &str = "breathe.pleme.io/origin-reserved";
+
+#[derive(CustomResource, Serialize, Deserialize, Clone, Debug, JsonSchema)]
+#[kube(
+    group = "breathe.pleme.io",
+    version = "v1",
+    kind = "IsolationBand",
+    shortname = "isob",
+    category = "breathe",
+    status = "IsolationBandStatus",
+    printcolumn = r#"{"name":"Placement","type":"string","jsonPath":".spec.placement"}"#,
+    printcolumn = r#"{"name":"TaintKey","type":"string","jsonPath":".spec.taint.key"}"#,
+    printcolumn = r#"{"name":"Phase","type":"string","jsonPath":".status.phase"}"#,
+    printcolumn = r#"{"name":"Tainted","type":"integer","jsonPath":".status.nodesTainted"}"#,
+    printcolumn = r#"{"name":"Unauthorized","type":"integer","jsonPath":".status.unauthorizedCount"}"#,
+    printcolumn = r#"{"name":"DryRun","type":"boolean","jsonPath":".spec.dryRun"}"#
+)]
+#[serde(rename_all = "camelCase")]
+pub struct IsolationBandSpec {
+    /// The node(s) this band protects. Origin-guard declares exactly one
+    /// hostname — this list IS "declare a node as origin".
+    pub target_nodes: Vec<String>,
+    /// The placement-isolation posture these nodes carry. `dedicated` (the
+    /// default) is the only posture origin-guard actuates on today; the other
+    /// arms are named for the future multi-node placement engine this CRD
+    /// kind is designed to also carry (the elasticity fields below).
+    #[serde(default)]
+    pub placement: PlacementIsolationKind,
+    /// The taint every `targetNodes` entry is kept carrying. Defaults to the
+    /// origin-guard taint (`breathe.pleme.io/origin-reserved:NoSchedule`).
+    #[serde(default)]
+    pub taint: TaintSpec,
+    /// Workloads allowed to run on `targetNodes` despite the taint (i.e. that
+    /// carry a matching toleration by convention). An origin-guard band
+    /// enumerates every legitimate daemon + controller explicitly — anything
+    /// unnamed is unauthorized by design.
+    #[serde(default)]
+    pub allowed_workloads: Vec<WorkloadRef>,
+    // ── elasticity fields — a future multi-node placement engine's setpoint
+    // knobs. All `Option`, all `None` for origin-guard (a single reserved
+    // node has no "grow/shrink" concept); present only so that engine reuses
+    // THIS SAME CRD kind rather than a second one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub setpoint: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grow_above: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shrink_below: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cooldown_seconds: Option<u64>,
+    /// Pool-level MASTER write switch (the `BreatheCloudPool.spec.writeEnabled`
+    /// convention): `false` ⇒ the whole band is in shadow regardless of
+    /// `dryRun`. Safe default — a freshly-applied `IsolationBand` taints
+    /// nothing until an operator opts in.
+    #[serde(default)]
+    pub write_enabled: bool,
+    /// SHADOW: observe + report what the band WOULD taint; never actuate.
+    #[serde(default)]
+    pub dry_run: bool,
+}
+
+/// `IsolationBand` status — the per-tick protect-and-observe receipt.
+#[derive(Serialize, Deserialize, Clone, Debug, JsonSchema, Default, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct IsolationBandStatus {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub phase: Option<String>,
+    /// How many of `spec.targetNodes` currently carry the taint (live count;
+    /// under `dryRun` this is the WOULD-be count).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nodes_tainted: Option<i64>,
+    /// Pods observed running on a `targetNodes` entry that match no
+    /// `allowed_workloads` entry — `"<namespace>/<pod-name>"` per finding.
+    /// OBSERVATION, not enforcement (only-mitigated / C2 tier, same ceiling
+    /// `breathe-lifecycle::OrphanTracker` names for itself): a wildcard
+    /// toleration on some unrelated pod still bypasses the taint entirely;
+    /// this field reports that, it does not prevent it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub unauthorized_pods: Vec<String>,
+    /// `unauthorized_pods.len()` mirrored as its own field so `kubectl get
+    /// isolationband` (a printcolumn can't index into a list) shows a count
+    /// at a glance.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unauthorized_count: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effective_dry_run: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_seen_epoch: Option<i64>,
+}
+
 // ─────────────────── BreatheOverview — the fleet dashboard as a k8s object ──────
 
 /// A FLEET-OVERVIEW object (cluster-scoped). The controller keeps its status
@@ -2930,6 +3108,57 @@ mod tests {
         assert_eq!(crd.spec.names.kind, "QuinhaoPool");
         assert_eq!(crd.spec.scope, "Namespaced");
         assert_eq!(crd.spec.names.short_names.as_ref().unwrap(), &["qpool"]);
+    }
+
+    #[test]
+    fn isolation_band_crd_generates_cluster_scoped() {
+        use kube::Resource;
+        let crd = <IsolationBand as kube::CustomResourceExt>::crd();
+        assert_eq!(crd.spec.names.kind, "IsolationBand");
+        assert_eq!(crd.spec.scope, "Cluster", "IsolationBand targets Nodes — cluster-scoped like BreatheCloudPool/BreatheNodePool");
+        assert_eq!(crd.spec.names.short_names.as_ref().unwrap(), &["isob"]);
+        let _ = IsolationBand::kind(&());
+    }
+
+    #[test]
+    fn isolation_band_taint_defaults_to_the_origin_reserved_taint() {
+        // A minimal spec (just targetNodes) parses to the origin-guard default —
+        // an operator does not have to spell out the taint/placement for the
+        // common case.
+        let band: IsolationBand = serde_json::from_value(serde_json::json!({
+            "apiVersion": "breathe.pleme.io/v1", "kind": "IsolationBand",
+            "metadata": { "name": "origin" },
+            "spec": { "targetNodes": ["camelot-origin"] }
+        }))
+        .expect("deserializes with defaults");
+        assert_eq!(band.spec.target_nodes, vec!["camelot-origin".to_string()]);
+        assert_eq!(band.spec.placement, PlacementIsolationKind::Dedicated);
+        assert_eq!(band.spec.taint.key, ORIGIN_TAINT_KEY);
+        assert_eq!(band.spec.taint.effect, "NoSchedule");
+        assert_eq!(band.spec.taint.value, None);
+        assert!(band.spec.allowed_workloads.is_empty());
+        assert!(!band.spec.write_enabled, "writeEnabled must default off (shadow-first)");
+        assert!(!band.spec.dry_run);
+        assert_eq!(band.spec.setpoint, None, "elasticity fields are None for a plain origin-guard band");
+    }
+
+    #[test]
+    fn isolation_band_status_round_trips_and_hides_empty_unauthorized() {
+        let empty = IsolationBandStatus::default();
+        let js = serde_json::to_value(&empty).unwrap();
+        assert!(js.get("unauthorizedPods").is_none(), "an empty unauthorized_pods list must not serialize");
+
+        let found = IsolationBandStatus {
+            phase: Some("Protecting".into()),
+            nodes_tainted: Some(1),
+            unauthorized_pods: vec!["default/stray-pod".into()],
+            unauthorized_count: Some(1),
+            effective_dry_run: Some(false),
+            last_seen_epoch: Some(1_000),
+        };
+        let js = serde_json::to_string(&found).unwrap();
+        let back: IsolationBandStatus = serde_json::from_str(&js).unwrap();
+        assert_eq!(found, back);
     }
 
     #[test]

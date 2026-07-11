@@ -725,7 +725,7 @@ spec:
           spec:
             properties:
               ceiling:
-                default: 16Gi
+                default: 200Gi
                 type: string
               confirmAfterSeconds:
                 default: 1800
@@ -749,7 +749,7 @@ spec:
                 default: false
                 type: boolean
               floor:
-                default: 256Mi
+                default: 2Gi
                 type: string
               forceLimit:
                 description: 'BREAK-GLASS: pin the limit to exactly this value (a quantity string in the band''s unit, e.g. `8Gi` / `2`). breathe skips the band law and carves to it — but STILL through the gate (DisruptionPolicy + the single-writer guard + the L2 ceiling all apply; it cannot bypass safety). Clear it to resume normal homeostasis. Pair with `forceLimitExpiry` for an auto-releasing pin.'
@@ -1013,6 +1013,399 @@ spec:
         required:
         - spec
         title: StorageBand
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: replicabands.breathe.pleme.io
+spec:
+  group: breathe.pleme.io
+  names:
+    categories:
+    - breathe
+    kind: ReplicaBand
+    plural: replicabands
+    shortNames:
+    - rband
+    singular: replicaband
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.targetRef.kind
+      name: Target
+      type: string
+    - jsonPath: .spec.targetRef.name
+      name: Name
+      type: string
+    - jsonPath: .spec.signal
+      name: Signal
+      type: string
+    - jsonPath: .status.currentLimit
+      name: Replicas
+      type: string
+    - jsonPath: .status.lastDecision
+      name: Last
+      type: string
+    - jsonPath: .status.phase
+      name: Phase
+      type: string
+    - jsonPath: .status.conditions[?(@.type=='Ready')].status
+      name: Ready
+      type: string
+    name: v1
+    schema:
+      openAPIV3Schema:
+        description: Auto-generated derived type for ReplicaBandSpec via `CustomResource`
+        properties:
+          spec:
+            properties:
+              ceiling:
+                default: 10
+                description: Never scale above this many replicas (the L2 wall).
+                format: uint32
+                minimum: 0.0
+                type: integer
+              confirmAfterSeconds:
+                default: 1800
+                format: uint64
+                minimum: 0.0
+                type: integer
+              cooldownSeconds:
+                default: 600
+                format: uint64
+                minimum: 0.0
+                type: integer
+              disruptionPolicy:
+                description: The golden/ceiling gate. Because a scale-IN sheds a pod (`RestartRequiring`), the default `restartFreeOnly` scales OUT freely but GATES scale-in; set `allowRestart` to let the band shed replicas (the usual autoscaler posture).
+                enum:
+                - restartFreeOnly
+                - allowConditional
+                - allowRestart
+                type: string
+              dryRun:
+                default: false
+                type: boolean
+              floor:
+                default: 2
+                description: The at-rest HA floor — never scale below this many replicas. Default 2 (a single replica tolerates no disruption; floor 1 + a PDB blocks node drains).
+                format: uint32
+                minimum: 0.0
+                type: integer
+              forceLimit:
+                description: 'BREAK-GLASS: pin the replica count to exactly this value (still through the gate + single-writer guard).'
+                nullable: true
+                type: string
+              forceLimitExpiry:
+                nullable: true
+                type: string
+              haFloor:
+                description: A stronger during-maintenance HA floor (e.g. 3) — survive one disruption while still serving with 2. Effective floor = `max(floor, haFloor)`.
+                format: uint32
+                minimum: 0.0
+                nullable: true
+                type: integer
+              maxScaleDownPct:
+                default: 10
+                description: Velocity cap DOWN (percent of current per tick). Default 10%.
+                format: uint32
+                minimum: 0.0
+                type: integer
+              maxScaleDownPods:
+                default: 1
+                description: Velocity cap DOWN (absolute pods per tick). Default 1.
+                format: uint32
+                minimum: 0.0
+                type: integer
+              maxScaleUpPct:
+                default: 100
+                description: Velocity cap UP (percent of current per tick). Default 100%.
+                format: uint32
+                minimum: 0.0
+                type: integer
+              maxScaleUpPods:
+                default: 4
+                description: Velocity cap UP (absolute pods per tick). Default 4.
+                format: uint32
+                minimum: 0.0
+                type: integer
+              maxStalenessSeconds:
+                default: 120
+                format: uint64
+                minimum: 0.0
+                type: integer
+              metric:
+                description: Where to read the `used` signal (a PromQL) + the optional reclaim signal.
+                properties:
+                  prometheus:
+                    type: string
+                  reclaimPrometheus:
+                    description: An OPTIONAL PromQL whose scalar is the count of this workload's replicas about to be lost to a pending node/spot reclaim (the `retirada` signal). A non-zero value drives a pre-emptive scale-OUT before the doomed pods drain. `None` ⇒ no spot-awareness (the reclaim count is always 0).
+                    nullable: true
+                    type: string
+                required:
+                - prometheus
+                type: object
+              mode:
+                description: 'The PROMOTION LIFECYCLE (unset ⇒ the fleet default `ShadowConfirmEffect`: shadow, then auto-promote once the clean-observation window proves it safe).'
+                enum:
+                - shadow
+                - effect
+                - shadowConfirmEffect
+                - suspended
+                nullable: true
+                type: string
+              signal:
+                default: utilization
+                description: Which signal drives scaling.
+                enum:
+                - utilization
+                - requestRate
+                - queueDepth
+                type: string
+              suspend:
+                type: boolean
+              target:
+                default: 0.8
+                description: 'The setpoint: target per-replica utilization (`utilization`) or target work PER replica (`requestRate` / `queueDepth`).'
+                format: double
+                type: number
+              targetRef:
+                description: The workload whose `.spec.replicas` this band scales (`Deployment` / `StatefulSet`).
+                properties:
+                  apiVersion:
+                    nullable: true
+                    type: string
+                  container:
+                    nullable: true
+                    type: string
+                  kind:
+                    type: string
+                  name:
+                    type: string
+                  podSelector:
+                    description: When set, breathe resolves the band's pods DIRECTLY by this k8s label selector (`k=v,k2=v2`) instead of via an owner's `spec.selector.matchLabels`. The path for **ephemeral / owner-less pod groups** whose name is not stable and which have no single resolvable workload owner — GitHub ARC `EphemeralRunner`s (`actions.github.com/scale-set-name=<set>`), bare pods, Job pods. A selector ALWAYS carves in-place (`PodResize`, zero restart) within `targetRef`'s namespace; `name` then serves only as the metrics pod-name prefix + the human label. Omit it for Deployment/StatefulSet/CNPG owners.
+                    nullable: true
+                    type: string
+                required:
+                - kind
+                - name
+                type: object
+              toleranceDown:
+                default: 0.2
+                description: SCALE-DOWN dead-band — scale down only below `1 - this`. Large (resist churn). Default 0.20.
+                format: double
+                type: number
+              toleranceUp:
+                default: 0.1
+                description: SCALE-UP dead-band — scale up only when the metric ratio exceeds `1 + this`. Small (react fast to spikes). Default 0.10.
+                format: double
+                type: number
+              topology:
+                default:
+                  kind: nonPersistent
+                description: 'The workload TOPOLOGY — selects the scaling ALGORITHM and the hard invariant the band may never violate. Default `nonPersistent` (stateless: free HPA scaling, HA floor). `persistent` (StatefulSet/PVC-per-ordinal: grow freely, a scale-in is HELD for drain/rebalance, never below `replicationFactor`). `masterSlave` (breathe the read-replicas only, never scale the primary away). `fullyDistributed` (quorum/consensus: odd count ≥ 3, majority-safe one-rung steps).'
+                properties:
+                  kind:
+                    default: nonPersistent
+                    description: The topology class.
+                    enum:
+                    - nonPersistent
+                    - persistent
+                    - masterSlave
+                    - fullyDistributed
+                    type: string
+                  primaries:
+                    description: '`masterSlave` only: the writable-primary count folded into the floor (never scaled away). Ignored by the other classes.'
+                    format: uint32
+                    minimum: 0.0
+                    nullable: true
+                    type: integer
+                  replicationFactor:
+                    description: '`persistent` only: the data-replication factor — the band never rests below this many replicas. Ignored by the other classes.'
+                    format: uint32
+                    minimum: 0.0
+                    nullable: true
+                    type: integer
+                type: object
+            required:
+            - metric
+            - targetRef
+            type: object
+          status:
+            description: The per-cycle typed status receipt — shared across all band kinds.
+            nullable: true
+            properties:
+              carvesTotal:
+                description: Cumulative count of carves (Applied) over this controller's lifetime.
+                format: int64
+                nullable: true
+                type: integer
+              conditions:
+                description: Standard conditions (Ready / Converged / Throttled / Stale / Conflict).
+                items:
+                  description: A standard k8s `metav1.Condition` (schemars-derivable — k8s_openapi's own `Condition` is not `JsonSchema`). Enables `kubectl wait --for=condition=…` and Flux/Argo health assessment off breathe bands.
+                  properties:
+                    lastTransitionTime:
+                      description: RFC3339 time the condition last flipped status (stable while status holds).
+                      type: string
+                    message:
+                      description: Human-readable message.
+                      type: string
+                    observedGeneration:
+                      description: The `metadata.generation` the controller observed when setting this.
+                      format: int64
+                      nullable: true
+                      type: integer
+                    reason:
+                      description: Machine-readable PascalCase reason.
+                      type: string
+                    status:
+                      description: '`True` | `False` | `Unknown`.'
+                      type: string
+                    type:
+                      description: Condition type, e.g. `Ready` / `Converged` / `Throttled` / `Stale` / `Conflict`.
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+              conflictManager:
+                nullable: true
+                type: string
+              conflictsTotal:
+                description: Cumulative count of single-writer conflicts (yielded to another manager).
+                format: int64
+                nullable: true
+                type: integer
+              cooldownRemainingSeconds:
+                description: Seconds remaining in the post-carve cooldown (0 = ready to carve).
+                format: int64
+                nullable: true
+                type: integer
+              currentLimit:
+                nullable: true
+                type: string
+              deferralsTotal:
+                description: Cumulative count of deferred ceiling crossings (policy refused a restart).
+                format: int64
+                nullable: true
+                type: integer
+              edgeTier:
+                description: Where the last tick sat on the golden/ceiling line (`GoldenPreserving` / `CeilingCrossing`) — the K4 continuity evidence, surfaced.
+                nullable: true
+                type: string
+              effectiveDryRun:
+                description: 'The effective mode: `true` = SHADOW (observe + attest, never carve).'
+                nullable: true
+                type: boolean
+              effectivePolicy:
+                description: The DisruptionPolicy in effect for this band (`restartFreeOnly` / …).
+                nullable: true
+                type: string
+              freshnessSeconds:
+                description: Age of the driving metric sample, in seconds (the freshness gate input).
+                format: int64
+                nullable: true
+                type: integer
+              history:
+                description: The recent TRAJECTORY (over-time view as a k8s object) — appended on a carve or a phase change, capped to the last N samples.
+                items:
+                  description: A point in a band's recent trajectory — the OVER-TIME view as a k8s object (no Grafana needed). Appended on a carve or a phase change, capped to the last N, so `kubectl get <band> -o yaml` shows how the adjustments have been going inline.
+                  properties:
+                    decision:
+                      description: The decision that produced this sample (carve / transition).
+                      nullable: true
+                      type: string
+                    limit:
+                      description: The limit at this point.
+                      format: int64
+                      nullable: true
+                      type: integer
+                    phase:
+                      description: The phase at this point.
+                      type: string
+                    time:
+                      description: RFC3339 time of this sample.
+                      type: string
+                    util:
+                      description: Observed utilization ratio at this point.
+                      format: double
+                      nullable: true
+                      type: number
+                  required:
+                  - phase
+                  - time
+                  type: object
+                type: array
+              lastActionClass:
+                description: The restart cost of the last carve/decision (`RestartFree` / `RestartConditional` / `RestartRequiring`) — the per-tick attestation evidence, now typed in status.
+                nullable: true
+                type: string
+              lastChangeEpoch:
+                format: int64
+                nullable: true
+                type: integer
+              lastDecision:
+                nullable: true
+                type: string
+              lastUtil:
+                nullable: true
+                type: string
+              observedCapacity:
+                description: The observed `capacity` (the current limit the util is measured against).
+                format: int64
+                nullable: true
+                type: integer
+              observedCostRemainingCents:
+                description: Cost remaining (cents) under the namespace's `Densa` envelope SLA; negative ⇒ over budget. Read from the namespace `Densa`'s status — the Dev-Loop cost-guard surfaced on the band, so `kubectl get <band>` shows the env's budget headroom. Read-only (breathe never writes the Densa from a band).
+                format: int64
+                nullable: true
+                type: integer
+              observedEnvId:
+                description: The `EphemeralEnvId` of the band's namespace, if it carries one (the ephemeral-env binding) — read from the namespace label, never written.
+                nullable: true
+                type: string
+              observedGeneration:
+                description: '`metadata.generation` the controller last reconciled — the "controller has seen my latest spec edit" signal.'
+                format: int64
+                nullable: true
+                type: integer
+              observedPeakUsed:
+                description: 'The trailing-window PEAK working set (max RSS, with slow decay) — the never-OOM shrink floor is keyed on THIS, not the instantaneous `observed_used` (the authentik-Celery-worker OOM fix). Carried across ticks: each tick folds the current `used` into the prior peak via `breathe_control::update_peak`, so a recently-demonstrated spike holds the floor up for a meaningful window.'
+                format: int64
+                nullable: true
+                type: integer
+              observedUsed:
+                description: The observed `used` scalar (bytes for memory/arc/cgroup; millicores for cpu).
+                format: int64
+                nullable: true
+                type: integer
+              observedUtil:
+                description: The observed utilization that drove this tick, as a ratio (`used/capacity`).
+                format: double
+                nullable: true
+                type: number
+              phase:
+                nullable: true
+                type: string
+              warmupStartEpoch:
+                description: The epoch (unix secs) the band's WARMUP window started — the last observed (re)start of the target, or the band's first successful observation. The reconcile layer derives `observed_for_secs = now - warmup_start_epoch` to drive the warmup gate (a shrink is held until this exceeds `warmup_seconds`). Reset to `now` whenever a target restart is detected (the live limit dropped back to the template default / the observed capacity collapsed), so a fresh boot spike is always observed before any carve resumes. `None` until first observed.
+                format: int64
+                nullable: true
+                type: integer
+            type: object
+        required:
+        - spec
+        title: ReplicaBand
         type: object
     served: true
     storage: true
@@ -2863,6 +3256,388 @@ spec:
 apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
+  name: appbands.breathe.pleme.io
+spec:
+  group: breathe.pleme.io
+  names:
+    categories:
+    - breathe
+    kind: AppBand
+    plural: appbands
+    shortNames:
+    - apband
+    singular: appband
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.directionality
+      name: Dir
+      type: string
+    - jsonPath: .status.lastUtil
+      name: Util
+      type: string
+    - jsonPath: .status.currentLimit
+      name: Limit
+      type: string
+    - jsonPath: .status.lastDecision
+      name: Last
+      type: string
+    - jsonPath: .status.phase
+      name: Phase
+      type: string
+    name: v1
+    schema:
+      openAPIV3Schema:
+        description: Auto-generated derived type for AppBandSpec via `CustomResource`
+        properties:
+          spec:
+            properties:
+              ceiling:
+                default: 16Gi
+                type: string
+              cooldownSeconds:
+                default: 600
+                format: uint64
+                minimum: 0.0
+                type: integer
+              directionality:
+                default: bidirectional
+                description: A host-param band's carve directionality (serializable mirror of `breathe_provider::Directionality`; `ObserveOnly` is not a carve).
+                enum:
+                - bidirectional
+                - growOnly
+                type: string
+              disruptionPolicy:
+                description: The FLAG that makes "without restart" controllable + explicit. Set per band / per node; the actuator refuses any action whose [`DisruptionClass`] the policy does not permit (returning a typed deferral, never a silent roll). The default is the cautious one — never restart a workload unless explicitly allowed.
+                enum:
+                - restartFreeOnly
+                - allowConditional
+                - allowRestart
+                type: string
+              dryRun:
+                default: false
+                type: boolean
+              floor:
+                default: 256Mi
+                type: string
+              forceLimit:
+                nullable: true
+                type: string
+              forceLimitExpiry:
+                nullable: true
+                type: string
+              growAbove:
+                default: 0.85
+                format: double
+                type: number
+              growFactor:
+                default: 1.25
+                format: double
+                type: number
+              layout:
+                description: The app-plane knob to carve (its variant tag selects the actuator).
+                oneOf:
+                - required:
+                  - configFile
+                - required:
+                  - apiCall
+                - required:
+                  - jmx
+                - required:
+                  - appRpc
+                properties:
+                  apiCall:
+                    description: A protocol `CONFIG SET` knob (Redis/Kafka/NATS) via the redis-CLI actuator. `command` = the protocol param (e.g. `maxmemory`); `endpoint` = the server URL.
+                    properties:
+                      command:
+                        type: string
+                      endpoint:
+                        type: string
+                    required:
+                    - command
+                    - endpoint
+                    type: object
+                  appRpc:
+                    description: An app admin RPC knob (GOMEMLIMIT/prefetch/max-concurrency). `endpoint` = the admin base URL; `command` = the knob name.
+                    properties:
+                      command:
+                        type: string
+                      endpoint:
+                        type: string
+                    required:
+                    - command
+                    - endpoint
+                    type: object
+                  configFile:
+                    description: A config file `key` at `path`, applied by the ConfigReload actuator + `reload`.
+                    properties:
+                      key:
+                        type: string
+                      path:
+                        type: string
+                      reload:
+                        description: How a [`AppBand`] config-file value takes effect (serde mirror of `breathe_provider::ConfigReload`).
+                        enum:
+                        - sighup
+                        - reload
+                        - restart
+                        type: string
+                    required:
+                    - key
+                    - path
+                    - reload
+                    type: object
+                  jmx:
+                    description: A JVM MBean over Jolokia. `endpoint` = the Jolokia base URL; `command` = `ObjectName:attribute`.
+                    properties:
+                      command:
+                        type: string
+                      endpoint:
+                        type: string
+                    required:
+                    - command
+                    - endpoint
+                    type: object
+                type: object
+              maxStalenessSeconds:
+                default: 120
+                format: uint64
+                minimum: 0.0
+                type: integer
+              metric:
+                description: Where to read the `used` signal (a PromQL on the metrics plane).
+                properties:
+                  prometheus:
+                    type: string
+                required:
+                - prometheus
+                type: object
+              predictive:
+                type: boolean
+              predictiveLookaheadSeconds:
+                default: 60
+                format: uint64
+                minimum: 0.0
+                type: integer
+              setpoint:
+                default: 0.8
+                format: double
+                type: number
+              shrinkBelow:
+                default: 0.7
+                format: double
+                type: number
+              shrinkFactor:
+                default: 0.9
+                format: double
+                type: number
+              suspend:
+                type: boolean
+              targetRef:
+                description: The workload this band carves (`targetRef.name`/`namespace` locate the app + its metric pods; the layout addresses the app's own knob).
+                properties:
+                  apiVersion:
+                    nullable: true
+                    type: string
+                  container:
+                    nullable: true
+                    type: string
+                  kind:
+                    type: string
+                  name:
+                    type: string
+                  podSelector:
+                    description: When set, breathe resolves the band's pods DIRECTLY by this k8s label selector (`k=v,k2=v2`) instead of via an owner's `spec.selector.matchLabels`. The path for **ephemeral / owner-less pod groups** whose name is not stable and which have no single resolvable workload owner — GitHub ARC `EphemeralRunner`s (`actions.github.com/scale-set-name=<set>`), bare pods, Job pods. A selector ALWAYS carves in-place (`PodResize`, zero restart) within `targetRef`'s namespace; `name` then serves only as the metrics pod-name prefix + the human label. Omit it for Deployment/StatefulSet/CNPG owners.
+                    nullable: true
+                    type: string
+                required:
+                - kind
+                - name
+                type: object
+            required:
+            - layout
+            - metric
+            - targetRef
+            type: object
+          status:
+            description: The per-cycle typed status receipt — shared across all band kinds.
+            nullable: true
+            properties:
+              carvesTotal:
+                description: Cumulative count of carves (Applied) over this controller's lifetime.
+                format: int64
+                nullable: true
+                type: integer
+              conditions:
+                description: Standard conditions (Ready / Converged / Throttled / Stale / Conflict).
+                items:
+                  description: A standard k8s `metav1.Condition` (schemars-derivable — k8s_openapi's own `Condition` is not `JsonSchema`). Enables `kubectl wait --for=condition=…` and Flux/Argo health assessment off breathe bands.
+                  properties:
+                    lastTransitionTime:
+                      description: RFC3339 time the condition last flipped status (stable while status holds).
+                      type: string
+                    message:
+                      description: Human-readable message.
+                      type: string
+                    observedGeneration:
+                      description: The `metadata.generation` the controller observed when setting this.
+                      format: int64
+                      nullable: true
+                      type: integer
+                    reason:
+                      description: Machine-readable PascalCase reason.
+                      type: string
+                    status:
+                      description: '`True` | `False` | `Unknown`.'
+                      type: string
+                    type:
+                      description: Condition type, e.g. `Ready` / `Converged` / `Throttled` / `Stale` / `Conflict`.
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+              conflictManager:
+                nullable: true
+                type: string
+              conflictsTotal:
+                description: Cumulative count of single-writer conflicts (yielded to another manager).
+                format: int64
+                nullable: true
+                type: integer
+              cooldownRemainingSeconds:
+                description: Seconds remaining in the post-carve cooldown (0 = ready to carve).
+                format: int64
+                nullable: true
+                type: integer
+              currentLimit:
+                nullable: true
+                type: string
+              deferralsTotal:
+                description: Cumulative count of deferred ceiling crossings (policy refused a restart).
+                format: int64
+                nullable: true
+                type: integer
+              edgeTier:
+                description: Where the last tick sat on the golden/ceiling line (`GoldenPreserving` / `CeilingCrossing`) — the K4 continuity evidence, surfaced.
+                nullable: true
+                type: string
+              effectiveDryRun:
+                description: 'The effective mode: `true` = SHADOW (observe + attest, never carve).'
+                nullable: true
+                type: boolean
+              effectivePolicy:
+                description: The DisruptionPolicy in effect for this band (`restartFreeOnly` / …).
+                nullable: true
+                type: string
+              freshnessSeconds:
+                description: Age of the driving metric sample, in seconds (the freshness gate input).
+                format: int64
+                nullable: true
+                type: integer
+              history:
+                description: The recent TRAJECTORY (over-time view as a k8s object) — appended on a carve or a phase change, capped to the last N samples.
+                items:
+                  description: A point in a band's recent trajectory — the OVER-TIME view as a k8s object (no Grafana needed). Appended on a carve or a phase change, capped to the last N, so `kubectl get <band> -o yaml` shows how the adjustments have been going inline.
+                  properties:
+                    decision:
+                      description: The decision that produced this sample (carve / transition).
+                      nullable: true
+                      type: string
+                    limit:
+                      description: The limit at this point.
+                      format: int64
+                      nullable: true
+                      type: integer
+                    phase:
+                      description: The phase at this point.
+                      type: string
+                    time:
+                      description: RFC3339 time of this sample.
+                      type: string
+                    util:
+                      description: Observed utilization ratio at this point.
+                      format: double
+                      nullable: true
+                      type: number
+                  required:
+                  - phase
+                  - time
+                  type: object
+                type: array
+              lastActionClass:
+                description: The restart cost of the last carve/decision (`RestartFree` / `RestartConditional` / `RestartRequiring`) — the per-tick attestation evidence, now typed in status.
+                nullable: true
+                type: string
+              lastChangeEpoch:
+                format: int64
+                nullable: true
+                type: integer
+              lastDecision:
+                nullable: true
+                type: string
+              lastUtil:
+                nullable: true
+                type: string
+              observedCapacity:
+                description: The observed `capacity` (the current limit the util is measured against).
+                format: int64
+                nullable: true
+                type: integer
+              observedCostRemainingCents:
+                description: Cost remaining (cents) under the namespace's `Densa` envelope SLA; negative ⇒ over budget. Read from the namespace `Densa`'s status — the Dev-Loop cost-guard surfaced on the band, so `kubectl get <band>` shows the env's budget headroom. Read-only (breathe never writes the Densa from a band).
+                format: int64
+                nullable: true
+                type: integer
+              observedEnvId:
+                description: The `EphemeralEnvId` of the band's namespace, if it carries one (the ephemeral-env binding) — read from the namespace label, never written.
+                nullable: true
+                type: string
+              observedGeneration:
+                description: '`metadata.generation` the controller last reconciled — the "controller has seen my latest spec edit" signal.'
+                format: int64
+                nullable: true
+                type: integer
+              observedPeakUsed:
+                description: 'The trailing-window PEAK working set (max RSS, with slow decay) — the never-OOM shrink floor is keyed on THIS, not the instantaneous `observed_used` (the authentik-Celery-worker OOM fix). Carried across ticks: each tick folds the current `used` into the prior peak via `breathe_control::update_peak`, so a recently-demonstrated spike holds the floor up for a meaningful window.'
+                format: int64
+                nullable: true
+                type: integer
+              observedUsed:
+                description: The observed `used` scalar (bytes for memory/arc/cgroup; millicores for cpu).
+                format: int64
+                nullable: true
+                type: integer
+              observedUtil:
+                description: The observed utilization that drove this tick, as a ratio (`used/capacity`).
+                format: double
+                nullable: true
+                type: number
+              phase:
+                nullable: true
+                type: string
+              warmupStartEpoch:
+                description: The epoch (unix secs) the band's WARMUP window started — the last observed (re)start of the target, or the band's first successful observation. The reconcile layer derives `observed_for_secs = now - warmup_start_epoch` to drive the warmup gate (a shrink is held until this exceeds `warmup_seconds`). Reset to `now` whenever a target restart is detected (the live limit dropped back to the template default / the observed capacity collapsed), so a fresh boot spike is always observed before any carve resumes. `None` until first observed.
+                format: int64
+                nullable: true
+                type: integer
+            type: object
+        required:
+        - spec
+        title: AppBand
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
   name: breathenodepools.breathe.pleme.io
 spec:
   group: breathe.pleme.io
@@ -3266,6 +4041,162 @@ spec:
         required:
         - spec
         title: BreatheCloudPool
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: isolationbands.breathe.pleme.io
+spec:
+  group: breathe.pleme.io
+  names:
+    categories:
+    - breathe
+    kind: IsolationBand
+    plural: isolationbands
+    shortNames:
+    - isob
+    singular: isolationband
+  scope: Cluster
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.placement
+      name: Placement
+      type: string
+    - jsonPath: .spec.taint.key
+      name: TaintKey
+      type: string
+    - jsonPath: .status.phase
+      name: Phase
+      type: string
+    - jsonPath: .status.nodesTainted
+      name: Tainted
+      type: integer
+    - jsonPath: .status.unauthorizedCount
+      name: Unauthorized
+      type: integer
+    - jsonPath: .spec.dryRun
+      name: DryRun
+      type: boolean
+    name: v1
+    schema:
+      openAPIV3Schema:
+        description: Auto-generated derived type for IsolationBandSpec via `CustomResource`
+        properties:
+          spec:
+            properties:
+              allowedWorkloads:
+                default: []
+                description: Workloads allowed to run on `targetNodes` despite the taint (i.e. that carry a matching toleration by convention). An origin-guard band enumerates every legitimate daemon + controller explicitly — anything unnamed is unauthorized by design.
+                items:
+                  description: A workload this band's `targetNodes` MAY run — matched against a pod's namespace + (its own name, for a bare/unmanaged pod, OR an owner reference's name, allowing the standard ReplicaSet `<name>-<hash>` prefix so a Deployment's `WorkloadRef` matches its pods without an extra apiserver hop to resolve the ReplicaSet's own owner — see `origin_guard::is_authorized_pod` in breathe-controller).
+                  properties:
+                    name:
+                      type: string
+                    namespace:
+                      type: string
+                  required:
+                  - name
+                  - namespace
+                  type: object
+                type: array
+              cooldownSeconds:
+                format: uint64
+                minimum: 0.0
+                nullable: true
+                type: integer
+              dryRun:
+                default: false
+                description: 'SHADOW: observe + report what the band WOULD taint; never actuate.'
+                type: boolean
+              growAbove:
+                format: double
+                nullable: true
+                type: number
+              placement:
+                default: dedicated
+                description: The placement-isolation posture these nodes carry. `dedicated` (the default) is the only posture origin-guard actuates on today; the other arms are named for the future multi-node placement engine this CRD kind is designed to also carry (the elasticity fields below).
+                enum:
+                - anti-affinity
+                - topology-spread
+                - co-locate
+                - dedicated
+                type: string
+              setpoint:
+                format: double
+                nullable: true
+                type: number
+              shrinkBelow:
+                format: double
+                nullable: true
+                type: number
+              taint:
+                default:
+                  effect: NoSchedule
+                  key: breathe.pleme.io/origin-reserved
+                description: The taint every `targetNodes` entry is kept carrying. Defaults to the origin-guard taint (`breathe.pleme.io/origin-reserved:NoSchedule`).
+                properties:
+                  effect:
+                    description: '`NoSchedule` / `PreferNoSchedule` / `NoExecute` — the raw k8s taint effect string (validated by the apiserver against `Taint`''s own enum, not re-validated here).'
+                    type: string
+                  key:
+                    type: string
+                  value:
+                    nullable: true
+                    type: string
+                required:
+                - effect
+                - key
+                type: object
+              targetNodes:
+                description: The node(s) this band protects. Origin-guard declares exactly one hostname — this list IS "declare a node as origin".
+                items:
+                  type: string
+                type: array
+              writeEnabled:
+                default: false
+                description: 'Pool-level MASTER write switch (the `BreatheCloudPool.spec.writeEnabled` convention): `false` ⇒ the whole band is in shadow regardless of `dryRun`. Safe default — a freshly-applied `IsolationBand` taints nothing until an operator opts in.'
+                type: boolean
+            required:
+            - targetNodes
+            type: object
+          status:
+            description: '`IsolationBand` status — the per-tick protect-and-observe receipt.'
+            nullable: true
+            properties:
+              effectiveDryRun:
+                nullable: true
+                type: boolean
+              lastSeenEpoch:
+                format: int64
+                nullable: true
+                type: integer
+              nodesTainted:
+                description: How many of `spec.targetNodes` currently carry the taint (live count; under `dryRun` this is the WOULD-be count).
+                format: int64
+                nullable: true
+                type: integer
+              phase:
+                nullable: true
+                type: string
+              unauthorizedCount:
+                description: '`unauthorized_pods.len()` mirrored as its own field so `kubectl get isolationband` (a printcolumn can''t index into a list) shows a count at a glance.'
+                format: int64
+                nullable: true
+                type: integer
+              unauthorizedPods:
+                description: 'Pods observed running on a `targetNodes` entry that match no `allowed_workloads` entry — `"<namespace>/<pod-name>"` per finding. OBSERVATION, not enforcement (only-mitigated / C2 tier, same ceiling `breathe-lifecycle::OrphanTracker` names for itself): a wildcard toleration on some unrelated pod still bypasses the taint entirely; this field reports that, it does not prevent it.'
+                items:
+                  type: string
+                type: array
+            type: object
+        required:
+        - spec
+        title: IsolationBand
         type: object
     served: true
     storage: true
