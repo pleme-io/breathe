@@ -15,6 +15,10 @@ use std::sync::Arc;
 
 use breathe_admission::{Allocatable, CapacidadeProof, Portao, Viveiro};
 use breathe_auction::{BandLeiloeiro, LinearTrendPrevisor, Previsao, Previsor, ReactivePrevisor};
+// correnteza M0 — the compute/auction permutation-space lock (`Lane` etc).
+// Aliased as `breathe_spread` in Cargo.toml: `crates/breathe-auction` is a
+// DIFFERENT crate that happens to share the package name `breathe-auction`
+// with the elasticity engine imported above.
 use breathe_crd::{BreatheCloudPool, CloudPoolStatus};
 use breathe_provider::{Forma, FormaSample, ProviderError, ProvisionReceipt, Provedor};
 use breathe_provision::{reconcile_forma, FormaTick};
@@ -499,6 +503,162 @@ impl Provedor for PoolProvedor {
     }
 }
 
+// ============================================================================
+// Node claiming — correnteza M0 (theory/CORRENTEZA.md): on a
+// `Lane::StandaloneEc2Instance` pool's `Grew` tick, claim ONE Ready, unclaimed,
+// non-kwok-fake node into the pool by tainting + labelling it. This is "a
+// workload cannot be scheduled due to resource pressure" (the SAME `Grew`
+// signal `reconcile_forma` already computes) turned into a NODE-level
+// decision. Shadow-first: the caller's EFFECTIVE `dry_run`
+// (`cr.spec.dry_run || !cr.spec.write_enabled`, computed once in
+// `reconcile_cloud_pool`) is the ONLY gate — the exact same switch that keeps
+// `KwokProvedor` from mutating in shadow, threaded one level deeper to the
+// per-node claim. In shadow the candidate is picked and reported
+// (`would_taint`) WITHOUT mutating; live, the SAME selection is patched for
+// real (`tainted_node`) via the identical `Api<Node>` write pathway
+// `KwokProvedor::provision` already uses.
+// ============================================================================
+
+/// The label a claimed node carries — value = the owning pool's name. It is
+/// BOTH the scheduling boundary (paired with a `NoSchedule` taint of the same
+/// key, so workloads stay off until they tolerate it) AND the claim-eligibility
+/// predicate: a node already carrying this label — for ANY pool — is never
+/// claimed a second time.
+const CLAIM_POOL_LABEL: &str = "breathe.pleme.io/pool";
+/// The lane the claimed node joined on (`Lane::as_str()`), stamped alongside
+/// the pool label purely for observability (`kubectl get nodes -L`).
+const CLAIM_LANE_LABEL: &str = "breathe.pleme.io/lane";
+
+/// The outcome of one claim attempt this tick.
+#[derive(Debug, Clone, PartialEq)]
+enum ClaimOutcome {
+    /// No Ready, unclaimed, non-kwok-fake node exists to claim.
+    NoCandidate,
+    /// Shadow: this node WOULD be tainted + labelled into the pool. Mutates nothing.
+    WouldTaint { node: String },
+    /// Live: this node WAS tainted + labelled into the pool.
+    Tainted { node: String },
+    /// Live: a candidate existed but the patch call failed — non-fatal, retried
+    /// next tick (the same per-node error handling `KwokProvedor::provision`
+    /// already uses; logged, never silently promoted to a status field).
+    ClaimFailed { node: String },
+}
+
+/// PURE (tested): is `node` eligible for a FRESH claim by any pool — Ready,
+/// not a kwok fake, and not already carrying [`CLAIM_POOL_LABEL`] (any pool's;
+/// a node claimed by pool A is never re-claimed by pool B).
+fn is_claim_candidate(node: &Node) -> bool {
+    node_ready(node)
+        && !is_kwok_fake(node)
+        && !node.metadata.labels.as_ref().is_some_and(|l| l.contains_key(CLAIM_POOL_LABEL))
+}
+
+/// PURE (tested): pick the claim candidate from a node list — the first, by
+/// name, of the eligible set ([`is_claim_candidate`]). Deterministic ordering
+/// so two reconciles observing the same cluster state pick the SAME node
+/// (no time-of-check/time-of-use race between the shadow report and the live
+/// apply of the same tick).
+fn pick_claim_candidate(nodes: &[Node]) -> Option<String> {
+    let mut names: Vec<&str> = nodes
+        .iter()
+        .filter(|n| is_claim_candidate(n))
+        .filter_map(|n| n.metadata.name.as_deref())
+        .collect();
+    names.sort_unstable();
+    names.first().map(|s| (*s).to_string())
+}
+
+/// PURE (tested): the merge-patch body that claims a node into `pool` on
+/// `lane` — labels [`CLAIM_POOL_LABEL`]/[`CLAIM_LANE_LABEL`], and
+/// `existing_taints` PLUS the new claim `NoSchedule` taint. A k8s JSON merge
+/// patch REPLACES the whole `spec.taints` list (it is not a per-element merge),
+/// so the caller must pass the node's CURRENT taints through — dropping them
+/// here would silently un-taint a node for anything else it already carries.
+/// Idempotent: re-claiming a node already tainted for `pool` does not duplicate
+/// the entry (filtered out, then re-added once).
+fn claim_patch(pool: &str, lane: &str, existing_taints: &[Taint]) -> serde_json::Value {
+    let mut taints: Vec<serde_json::Value> = existing_taints
+        .iter()
+        .filter(|t| t.key != CLAIM_POOL_LABEL)
+        .map(|t| serde_json::json!({ "key": t.key, "value": t.value, "effect": t.effect }))
+        .collect();
+    taints.push(serde_json::json!({ "key": CLAIM_POOL_LABEL, "value": pool, "effect": "NoSchedule" }));
+    serde_json::json!({
+        "metadata": { "labels": { CLAIM_POOL_LABEL: pool, CLAIM_LANE_LABEL: lane } },
+        "spec": { "taints": taints },
+    })
+}
+
+/// Claim one node into `pool` on `lane` this tick. Lists Ready nodes, picks the
+/// deterministic candidate ([`pick_claim_candidate`]), and — ONLY when
+/// `!dry_run` — patches it for real. `dry_run` is the caller's EFFECTIVE gate;
+/// this function adds no second switch.
+async fn claim_unassigned_node_for_pool(
+    client: &Client,
+    pool: &str,
+    lane: &str,
+    dry_run: bool,
+) -> ClaimOutcome {
+    let nodes = match Api::<Node>::all(client.clone()).list(&ListParams::default()).await {
+        Ok(l) => l.items,
+        Err(e) => {
+            warn!(pool, error = %e, "claim_unassigned_node_for_pool: node list failed (non-fatal; retried next tick)");
+            return ClaimOutcome::NoCandidate;
+        }
+    };
+    let Some(name) = pick_claim_candidate(&nodes) else {
+        return ClaimOutcome::NoCandidate;
+    };
+    if dry_run {
+        return ClaimOutcome::WouldTaint { node: name };
+    }
+    let existing_taints = nodes
+        .iter()
+        .find(|n| n.metadata.name.as_deref() == Some(name.as_str()))
+        .and_then(|n| n.spec.as_ref())
+        .and_then(|s| s.taints.clone())
+        .unwrap_or_default();
+    let patch = claim_patch(pool, lane, &existing_taints);
+    let api = Api::<Node>::all(client.clone());
+    match api.patch(&name, &PatchParams::default(), &Patch::Merge(&patch)).await {
+        Ok(_) => {
+            info!(pool, lane, node = %name, "claimed node into pool (tainted + labelled)");
+            ClaimOutcome::Tainted { node: name }
+        }
+        Err(e) => {
+            warn!(pool, node = %name, error = %e, "claim patch failed (non-fatal; retried next tick)");
+            ClaimOutcome::ClaimFailed { node: name }
+        }
+    }
+}
+
+/// The metrics-label outcome for `breathe_node_claim_total` — the claim-tier
+/// peer of `outcome_of`.
+fn claim_outcome_label(c: &ClaimOutcome) -> &'static str {
+    match c {
+        ClaimOutcome::NoCandidate => "no_candidate",
+        ClaimOutcome::WouldTaint { .. } => "would_taint",
+        ClaimOutcome::Tainted { .. } => "tainted",
+        ClaimOutcome::ClaimFailed { .. } => "claim_failed",
+    }
+}
+
+/// PURE (tested): apply a claim outcome onto an already-built `CloudPoolStatus`
+/// — `WouldTaint` → `would_taint`; `Tainted` → `tainted_node`; `NoCandidate`/
+/// `ClaimFailed` leave both `None` (nothing happened worth reporting on the CR
+/// — a failed claim is logged + metriced, never silently promoted to a status
+/// field it doesn't own). Kept OUT of `cloud_pool_status` itself — the same
+/// post-hoc-field-set convention `reconcile_cloud_pool` already uses for
+/// `scheduler_scoring`/`predictive_active` — so that function's signature (and
+/// its existing tests) stay stable.
+fn apply_claim_to_status(status: &mut CloudPoolStatus, claim: &ClaimOutcome) {
+    match claim {
+        ClaimOutcome::WouldTaint { node } => status.would_taint = Some(node.clone()),
+        ClaimOutcome::Tainted { node } => status.tainted_node = Some(node.clone()),
+        ClaimOutcome::NoCandidate | ClaimOutcome::ClaimFailed { .. } => {}
+    }
+}
+
 /// PURE: map a `FormaTick` (+ the observed sample + effective mode) onto the
 /// typed `CloudPoolStatus`. The node-tier peer of `breathe_runtime::status_for`;
 /// unit-tested below, no I/O — so the CR status, the metrics, and the logs can
@@ -651,6 +811,21 @@ pub async fn reconcile_cloud_pool(cr: Arc<BreatheCloudPool>, ctx: Arc<Ctx>) -> R
     // implies — breathe SETS the posture; the scheduler (profile-configured) binds.
     status.scheduler_scoring = Some(cr.spec.fill_policy.scheduler_scoring().to_string());
     status.predictive_active = Some(cr.spec.predictive);
+
+    // correnteza M0 — StandaloneEc2Instance lane: on a Grew tick (this pool
+    // cannot cover current demand with its present node count — the trigger
+    // grounding names as "a workload cannot be scheduled due to resource
+    // pressure"), claim ONE unclaimed Ready node into this pool. Gated on the
+    // SAME effective `dry_run` `reconcile_forma` was just run under — no new
+    // safety switch, threaded one level deeper (see the module doc above).
+    if let (FormaTick::Grew { .. }, Some(lane)) = (&tick, cr.spec.lane.as_deref()) {
+        if lane == breathe_spread::Lane::StandaloneEc2Instance.as_str() {
+            let claim = claim_unassigned_node_for_pool(&ctx.client, &name, lane, dry_run).await;
+            counter!("breathe_node_claim_total", "pool" => name.clone(), "lane" => lane.to_string(), "outcome" => claim_outcome_label(&claim)).increment(1);
+            apply_claim_to_status(&mut status, &claim);
+        }
+    }
+
     if let Some(w) = status.would_provision {
         gauge!("breathe_forma_would_provision", "forma" => "node-on-demand", "pool" => name.clone()).set(w as f64);
     }
@@ -682,16 +857,55 @@ pub fn error_policy_cloud_pool(_cr: Arc<BreatheCloudPool>, err: &Error, ctx: Arc
 #[cfg(test)]
 mod tests {
     use super::{
-        cloud_pool_status, fake_node_object, forma_from_str, is_kwok_managed, node_imbalance,
-        outcome_of, parse_cpu_milli, KWOK_MANAGED_LABEL,
+        apply_claim_to_status, claim_outcome_label, claim_patch, cloud_pool_status,
+        fake_node_object, forma_from_str, is_claim_candidate, is_kwok_managed, node_imbalance,
+        outcome_of, parse_cpu_milli, pick_claim_candidate, ClaimOutcome, CLAIM_POOL_LABEL,
+        KWOK_MANAGED_LABEL,
     };
+    use breathe_crd::CloudPoolStatus;
     use breathe_provider::Forma;
     use breathe_provision::FormaTick;
-    use k8s_openapi::api::core::v1::Node;
+    use k8s_openapi::api::core::v1::{Node, NodeCondition, NodeSpec, NodeStatus, Taint};
     use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
 
     fn n(name: &str, alloc: u64, req: u64) -> (String, u64, u64) {
         (name.to_string(), alloc, req)
+    }
+
+    /// A Ready node (optionally already claimed by `claimed_by`, optionally
+    /// carrying `extra_taints`) — the fixture the claim-candidate tests share.
+    fn ready_node(name: &str, claimed_by: Option<&str>, extra_taints: Vec<Taint>) -> Node {
+        let mut labels = std::collections::BTreeMap::new();
+        if let Some(pool) = claimed_by {
+            labels.insert(CLAIM_POOL_LABEL.to_string(), pool.to_string());
+        }
+        Node {
+            metadata: ObjectMeta { name: Some(name.to_string()), labels: Some(labels), ..Default::default() },
+            spec: Some(NodeSpec { taints: (!extra_taints.is_empty()).then_some(extra_taints), ..Default::default() }),
+            status: Some(NodeStatus {
+                conditions: Some(vec![NodeCondition {
+                    type_: "Ready".to_string(),
+                    status: "True".to_string(),
+                    ..Default::default()
+                }]),
+                ..Default::default()
+            }),
+        }
+    }
+
+    fn not_ready_node(name: &str) -> Node {
+        Node {
+            metadata: ObjectMeta { name: Some(name.to_string()), ..Default::default() },
+            status: Some(NodeStatus {
+                conditions: Some(vec![NodeCondition {
+                    type_: "Ready".to_string(),
+                    status: "False".to_string(),
+                    ..Default::default()
+                }]),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }
     }
 
     fn node_with_managed(label: Option<&str>) -> Node {
@@ -807,5 +1021,105 @@ mod tests {
         let err = cloud_pool_status(&FormaTick::ObserveError("boom".into()), None, None, true);
         assert_eq!(err.phase.as_deref(), Some("Error"));
         assert_eq!(outcome_of(&FormaTick::ObserveError("x".into())), "observe_error");
+    }
+
+    // ── correnteza M0: node-claim tests ─────────────────────────────────────
+
+    #[test]
+    fn claim_candidate_predicate_excludes_not_ready_kwok_fake_and_already_claimed() {
+        assert!(is_claim_candidate(&ready_node("fresh", None, vec![])), "a bare Ready node is claimable");
+        assert!(!is_claim_candidate(&not_ready_node("booting")), "NotReady is never a candidate");
+        assert!(!is_claim_candidate(&fake_node_object("some-kwok-pool", "kwok-1", 4000)), "a kwok fake is never a real claim candidate");
+        assert!(!is_claim_candidate(&ready_node("owned", Some("other-pool"), vec![])), "already labelled for ANY pool is never re-claimed");
+    }
+
+    #[test]
+    fn pick_claim_candidate_is_deterministic_and_skips_ineligible() {
+        let nodes = vec![
+            ready_node("zzz-node", None, vec![]),
+            not_ready_node("aaa-not-ready"),
+            ready_node("bbb-claimed", Some("pool-a"), vec![]),
+            ready_node("ccc-node", None, vec![]),
+        ];
+        // Two eligible: "zzz-node" and "ccc-node" — deterministic pick = lowest name.
+        assert_eq!(pick_claim_candidate(&nodes).as_deref(), Some("ccc-node"));
+    }
+
+    #[test]
+    fn pick_claim_candidate_none_when_nothing_eligible() {
+        let nodes = vec![not_ready_node("a"), ready_node("b", Some("pool-a"), vec![])];
+        assert_eq!(pick_claim_candidate(&nodes), None);
+        assert_eq!(pick_claim_candidate(&[]), None);
+    }
+
+    #[test]
+    fn claim_patch_labels_and_taints_the_node_preserving_existing_taints() {
+        let existing = vec![Taint {
+            key: "dedicated".to_string(),
+            value: Some("gpu".to_string()),
+            effect: "NoSchedule".to_string(),
+            ..Default::default()
+        }];
+        let patch = claim_patch("camelot-agents", "standalone-ec2-instance", &existing);
+        let labels = &patch["metadata"]["labels"];
+        assert_eq!(labels[CLAIM_POOL_LABEL], "camelot-agents");
+        assert_eq!(labels["breathe.pleme.io/lane"], "standalone-ec2-instance");
+        let taints = patch["spec"]["taints"].as_array().unwrap();
+        assert_eq!(taints.len(), 2, "the pre-existing taint is PRESERVED, not dropped");
+        assert_eq!(taints[0]["key"], "dedicated");
+        assert_eq!(taints[1]["key"], CLAIM_POOL_LABEL);
+        assert_eq!(taints[1]["value"], "camelot-agents");
+        assert_eq!(taints[1]["effect"], "NoSchedule");
+    }
+
+    #[test]
+    fn claim_patch_is_idempotent_on_a_re_claim_of_the_same_pool() {
+        // A node already carrying THIS pool's taint (e.g. a retried tick after a
+        // status-patch failure) must not accumulate a duplicate taint entry.
+        let existing = vec![Taint {
+            key: CLAIM_POOL_LABEL.to_string(),
+            value: Some("camelot-agents".to_string()),
+            effect: "NoSchedule".to_string(),
+            ..Default::default()
+        }];
+        let patch = claim_patch("camelot-agents", "standalone-ec2-instance", &existing);
+        let taints = patch["spec"]["taints"].as_array().unwrap();
+        assert_eq!(taints.len(), 1, "re-claiming never duplicates the pool taint");
+    }
+
+    #[test]
+    fn claim_outcome_maps_to_the_right_status_field_or_neither() {
+        let mut s = CloudPoolStatus::default();
+        apply_claim_to_status(&mut s, &ClaimOutcome::WouldTaint { node: "n1".into() });
+        assert_eq!(s.would_taint.as_deref(), Some("n1"));
+        assert_eq!(s.tainted_node, None);
+
+        let mut s = CloudPoolStatus::default();
+        apply_claim_to_status(&mut s, &ClaimOutcome::Tainted { node: "n2".into() });
+        assert_eq!(s.tainted_node.as_deref(), Some("n2"));
+        assert_eq!(s.would_taint, None);
+
+        // NoCandidate / ClaimFailed report NOTHING on the CR — a non-event and a
+        // logged-but-non-fatal failure are never silently promoted to a status
+        // field that would misreport "this WOULD/DID happen".
+        for c in [ClaimOutcome::NoCandidate, ClaimOutcome::ClaimFailed { node: "n3".into() }] {
+            let mut s = CloudPoolStatus::default();
+            apply_claim_to_status(&mut s, &c);
+            assert_eq!(s.would_taint, None);
+            assert_eq!(s.tainted_node, None);
+        }
+    }
+
+    #[test]
+    fn claim_outcome_labels_are_distinct() {
+        let labels: std::collections::HashSet<&str> = [
+            claim_outcome_label(&ClaimOutcome::NoCandidate),
+            claim_outcome_label(&ClaimOutcome::WouldTaint { node: "x".into() }),
+            claim_outcome_label(&ClaimOutcome::Tainted { node: "x".into() }),
+            claim_outcome_label(&ClaimOutcome::ClaimFailed { node: "x".into() }),
+        ]
+        .into_iter()
+        .collect();
+        assert_eq!(labels.len(), 4, "every claim outcome gets a distinct metric label");
     }
 }

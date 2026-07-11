@@ -1,7 +1,7 @@
 ;;; auction.lisp — the tatara-lisp vocabulary bridge for the arch × auction × spot
 ;;; configuration spread (the compute/auction companion to the breathability
 ;;; (defbreathe-invariant) lock). One `(defauction-spread …)` form per use-case
-;;; molding; the Rust border (breathe-auction::spread::MOLDINGS) is the type, this
+;;; molding; the Rust border (breathe-spread::spread::MOLDINGS) is the type, this
 ;;; is the authored spec, and the matrix cross-checks the two never drift
 ;;; (/vocabulary-bridging). Naming: the auction concept is `leilão` (BR-PT) in the
 ;;; org vocabulary; the descriptive form-name matches the sibling lock.

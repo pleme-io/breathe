@@ -1,4 +1,17 @@
-# breathe-auction — the arch × auction × spot configuration spread as a first-class configurable dimension
+# breathe-spread — the arch × auction × spot configuration spread as a first-class configurable dimension
+
+> **Renamed from `breathe-auction`** (2026-07-11, executing
+> `theory/CORRENTEZA.md` §1.2's named follow-up,
+> `pending-correnteza: rename-breathe-auction-spread-lock`). Two crates shared
+> the literal package name `breathe-auction`: this one (the config-spread
+> lock) and `breathe/breathe-auction` (the node-count/forma elasticity engine
+> — `Leiloeiro`/`Previsor`, live-wired into `breathe-provision::reconcile_forma`
+> and `breathe-controller::node_forma`). Cargo refuses two same-named local
+> packages in one resolve graph, which blocked `breathe-controller` from
+> depending on both at once — hit for real wiring the correnteza M0 node-claim
+> slice. The elasticity engine kept the name; this crate took `breathe-spread`
+> (its own primary type is literally `AuctionSpread`), per this doc's own
+> recommendation below.
 
 The COMPUTE/AUCTION companion to the breathability variant/invariant lock
 (`crates/breathe-invariant`). Breathability locks the *dimension carve* (memory /
@@ -66,7 +79,7 @@ arm loses) — the operator's "be vocal where arm is not winning" as a CI gate.
 
 The BREATHABILITY doctrine's 100 %-spot / flex-window section
 (`theory/BREATHABILITY.md` §II.6) and the `/breathability` + `/camelot` skills
-should point at **`pleme-io/breathe/crates/breathe-auction`** as the CANONICAL LOCK
+should point at **`pleme-io/breathe/crates/breathe-spread`** as the CANONICAL LOCK
 of the arch × auction × spot spread — the compute peer of the `breathe-invariant`
 dimension lock. The doctrine PROSE is the model; this crate is the typed contract
 it points at (same relationship as breathability ↔ breathe-invariant).

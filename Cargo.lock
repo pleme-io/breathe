@@ -607,6 +607,7 @@ dependencies = [
  "breathe-provider",
  "breathe-provision",
  "breathe-runtime",
+ "breathe-spread",
  "breathe-store",
  "futures",
  "k8s-openapi",
@@ -773,6 +774,14 @@ dependencies = [
  "chrono",
  "kube",
  "metrics",
+ "serde_json",
+]
+
+[[package]]
+name = "breathe-spread"
+version = "0.1.0"
+dependencies = [
+ "serde",
  "serde_json",
 ]
 

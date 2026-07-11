@@ -29,6 +29,15 @@ members = [
   "breathe-facade",    # the typed CRD facade (BreatheStore) — shared by every API surface
   "breathe-mcp",       # the MCP surface — a model drives breathe (bands/nodepools over kube-rs)
   "breathe-api-server", # the REST surface (axum) over the same facade
+  # correnteza M0 (theory/CORRENTEZA.md) — folded in from its own standalone
+  # workspace root so `breathe-controller` can depend on it: Cargo refuses a
+  # path dependency onto a NESTED directory that also declares its own
+  # `[workspace]` ("multiple workspace roots found in the same workspace"),
+  # so isolation-via-nested-[workspace] only works for a crate nothing in this
+  # workspace ever depends on. This crate's own doc named exactly this move as
+  # its follow-up ("fold into the breathe workspace members ... once the
+  # concurrent band-crate work lands") — this IS that band-crate work.
+  "crates/breathe-spread", # the ARCH × AUCTION × SPOT config-spread lock (Lane/AuctionSpread) — renamed from breathe-auction, see its Cargo.toml header
 ]
 
 [workspace.package]

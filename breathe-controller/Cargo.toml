@@ -27,6 +27,12 @@ breathe-config = { path = "../breathe-config", version = "0.1.0" }
 breathe-provision = { path = "../breathe-provision", version = "0.1.0" }
 breathe-auction = { path = "../breathe-auction", version = "0.1.0" }
 breathe-admission = { path = "../breathe-admission", version = "0.1.0" }
+# correnteza M0 — the compute/auction permutation-space lock (Lane/AuctionSpread).
+# Was package-named `breathe-auction` too (a real collision with the elasticity
+# engine above, since Cargo refuses two same-named local packages in one
+# resolve graph) — renamed to `breathe-spread` (theory/CORRENTEZA.md §1.2) so
+# both coexist here with no alias needed.
+breathe-spread = { path = "../crates/breathe-spread", version = "0.1.0" }
 async-trait = "0.1"
 kube = { version = "0.96", features = ["client", "runtime", "derive", "rustls-tls", "unstable-runtime"], default-features = false }
 k8s-openapi = { version = "0.23", features = ["latest"] }

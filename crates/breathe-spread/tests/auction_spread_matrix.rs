@@ -7,15 +7,15 @@
 //! Peer of `breathe-invariant`'s `tests/breathe_dimension_matrix.rs`. Failures
 //! aggregate before assert where it aids the operator; every named gate has teeth.
 
-use breathe_auction::axis::{
+use breathe_spread::axis::{
     ArchSelection, Interruption, LadderMode, PerfClass, Placement, ResolvedArch, SpotStrategy,
     StorageBinding, REMOVED_ON_DEMAND_PERF_CLASSES,
 };
-use breathe_auction::invariant::AuctionClause;
-use breathe_auction::spread::{
+use breathe_spread::invariant::AuctionClause;
+use breathe_spread::spread::{
     cost_witness, AuctionSpread, Lane, StrategyWiring, UseCase, BUILD_BURST, MOLDINGS, SAAS_STEADY,
 };
-use breathe_auction::{AXIS_LEDGER, Maturity};
+use breathe_spread::{AXIS_LEDGER, Maturity};
 
 // ── row 1: every use-case resolves to a valid typed permutation ─────────────────
 
@@ -51,7 +51,7 @@ fn never_on_demand_is_structural_capacity_is_not_an_axis() {
     // And the never-on-demand clause is the strongest (truly-unrep library + parse-wire).
     assert_eq!(
         AuctionClause::NeverOnDemand.achievable_tier(),
-        breathe_auction::UnrepTier::TrulyUnrepLibraryParseWire
+        breathe_spread::UnrepTier::TrulyUnrepLibraryParseWire
     );
 }
 
@@ -117,7 +117,7 @@ fn arm_losing_is_always_loud() {
 
 #[test]
 fn every_molding_arch_flips_with_the_price_signal() {
-    use breathe_auction::axis::ArchCostSignal;
+    use breathe_spread::axis::ArchCostSignal;
     for m in MOLDINGS {
         let w = cost_witness(m.use_case).expect("witness");
         assert_eq!(m.resolved_arch(w.signal), m.cost_rationale.chosen_arch, "{}: arch must equal the cost resolution", m.use_case.as_str());
@@ -218,7 +218,7 @@ fn axis_ledger_partitions_and_names_the_gaps() {
 
 #[test]
 fn no_clause_rounds_up_past_its_ceiling() {
-    use breathe_auction::UnrepTier;
+    use breathe_spread::UnrepTier;
     for c in AuctionClause::ALL {
         let t = c.achievable_tier();
         // a ceiling clause never claims a truly-unrep tier it cannot reach.

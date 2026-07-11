@@ -3108,6 +3108,12 @@ spec:
     - jsonPath: .spec.dryRun
       name: DryRun
       type: boolean
+    - jsonPath: .spec.lane
+      name: Lane
+      type: string
+    - jsonPath: .status.taintedNode
+      name: Tainted
+      type: string
     name: v1
     schema:
       openAPIV3Schema:
@@ -3157,6 +3163,10 @@ spec:
                 default: 1.25
                 format: double
                 type: number
+              lane:
+                description: 'The AWS lane this pool''s nodes join on — one of `breathe_auction::spread::Lane::as_str()`''s values (e.g. `"standalone-ec2-instance"`). A plain string BY REFERENCE (never a dependency on the `breathe-auction` crate from here) — the same composes-by-reference discipline `breathe-invariant`''s `doctrine_ref` uses, so the CRD stays decoupled from that crate''s churn. `None` ⇒ no lane-specific behaviour (today: node-claiming stays off — see `node_forma::claim_unassigned_node_for_pool`, gated on the `"standalone-ec2-instance"` string matching `Lane::StandaloneEc2Instance`).'
+                nullable: true
+                type: string
               predictive:
                 description: 'Forecast demand AHEAD of `reliefLatencySeconds` instead of reacting to current util. Node boot is slow, so a reactive pool is always late; the `LinearTrendPrevisor` projects the recent slope `reliefLatencySeconds` ahead so capacity lands in time. MONOTONE-SAFE: it only ever provisions EARLIER, never shrinks prematurely (a falling trend echoes the reactive value), so it is strictly safer than reactive. Default off (peer of the limit-side `predictive`). Omitted on serialize at the `false` default.'
                 type: boolean
@@ -3226,11 +3236,19 @@ spec:
                 description: The kube-scheduler scoringStrategy hint the pool's `fillPolicy` implies (`MostAllocated` for pack / `LeastAllocated` for spread) — surfaced for the scheduler profile; breathe never binds a pod.
                 nullable: true
                 type: string
+              taintedNode:
+                description: 'LIVE half: the name of the node this pool ACTUALLY tainted+labelled into itself this tick (`breathe.pleme.io/pool=<this pool>`, `breathe.pleme.io/lane=<lane>`, `NoSchedule`). Set only when the claim mutation ran (`effectiveDryRun == false` and a candidate existed).'
+                nullable: true
+                type: string
               wouldProvision:
                 description: Signed node delta the pool WOULD provision (+) / deprovision (−) this tick.
                 format: int64
                 nullable: true
                 type: integer
+              wouldTaint:
+                description: 'SHADOW half of a `StandaloneEc2Instance`-lane claim decision: the name of the Ready, unclaimed node this pool WOULD taint+label into itself this tick. Set only in shadow (`effectiveDryRun == true`); mirrors `wouldProvision`''s shadow-first convention at the per-node claim grain.'
+                nullable: true
+                type: string
             type: object
         required:
         - spec
