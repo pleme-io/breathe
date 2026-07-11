@@ -18,6 +18,20 @@ spec:
       labels:
         app.kubernetes.io/name: pleme-breathe
         app.kubernetes.io/component: controller
+      # NOTE (2026-07-11): metrics.enabled was already USER-SUPPLIED in the
+      # live release's values (helm get values shows metrics.enabled=true)
+      # but this chart never consumed it — the controller's own :9100
+      # /metrics listener is unconditional (breathe-controller/src/main.rs)
+      # but the scrape annotations + containerPort below were only ever
+      # hand-patched onto the live Deployment out of band, same drift class
+      # as the RBAC/CRD grants. Wiring the value the release already passes
+      # closes that drift instead of leaving it live-only.
+      {{- if .Values.metrics.enabled }}
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9100"
+        prometheus.io/path: /metrics
+      {{- end }}
     spec:
       serviceAccountName: {{ .Values.serviceAccount.name }}
       {{- with .Values.nodeSelector }}
@@ -41,7 +55,23 @@ spec:
         - name: controller
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
+          {{- if .Values.metrics.enabled }}
+          ports:
+            - name: metrics
+              containerPort: 9100
+              protocol: TCP
+          {{- end }}
           env:
+            # POD_NAME: same live-but-uncommitted drift as the annotations
+            # above. Optional at the app layer (Reporter::instance reads it
+            # via std::env::var(...).ok() in main.rs — absence degrades to
+            # no per-pod identity tag, never a startup failure) but real —
+            # it was already hand-patched onto the live Deployment.
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: metadata.name
             - name: BREATHE_PROMETHEUS_URL
               value: {{ .Values.prometheusUrl | quote }}
             - name: BREATHE_REQUEUE_SECONDS
