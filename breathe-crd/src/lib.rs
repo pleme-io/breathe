@@ -1839,6 +1839,39 @@ pub enum ProviderKind {
     Kwok,
 }
 
+/// Which REALIZATION mechanism turns a `Grew` decision into an actual new
+/// node. Orthogonal to [`ProviderKind`] (the SIGNAL source — real cluster vs.
+/// the kwok fake-node test bed): `ProviderKind::KubeObserve` reads real node
+/// demand/capacity; `NodeProvisioningBackend` then picks HOW that pool's
+/// `Grew` tick gets realized. Consulted ONLY when `provider == KubeObserve` —
+/// a `Kwok` test-bed pool ignores it (crossing kwok's fake nodes with a real
+/// Karpenter realization is nonsensical and unsafe, so it is structurally
+/// excluded rather than merely discouraged).
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum NodeProvisioningBackend {
+    /// The existing, live path (census/`CamelotAgentNode` precedent): breathe
+    /// stays observe-only for the cloud mutation itself — reports
+    /// `wouldProvision` in shadow; when live, claims a Ready node a
+    /// human/Pangea separately provisioned via
+    /// `Pangea::Architectures::CamelotAgentNode` + pangea-operator. The
+    /// default — matches Camelot's active "stick to AMI" posture.
+    #[default]
+    K3sCustomAmi,
+    /// Realize against a real upstream Karpenter install: read the
+    /// referenced `karpenter.sh/v1 NodePool` (`karpenterNodePoolRef`) and, on
+    /// `Grew`, mint `karpenter.sh/v1 NodeClaim` objects copying its
+    /// `spec.template.spec` verbatim. Shadow-first via the same
+    /// `dryRun`/`writeEnabled` gates as every other backend.
+    EksKarpenter,
+}
+
+impl NodeProvisioningBackend {
+    fn is_default(&self) -> bool {
+        matches!(self, NodeProvisioningBackend::K3sCustomAmi)
+    }
+}
+
 #[derive(CustomResource, Serialize, Deserialize, Clone, Debug, JsonSchema)]
 #[kube(
     group = "breathe.pleme.io",
@@ -1855,7 +1888,8 @@ pub enum ProviderKind {
     printcolumn = r#"{"name":"Phase","type":"string","jsonPath":".status.phase"}"#,
     printcolumn = r#"{"name":"DryRun","type":"boolean","jsonPath":".spec.dryRun"}"#,
     printcolumn = r#"{"name":"Lane","type":"string","jsonPath":".spec.lane"}"#,
-    printcolumn = r#"{"name":"Tainted","type":"string","jsonPath":".status.taintedNode"}"#
+    printcolumn = r#"{"name":"Tainted","type":"string","jsonPath":".status.taintedNode"}"#,
+    printcolumn = r#"{"name":"Backend","type":"string","jsonPath":".spec.nodeProvisioningBackend"}"#
 )]
 #[serde(rename_all = "camelCase")]
 pub struct BreatheCloudPoolSpec {
@@ -1923,6 +1957,22 @@ pub struct BreatheCloudPoolSpec {
     /// `"standalone-ec2-instance"` string matching `Lane::StandaloneEc2Instance`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lane: Option<String>,
+    /// Which mechanism realizes a `Grew` decision into an actual new node.
+    /// Consulted only when `provider == KubeObserve`; a `Kwok` test-bed pool
+    /// ignores it. Default `k3sCustomAmi` — today's shadow + correnteza-claim
+    /// path, zero behaviour change.
+    #[serde(default, skip_serializing_if = "NodeProvisioningBackend::is_default")]
+    pub node_provisioning_backend: NodeProvisioningBackend,
+    /// The real `karpenter.sh/v1 NodePool`'s `metadata.name` this pool mints
+    /// `NodeClaim`s against — REQUIRED when `nodeProvisioningBackend ==
+    /// eksKarpenter` (validated at reconcile time: an unset ref under that
+    /// backend reconciles to `phase: Error`, mirroring the unknown-`forma`
+    /// early-return — never guesses a name). Ignored under `k3sCustomAmi`.
+    /// The referenced NodePool is a PRECONDITION breathe only ever READS — it
+    /// is authored the existing way, by `pleme-lib`'s `_karpenter.tpl` via
+    /// Helm (GitOps-native); breathe never creates or mutates a NodePool.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub karpenter_node_pool_ref: Option<String>,
 }
 
 impl ProviderKind {

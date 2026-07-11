@@ -3114,6 +3114,9 @@ spec:
     - jsonPath: .status.taintedNode
       name: Tainted
       type: string
+    - jsonPath: .spec.nodeProvisioningBackend
+      name: Backend
+      type: string
     name: v1
     schema:
       openAPIV3Schema:
@@ -3163,9 +3166,19 @@ spec:
                 default: 1.25
                 format: double
                 type: number
+              karpenterNodePoolRef:
+                description: 'The real `karpenter.sh/v1 NodePool`''s `metadata.name` this pool mints `NodeClaim`s against — REQUIRED when `nodeProvisioningBackend == eksKarpenter` (validated at reconcile time: an unset ref under that backend reconciles to `phase: Error`, mirroring the unknown-`forma` early-return — never guesses a name). Ignored under `k3sCustomAmi`. The referenced NodePool is a PRECONDITION breathe only ever READS — it is authored the existing way, by `pleme-lib`''s `_karpenter.tpl` via Helm (GitOps-native); breathe never creates or mutates a NodePool.'
+                nullable: true
+                type: string
               lane:
                 description: 'The AWS lane this pool''s nodes join on — one of `breathe_auction::spread::Lane::as_str()`''s values (e.g. `"standalone-ec2-instance"`). A plain string BY REFERENCE (never a dependency on the `breathe-auction` crate from here) — the same composes-by-reference discipline `breathe-invariant`''s `doctrine_ref` uses, so the CRD stays decoupled from that crate''s churn. `None` ⇒ no lane-specific behaviour (today: node-claiming stays off — see `node_forma::claim_unassigned_node_for_pool`, gated on the `"standalone-ec2-instance"` string matching `Lane::StandaloneEc2Instance`).'
                 nullable: true
+                type: string
+              nodeProvisioningBackend:
+                description: Which mechanism realizes a `Grew` decision into an actual new node. Consulted only when `provider == KubeObserve`; a `Kwok` test-bed pool ignores it. Default `k3sCustomAmi` — today's shadow + correnteza-claim path, zero behaviour change.
+                enum:
+                - k3sCustomAmi
+                - eksKarpenter
                 type: string
               predictive:
                 description: 'Forecast demand AHEAD of `reliefLatencySeconds` instead of reacting to current util. Node boot is slow, so a reactive pool is always late; the `LinearTrendPrevisor` projects the recent slope `reliefLatencySeconds` ahead so capacity lands in time. MONOTONE-SAFE: it only ever provisions EARLIER, never shrinks prematurely (a falling trend echoes the reactive value), so it is strictly safer than reactive. Default off (peer of the limit-side `predictive`). Omitted on serialize at the `false` default.'
