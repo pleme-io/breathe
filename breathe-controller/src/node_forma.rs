@@ -34,11 +34,12 @@ use kube::{
 use metrics::{counter, gauge};
 use tracing::{info, warn};
 
+use crate::karpenter_provedor::{KarpenterProvedor, KubeKarpenterEnvironment};
 use crate::{Ctx, Error};
 
 /// Parse a Kubernetes CPU quantity into millicores. `"500m"` → 500, `"2"` →
 /// 2000, `"1.5"` → 1500, `"250000000n"` (nanocores) → 250. Unparseable ⇒ 0.
-fn parse_cpu_milli(q: &str) -> u64 {
+pub(crate) fn parse_cpu_milli(q: &str) -> u64 {
     let q = q.trim();
     if let Some(m) = q.strip_suffix('m') {
         m.trim().parse::<u64>().unwrap_or(0)
@@ -118,7 +119,7 @@ impl Allocatable for NodeRef {
     }
 }
 
-fn node_ready(n: &Node) -> bool {
+pub(crate) fn node_ready(n: &Node) -> bool {
     n.status
         .as_ref()
         .and_then(|s| s.conditions.as_ref())
@@ -461,22 +462,26 @@ impl Provedor for KwokProvedor {
     }
 }
 
-/// The per-pool executor selected by `spec.provider`: typed dispatch (a sum
-/// type, no `dyn`) over the observe-only [`KubeNodeProvedor`] and the actuating
-/// [`KwokProvedor`], so `reconcile_forma` is driven from ONE call site.
+/// The per-pool executor selected by `spec.provider` + (when `KubeObserve`)
+/// `spec.nodeProvisioningBackend`: typed dispatch (a sum type, no `dyn`) over
+/// the observe-only [`KubeNodeProvedor`], the actuating [`KwokProvedor`], and
+/// the actuating [`KarpenterProvedor`], so `reconcile_forma` is driven from
+/// ONE call site regardless of which executor realizes the pool.
 enum PoolProvedor {
     KubeObserve(KubeNodeProvedor),
     Kwok(KwokProvedor),
+    Karpenter(KarpenterProvedor<KubeKarpenterEnvironment>),
 }
 
 impl PoolProvedor {
     /// The per-unit allocatable (millicores) used to size a minted `NodeRef` for
     /// the admission gate. KubeObserve uses the live cluster mean; Kwok uses its
-    /// fixed fake-node size.
+    /// fixed fake-node size; Karpenter uses the mean over its OWNED Ready nodes.
     async fn per_node_alloc_milli(&self) -> u64 {
         match self {
             Self::KubeObserve(p) => p.per_node_alloc_milli().await,
             Self::Kwok(_) => KWOK_NODE_CPU_MILLI,
+            Self::Karpenter(p) => p.per_node_alloc_milli().await,
         }
     }
 }
@@ -487,18 +492,21 @@ impl Provedor for PoolProvedor {
         match self {
             Self::KubeObserve(p) => p.observe().await,
             Self::Kwok(p) => p.observe().await,
+            Self::Karpenter(p) => p.observe().await,
         }
     }
     async fn provision(&self, n: u64) -> Result<ProvisionReceipt, ProviderError> {
         match self {
             Self::KubeObserve(p) => p.provision(n).await,
             Self::Kwok(p) => p.provision(n).await,
+            Self::Karpenter(p) => p.provision(n).await,
         }
     }
     async fn deprovision(&self, n: u64) -> Result<ProvisionReceipt, ProviderError> {
         match self {
             Self::KubeObserve(p) => p.deprovision(n).await,
             Self::Kwok(p) => p.deprovision(n).await,
+            Self::Karpenter(p) => p.deprovision(n).await,
         }
     }
 }
@@ -524,7 +532,7 @@ impl Provedor for PoolProvedor {
 /// key, so workloads stay off until they tolerate it) AND the claim-eligibility
 /// predicate: a node already carrying this label — for ANY pool — is never
 /// claimed a second time.
-const CLAIM_POOL_LABEL: &str = "breathe.pleme.io/pool";
+pub(crate) const CLAIM_POOL_LABEL: &str = "breathe.pleme.io/pool";
 /// The lane the claimed node joined on (`Lane::as_str()`), stamped alongside
 /// the pool label purely for observability (`kubectl get nodes -L`).
 const CLAIM_LANE_LABEL: &str = "breathe.pleme.io/lane";
@@ -757,12 +765,38 @@ pub async fn reconcile_cloud_pool(cr: Arc<BreatheCloudPool>, ctx: Arc<Ctx>) -> R
     // (it is DryRun by construction — it can never mutate).
     let dry_run = cr.spec.dry_run || !cr.spec.write_enabled;
 
-    // Select the executor. Default KubeObserve can never actuate; Kwok actuates
-    // only when `!dry_run` (passed the EFFECTIVE shadow, both gates respected).
+    // Select the executor. Default KubeObserve can never actuate on its own —
+    // it further dispatches on `nodeProvisioningBackend` (the REALIZATION
+    // axis, orthogonal to `provider`'s SIGNAL-source axis): `K3sCustomAmi`
+    // (default) stays the existing shadow + correnteza-claim path;
+    // `EksKarpenter` actuates via real `karpenter.sh` NodeClaims once live
+    // (`!dry_run`). Kwok (the fake-node signal source) ignores the backend
+    // entirely and actuates only when `!dry_run`.
     let provedor = match cr.spec.provider {
-        breathe_crd::ProviderKind::KubeObserve => {
-            PoolProvedor::KubeObserve(KubeNodeProvedor::new(ctx.client.clone()))
-        }
+        breathe_crd::ProviderKind::KubeObserve => match cr.spec.node_provisioning_backend {
+            breathe_crd::NodeProvisioningBackend::K3sCustomAmi => {
+                PoolProvedor::KubeObserve(KubeNodeProvedor::new(ctx.client.clone()))
+            }
+            breathe_crd::NodeProvisioningBackend::EksKarpenter => {
+                let Some(node_pool_ref) = cr.spec.karpenter_node_pool_ref.clone() else {
+                    warn!(pool = %name, "BreatheCloudPool: eksKarpenter backend requires karpenterNodePoolRef — skipping");
+                    let st = CloudPoolStatus {
+                        phase: Some("Error".into()),
+                        last_decision: Some("eksKarpenter backend requires spec.karpenterNodePoolRef".into()),
+                        last_seen_epoch: Some(now_secs()),
+                        ..Default::default()
+                    };
+                    patch_status(&ctx.client, &name, &st).await;
+                    return Ok(Action::requeue(ctx.requeue));
+                };
+                PoolProvedor::Karpenter(KarpenterProvedor::new(
+                    KubeKarpenterEnvironment::new(ctx.client.clone()),
+                    name.clone(),
+                    node_pool_ref,
+                    dry_run,
+                ))
+            }
+        },
         breathe_crd::ProviderKind::Kwok => {
             PoolProvedor::Kwok(KwokProvedor::new(ctx.client.clone(), name.clone(), dry_run))
         }
@@ -818,11 +852,18 @@ pub async fn reconcile_cloud_pool(cr: Arc<BreatheCloudPool>, ctx: Arc<Ctx>) -> R
     // pressure"), claim ONE unclaimed Ready node into this pool. Gated on the
     // SAME effective `dry_run` `reconcile_forma` was just run under — no new
     // safety switch, threaded one level deeper (see the module doc above).
-    if let (FormaTick::Grew { .. }, Some(lane)) = (&tick, cr.spec.lane.as_deref()) {
-        if lane == breathe_spread::Lane::StandaloneEc2Instance.as_str() {
-            let claim = claim_unassigned_node_for_pool(&ctx.client, &name, lane, dry_run).await;
-            counter!("breathe_node_claim_total", "pool" => name.clone(), "lane" => lane.to_string(), "outcome" => claim_outcome_label(&claim)).increment(1);
-            apply_claim_to_status(&mut status, &claim);
+    // Gated on `K3sCustomAmi` (the ONLY backend the correnteza taint-claim
+    // mechanism belongs to) so a misconfigured `EksKarpenter` pool with a
+    // stray `lane` set can never double-realize a `Grew` tick — once via a
+    // real NodeClaim (above, through `provedor.provision`/`reconcile_forma`)
+    // AND via a taint claim on an unrelated node.
+    if cr.spec.node_provisioning_backend == breathe_crd::NodeProvisioningBackend::K3sCustomAmi {
+        if let (FormaTick::Grew { .. }, Some(lane)) = (&tick, cr.spec.lane.as_deref()) {
+            if lane == breathe_spread::Lane::StandaloneEc2Instance.as_str() {
+                let claim = claim_unassigned_node_for_pool(&ctx.client, &name, lane, dry_run).await;
+                counter!("breathe_node_claim_total", "pool" => name.clone(), "lane" => lane.to_string(), "outcome" => claim_outcome_label(&claim)).increment(1);
+                apply_claim_to_status(&mut status, &claim);
+            }
         }
     }
 

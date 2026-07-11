@@ -79,6 +79,17 @@ rules:
   - apiGroups: ["", "events.k8s.io"]   # core + the events.k8s.io/v1 API kube 0.96 Recorder uses
     resources: ["events"]
     verbs: ["create", "patch"]
+  # EksKarpenter backend (BreatheCloudPool.spec.nodeProvisioningBackend):
+  # READ the real karpenter.sh NodePool (authored by pleme-lib's
+  # _karpenter.tpl, never written by breathe); mint/delete karpenter.sh
+  # NodeClaim — the per-request unit real Karpenter's own nodeclaim/lifecycle
+  # controller launches from. breathe never writes NodePool.
+  - apiGroups: ["karpenter.sh"]
+    resources: ["nodepools"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["karpenter.sh"]
+    resources: ["nodeclaims"]
+    verbs: ["get", "list", "watch", "create", "delete"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding

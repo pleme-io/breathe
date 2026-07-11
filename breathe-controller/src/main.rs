@@ -13,6 +13,7 @@
 use std::{sync::Arc, time::Duration};
 
 mod app_band;
+mod karpenter_provedor;
 mod node_forma;
 mod kube_param;
 mod quinhao;
