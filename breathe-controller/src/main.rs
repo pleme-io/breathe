@@ -15,6 +15,7 @@ use std::{sync::Arc, time::Duration};
 mod app_band;
 mod karpenter_provedor;
 mod node_forma;
+mod origin_guard;
 mod kube_param;
 mod quinhao;
 mod pod_memory_high;
@@ -23,8 +24,8 @@ mod replica_band;
 use breathe_core::{reconcile_one, PredictiveInput, ReconcileInput};
 use breathe_crd::{
     AppBand, ArcBand, Band, BandSummary, BreatheCloudPool, BreatheConfig, BreatheConfigSpec, BreatheOverview,
-    CgroupBand, CgroupCpuBand, CpuBand, Densa, KubeParamBand, MemoryBand, OverviewStatus, QuinhaoPool, ReplicaBand,
-    StorageBand,
+    CgroupBand, CgroupCpuBand, CpuBand, Densa, IsolationBand, KubeParamBand, MemoryBand, OverviewStatus, QuinhaoPool,
+    ReplicaBand, StorageBand,
 };
 use breathe_dimensions::{CpuDescriptor, MemoryDescriptor, StorageDescriptor};
 use breathe_kube::KubeCluster;
@@ -794,6 +795,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cloud_pools = gen_controller!(Api::<BreatheCloudPool>::all(client.clone()))
         .run(node_forma::reconcile_cloud_pool, node_forma::error_policy_cloud_pool, ctx.clone())
         .for_each(|_| async {});
+    // The membership-CLOSING peer of the correnteza claim path above: watches
+    // IsolationBand CRs, keeping every declared target node tainted against
+    // everything but its allowlist (Camelot's origin node is the first
+    // consumer) and observing unauthorized occupants. Reconciles every tick,
+    // unconditionally — a standing PROTECT posture, not a Grew-gated reaction.
+    let isolation_bands = gen_controller!(Api::<IsolationBand>::all(client.clone()))
+        .run(origin_guard::reconcile_isolation_band, origin_guard::error_policy_isolation_band, ctx.clone())
+        .for_each(|_| async {});
     // Step-6/8/12: the generic k8s-CR / app band — reconciled via KubeCluster's
     // generic CR-path SSA. Additive; the mem/cpu/storage reconcile is untouched.
     let kube_params = gen_controller!(Api::<KubeParamBand>::all(client.clone()))
@@ -823,7 +832,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .run(replica_band::reconcile_replica_band, replica_band::error_policy_replica_band, ctx.clone())
         .for_each(|_| async {});
 
-    tokio::join!(mem, cpu, sto, overview, cloud_pools, kube_params, quinhao_pools, app_bands, replica_bands);
+    tokio::join!(mem, cpu, sto, overview, cloud_pools, isolation_bands, kube_params, quinhao_pools, app_bands, replica_bands);
     Ok(())
 }
 

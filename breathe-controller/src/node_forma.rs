@@ -576,21 +576,35 @@ fn pick_claim_candidate(nodes: &[Node]) -> Option<String> {
     names.first().map(|s| (*s).to_string())
 }
 
-/// PURE (tested): the merge-patch body that claims a node into `pool` on
-/// `lane` — labels [`CLAIM_POOL_LABEL`]/[`CLAIM_LANE_LABEL`], and
-/// `existing_taints` PLUS the new claim `NoSchedule` taint. A k8s JSON merge
-/// patch REPLACES the whole `spec.taints` list (it is not a per-element merge),
-/// so the caller must pass the node's CURRENT taints through — dropping them
-/// here would silently un-taint a node for anything else it already carries.
-/// Idempotent: re-claiming a node already tainted for `pool` does not duplicate
-/// the entry (filtered out, then re-added once).
-fn claim_patch(pool: &str, lane: &str, existing_taints: &[Taint]) -> serde_json::Value {
-    let mut taints: Vec<serde_json::Value> = existing_taints
+/// PURE (tested): merge ONE taint entry (`key`/`value`/`effect`) into an
+/// existing taint list — replacing any prior entry for the SAME key (so a
+/// re-apply is idempotent, never a duplicate entry) while preserving every
+/// OTHER key's taint untouched — and return the result as typed JSON values
+/// ready to embed in a k8s JSON merge patch's `spec.taints`. A k8s JSON merge
+/// patch REPLACES the whole `spec.taints` list (it is not a per-element
+/// merge), so a caller must ALWAYS pass every pre-existing taint through this
+/// function — dropping one here would silently un-taint a node for anything
+/// else it already carries. Shared by BOTH the membership-OPENING claim path
+/// ([`claim_patch`], below) and the membership-CLOSING [`crate::origin_guard`]
+/// reconcile, so the two mechanisms structurally cannot diverge on how a
+/// merge-patch treats a node's existing taints.
+pub(crate) fn upsert_taint(existing: &[Taint], key: &str, value: Option<&str>, effect: &str) -> Vec<serde_json::Value> {
+    let mut taints: Vec<serde_json::Value> = existing
         .iter()
-        .filter(|t| t.key != CLAIM_POOL_LABEL)
+        .filter(|t| t.key != key)
         .map(|t| serde_json::json!({ "key": t.key, "value": t.value, "effect": t.effect }))
         .collect();
-    taints.push(serde_json::json!({ "key": CLAIM_POOL_LABEL, "value": pool, "effect": "NoSchedule" }));
+    taints.push(serde_json::json!({ "key": key, "value": value, "effect": effect }));
+    taints
+}
+
+/// PURE (tested): the merge-patch body that claims a node into `pool` on
+/// `lane` — labels [`CLAIM_POOL_LABEL`]/[`CLAIM_LANE_LABEL`], and the claim
+/// taint upserted via [`upsert_taint`] alongside every taint the node already
+/// carried. Idempotent: re-claiming a node already tainted for `pool` does not
+/// duplicate the entry.
+fn claim_patch(pool: &str, lane: &str, existing_taints: &[Taint]) -> serde_json::Value {
+    let taints = upsert_taint(existing_taints, CLAIM_POOL_LABEL, Some(pool), "NoSchedule");
     serde_json::json!({
         "metadata": { "labels": { CLAIM_POOL_LABEL: pool, CLAIM_LANE_LABEL: lane } },
         "spec": { "taints": taints },
@@ -900,7 +914,7 @@ mod tests {
     use super::{
         apply_claim_to_status, claim_outcome_label, claim_patch, cloud_pool_status,
         fake_node_object, forma_from_str, is_claim_candidate, is_kwok_managed, node_imbalance,
-        outcome_of, parse_cpu_milli, pick_claim_candidate, ClaimOutcome, CLAIM_POOL_LABEL,
+        outcome_of, parse_cpu_milli, pick_claim_candidate, upsert_taint, ClaimOutcome, CLAIM_POOL_LABEL,
         KWOK_MANAGED_LABEL,
     };
     use breathe_crd::CloudPoolStatus;
@@ -1091,6 +1105,38 @@ mod tests {
         let nodes = vec![not_ready_node("a"), ready_node("b", Some("pool-a"), vec![])];
         assert_eq!(pick_claim_candidate(&nodes), None);
         assert_eq!(pick_claim_candidate(&[]), None);
+    }
+
+    // ── upsert_taint (the shared primitive claim_patch AND origin_guard use) ──
+
+    #[test]
+    fn upsert_taint_preserves_other_keys_and_upserts_its_own() {
+        let existing = vec![Taint {
+            key: "dedicated".to_string(),
+            value: Some("gpu".to_string()),
+            effect: "NoSchedule".to_string(),
+            ..Default::default()
+        }];
+        let out = upsert_taint(&existing, "breathe.pleme.io/origin-reserved", None, "NoSchedule");
+        assert_eq!(out.len(), 2, "the pre-existing OTHER-key taint is preserved");
+        assert_eq!(out[0]["key"], "dedicated");
+        assert_eq!(out[1]["key"], "breathe.pleme.io/origin-reserved");
+        assert_eq!(out[1]["value"], serde_json::Value::Null);
+        assert_eq!(out[1]["effect"], "NoSchedule");
+    }
+
+    #[test]
+    fn upsert_taint_replaces_rather_than_duplicates_its_own_key() {
+        let existing = vec![Taint {
+            key: "breathe.pleme.io/origin-reserved".to_string(),
+            value: Some("stale".to_string()),
+            effect: "PreferNoSchedule".to_string(),
+            ..Default::default()
+        }];
+        let out = upsert_taint(&existing, "breathe.pleme.io/origin-reserved", None, "NoSchedule");
+        assert_eq!(out.len(), 1, "re-upserting the SAME key replaces, never duplicates");
+        assert_eq!(out[0]["value"], serde_json::Value::Null, "the stale value is replaced");
+        assert_eq!(out[0]["effect"], "NoSchedule", "the stale effect is replaced");
     }
 
     #[test]

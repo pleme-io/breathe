@@ -3,7 +3,8 @@
 
 use breathe_crd::{
     AppBand, ArcBand, BreatheCloudPool, BreatheConfig, BreatheNodePool, BreatheOverview, CgroupBand, CgroupCpuBand,
-    CpuBand, Densa, HostParamBand, KubeParamBand, MemoryBand, PodMemoryHigh, QuinhaoPool, ReplicaBand, StorageBand,
+    CpuBand, Densa, HostParamBand, IsolationBand, KubeParamBand, MemoryBand, PodMemoryHigh, QuinhaoPool, ReplicaBand,
+    StorageBand,
 };
 use kube::CustomResourceExt;
 
@@ -29,6 +30,9 @@ fn main() {
         PodMemoryHigh::crd(),
         // BU2 — the node-count Forma enrollment (Forma ⇄ Densa envelope)
         BreatheCloudPool::crd(),
+        // correnteza — the membership-CLOSING peer: a named node kept tainted
+        // against everything but an allowlist (Camelot's origin node first).
+        IsolationBand::crd(),
         // the fleet-overview dashboard object + the fleet config
         BreatheOverview::crd(),
         BreatheConfig::crd(),

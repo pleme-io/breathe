@@ -28,6 +28,8 @@ rules:
       - "cpubands/status"
       - "storagebands"
       - "storagebands/status"
+      - "isolationbands"
+      - "isolationbands/status"
     verbs: ["get", "list", "watch", "patch", "update"]
   # Host-dim bands: READ-ONLY. The controller lists these only to aggregate the
   # fleet BreatheOverview — the host-agent owns their status (no patch here).
@@ -72,6 +74,20 @@ rules:
   - apiGroups: [""]
     resources: ["pods"]
     verbs: ["get", "list"]
+  # correnteza node-tier: the OPENING claim path (node_forma.rs — patches a
+  # node's taints/labels to claim it into a BreatheCloudPool on a Grew tick,
+  # task #84 proven live) AND the CLOSING origin_guard path (isolation_band.rs
+  # — keeps a declared IsolationBand's targetNodes tainted every tick) both
+  # read + patch Node objects; the kwok go-live bed additionally create/deletes
+  # its OWN fake nodes (never a real one — see node_forma::is_kwok_managed).
+  # NOTE: this grant was MISSING from this checked-in chart despite the
+  # already-shipped node_forma.rs claim path depending on it (confirmed absent
+  # by re-reading this file before this change) — the live release currently
+  # carries it only because it was hand-patched onto the cluster out of band.
+  # Landing it here closes that drift, not just adds origin_guard's need.
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["get", "list", "watch", "patch", "create", "delete"]
   # Read live container usage from metrics-server (the always-on metric source).
   - apiGroups: ["metrics.k8s.io"]
     resources: ["pods"]
