@@ -1,0 +1,63 @@
+# breathe-spread — the ARCH × AUCTION × SPOT configuration-spread LOCK.
+#
+# RENAMED from `breathe-auction` (2026-07-11, theory/CORRENTEZA.md §1.2's named
+# follow-up, `pending-correnteza: rename-breathe-auction-spread-lock`, executed
+# here): `breathe/breathe-auction` (the node-count/forma elasticity auction —
+# `Leiloeiro`/`Previsor`, wired live into `breathe-provision::reconcile_forma`
+# and `breathe-controller::node_forma`) and this crate shared the literal
+# package name `breathe-auction`, which blocks any workspace member from
+# depending on both at once (Cargo refuses two same-named local packages in one
+# resolve graph) — hit for real wiring `breathe-controller`'s correnteza M0
+# node-claim slice against this crate's `Lane`/`AuctionSpread`. The elasticity
+# engine keeps the name (it is the one live in the controller loop and the more
+# literal reading of "auction"); this crate takes `breathe-spread` (its own
+# primary type is literally `AuctionSpread`), per the doc's own recommendation.
+#
+# The COMPUTE/AUCTION companion to `breathe-invariant` (the breathability
+# variant/invariant lock). Where breathe-invariant locks "carve every resource
+# DIMENSION to a setpoint, dual-purpose, default-on", this crate locks the
+# orthogonal COMPUTE surface: the typed PERMUTATION SPACE of
+# `arch × spot-strategy × auction-ladder × perf-class × placement × interruption`,
+# every combination configurable, with a MOLDING default per use-case
+# (SaaS-steady / build-burst / eyes), under the never-on-demand hard law and the
+# breathability dual-purpose (cost AND resiliency, one mechanism).
+#
+# FOLDED into the parent `breathe` workspace's `members` (2026-07-11) — it was
+# a standalone workspace root (like breathe-invariant remains) so it composed
+# the breathe substrate + the pangea node-groups + the spot catalog BY
+# REFERENCE (doctrine_ref) without coupling to their build or in-flight churn;
+# that isolation broke the moment a REAL workspace member (breathe-controller)
+# needed a path dependency onto it — Cargo refuses a path dependency onto a
+# nested directory that also declares its own `[workspace]` ("multiple
+# workspace roots found in the same workspace"). This crate's own doc had
+# already named exactly this move as its follow-up ("fold into the breathe
+# workspace members ... once the concurrent band-crate work lands") — this IS
+# that band-crate work (theory/CORRENTEZA.md M0). The concrete realizers this
+# crate composes BY REFERENCE are unaffected — `breathe-catalog::builder` (the
+# DegradeTier ladders), `pangea-architectures` (Camelot{,Builder}NodeGroup +
+# AzTopology), `pangea-spot` (Allocation + Catalog) — none of them are actual
+# Cargo dependencies, so folding into the workspace adds no build coupling to
+# their churn; it only lets a REAL Rust dependent (breathe-controller) exist.
+[package]
+name = "breathe-spread"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "The ARCH × AUCTION × SPOT configuration-spread lock — the compute/auction companion to breathe-invariant. A typed configurable-permutation space (arch × spot-strategy × auction-ladder × perf-class × placement × interruption) with a molding default per use-case (SaaS-steady/build-burst/eyes), under the never-on-demand hard law + breathability dual-purpose. Arch is a COST-OPTIMIZED axis (multi-arch AUTOBUMP images make arch selection free; the auction lands on the cheapest-deepest arch, self-adjusting). The verification MATRIX makes an on-demand permutation, an unexpressible arch, a single-effect molding, and an un-justified counter-intuitive cost choice CI-caught. Renamed from `breathe-auction` (theory/CORRENTEZA.md §1.2) to resolve a package-name collision with the node-count elasticity crate of the same original name."
+
+[lib]
+name = "breathe_spread"
+path = "src/lib.rs"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+module_name_repetitions = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"

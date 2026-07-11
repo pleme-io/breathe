@@ -1853,7 +1853,9 @@ pub enum ProviderKind {
     printcolumn = r#"{"name":"Used","type":"integer","jsonPath":".status.observedUsed"}"#,
     printcolumn = r#"{"name":"Capacity","type":"integer","jsonPath":".status.observedCapacity"}"#,
     printcolumn = r#"{"name":"Phase","type":"string","jsonPath":".status.phase"}"#,
-    printcolumn = r#"{"name":"DryRun","type":"boolean","jsonPath":".spec.dryRun"}"#
+    printcolumn = r#"{"name":"DryRun","type":"boolean","jsonPath":".spec.dryRun"}"#,
+    printcolumn = r#"{"name":"Lane","type":"string","jsonPath":".spec.lane"}"#,
+    printcolumn = r#"{"name":"Tainted","type":"string","jsonPath":".status.taintedNode"}"#
 )]
 #[serde(rename_all = "camelCase")]
 pub struct BreatheCloudPoolSpec {
@@ -1910,6 +1912,17 @@ pub struct BreatheCloudPoolSpec {
     /// can never mutate). Set `kwok` for the fake-node go-live bed.
     #[serde(default, skip_serializing_if = "ProviderKind::is_default")]
     pub provider: ProviderKind,
+    /// The AWS lane this pool's nodes join on — one of
+    /// `breathe_auction::spread::Lane::as_str()`'s values (e.g.
+    /// `"standalone-ec2-instance"`). A plain string BY REFERENCE (never a
+    /// dependency on the `breathe-auction` crate from here) — the same
+    /// composes-by-reference discipline `breathe-invariant`'s `doctrine_ref`
+    /// uses, so the CRD stays decoupled from that crate's churn. `None` ⇒ no
+    /// lane-specific behaviour (today: node-claiming stays off — see
+    /// `node_forma::claim_unassigned_node_for_pool`, gated on the
+    /// `"standalone-ec2-instance"` string matching `Lane::StandaloneEc2Instance`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lane: Option<String>,
 }
 
 impl ProviderKind {
@@ -1973,6 +1986,18 @@ pub struct CloudPoolStatus {
     pub effective_dry_run: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_seen_epoch: Option<i64>,
+    /// SHADOW half of a `StandaloneEc2Instance`-lane claim decision: the name of
+    /// the Ready, unclaimed node this pool WOULD taint+label into itself this
+    /// tick. Set only in shadow (`effectiveDryRun == true`); mirrors
+    /// `wouldProvision`'s shadow-first convention at the per-node claim grain.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub would_taint: Option<String>,
+    /// LIVE half: the name of the node this pool ACTUALLY tainted+labelled into
+    /// itself this tick (`breathe.pleme.io/pool=<this pool>`,
+    /// `breathe.pleme.io/lane=<lane>`, `NoSchedule`). Set only when the claim
+    /// mutation ran (`effectiveDryRun == false` and a candidate existed).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tainted_node: Option<String>,
 }
 
 // ─────────────────── BreatheOverview — the fleet dashboard as a k8s object ──────
