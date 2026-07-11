@@ -34,6 +34,9 @@ breathe-admission = { path = "../breathe-admission", version = "0.1.0" }
 # both coexist here with no alias needed.
 breathe-spread = { path = "../crates/breathe-spread", version = "0.1.0" }
 async-trait = "0.1"
+# NATS reactive-reconcile trigger (task #90, nervous-system integration) — the
+# same 0.35 pin escuta uses, for one version across the fleet's NATS clients.
+async-nats = "0.35"
 kube = { version = "0.96", features = ["client", "runtime", "derive", "rustls-tls", "unstable-runtime"], default-features = false }
 k8s-openapi = { version = "0.23", features = ["latest"] }
 tokio = { version = "1.40", features = ["macros", "rt-multi-thread"] }
