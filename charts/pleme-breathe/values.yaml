@@ -49,6 +49,19 @@ serviceAccount:
   create: true
   name: breathe-controller
 
+# The HANDS' RBAC (breathe-host-agent DaemonSet identity). Off by default --
+# no DaemonSet template exists in this chart yet (the agent is deployed
+# out-of-band today); this only controls whether its narrow, host-agent-only
+# ClusterRole/ClusterRoleBinding render. Was never defined here at all until
+# `helm lint` caught templates/rbac.yaml's unconditional `.Values.agent.enabled`
+# reference as the chart's first-ever lint (2026-07-11) -- genuinely never
+# tested until this pass.
+agent:
+  enabled: false
+  namespace: breathe-system
+  serviceAccount:
+    name: breathe-host-agent
+
 # Self-observability: prometheus.io/* scrape annotations + the metrics
 # containerPort on the controller pod. The controller's own :9100 /metrics
 # listener always binds regardless of this flag (main.rs) — this only gates
