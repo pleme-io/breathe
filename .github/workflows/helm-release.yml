@@ -1,0 +1,27 @@
+# AUTO-RELEASE (default-on) for the pleme-breathe chart. Publishes to the SAME
+# registry every other fleet chart ships to (oci://ghcr.io/pleme-io/charts) --
+# NOT the substrate reusable's own default (ghcr.io/pleme-io/helm), which is a
+# different registry the fleet's HelmRepository objects don't point at.
+name: helm-release
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "charts/pleme-breathe/**"
+  workflow_dispatch:
+    inputs:
+      bump-type:
+        description: "patch | minor | major"
+        required: false
+        default: patch
+
+jobs:
+  release:
+    uses: pleme-io/substrate/.github/workflows/helm-auto-release.yml@main
+    with:
+      bump-type: ${{ inputs.bump-type || 'patch' }}
+      registry: "ghcr.io/pleme-io/charts"
+      source-paths: "charts/pleme-breathe/templates charts/pleme-breathe/values.yaml charts/pleme-breathe/Chart.yaml"
+      add-paths: "charts/pleme-breathe/Chart.yaml"
+    secrets: inherit
