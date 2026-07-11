@@ -85,6 +85,24 @@ pub struct NodeClaimRef {
     pub pool_label: Option<String>,
 }
 
+/// The referenced NodePool's `.spec.template`, split into the opaque
+/// NodeClaimSpec (`spec`, copied verbatim into a minted NodeClaim's `.spec`
+/// — `NodeClaimSpec`'s field set is structurally a subset of
+/// `NodePool.spec.template.spec`, so no field-by-field re-modeling is
+/// needed) and the template's own `.metadata` (`labels`/`annotations` an
+/// operator authored on the NodePool for every node/claim it launches —
+/// copied onto the minted NodeClaim alongside breathe's own ownership
+/// labels, mirroring what real Karpenter's own NodePool→NodeClaim
+/// controller does when IT constructs a NodeClaim). Both label/annotation
+/// maps default empty — most NodePool templates author zero extra
+/// metadata, and a nil `.metadata` block is the common case, not an error.
+#[derive(Debug, Clone, Default)]
+pub struct NodePoolTemplate {
+    pub spec: serde_json::Value,
+    pub labels: BTreeMap<String, String>,
+    pub annotations: BTreeMap<String, String>,
+}
+
 /// The side-effecting boundary this backend performs ALL its I/O through —
 /// the mockable seam. A real implementation ([`KubeKarpenterEnvironment`])
 /// wraps a `kube::Client`; tests wrap an in-memory fixture. Every method maps
@@ -105,11 +123,8 @@ pub trait KarpenterEnvironment: Send + Sync {
     /// [`crate::node_forma::KwokProvedor::observe`] pattern) is a named
     /// follow-up once a real multi-NodePool `EksKarpenter` fleet exists.
     async fn observe_pod_demand_milli(&self) -> Result<u64, ProviderError>;
-    /// The referenced NodePool's `.spec.template.spec`, as opaque JSON —
-    /// copied verbatim into a minted NodeClaim's `.spec`. `NodeClaimSpec`'s
-    /// field set is structurally a subset of `NodePool.spec.template.spec`,
-    /// so no field-by-field re-modeling is needed.
-    async fn get_nodepool_template_spec(&self, node_pool_ref: &str) -> Result<serde_json::Value, ProviderError>;
+    /// The referenced NodePool's `.spec.template` — see [`NodePoolTemplate`].
+    async fn get_nodepool_template(&self, node_pool_ref: &str) -> Result<NodePoolTemplate, ProviderError>;
     /// This pool's own NodeClaims (labeled `CLAIM_POOL_LABEL=pool`).
     async fn list_managed_nodeclaims(&self, pool: &str) -> Result<Vec<NodeClaimRef>, ProviderError>;
     /// Create one NodeClaim object (already built by [`build_nodeclaim`]).
@@ -138,19 +153,65 @@ fn is_karpenter_managed_ref(claim: &NodeClaimRef, pool: &str) -> bool {
 }
 
 /// PURE (tested): build ONE NodeClaim [`DynamicObject`] for `pool`, copying
-/// `template_spec` (a NodePool's `.spec.template.spec`, opaque JSON) verbatim
-/// into `.spec`. `generateName`, never a fixed name — Karpenter-shaped
-/// objects are minted many at a time; letting the apiserver assign the
-/// suffix means two concurrent `provision` calls can never collide on a name.
-fn build_nodeclaim(pool: &str, node_pool_ref: &str, template_spec: &serde_json::Value) -> DynamicObject {
-    let mut labels = BTreeMap::new();
+/// `template.spec` (a NodePool's `.spec.template.spec`, opaque JSON) verbatim
+/// into `.spec`, plus `template`'s own authored `labels`/`annotations`.
+/// `generateName`, never a fixed name — Karpenter-shaped objects are minted
+/// many at a time; letting the apiserver assign the suffix means two
+/// concurrent `provision` calls can never collide on a name.
+///
+/// # The `karpenter.sh/nodepool` ownership label — synthesized, not copied
+///
+/// Real Karpenter's own NodePool→NodeClaim controller stamps
+/// `karpenter.sh/nodepool: <NodePool.Name>` onto every NodeClaim it
+/// constructs (`lo.Assign(nodePool.Spec.Template.Labels, map[string]string{
+/// v1.NodePoolLabelKey: nodePool.Name})` — template labels first, the
+/// injected ownership label layered on top so it always wins a key
+/// collision), and that label then propagates onto the launched `Node`.
+/// Here breathe IS its own minting authority — it never delegates to that
+/// upstream controller — so this function must synthesize the same label
+/// itself, from `node_pool_ref` (the NodePool's own object name), applying
+/// it AFTER the template's own labels for the identical never-shadowed
+/// guarantee. This is the exact key+value
+/// [`owned_by_nodepool`]/[`KubeKarpenterEnvironment::observe_owned_nodes`]
+/// filter real `Node` objects on — omitting it makes breathe's own
+/// `observe()` see zero owned nodes forever, even after a successful mint.
+fn build_nodeclaim(pool: &str, node_pool_ref: &str, template: &NodePoolTemplate) -> DynamicObject {
+    let mut labels = template.labels.clone();
     labels.insert(CLAIM_POOL_LABEL.to_string(), pool.to_string());
     labels.insert(KARPENTER_NODE_POOL_REF_LABEL.to_string(), node_pool_ref.to_string());
-    let mut obj = DynamicObject::new("", &nodeclaim_resource()).data(serde_json::json!({ "spec": template_spec }));
+    labels.insert(KARPENTER_NODEPOOL_LABEL.to_string(), node_pool_ref.to_string());
+
+    let mut obj = DynamicObject::new("", &nodeclaim_resource()).data(serde_json::json!({ "spec": template.spec }));
     obj.metadata.name = None;
     obj.metadata.generate_name = Some(format!("breathe-{pool}-"));
     obj.metadata.labels = Some(labels);
+    if !template.annotations.is_empty() {
+        obj.metadata.annotations = Some(template.annotations.clone());
+    }
     obj
+}
+
+/// PURE (tested): parse a [`NodePoolTemplate`] out of a NodePool's raw
+/// `.data` JSON — isolated from [`KubeKarpenterEnvironment::get_nodepool_template`]'s
+/// `kube::Api::get` call so the nil/missing-`.metadata` case (the common
+/// case: most NodePool templates author zero extra labels/annotations) is
+/// provably non-panicking with zero client mocking required.
+fn parse_nodepool_template(node_pool_ref: &str, node_pool_data: &serde_json::Value) -> Result<NodePoolTemplate, ProviderError> {
+    let template = node_pool_data.get("spec").and_then(|s| s.get("template"));
+    let spec = template
+        .and_then(|t| t.get("spec"))
+        .cloned()
+        .ok_or_else(|| ProviderError::ApiPermanent(format!("NodePool {node_pool_ref} has no spec.template.spec")))?;
+    let metadata = template.and_then(|t| t.get("metadata"));
+    let labels = metadata
+        .and_then(|m| m.get("labels"))
+        .and_then(|l| serde_json::from_value::<BTreeMap<String, String>>(l.clone()).ok())
+        .unwrap_or_default();
+    let annotations = metadata
+        .and_then(|m| m.get("annotations"))
+        .and_then(|a| serde_json::from_value::<BTreeMap<String, String>>(a.clone()).ok())
+        .unwrap_or_default();
+    Ok(NodePoolTemplate { spec, labels, annotations })
 }
 
 /// A LIVE actuator against a REAL Karpenter install, generic over its
@@ -207,10 +268,10 @@ impl<E: KarpenterEnvironment> Provedor for KarpenterProvedor<E> {
         if self.dry_run {
             return Ok(ProvisionReceipt::DryRun { would: n as i64 });
         }
-        let template_spec = self.env.get_nodepool_template_spec(&self.node_pool_ref).await?;
+        let template = self.env.get_nodepool_template(&self.node_pool_ref).await?;
         let mut created = 0i64;
         for _ in 0..n {
-            let obj = build_nodeclaim(&self.pool, &self.node_pool_ref, &template_spec);
+            let obj = build_nodeclaim(&self.pool, &self.node_pool_ref, &template);
             match self.env.create_nodeclaim(obj).await {
                 Ok(()) => created += 1,
                 Err(e) => warn!(pool = %self.pool, error = %e, "NodeClaim create failed (non-fatal; retried next tick)"),
@@ -307,16 +368,10 @@ impl KarpenterEnvironment for KubeKarpenterEnvironment {
         Ok(demand_milli)
     }
 
-    async fn get_nodepool_template_spec(&self, node_pool_ref: &str) -> Result<serde_json::Value, ProviderError> {
+    async fn get_nodepool_template(&self, node_pool_ref: &str) -> Result<NodePoolTemplate, ProviderError> {
         let np_api: Api<DynamicObject> = Api::all_with(self.client.clone(), &nodepool_resource());
         let node_pool = np_api.get(node_pool_ref).await.map_err(|e| ProviderError::ApiTransient(e.to_string()))?;
-        node_pool
-            .data
-            .get("spec")
-            .and_then(|s| s.get("template"))
-            .and_then(|t| t.get("spec"))
-            .cloned()
-            .ok_or_else(|| ProviderError::ApiPermanent(format!("NodePool {node_pool_ref} has no spec.template.spec")))
+        parse_nodepool_template(node_pool_ref, &node_pool.data)
     }
 
     async fn list_managed_nodeclaims(&self, pool: &str) -> Result<Vec<NodeClaimRef>, ProviderError> {
@@ -348,8 +403,8 @@ impl KarpenterEnvironment for KubeKarpenterEnvironment {
 mod tests {
     use super::{
         build_nodeclaim, is_karpenter_managed_ref, nodeclaim_resource, nodepool_resource, owned_by_nodepool,
-        KarpenterEnvironment, KarpenterProvedor, NodeClaimRef, ObservedNode, CLAIM_POOL_LABEL,
-        KARPENTER_NODE_POOL_REF_LABEL, KARPENTER_NODEPOOL_LABEL,
+        parse_nodepool_template, KarpenterEnvironment, KarpenterProvedor, NodeClaimRef, NodePoolTemplate, ObservedNode,
+        CLAIM_POOL_LABEL, KARPENTER_NODE_POOL_REF_LABEL, KARPENTER_NODEPOOL_LABEL,
     };
     use async_trait::async_trait;
     use breathe_provider::{FormaSample, Provedor, ProviderError, ProvisionReceipt};
@@ -409,11 +464,12 @@ mod tests {
 
     #[test]
     fn build_nodeclaim_has_no_fixed_name_generates_from_pool_and_copies_spec_verbatim() {
-        let template_spec = serde_json::json!({
+        let spec = serde_json::json!({
             "requirements": [{"key": "karpenter.sh/capacity-type", "operator": "In", "values": ["on-demand"]}],
             "nodeClassRef": {"group": "karpenter.k8s.aws", "kind": "EC2NodeClass", "name": "default"},
         });
-        let obj = build_nodeclaim("camelot-agents", "camelot-nodepool", &template_spec);
+        let template = NodePoolTemplate { spec: spec.clone(), ..NodePoolTemplate::default() };
+        let obj = build_nodeclaim("camelot-agents", "camelot-nodepool", &template);
 
         // No fixed name — the apiserver assigns the suffix (concurrent
         // provisions never collide).
@@ -425,7 +481,113 @@ mod tests {
         assert_eq!(labels.get(KARPENTER_NODE_POOL_REF_LABEL).map(String::as_str), Some("camelot-nodepool"));
 
         // The template spec is copied VERBATIM — no field-by-field re-modeling.
-        assert_eq!(obj.data["spec"], template_spec, "spec.template.spec is copied verbatim into the NodeClaim spec");
+        assert_eq!(obj.data["spec"], spec, "spec.template.spec is copied verbatim into the NodeClaim spec");
+    }
+
+    #[test]
+    fn build_nodeclaim_stamps_the_ownership_label_observe_owned_nodes_actually_filters_on() {
+        // Real Karpenter's own NodePool->NodeClaim controller stamps
+        // `karpenter.sh/nodepool` on every NodeClaim it constructs, and that
+        // label then propagates onto the launched Node. breathe is its OWN
+        // minting authority here (never delegating to that controller), so
+        // build_nodeclaim must synthesize the same label itself. Without
+        // this, breathe's own observe_owned_nodes()/owned_by_nodepool()
+        // filter would never match a node breathe itself caused to be
+        // launched — self-referentially zero owned capacity forever.
+        let template = NodePoolTemplate::default();
+        let obj = build_nodeclaim("camelot-agents", "camelot-nodepool", &template);
+        let labels = obj.metadata.labels.as_ref().expect("labels set");
+        assert_eq!(
+            labels.get(KARPENTER_NODEPOOL_LABEL).map(String::as_str),
+            Some("camelot-nodepool"),
+            "the minted NodeClaim must carry karpenter.sh/nodepool=<NodePool name> — \
+             the exact key+value owned_by_nodepool() filters real Nodes on"
+        );
+
+        // Round-trip through the real filter predicate: a Node carrying this
+        // exact label+value (as real Karpenter's launch flow would produce)
+        // is recognized as owned by this NodePool.
+        let node = node_with_nodepool_label(labels.get(KARPENTER_NODEPOOL_LABEL).map(String::as_str));
+        assert!(owned_by_nodepool(&node, "camelot-nodepool"));
+    }
+
+    #[test]
+    fn build_nodeclaim_copies_template_metadata_labels_and_annotations_without_letting_them_shadow_ownership() {
+        let mut template_labels = std::collections::BTreeMap::new();
+        template_labels.insert("team".to_string(), "platform".to_string());
+        // A conflicting template-authored label using breathe's own
+        // ownership key — must never win. Mirrors real Karpenter's
+        // `lo.Assign(template.Labels, {NodePoolLabelKey: name})` ordering,
+        // where the injected key always wins a collision.
+        template_labels.insert(KARPENTER_NODEPOOL_LABEL.to_string(), "should-never-survive".to_string());
+        let mut template_annotations = std::collections::BTreeMap::new();
+        template_annotations.insert("example.com/owner".to_string(), "sre".to_string());
+
+        let template = NodePoolTemplate {
+            spec: serde_json::json!({"requirements": []}),
+            labels: template_labels,
+            annotations: template_annotations.clone(),
+        };
+        let obj = build_nodeclaim("camelot-agents", "camelot-nodepool", &template);
+
+        let labels = obj.metadata.labels.as_ref().expect("labels set");
+        assert_eq!(labels.get("team").map(String::as_str), Some("platform"), "template-authored labels propagate");
+        assert_eq!(
+            labels.get(KARPENTER_NODEPOOL_LABEL).map(String::as_str),
+            Some("camelot-nodepool"),
+            "breathe's synthesized ownership label always wins over a conflicting template-authored one"
+        );
+        assert_eq!(
+            obj.metadata.annotations.as_ref(),
+            Some(&template_annotations),
+            "template-authored annotations propagate verbatim"
+        );
+    }
+
+    #[test]
+    fn build_nodeclaim_with_no_template_metadata_does_not_panic_and_still_stamps_ownership() {
+        let template = NodePoolTemplate { spec: serde_json::json!({}), ..NodePoolTemplate::default() };
+        let obj = build_nodeclaim("pool", "nodepool", &template);
+        let labels = obj.metadata.labels.as_ref().expect("labels set");
+        assert_eq!(labels.get(KARPENTER_NODEPOOL_LABEL).map(String::as_str), Some("nodepool"));
+        assert_eq!(labels.get(CLAIM_POOL_LABEL).map(String::as_str), Some("pool"));
+        assert!(obj.metadata.annotations.is_none(), "no annotations block is set on the NodeClaim when the template carries none");
+    }
+
+    #[test]
+    fn parse_nodepool_template_with_no_metadata_block_defaults_to_empty_maps_and_does_not_panic() {
+        let node_pool_data = serde_json::json!({
+            "spec": { "template": { "spec": { "requirements": [] } } }
+        });
+        let template = parse_nodepool_template("camelot-nodepool", &node_pool_data).expect("spec present, must parse");
+        assert_eq!(template.spec, serde_json::json!({"requirements": []}));
+        assert!(template.labels.is_empty(), "a nil metadata block yields empty labels, not a panic");
+        assert!(template.annotations.is_empty(), "a nil metadata block yields empty annotations, not a panic");
+    }
+
+    #[test]
+    fn parse_nodepool_template_with_metadata_extracts_labels_and_annotations() {
+        let node_pool_data = serde_json::json!({
+            "spec": {
+                "template": {
+                    "metadata": {
+                        "labels": {"team": "platform"},
+                        "annotations": {"example.com/owner": "sre"},
+                    },
+                    "spec": { "requirements": [] },
+                }
+            }
+        });
+        let template = parse_nodepool_template("camelot-nodepool", &node_pool_data).expect("spec present, must parse");
+        assert_eq!(template.labels.get("team").map(String::as_str), Some("platform"));
+        assert_eq!(template.annotations.get("example.com/owner").map(String::as_str), Some("sre"));
+    }
+
+    #[test]
+    fn parse_nodepool_template_missing_spec_still_errors_the_same_as_before() {
+        let node_pool_data = serde_json::json!({ "spec": { "template": {} } });
+        let err = parse_nodepool_template("camelot-nodepool", &node_pool_data).expect_err("missing spec must surface, never be silently defaulted");
+        assert!(matches!(err, ProviderError::ApiPermanent(_)));
     }
 
     /// The mockable [`KarpenterEnvironment`] fixture — proves
@@ -434,7 +596,7 @@ mod tests {
     struct MockEnv {
         nodes: Vec<ObservedNode>,
         pod_demand_milli: u64,
-        template_spec: Result<serde_json::Value, ProviderError>,
+        template: Result<NodePoolTemplate, ProviderError>,
         managed_claims: Vec<NodeClaimRef>,
         /// The first N `create_nodeclaim` calls fail; the rest succeed —
         /// exercises the SAME non-fatal partial-failure semantics
@@ -452,7 +614,7 @@ mod tests {
             Self {
                 nodes: vec![],
                 pod_demand_milli: 0,
-                template_spec: Ok(serde_json::json!({})),
+                template: Ok(NodePoolTemplate::default()),
                 managed_claims: vec![],
                 fail_first_n_creates: 0,
                 create_attempts: Mutex::new(0),
@@ -471,8 +633,8 @@ mod tests {
         async fn observe_pod_demand_milli(&self) -> Result<u64, ProviderError> {
             Ok(self.pod_demand_milli)
         }
-        async fn get_nodepool_template_spec(&self, _node_pool_ref: &str) -> Result<serde_json::Value, ProviderError> {
-            self.template_spec.clone()
+        async fn get_nodepool_template(&self, _node_pool_ref: &str) -> Result<NodePoolTemplate, ProviderError> {
+            self.template.clone()
         }
         async fn list_managed_nodeclaims(&self, _pool: &str) -> Result<Vec<NodeClaimRef>, ProviderError> {
             Ok(self.managed_claims.clone())
@@ -546,7 +708,10 @@ mod tests {
 
     #[tokio::test]
     async fn provision_dry_run_reports_would_and_creates_nothing() {
-        let env = MockEnv { template_spec: Ok(serde_json::json!({"x": 1})), ..MockEnv::empty() };
+        let env = MockEnv {
+            template: Ok(NodePoolTemplate { spec: serde_json::json!({"x": 1}), ..NodePoolTemplate::default() }),
+            ..MockEnv::empty()
+        };
         let p = KarpenterProvedor::new(env, "pool".into(), "nodepool".into(), true);
         let receipt = p.provision(3).await.unwrap();
         assert_eq!(receipt, ProvisionReceipt::DryRun { would: 3 });
@@ -555,8 +720,8 @@ mod tests {
 
     #[tokio::test]
     async fn provision_live_creates_n_nodeclaims_copying_the_template_spec_verbatim() {
-        let template_spec = serde_json::json!({"requirements": [{"key": "k", "operator": "In", "values": ["v"]}]});
-        let env = MockEnv { template_spec: Ok(template_spec.clone()), ..MockEnv::empty() };
+        let spec = serde_json::json!({"requirements": [{"key": "k", "operator": "In", "values": ["v"]}]});
+        let env = MockEnv { template: Ok(NodePoolTemplate { spec: spec.clone(), ..NodePoolTemplate::default() }), ..MockEnv::empty() };
         let p = KarpenterProvedor::new(env, "camelot-agents".into(), "camelot-nodepool".into(), false);
         let receipt = p.provision(3).await.unwrap();
         assert_eq!(receipt, ProvisionReceipt::Applied { delta: 3, plan_id: "karpenter:provision:camelot-agents".into() });
@@ -566,16 +731,21 @@ mod tests {
         for obj in created.iter() {
             assert_eq!(obj.metadata.name, None);
             assert_eq!(obj.metadata.generate_name.as_deref(), Some("breathe-camelot-agents-"));
-            assert_eq!(obj.data["spec"], template_spec);
+            assert_eq!(obj.data["spec"], spec);
             let labels = obj.metadata.labels.as_ref().unwrap();
             assert_eq!(labels.get(CLAIM_POOL_LABEL).map(String::as_str), Some("camelot-agents"));
+            assert_eq!(
+                labels.get(KARPENTER_NODEPOOL_LABEL).map(String::as_str),
+                Some("camelot-nodepool"),
+                "every live-created NodeClaim carries the ownership label observe_owned_nodes filters on"
+            );
         }
     }
 
     #[tokio::test]
     async fn provision_live_missing_template_spec_propagates_the_error_and_creates_nothing() {
         let env = MockEnv {
-            template_spec: Err(ProviderError::ApiPermanent("NodePool camelot-nodepool has no spec.template.spec".into())),
+            template: Err(ProviderError::ApiPermanent("NodePool camelot-nodepool has no spec.template.spec".into())),
             ..MockEnv::empty()
         };
         let p = KarpenterProvedor::new(env, "pool".into(), "camelot-nodepool".into(), false);
