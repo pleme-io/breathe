@@ -21,7 +21,14 @@ requeueSeconds: 60
 # Pieces 1 (NATS on Camelot) and 2 (escuta-breathe-bridge deployed) are proven
 # live — until Piece 2's own named blocker closes there is nothing publishing
 # on these subjects even when this is enabled.
-natsReactiveUrl: "nats://pleme-nats.nats.svc:4222"
+#
+# Helm fullname of the pleme-nats release in akeyless-k8s/.../infrastructure/
+# nats is "nats-pleme-nats" (release name "nats" + chart name "pleme-nats" —
+# they don't collapse to just the release name because "pleme-nats" doesn't
+# contain "nats" as a prefix; see the chart's own `pleme-lib.fullname`
+# helper). Matches the fleet's own live precedent in
+# k8s/clusters/rio/infrastructure/{tend-throttle,tend-operator}/release.yaml.
+natsReactiveUrl: "nats://nats-pleme-nats.nats.svc:4222"
 natsReactiveEnabled: false
 
 # Tight bound — the controller observes + patches, no heavy work. Per the
