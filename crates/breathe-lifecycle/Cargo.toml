@@ -4,7 +4,10 @@
 # A standalone crate (its own [workspace] root) so it composes the breathe
 # substrate by REFERENCE without being coupled to the parent breathe
 # workspace's build or its in-flight band-crate churn — the exact isolation
-# discipline `breathe-invariant` and `crates/breathe-auction` already use.
+# discipline `breathe-invariant` uses. (`crates/breathe-auction` used to be a
+# second example of this pattern, but it was renamed to `crates/breathe-spread`
+# AND folded into the parent workspace in the same commit, theory/CORRENTEZA.md
+# §1.2/§10 — it's a normal workspace member now, no longer isolated this way.)
 [package]
 name = "breathe-lifecycle"
 version = "0.1.0"

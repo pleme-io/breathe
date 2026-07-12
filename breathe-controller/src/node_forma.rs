@@ -15,10 +15,12 @@ use std::sync::Arc;
 
 use breathe_admission::{Allocatable, CapacidadeProof, Portao, Viveiro};
 use breathe_auction::{BandLeiloeiro, LinearTrendPrevisor, Previsao, Previsor, ReactivePrevisor};
-// correnteza M0 — the compute/auction permutation-space lock (`Lane` etc).
-// Aliased as `breathe_spread` in Cargo.toml: `crates/breathe-auction` is a
-// DIFFERENT crate that happens to share the package name `breathe-auction`
-// with the elasticity engine imported above.
+// correnteza M0 — the compute/auction permutation-space lock (`Lane` etc,
+// used below via fully-qualified `breathe_spread::Lane` paths). Lives in the
+// sibling `breathe-spread` crate (renamed from `crates/breathe-auction`,
+// theory/CORRENTEZA.md §1.2 — it originally shared the literal package name
+// `breathe-auction` with the elasticity engine imported above; the rename
+// resolved the collision, no import-time aliasing needed anymore).
 use breathe_crd::{BreatheCloudPool, CloudPoolStatus};
 use breathe_provider::{Forma, FormaSample, ProviderError, ProvisionReceipt, Provedor};
 use breathe_provision::{reconcile_forma, FormaTick};
