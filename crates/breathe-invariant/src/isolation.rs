@@ -101,7 +101,7 @@ impl QosClass {
 
 /// The node-level placement isolation axis — how much a workload co-locates
 /// (bin-pack / efficient) vs separates (isolate / sealed). The Rust contract
-/// mirror of the config-spread placement/anti-affinity axis (breathe-auction
+/// mirror of the config-spread placement/anti-affinity axis (breathe-spread
 /// `axis::Placement` / `StorageBinding`) — REFERENCED, never re-implemented.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
