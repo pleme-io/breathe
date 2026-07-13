@@ -56,11 +56,16 @@ pub(crate) fn parse_cpu_milli(q: &str) -> u64 {
 
 /// Map the CR's `forma` string onto a typed [`Forma`]. `None` ⇒ unknown shape
 /// (the reconcile reports it + skips, never guesses).
+///
+/// Delegates to `Forma`'s own `#[serde(rename_all = "kebab-case")]` derive
+/// (`breathe-provider::Forma`) rather than a hand-maintained match — the
+/// prior version only recognized `"node-on-demand"`, silently rejecting
+/// every other real `Forma` variant (`"node-spot"` included) as `unknown
+/// forma` even though `Forma::as_str()` already names it correctly. A
+/// second hand-written string table can drift from the enum the moment a
+/// new `Forma` variant lands; this can't.
 fn forma_from_str(s: &str) -> Option<Forma> {
-    match s {
-        "node-on-demand" => Some(Forma::NodeOnDemand),
-        _ => None,
-    }
+    serde_json::from_value(serde_json::Value::String(s.to_string())).ok()
 }
 
 /// Per-node utilisation SKEW across the Ready nodes — the rebalance SIGNAL.
@@ -1046,6 +1051,42 @@ mod tests {
     fn forma_string_maps_to_typed_or_none() {
         assert_eq!(forma_from_str("node-on-demand"), Some(Forma::NodeOnDemand));
         assert_eq!(forma_from_str("nonsense"), None);
+    }
+
+    /// Regression for the real bug this session's live Camelot-EKS trial
+    /// caught: a `BreatheCloudPool` with `spec.forma: node-spot` reconciled
+    /// to `phase: Error, lastDecision: "unknown forma \"node-spot\""` even
+    /// though `Forma::NodeSpot` (and `Forma::as_str()`'s `"node-spot"`
+    /// mapping) already existed — the old hand-written match in
+    /// `forma_from_str` only ever recognized `"node-on-demand"`. Covers
+    /// every `Forma` variant's `as_str()` round-trip so a future variant
+    /// can't silently repeat the same gap.
+    #[test]
+    fn every_forma_as_str_round_trips_through_forma_from_str() {
+        let all = [
+            Forma::NodeOnDemand,
+            Forma::NodeSpot,
+            Forma::ProvisionedIops,
+            Forma::ProvisionedThroughput,
+            Forma::DynamoCapacity,
+            Forma::Commitment,
+            Forma::Accelerator,
+            Forma::ServerlessSlot,
+            Forma::ZoneCapacity,
+            Forma::EdgePlacement,
+            Forma::LbCapacity,
+            Forma::EgressBandwidth,
+            Forma::JitBuilder,
+            Forma::LogIngestion,
+        ];
+        for forma in all {
+            assert_eq!(
+                forma_from_str(forma.as_str()),
+                Some(forma),
+                "forma_from_str({:?}) should round-trip",
+                forma.as_str()
+            );
+        }
     }
 
     #[test]
