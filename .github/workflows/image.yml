@@ -44,6 +44,19 @@ on:
       - "flake.lock"
       - ".github/workflows/image.yml"
   workflow_dispatch:
+    inputs:
+      runnerOverride:
+        description: >-
+          Escape hatch for when CAMELOT_IMAGE_RUNNER's scale set is broken
+          (e.g. its ClusterSecretStore credential isn't provisioned yet —
+          see task tracker "camelot-builder-pleme ARC scale set broken").
+          Set to a real GitHub-hosted label (e.g. ubuntu-24.04) to bypass
+          it for one manual run. Empty (default) = normal var-driven
+          selection, unaffected. Never rio-build-01 for Camelot images
+          (org rule) — this input exists so the fallback never silently
+          becomes rio.
+        type: string
+        default: ""
 
 permissions:
   contents: read
@@ -59,7 +72,7 @@ jobs:
       imageName: pleme-io/breathe-controller
       tag: amd64-${{ startsWith(github.ref_name, 'camelot/') && 'camelot-' || '' }}r${{ github.run_number }}-${{ github.sha }}
       additionalTags: ${{ startsWith(github.ref_name, 'camelot/') && 'amd64-camelot-latest' || 'amd64-latest' }}
-      runner: ${{ vars.CAMELOT_IMAGE_RUNNER || 'rio-build-01' }}
+      runner: ${{ inputs.runnerOverride || vars.CAMELOT_IMAGE_RUNNER || 'rio-build-01' }}
       extraSubstituters: ${{ vars.CAMELOT_SUI_SUBSTITUTER }}
       requireSigs: ${{ vars.CAMELOT_SUI_REQUIRE_SIGS }}
     secrets: inherit
@@ -71,7 +84,7 @@ jobs:
       imageName: pleme-io/breathe-host-agent
       tag: amd64-${{ startsWith(github.ref_name, 'camelot/') && 'camelot-' || '' }}r${{ github.run_number }}-${{ github.sha }}
       additionalTags: ${{ startsWith(github.ref_name, 'camelot/') && 'amd64-camelot-latest' || 'amd64-latest' }}
-      runner: ${{ vars.CAMELOT_IMAGE_RUNNER || 'rio-build-01' }}
+      runner: ${{ inputs.runnerOverride || vars.CAMELOT_IMAGE_RUNNER || 'rio-build-01' }}
       extraSubstituters: ${{ vars.CAMELOT_SUI_SUBSTITUTER }}
       requireSigs: ${{ vars.CAMELOT_SUI_REQUIRE_SIGS }}
     secrets: inherit
@@ -83,7 +96,7 @@ jobs:
       imageName: pleme-io/breathe-api-server
       tag: amd64-${{ startsWith(github.ref_name, 'camelot/') && 'camelot-' || '' }}r${{ github.run_number }}-${{ github.sha }}
       additionalTags: ${{ startsWith(github.ref_name, 'camelot/') && 'amd64-camelot-latest' || 'amd64-latest' }}
-      runner: ${{ vars.CAMELOT_IMAGE_RUNNER || 'rio-build-01' }}
+      runner: ${{ inputs.runnerOverride || vars.CAMELOT_IMAGE_RUNNER || 'rio-build-01' }}
       extraSubstituters: ${{ vars.CAMELOT_SUI_SUBSTITUTER }}
       requireSigs: ${{ vars.CAMELOT_SUI_REQUIRE_SIGS }}
     secrets: inherit
