@@ -107,7 +107,18 @@ pub const DB_MATRIX: &[DbKnobSpec] = &[
         knob: "shared_buffers",
         dimension: DimensionId::AppParam,
         directionality: Directionality::Bidirectional,
-        actuator: "config-file + rolling restart (postgresql.conf shared_buffers)",
+        // NOTE (live-verified 2026-07-14 on Camelot): this actuator string
+        // describes BARE Postgres only. A CNPG-managed instance must NOT be
+        // carved via a direct postgresql.conf file edit — CNPG's own operator
+        // owns that file and re-renders it from Cluster.spec.postgresql.parameters
+        // on every reconcile, so a raw file write races it (two writers, no
+        // coordination). For CNPG, the correct actuator is KubeParamBand's
+        // KubeLayoutSpec::CrField targeting the Cluster CR's
+        // spec.postgresql.parameters.<knob> field path, letting CNPG keep sole
+        // ownership of the render + reload/restart decision. See
+        // akeyless-k8s/clusters/camelot-mode1/apps/camelot/pangea-database-breathe-band.yaml
+        // for the live, shadow-mode worked example (max_connections).
+        actuator: "config-file + rolling restart (postgresql.conf shared_buffers) — bare Postgres only; CNPG-managed uses KubeParamBand CrField instead",
         requires_roll: true, // shared_buffers is set at boot — the carve needs a roll
         topology_kind: "masterSlave",
         observe: "pg_stat_bgwriter buffers_backend / cache-hit ratio (rising backend reads ⇒ buffers too small)",
@@ -118,7 +129,13 @@ pub const DB_MATRIX: &[DbKnobSpec] = &[
         knob: "max_connections",
         dimension: DimensionId::AppParam,
         directionality: Directionality::Bidirectional,
-        actuator: "config-file + rolling restart (postgresql.conf max_connections)",
+        // NOTE (live-verified 2026-07-14 on Camelot): same CNPG caveat as
+        // shared_buffers above — bare Postgres only; a CNPG-managed cluster
+        // uses KubeParamBand's CrField layout against
+        // Cluster.spec.postgresql.parameters.max_connections instead of a
+        // direct file edit, so CNPG's own reconciler stays the sole writer of
+        // postgresql.conf.
+        actuator: "config-file + rolling restart (postgresql.conf max_connections) — bare Postgres only; CNPG-managed uses KubeParamBand CrField instead",
         requires_roll: true, // max_connections is a boot-time GUC — needs a roll
         topology_kind: "masterSlave",
         observe: "pg_stat_activity count / current_setting('max_connections')",
