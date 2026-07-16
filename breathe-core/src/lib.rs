@@ -84,6 +84,14 @@ pub enum TickReceipt {
     /// per-entity gauge, so it is not measuring this entity (local-path PVC →
     /// whole-node-fs bytes). Held + surfaced; NEVER carved on the lie.
     MetricUnrepresentable { used: u64, capacity: u64 },
+    /// Mirrors `TickPlan::CapabilityMissing` — a `GrowOnly` dimension's
+    /// backing StorageClass cannot support what breathe needs to safely
+    /// carve it (no online expansion and/or no per-volume metrics). Reported
+    /// as CRD `phase = "Unsupported"` — checked FIRST (before the
+    /// single-writer guard), so this is what the operator sees instead of a
+    /// `Conflict`/`MetricUnrepresentable` red herring produced by the exact
+    /// same underlying gap. NEVER carved.
+    CapabilityMissing { volume_expansion: bool, per_volume_metrics: bool, provisioner: String },
     /// A SHRINK was warranted but the workload is still in its WARMUP window (it
     /// (re)started less than `warmup_seconds` ago and hasn't demonstrated a full duty
     /// cycle) — held + surfaced. The idle reading is not yet proof the slack is safe
@@ -150,6 +158,7 @@ impl TickReceipt {
             | Self::Stale { .. }
             | Self::Conflict { .. }
             | Self::MetricUnrepresentable { .. }
+            | Self::CapabilityMissing { .. }
             | Self::Error { .. } => EdgeTier::GoldenPreserving,
         }
     }
@@ -272,6 +281,9 @@ pub async fn reconcile_one(
         TickPlan::Unrepresentable { used, capacity } => {
             TickReceipt::MetricUnrepresentable { used, capacity }
         }
+        TickPlan::CapabilityMissing { volume_expansion, per_volume_metrics, provisioner } => {
+            TickReceipt::CapabilityMissing { volume_expansion, per_volume_metrics, provisioner }
+        }
         TickPlan::Warmup { observed_for, warmup, .. } => TickReceipt::Warmup { observed_for, warmup },
         TickPlan::Throttled { restarting, .. } => TickReceipt::Throttled { restarting },
         TickPlan::Stale { staleness_secs, .. } => TickReceipt::Stale { staleness_secs },
@@ -312,8 +324,8 @@ pub async fn reconcile_one(
 mod tests {
     use super::*;
     use breathe_control::FieldOwner;
-    use breathe_provider::{mock::MockCluster, BandProvider, DimensionDescriptor, Target};
-    use breathe_dimensions::MemoryDescriptor;
+    use breathe_provider::{mock::MockCluster, BandProvider, DimensionDescriptor, StorageCapability, Target};
+    use breathe_dimensions::{MemoryDescriptor, StorageDescriptor};
 
     const MEMORY_FIELD: &str = "resources.limits.memory";
     const MEMORY_MANAGER: &str = "breathe/memory";
@@ -735,6 +747,81 @@ mod tests {
         );
         for p in &prov.cluster().applied() {
             assert!(p.value >= 2 * GI, "a crash-loop carve must never lower the limit, wrote {}", p.value);
+        }
+    }
+
+    // ── STORAGE CAPABILITY GATE end-to-end (the fail-fast fix) ───────────────
+
+    fn pvc_target(name: &str) -> Target {
+        Target {
+            namespace: "akeyless".into(),
+            name: name.into(),
+            kind: "PersistentVolumeClaim".into(),
+            api_version: String::new(),
+            container: None,
+            pod_selector: None,
+        }
+    }
+    fn unsupported_cap() -> StorageCapability {
+        StorageCapability { volume_expansion: false, per_volume_metrics: false, provisioner: "rancher.io/local-path".into() }
+    }
+    fn storage_input<'a>(t: &'a Target, cfg: &'a BandConfig) -> ReconcileInput<'a> {
+        ReconcileInput { target: t, cfg, max_staleness_secs: 60, in_cooldown: false, dry_run: false, policy: DisruptionPolicy::RestartFreeOnly, force: None, predictive: None, peak_used: None, observed_for_secs: None, hard_plane_grow_only: false }
+    }
+
+    /// The `rustfs-data-storage` case: no competing field manager, but `local-path`
+    /// can neither online-expand nor report a trustworthy per-volume metric. The
+    /// fix catches this at capability-discovery time — never carved.
+    #[tokio::test]
+    async fn reconcile_flags_an_unsupported_storage_class_as_capability_missing_never_carving() {
+        let cluster = MockCluster::new(GI, 0, GI, Vec::new()).with_storage_capability(Some(unsupported_cap()));
+        let prov = BandProvider::new(cluster, StorageDescriptor);
+        let cfg = BandConfig::default();
+        let t = pvc_target("rustfs-data-storage");
+        let out = reconcile_one(&storage_input(&t, &cfg), &prov).await;
+        match out.receipt {
+            TickReceipt::CapabilityMissing { volume_expansion, per_volume_metrics, provisioner } => {
+                assert!(!volume_expansion);
+                assert!(!per_volume_metrics);
+                assert_eq!(provisioner, "rancher.io/local-path");
+            }
+            other => panic!("expected CapabilityMissing, got {other:?}"),
+        }
+        assert!(prov.cluster().applied().is_empty(), "an unsupported StorageClass must never be carved");
+    }
+
+    /// THE collapse this fix exists for — the `data-mysql-0-storage` case: k3s's own
+    /// controller-manager owns the field (the real Camelot shape). WITHOUT the
+    /// capability gate this would reconcile to `Conflict`; WITH it, the IDENTICAL
+    /// StorageClass gap reports the SAME `CapabilityMissing` terminal as the
+    /// no-competing-owner case above — never a field-ownership red herring.
+    #[tokio::test]
+    async fn reconcile_capability_missing_beats_a_competing_field_manager() {
+        let competing = vec![FieldOwner { manager: "k3s".into(), field: "spec.resources.requests.storage".into() }];
+        let cluster = MockCluster::new(GI, 0, GI, competing).with_storage_capability(Some(unsupported_cap()));
+        let prov = BandProvider::new(cluster, StorageDescriptor);
+        let cfg = BandConfig::default();
+        let t = pvc_target("data-mysql-0-storage");
+        match reconcile_one(&storage_input(&t, &cfg), &prov).await.receipt {
+            TickReceipt::CapabilityMissing { .. } => {}
+            other => panic!(
+                "expected CapabilityMissing (never Conflict) for a competing-owner + unsupported StorageClass, got {other:?}"
+            ),
+        }
+    }
+
+    /// The regression guard: a real elastic StorageClass must still carve normally —
+    /// the gate is additive, never a tax on the golden path.
+    #[tokio::test]
+    async fn reconcile_never_gates_a_supported_storage_class() {
+        let supported = StorageCapability { volume_expansion: true, per_volume_metrics: true, provisioner: "ebs.csi.aws.com".into() };
+        let cluster = MockCluster::new(950 * MI, 0, GI, Vec::new()).with_storage_capability(Some(supported));
+        let prov = BandProvider::new(cluster, StorageDescriptor);
+        let cfg = BandConfig::default();
+        let t = pvc_target("elastic-data");
+        match reconcile_one(&storage_input(&t, &cfg), &prov).await.receipt {
+            TickReceipt::CapabilityMissing { .. } => panic!("a supported StorageClass must never be gated"),
+            _ => {} // Applied / Observed / etc. — whatever the band law decides, just not gated.
         }
     }
 }

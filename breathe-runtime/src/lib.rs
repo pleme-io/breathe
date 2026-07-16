@@ -109,6 +109,13 @@ pub fn event_for(receipt: &TickReceipt) -> Option<(EventKind, &'static str, Stri
             "MetricUnrepresentable",
             format!("metric reports used {used} > capacity {capacity} — not a per-entity gauge (e.g. local-path PVC stats the whole node fs); held, never carved"),
         ),
+        TickReceipt::CapabilityMissing { volume_expansion, per_volume_metrics, provisioner } => (
+            Warning,
+            "Unsupported",
+            format!(
+                "StorageClass ({provisioner}) can never converge — allowVolumeExpansion={volume_expansion}, perVolumeMetrics={per_volume_metrics}; provision an elastic StorageClass (e.g. ebs-gp3) or accept the fixed size"
+            ),
+        ),
         TickReceipt::Error { error } => (Warning, "ReconcileError", error.to_string()),
         TickReceipt::DryRunWouldApply { from, to } => {
             (Normal, "ShadowWouldApply", format!("shadow: would carve {from} -> {to} (dryRun — nothing written)"))
@@ -191,8 +198,14 @@ pub fn conditions_for(outcome: &TickOutcome, prior: &[Condition], generation: Op
         r,
         TickReceipt::Error { .. }
             | TickReceipt::MetricUnrepresentable { .. }
+            | TickReceipt::CapabilityMissing { .. }
             | TickReceipt::Observed { decision: Decision::NoLimit }
     );
+    // SUPPORTED (the design's point-3(b) "will never converge without operator
+    // action" signal, distinct from "waiting"): `false` ONLY for
+    // `CapabilityMissing` — every other receipt (including `Conflict`/
+    // `MetricUnrepresentable`, which MAY be transient) stays `true`.
+    let supported = !matches!(r, TickReceipt::CapabilityMissing { .. });
     let converged = matches!(
         r,
         TickReceipt::Observed { decision: Decision::Hold | Decision::AtCeiling { .. } | Decision::NoSafeShrink { .. } }
@@ -205,7 +218,7 @@ pub fn conditions_for(outcome: &TickOutcome, prior: &[Condition], generation: Op
     let stale = matches!(r, TickReceipt::Stale { .. });
     let conflict = matches!(r, TickReceipt::Conflict { .. });
 
-    let mut out = Vec::with_capacity(5);
+    let mut out = Vec::with_capacity(6);
     upsert_condition(&mut out, prior, &now, "Ready", observable,
         if observable { "Reconciling" } else { "NotObservable" },
         if observable { "enrolled, config parses, metric observable" } else { "no metric/limit to reason on" }, generation);
@@ -218,6 +231,9 @@ pub fn conditions_for(outcome: &TickOutcome, prior: &[Condition], generation: Op
         if stale { "StaleMetric" } else { "Fresh" }, "driving metric sample age vs maxStaleness", generation);
     upsert_condition(&mut out, prior, &now, "Conflict", conflict,
         if conflict { "FieldOwnedElsewhere" } else { "SoleWriter" }, "single-writer guard", generation);
+    upsert_condition(&mut out, prior, &now, "Supported", supported,
+        if supported { "CapabilityOk" } else { "StorageClassUnsupported" },
+        "StorageClass allowVolumeExpansion + per-volume metrics — False means this band can NEVER converge without operator action", generation);
     out
 }
 
@@ -278,6 +294,15 @@ pub fn status_for(
             s.phase = Some("MetricUnrepresentable".into());
             s.last_decision = Some(format!(
                 "used {used} > capacity {capacity} — metric not per-entity (e.g. local-path PVC = whole-node fs); held"
+            ));
+        }
+        TickReceipt::CapabilityMissing { volume_expansion, per_volume_metrics, provisioner } => {
+            // the fail-fast terminal: checked BEFORE the single-writer guard, so this
+            // is reached on the very first tick regardless of who else owns the
+            // field — never `Conflict`/`MetricUnrepresentable` for the same root cause.
+            s.phase = Some("Unsupported".into());
+            s.last_decision = Some(format!(
+                "StorageClass ({provisioner}) can never converge — allowVolumeExpansion={volume_expansion}, perVolumeMetrics={per_volume_metrics}; provision an elastic StorageClass (e.g. ebs-gp3) or accept the fixed size"
             ));
         }
         TickReceipt::Warmup { observed_for, warmup } => {
@@ -451,6 +476,7 @@ fn receipt_kind_str(r: &TickReceipt) -> &'static str {
     match r {
         TickReceipt::Conflict { .. } => "Conflict",
         TickReceipt::MetricUnrepresentable { .. } => "MetricUnrepresentable",
+        TickReceipt::CapabilityMissing { .. } => "CapabilityMissing",
         TickReceipt::Stale { .. } => "Stale",
         TickReceipt::Cooldown => "Cooldown",
         TickReceipt::Applied { .. } => "Applied",
@@ -510,6 +536,16 @@ pub fn counters_from_status(prior: Option<&BandStatus>) -> CumulativeCounters {
     }
 }
 
+/// The backoff for `TickReceipt::CapabilityMissing` — deliberately far past
+/// every other class's cooldown (`ClassCooldowns::restart_requiring` tops out
+/// at minutes). A StorageClass gap is a STRUCTURAL fact that does not clear on
+/// its own; re-checking every few seconds forever (the never-silently-stuck
+/// escalation's whole point is to STOP hammering a terminal that needs
+/// operator action, not a transient condition) wastes API calls and etcd
+/// writes for no gain. One hour still re-observes promptly enough that fixing
+/// the StorageClass (or migrating the PVC) converges within a session.
+const CAPABILITY_MISSING_REQUEUE_SECS: u64 = 3600;
+
 /// The requeue interval for the NEXT tick, keyed on what just happened — the
 /// real-time corollary of the restart-cost axis. A permitted carve (golden under
 /// the default policy) or a shadow requeues at the fast restart-free cadence
@@ -535,6 +571,10 @@ pub fn next_requeue(receipt: &TickReceipt, cooldowns: &ClassCooldowns) -> Durati
         // we most want to track closely (it is being starved RIGHT NOW) so we observe
         // the throttle clearing + grow it out of the cap promptly. Never the slow window.
         TickReceipt::Warmup { .. } | TickReceipt::Throttled { .. } => cooldowns.restart_free,
+        // TERMINAL, structural, never-clears-on-its-own: back off FAR past every
+        // other class (see the const doc) — this is the never-silently-stuck
+        // escalation for a StorageClass gap, not a transient condition.
+        TickReceipt::CapabilityMissing { .. } => return Duration::from_secs(CAPABILITY_MISSING_REQUEUE_SECS),
         // non-mutating / transient: the mid window.
         TickReceipt::Observed { .. }
         | TickReceipt::Cooldown
@@ -1068,6 +1108,61 @@ mod tests {
         assert_eq!(s.conflicts_total, Some(1));
         assert_eq!(s.phase.as_deref(), Some("Conflict"));
         assert_eq!(s.conflict_manager.as_deref(), Some("helm"));
+    }
+
+    #[test]
+    fn capability_missing_maps_to_the_unsupported_phase_and_a_false_supported_condition() {
+        // the fail-fast fix's CRD-visible shape: phase="Unsupported" (never
+        // Conflict/MetricUnrepresentable for the same StorageClass gap), and the
+        // new Supported condition flips False — distinct from every other
+        // "waiting" state, which stays True.
+        let s = status_of(&out(TickReceipt::CapabilityMissing {
+            volume_expansion: false,
+            per_volume_metrics: false,
+            provisioner: "rancher.io/local-path".into(),
+        }));
+        assert_eq!(s.phase.as_deref(), Some("Unsupported"));
+        assert!(s.last_decision.as_deref().unwrap().contains("rancher.io/local-path"));
+        let supported = s.conditions.iter().find(|c| c.type_ == "Supported").expect("Supported condition present");
+        assert_eq!(supported.status, "False");
+        assert_eq!(supported.reason, "StorageClassUnsupported");
+        // not observable either — there is nothing further to reason on.
+        let ready = s.conditions.iter().find(|c| c.type_ == "Ready").unwrap();
+        assert_eq!(ready.status, "False");
+    }
+
+    #[test]
+    fn a_normal_receipt_keeps_the_supported_condition_true() {
+        use breathe_provider::DisruptionClass::RestartFree;
+        let s = status_of(&out(TickReceipt::Applied { from: 1, to: 2, class: RestartFree }));
+        let supported = s.conditions.iter().find(|c| c.type_ == "Supported").expect("Supported condition present");
+        assert_eq!(supported.status, "True");
+        assert_eq!(supported.reason, "CapabilityOk");
+    }
+
+    #[test]
+    fn capability_missing_backs_off_far_longer_than_every_other_class() {
+        use breathe_provider::ClassCooldowns;
+        let cd = ClassCooldowns::default();
+        let backoff = next_requeue(
+            &TickReceipt::CapabilityMissing { volume_expansion: false, per_volume_metrics: false, provisioner: "x".into() },
+            &cd,
+        );
+        assert!(backoff > Duration::from_secs(cd.restart_requiring), "must back off PAST every existing class's cooldown");
+        assert_eq!(backoff, Duration::from_secs(CAPABILITY_MISSING_REQUEUE_SECS));
+    }
+
+    #[test]
+    fn capability_missing_emits_a_warning_event_naming_the_provisioner() {
+        let (kind, reason, note) = event_for(&TickReceipt::CapabilityMissing {
+            volume_expansion: false,
+            per_volume_metrics: true,
+            provisioner: "rancher.io/local-path".into(),
+        })
+        .unwrap();
+        assert_eq!(kind, EventKind::Warning);
+        assert_eq!(reason, "Unsupported");
+        assert!(note.contains("rancher.io/local-path"));
     }
 
     #[test]

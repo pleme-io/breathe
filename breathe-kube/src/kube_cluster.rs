@@ -11,10 +11,11 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
-use breathe_control::{FieldOwner, Quantity, Unit};
+use breathe_control::{FieldOwner, Quantity, StorageCapability, Unit};
 use breathe_provider::{
     AppliedReceipt, Cluster, LimitLayout, MetricSource, ProviderError, Sample, SsaPatch, Target,
 };
+use k8s_openapi::api::storage::v1::StorageClass;
 use kube::{
     api::{Api, ApiResource, DynamicObject, ListParams, Patch, PatchParams},
     core::GroupVersionKind,
@@ -395,6 +396,46 @@ fn resize_resources_block(qos: &str, resource: &str, value: u64, current_request
     }
 }
 
+/// Provisioners known to report NODE-WIDE (not per-volume) usage stats via
+/// `kubelet_volume_stats_used_bytes` — `local-path`'s hostPath-backed PVs are
+/// the canonical case (the metric reports the whole node filesystem, not the
+/// 10Gi volume, which is exactly the lie `TickPlan::Unrepresentable` catches
+/// when it manifests as `used > capacity`). A StorageClass on this denylist
+/// is caught EARLIER, at capability-discovery time, before a bad sample has
+/// to land. Absence from this list is NOT proof of correctness — it is the
+/// honest default (a class we have no reason to distrust).
+const NO_PER_VOLUME_METRICS_PROVISIONERS: &[&str] = &["rancher.io/local-path", "kubernetes.io/host-path"];
+
+/// The JSON-pointer to the StorageClass NAME on a storage layout's fetched
+/// owner object. `PvcRequest`'s owner IS the PVC (`spec.storageClassName`,
+/// always set post-admission-defaulting); `ClusterStorage`'s owner is the
+/// CNPG `Cluster` CR (`spec.storage.storageClass`, the field CNPG's own
+/// instance PVCs are provisioned with). `None` for every other layout (no
+/// PVC/StorageClass concept) or when the field genuinely isn't set yet (a
+/// CNPG cluster whose `spec.storage.storageClass` was omitted — the operator
+/// falls back to the namespace default, which this pointer can't see).
+fn storage_class_name_for(data: &Value, layout: &LimitLayout) -> Option<String> {
+    match layout {
+        LimitLayout::PvcRequest => data.pointer("/spec/storageClassName").and_then(Value::as_str).map(String::from),
+        LimitLayout::ClusterStorage => {
+            data.pointer("/spec/storage/storageClass").and_then(Value::as_str).map(String::from)
+        }
+        _ => None,
+    }
+}
+
+/// Project a live [`StorageClass`] onto the typed capability contract — see
+/// [`StorageCapability`]'s doc for what each property means and why either
+/// being false is fatal to convergence. Pure + unit-tested.
+fn storage_capability_from(sc: &StorageClass) -> StorageCapability {
+    let provisioner = sc.provisioner.clone();
+    StorageCapability {
+        volume_expansion: sc.allow_volume_expansion.unwrap_or(false),
+        per_volume_metrics: !NO_PER_VOLUME_METRICS_PROVISIONERS.contains(&provisioner.as_str()),
+        provisioner,
+    }
+}
+
 #[async_trait]
 impl Cluster for KubeCluster {
     async fn read_used(&self, source: &MetricSource) -> Result<Sample, ProviderError> {
@@ -719,6 +760,34 @@ impl Cluster for KubeCluster {
         }
         Ok(false)
     }
+
+    /// The CAPABILITY-DISCOVERY read (the fail-fast fix): resolve the
+    /// StorageClass backing `target`'s PVC (`PvcRequest`) or CNPG-managed PVCs
+    /// (`ClusterStorage`) and project it onto [`StorageCapability`]. `Ok(None)`
+    /// for every other layout (no PVC concept) and for the two "can't
+    /// determine, don't gate" cases: the layout's owner has no explicit
+    /// StorageClass name yet, or the named StorageClass has vanished. Both are
+    /// UNKNOWN, never a false negative — see [`Cluster::read_storage_capability`]'s
+    /// doc for why the weakest answer is the safe default.
+    async fn read_storage_capability(
+        &self,
+        target: &Target,
+        layout: &LimitLayout,
+    ) -> Result<Option<StorageCapability>, ProviderError> {
+        if !matches!(layout, LimitLayout::PvcRequest | LimitLayout::ClusterStorage) {
+            return Ok(None);
+        }
+        let obj = self.get_owner(target).await?;
+        let Some(name) = storage_class_name_for(&obj.data, layout) else {
+            return Ok(None);
+        };
+        let api: Api<StorageClass> = Api::all(self.client.clone());
+        match api.get_opt(&name).await {
+            Ok(Some(sc)) => Ok(Some(storage_capability_from(&sc))),
+            Ok(None) => Ok(None), // the named class doesn't exist (yet) — unknown, don't gate
+            Err(e) => Err(ProviderError::ApiTransient(e.to_string())),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -820,5 +889,81 @@ mod tests {
         assert!(!KubeCluster::container_resize_not_required(&not_required, &Some("missing".into()), "memory"));
         // None ⇒ first container; resolves the same policy.
         assert!(KubeCluster::container_resize_not_required(&not_required, &None, "memory"));
+    }
+
+    // ── STORAGE CAPABILITY DISCOVERY (the fail-fast fix) ─────────────────────
+
+    #[test]
+    fn storage_class_name_for_reads_the_pvc_field_for_pvc_request() {
+        use super::{storage_class_name_for, LimitLayout};
+        let pvc = json!({ "spec": { "storageClassName": "local-path", "resources": { "requests": { "storage": "10Gi" } } } });
+        assert_eq!(storage_class_name_for(&pvc, &LimitLayout::PvcRequest), Some("local-path".to_string()));
+    }
+
+    #[test]
+    fn storage_class_name_for_reads_the_cnpg_cluster_field_for_cluster_storage() {
+        use super::{storage_class_name_for, LimitLayout};
+        let cluster = json!({ "spec": { "storage": { "storageClass": "ebs-gp3", "size": "10Gi" } } });
+        assert_eq!(storage_class_name_for(&cluster, &LimitLayout::ClusterStorage), Some("ebs-gp3".to_string()));
+    }
+
+    #[test]
+    fn storage_class_name_for_is_none_when_unset_or_not_applicable() {
+        use super::{storage_class_name_for, LimitLayout};
+        // omitted storageClassName (shouldn't happen post-admission, but must not panic).
+        assert_eq!(storage_class_name_for(&json!({ "spec": {} }), &LimitLayout::PvcRequest), None);
+        // a CNPG cluster whose storage.storageClass was never set (namespace default).
+        assert_eq!(
+            storage_class_name_for(&json!({ "spec": { "storage": { "size": "10Gi" } } }), &LimitLayout::ClusterStorage),
+            None
+        );
+        // no PVC/StorageClass concept for this layout at all.
+        assert_eq!(
+            storage_class_name_for(&json!({ "spec": {} }), &LimitLayout::PodTemplate { container: None }),
+            None
+        );
+    }
+
+    #[test]
+    fn storage_capability_from_flags_the_local_path_denylist_as_unsupported() {
+        use super::storage_capability_from;
+        use k8s_openapi::api::storage::v1::StorageClass;
+        // the real Camelot shape: local-path, no expansion, no per-volume metrics.
+        let sc = StorageClass {
+            provisioner: "rancher.io/local-path".into(),
+            allow_volume_expansion: None,
+            ..Default::default()
+        };
+        let cap = storage_capability_from(&sc);
+        assert!(!cap.volume_expansion);
+        assert!(!cap.per_volume_metrics);
+        assert_eq!(cap.provisioner, "rancher.io/local-path");
+        assert!(!cap.is_supported());
+    }
+
+    #[test]
+    fn storage_capability_from_reports_a_real_elastic_class_as_supported() {
+        use super::storage_capability_from;
+        use k8s_openapi::api::storage::v1::StorageClass;
+        let sc = StorageClass {
+            provisioner: "ebs.csi.aws.com".into(),
+            allow_volume_expansion: Some(true),
+            ..Default::default()
+        };
+        assert!(storage_capability_from(&sc).is_supported());
+    }
+
+    #[test]
+    fn storage_capability_from_treats_no_expansion_as_unsupported_even_off_the_denylist() {
+        // a non-denylisted provisioner that simply never turned on
+        // allowVolumeExpansion is STILL unsupported — the two properties are
+        // independent, and either being false is fatal (see StorageCapability's doc).
+        use super::storage_capability_from;
+        use k8s_openapi::api::storage::v1::StorageClass;
+        let sc = StorageClass { provisioner: "ebs.csi.aws.com".into(), allow_volume_expansion: Some(false), ..Default::default() };
+        let cap = storage_capability_from(&sc);
+        assert!(cap.per_volume_metrics); // not on the denylist
+        assert!(!cap.volume_expansion); // but expansion is off
+        assert!(!cap.is_supported());
     }
 }
