@@ -282,6 +282,12 @@ pub enum HealthVerdict {
     /// real object appears, and is surfaced immediately rather than waiting
     /// [`STUCK_AFTER_SECS`] behind the generic Ready/Converged timer.
     TargetNotFound { since_secs: i64 },
+    /// A permanently-shadowed band (`dryRun:true`) whose target sits outside the
+    /// deadband: `Converged=False` has held past [`STUCK_AFTER_SECS`], but a
+    /// shadow band computes what it WOULD do and never actually resizes, so it
+    /// can STRUCTURALLY never converge. Distinct from `Stuck` — this is the band
+    /// working exactly as designed, not wedged; never alarming.
+    ShadowPending { since_secs: i64 },
     /// A condition that should be transient has held past [`STUCK_AFTER_SECS`] —
     /// no longer "waiting on a warmup/cooldown/race", now needs attention.
     Stuck { condition: String, since_secs: i64, reason: String },
@@ -296,6 +302,7 @@ impl HealthVerdict {
             Self::Healthy => "Healthy",
             Self::Unsupported { .. } => "Unsupported",
             Self::TargetNotFound { .. } => "TargetNotFound",
+            Self::ShadowPending { .. } => "ShadowPending",
             Self::Stuck { .. } => "Stuck",
         }
     }
@@ -318,8 +325,14 @@ pub fn seconds_since(now: &str, since: &str) -> Option<i64> {
 /// Classify [`HealthVerdict`] from a band's own conditions array. `now` is an
 /// RFC3339 timestamp (injected, not read internally, so this stays pure/testable
 /// — matches this file's existing `conditions_for`/`upsert_condition` style).
+/// `effective_dry_run` is the tick's shadow mode — a permanently-shadowed band
+/// can structurally never clear `Converged=False` (it computes what it WOULD do
+/// and never applies), so the age-based `Converged` → `Stuck` classification is
+/// downgraded to the distinct, non-alarming [`HealthVerdict::ShadowPending`].
+/// The `Ready`-based check is UNCHANGED by `effective_dry_run` — an
+/// observability/metrics failure is meaningful even in shadow mode.
 #[must_use]
-pub fn health_verdict(conditions: &[Condition], now: &str, stuck_after_secs: i64) -> HealthVerdict {
+pub fn health_verdict(conditions: &[Condition], now: &str, stuck_after_secs: i64, effective_dry_run: bool) -> HealthVerdict {
     if let Some(c) = find_condition(conditions, "Supported") {
         if c.status != "True" {
             return HealthVerdict::Unsupported { reason: c.message.clone() };
@@ -341,13 +354,29 @@ pub fn health_verdict(conditions: &[Condition], now: &str, stuck_after_secs: i64
     if find_condition(conditions, "Throttled").is_some_and(|c| c.status == "True") {
         return HealthVerdict::Healthy;
     }
-    for type_ in ["Ready", "Converged"] {
-        if let Some(c) = find_condition(conditions, type_) {
-            if c.status == "False" {
-                if let Some(secs) = seconds_since(now, &c.last_transition_time) {
-                    if secs >= stuck_after_secs {
-                        return HealthVerdict::Stuck { condition: type_.into(), since_secs: secs, reason: c.message.clone() };
+    // READY: unaffected by dry-run — an observability/metrics failure is
+    // meaningful even in shadow mode.
+    if let Some(c) = find_condition(conditions, "Ready") {
+        if c.status == "False" {
+            if let Some(secs) = seconds_since(now, &c.last_transition_time) {
+                if secs >= stuck_after_secs {
+                    return HealthVerdict::Stuck { condition: "Ready".into(), since_secs: secs, reason: c.message.clone() };
+                }
+            }
+        }
+    }
+    // CONVERGED: dry-run aware. A band permanently in shadow mode whose target
+    // sits outside the deadband can never actually converge (it never applies) —
+    // that is the band working as designed, not wedged, so the age-based Stuck
+    // classification is downgraded to `ShadowPending` instead of alarming forever.
+    if let Some(c) = find_condition(conditions, "Converged") {
+        if c.status == "False" {
+            if let Some(secs) = seconds_since(now, &c.last_transition_time) {
+                if secs >= stuck_after_secs {
+                    if effective_dry_run {
+                        return HealthVerdict::ShadowPending { since_secs: secs };
                     }
+                    return HealthVerdict::Stuck { condition: "Converged".into(), since_secs: secs, reason: c.message.clone() };
                 }
             }
         }
@@ -379,6 +408,13 @@ pub fn health_event_for(verdict: &HealthVerdict) -> Option<(EventKind, &'static 
             EventKind::Warning,
             "TargetNotFound",
             format!("targetRef has not resolved for {since_secs}s — will self-heal automatically once the object is created; verify the targetRef name/kind/namespace if this persists"),
+        )),
+        // non-alarming by design: a permanently-shadowed band that never converges
+        // is working exactly as configured, not wedged — Normal, not Warning.
+        HealthVerdict::ShadowPending { since_secs } => Some((
+            EventKind::Normal,
+            "ShadowPending",
+            format!("shadow mode (dryRun) — {since_secs}s outside the deadband; would-carve only, never applied (flip dryRun to converge)"),
         )),
         HealthVerdict::Stuck { condition, since_secs, reason } => Some((
             EventKind::Warning,
@@ -584,7 +620,7 @@ pub fn status_for(
     //    (no new tracked state; last_transition_time is already stable-while-held
     //    per condition). Same across all 5 band kinds for free.
     let now = now_rfc3339();
-    s.health = Some(health_verdict(&s.conditions, &now, STUCK_AFTER_SECS).label().to_string());
+    s.health = Some(health_verdict(&s.conditions, &now, STUCK_AFTER_SECS, outcome.dry_run).label().to_string());
 
     // ── B: per-band TREND (the over-time view as a k8s object, no Grafana) —
     //    append on a carve or a phase change, cap to the last N. A resting band's
@@ -1576,7 +1612,7 @@ mod health_tests {
             cond("Conflict", "False", T0),
             cond("Supported", "True", T0),
         ];
-        assert_eq!(health_verdict(&conditions, NOW_FAR, STUCK_AFTER_SECS), HealthVerdict::Healthy);
+        assert_eq!(health_verdict(&conditions, NOW_FAR, STUCK_AFTER_SECS, false), HealthVerdict::Healthy);
     }
 
     #[test]
@@ -1586,7 +1622,7 @@ mod health_tests {
             cond("Supported", "False", T0),
         ];
         assert_eq!(
-            health_verdict(&conditions, NOW_FAR, STUCK_AFTER_SECS),
+            health_verdict(&conditions, NOW_FAR, STUCK_AFTER_SECS, false),
             HealthVerdict::Unsupported { reason: "Supported is False".into() }
         );
     }
@@ -1597,7 +1633,7 @@ mod health_tests {
         // TargetNotFound immediately (task #217), never Healthy-until-stuck.
         let conditions = vec![cond("Ready", "False", T0), cond("Supported", "True", T0), cond("TargetFound", "False", T0)];
         assert_eq!(
-            health_verdict(&conditions, NOW_NEAR, STUCK_AFTER_SECS),
+            health_verdict(&conditions, NOW_NEAR, STUCK_AFTER_SECS, false),
             HealthVerdict::TargetNotFound { since_secs: 600 }
         );
     }
@@ -1608,7 +1644,7 @@ mod health_tests {
         // takes priority, exactly like Supported does, so the honest arm wins.
         let conditions = vec![cond("Ready", "False", T0), cond("Supported", "True", T0), cond("TargetFound", "False", T0)];
         assert_eq!(
-            health_verdict(&conditions, NOW_FAR, STUCK_AFTER_SECS),
+            health_verdict(&conditions, NOW_FAR, STUCK_AFTER_SECS, false),
             HealthVerdict::TargetNotFound { since_secs: 3600 }
         );
     }
@@ -1622,20 +1658,31 @@ mod health_tests {
             cond("Supported", "True", T0),
             cond("TargetFound", "True", T0),
         ];
-        assert_eq!(health_verdict(&conditions, NOW_FAR, STUCK_AFTER_SECS), HealthVerdict::Healthy);
+        assert_eq!(health_verdict(&conditions, NOW_FAR, STUCK_AFTER_SECS, false), HealthVerdict::Healthy);
     }
 
     #[test]
     fn not_yet_stuck_before_the_threshold_elapses() {
         let conditions = vec![cond("Ready", "False", T0), cond("Supported", "True", T0)];
-        assert_eq!(health_verdict(&conditions, NOW_NEAR, STUCK_AFTER_SECS), HealthVerdict::Healthy);
+        assert_eq!(health_verdict(&conditions, NOW_NEAR, STUCK_AFTER_SECS, false), HealthVerdict::Healthy);
     }
 
     #[test]
     fn ready_false_past_threshold_is_stuck() {
         let conditions = vec![cond("Ready", "False", T0), cond("Supported", "True", T0)];
         assert_eq!(
-            health_verdict(&conditions, NOW_FAR, STUCK_AFTER_SECS),
+            health_verdict(&conditions, NOW_FAR, STUCK_AFTER_SECS, false),
+            HealthVerdict::Stuck { condition: "Ready".into(), since_secs: 3600, reason: "Ready is False".into() }
+        );
+    }
+
+    #[test]
+    fn ready_false_past_threshold_is_stuck_even_in_dry_run() {
+        // task 2's carveout is scoped to Converged ONLY — an observability/metrics
+        // failure (Ready=False) is meaningful even in shadow mode.
+        let conditions = vec![cond("Ready", "False", T0), cond("Supported", "True", T0)];
+        assert_eq!(
+            health_verdict(&conditions, NOW_FAR, STUCK_AFTER_SECS, true),
             HealthVerdict::Stuck { condition: "Ready".into(), since_secs: 3600, reason: "Ready is False".into() }
         );
     }
@@ -1649,8 +1696,25 @@ mod health_tests {
             cond("Supported", "True", T0),
         ];
         assert_eq!(
-            health_verdict(&conditions, NOW_FAR, STUCK_AFTER_SECS),
+            health_verdict(&conditions, NOW_FAR, STUCK_AFTER_SECS, false),
             HealthVerdict::Stuck { condition: "Converged".into(), since_secs: 3600, reason: "Converged is False".into() }
+        );
+    }
+
+    #[test]
+    fn converged_false_past_threshold_in_dry_run_is_shadow_pending_not_stuck() {
+        // task 2: a permanently-shadowed band (dryRun:true) structurally never
+        // converges — the age-based Stuck classification downgrades to the
+        // distinct, non-alarming ShadowPending instead of a false Stuck.
+        let conditions = vec![
+            cond("Ready", "True", T0),
+            cond("Converged", "False", T0),
+            cond("Throttled", "False", T0),
+            cond("Supported", "True", T0),
+        ];
+        assert_eq!(
+            health_verdict(&conditions, NOW_FAR, STUCK_AFTER_SECS, true),
+            HealthVerdict::ShadowPending { since_secs: 3600 }
         );
     }
 
@@ -1664,7 +1728,7 @@ mod health_tests {
             cond("Throttled", "True", T0),
             cond("Supported", "True", T0),
         ];
-        assert_eq!(health_verdict(&conditions, NOW_FAR, STUCK_AFTER_SECS), HealthVerdict::Healthy);
+        assert_eq!(health_verdict(&conditions, NOW_FAR, STUCK_AFTER_SECS, false), HealthVerdict::Healthy);
     }
 
     #[test]
@@ -1677,14 +1741,14 @@ mod health_tests {
             cond("Supported", "True", T0),
         ];
         assert_eq!(
-            health_verdict(&conditions, NOW_FAR, STUCK_AFTER_SECS),
+            health_verdict(&conditions, NOW_FAR, STUCK_AFTER_SECS, false),
             HealthVerdict::Stuck { condition: "Conflict".into(), since_secs: 3600, reason: "Conflict is True".into() }
         );
     }
 
     #[test]
     fn missing_conditions_never_panics_and_defaults_healthy() {
-        assert_eq!(health_verdict(&[], NOW_FAR, STUCK_AFTER_SECS), HealthVerdict::Healthy);
+        assert_eq!(health_verdict(&[], NOW_FAR, STUCK_AFTER_SECS, false), HealthVerdict::Healthy);
     }
 
     #[test]
@@ -1692,6 +1756,7 @@ mod health_tests {
         assert_eq!(HealthVerdict::Healthy.label(), "Healthy");
         assert_eq!(HealthVerdict::Unsupported { reason: String::new() }.label(), "Unsupported");
         assert_eq!(HealthVerdict::TargetNotFound { since_secs: 0 }.label(), "TargetNotFound");
+        assert_eq!(HealthVerdict::ShadowPending { since_secs: 0 }.label(), "ShadowPending");
         assert_eq!(HealthVerdict::Stuck { condition: String::new(), since_secs: 0, reason: String::new() }.label(), "Stuck");
     }
 
@@ -1708,6 +1773,15 @@ mod health_tests {
         assert_eq!(kind, EventKind::Warning);
         assert_eq!(reason, "TargetNotFound");
         assert!(note.contains("42s"));
+    }
+
+    #[test]
+    fn health_event_for_shadow_pending_is_normal_never_a_warning() {
+        // non-alarming by design — a permanently-shadowed band that never
+        // converges is working exactly as configured.
+        let (kind, reason, _) = health_event_for(&HealthVerdict::ShadowPending { since_secs: 42 }).unwrap();
+        assert_eq!(kind, EventKind::Normal);
+        assert_eq!(reason, "ShadowPending");
     }
 
     #[test]

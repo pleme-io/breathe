@@ -187,8 +187,14 @@ async fn emit_event<B: Band>(ctx: &Ctx, obj: &B, receipt: &breathe_core::TickRec
 /// NATS/escuta nervous-system path (nats_trigger.rs) already reacts to k8s
 /// Events, so a band going Stuck now nudges its OWN next reconcile sooner with no
 /// new wiring on that side.
-async fn emit_health_event<B: Band>(ctx: &Ctx, obj: &B, conditions: &[breathe_crd::Condition], prior_health: Option<&str>) {
-    let verdict = health_verdict(conditions, &now_rfc3339(), STUCK_AFTER_SECS);
+async fn emit_health_event<B: Band>(
+    ctx: &Ctx,
+    obj: &B,
+    conditions: &[breathe_crd::Condition],
+    prior_health: Option<&str>,
+    effective_dry_run: bool,
+) {
+    let verdict = health_verdict(conditions, &now_rfc3339(), STUCK_AFTER_SECS, effective_dry_run);
     if !should_emit_health_event(&verdict, prior_health) {
         return;
     }
@@ -463,7 +469,7 @@ async fn reconcile<B: Band, D: DimensionDescriptor + Default>(
     apply_env_context(&mut status, &env_ctx);
     info!(dim = %provider.id(), band = %name, target = %target.name, phase = ?status.phase, health = ?status.health, "reconciled");
     emit_event(&ctx, obj.as_ref(), &outcome.receipt, status.phase.as_deref(), prior_phase.as_deref()).await;
-    emit_health_event(&ctx, obj.as_ref(), &status.conditions, prior_health.as_deref()).await;
+    emit_health_event(&ctx, obj.as_ref(), &status.conditions, prior_health.as_deref(), outcome.dry_run).await;
     metrics_for(
         &BandLabels { dim: provider.id().to_string(), namespace: ns.clone(), name: name.clone() },
         &outcome,
