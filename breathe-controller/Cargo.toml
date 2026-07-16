@@ -34,6 +34,15 @@ breathe-admission = { path = "../breathe-admission", version = "0.1.0" }
 # both coexist here with no alias needed.
 breathe-spread = { path = "../crates/breathe-spread", version = "0.1.0" }
 async-trait = "0.1"
+# eks_nodegroup_provedor (task #205) — the EksManagedNodegroup backend's real
+# AWS calls (DescribeNodegroup + UpdateNodegroupConfig). Same major-version
+# pin discipline as crates/breathe-lifecycle's aws-sdk-ec2 dev-dependency —
+# one AWS SDK release train fleet-wide. No aws-sdk-autoscaling: EKS owns +
+# continuously reconciles a managed nodegroup's underlying ASG, so a direct
+# `autoscaling:SetDesiredCapacity` races EKS's own control loop and is not a
+# supported alternative (see eks_nodegroup_provedor.rs's module doc).
+aws-config = { version = "=1.8.18", features = ["behavior-version-latest"] }
+aws-sdk-eks = "=1.137.0"
 # NATS reactive-reconcile trigger (task #90, nervous-system integration) — the
 # same 0.35 pin escuta uses, for one version across the fleet's NATS clients.
 async-nats = "0.35"
