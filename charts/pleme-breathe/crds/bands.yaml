@@ -243,6 +243,10 @@ spec:
                 format: int64
                 nullable: true
                 type: integer
+              health:
+                description: Cross-dimension health rollup, derived purely from `conditions` (no new per-band state) — `"Healthy"` | `"Stuck"` | `"Unsupported"`. See `breathe_runtime::health_verdict`. Generalizes the storage-only `Supported=False` terminal into a single normalized signal every band kind carries, so a reactive consumer (NATS/escuta, a dashboard, an operator) never has to interpret `phase` strings per-dimension to answer "is this band OK right now".
+                nullable: true
+                type: string
               history:
                 description: The recent TRAJECTORY (over-time view as a k8s object) — appended on a carve or a phase change, capped to the last N samples.
                 items:
@@ -583,6 +587,10 @@ spec:
                 format: int64
                 nullable: true
                 type: integer
+              health:
+                description: Cross-dimension health rollup, derived purely from `conditions` (no new per-band state) — `"Healthy"` | `"Stuck"` | `"Unsupported"`. See `breathe_runtime::health_verdict`. Generalizes the storage-only `Supported=False` terminal into a single normalized signal every band kind carries, so a reactive consumer (NATS/escuta, a dashboard, an operator) never has to interpret `phase` strings per-dimension to answer "is this band OK right now".
+                nullable: true
+                type: string
               history:
                 description: The recent TRAJECTORY (over-time view as a k8s object) — appended on a carve or a phase change, capped to the last N samples.
                 items:
@@ -923,6 +931,10 @@ spec:
                 format: int64
                 nullable: true
                 type: integer
+              health:
+                description: Cross-dimension health rollup, derived purely from `conditions` (no new per-band state) — `"Healthy"` | `"Stuck"` | `"Unsupported"`. See `breathe_runtime::health_verdict`. Generalizes the storage-only `Supported=False` terminal into a single normalized signal every band kind carries, so a reactive consumer (NATS/escuta, a dashboard, an operator) never has to interpret `phase` strings per-dimension to answer "is this band OK right now".
+                nullable: true
+                type: string
               history:
                 description: The recent TRAJECTORY (over-time view as a k8s object) — appended on a carve or a phase change, capped to the last N samples.
                 items:
@@ -1316,6 +1328,10 @@ spec:
                 format: int64
                 nullable: true
                 type: integer
+              health:
+                description: Cross-dimension health rollup, derived purely from `conditions` (no new per-band state) — `"Healthy"` | `"Stuck"` | `"Unsupported"`. See `breathe_runtime::health_verdict`. Generalizes the storage-only `Supported=False` terminal into a single normalized signal every band kind carries, so a reactive consumer (NATS/escuta, a dashboard, an operator) never has to interpret `phase` strings per-dimension to answer "is this band OK right now".
+                nullable: true
+                type: string
               history:
                 description: The recent TRAJECTORY (over-time view as a k8s object) — appended on a carve or a phase change, capped to the last N samples.
                 items:
@@ -1656,6 +1672,10 @@ spec:
                 format: int64
                 nullable: true
                 type: integer
+              health:
+                description: Cross-dimension health rollup, derived purely from `conditions` (no new per-band state) — `"Healthy"` | `"Stuck"` | `"Unsupported"`. See `breathe_runtime::health_verdict`. Generalizes the storage-only `Supported=False` terminal into a single normalized signal every band kind carries, so a reactive consumer (NATS/escuta, a dashboard, an operator) never has to interpret `phase` strings per-dimension to answer "is this band OK right now".
+                nullable: true
+                type: string
               history:
                 description: The recent TRAJECTORY (over-time view as a k8s object) — appended on a carve or a phase change, capped to the last N samples.
                 items:
@@ -1996,6 +2016,10 @@ spec:
                 format: int64
                 nullable: true
                 type: integer
+              health:
+                description: Cross-dimension health rollup, derived purely from `conditions` (no new per-band state) — `"Healthy"` | `"Stuck"` | `"Unsupported"`. See `breathe_runtime::health_verdict`. Generalizes the storage-only `Supported=False` terminal into a single normalized signal every band kind carries, so a reactive consumer (NATS/escuta, a dashboard, an operator) never has to interpret `phase` strings per-dimension to answer "is this band OK right now".
+                nullable: true
+                type: string
               history:
                 description: The recent TRAJECTORY (over-time view as a k8s object) — appended on a carve or a phase change, capped to the last N samples.
                 items:
@@ -2336,6 +2360,10 @@ spec:
                 format: int64
                 nullable: true
                 type: integer
+              health:
+                description: Cross-dimension health rollup, derived purely from `conditions` (no new per-band state) — `"Healthy"` | `"Stuck"` | `"Unsupported"`. See `breathe_runtime::health_verdict`. Generalizes the storage-only `Supported=False` terminal into a single normalized signal every band kind carries, so a reactive consumer (NATS/escuta, a dashboard, an operator) never has to interpret `phase` strings per-dimension to answer "is this band OK right now".
+                nullable: true
+                type: string
               history:
                 description: The recent TRAJECTORY (over-time view as a k8s object) — appended on a carve or a phase change, capped to the last N samples.
                 items:
@@ -2761,6 +2789,10 @@ spec:
                 format: int64
                 nullable: true
                 type: integer
+              health:
+                description: Cross-dimension health rollup, derived purely from `conditions` (no new per-band state) — `"Healthy"` | `"Stuck"` | `"Unsupported"`. See `breathe_runtime::health_verdict`. Generalizes the storage-only `Supported=False` terminal into a single normalized signal every band kind carries, so a reactive consumer (NATS/escuta, a dashboard, an operator) never has to interpret `phase` strings per-dimension to answer "is this band OK right now".
+                nullable: true
+                type: string
               history:
                 description: The recent TRAJECTORY (over-time view as a k8s object) — appended on a carve or a phase change, capped to the last N samples.
                 items:
@@ -3157,6 +3189,10 @@ spec:
                 format: int64
                 nullable: true
                 type: integer
+              health:
+                description: Cross-dimension health rollup, derived purely from `conditions` (no new per-band state) — `"Healthy"` | `"Stuck"` | `"Unsupported"`. See `breathe_runtime::health_verdict`. Generalizes the storage-only `Supported=False` terminal into a single normalized signal every band kind carries, so a reactive consumer (NATS/escuta, a dashboard, an operator) never has to interpret `phase` strings per-dimension to answer "is this band OK right now".
+                nullable: true
+                type: string
               history:
                 description: The recent TRAJECTORY (over-time view as a k8s object) — appended on a carve or a phase change, capped to the last N samples.
                 items:
@@ -3539,6 +3575,10 @@ spec:
                 format: int64
                 nullable: true
                 type: integer
+              health:
+                description: Cross-dimension health rollup, derived purely from `conditions` (no new per-band state) — `"Healthy"` | `"Stuck"` | `"Unsupported"`. See `breathe_runtime::health_verdict`. Generalizes the storage-only `Supported=False` terminal into a single normalized signal every band kind carries, so a reactive consumer (NATS/escuta, a dashboard, an operator) never has to interpret `phase` strings per-dimension to answer "is this band OK right now".
+                nullable: true
+                type: string
               history:
                 description: The recent TRAJECTORY (over-time view as a k8s object) — appended on a carve or a phase change, capped to the last N samples.
                 items:
