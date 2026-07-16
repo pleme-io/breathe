@@ -13,7 +13,7 @@ use breathe_control::{BandConfig, Decision, Observation};
 use breathe_control::replica::{ReplicaDecision, ReplicaTickPlan};
 use breathe_core::{TickOutcome, TickReceipt};
 use breathe_crd::{Band, BandStatus, Condition, TrendSample};
-use breathe_provider::{ClassCooldowns, DisruptionPolicy, EdgeTier};
+use breathe_provider::{ClassCooldowns, DisruptionPolicy, EdgeTier, ProviderError};
 
 // The durable-store seam (M0 of the Urdume-microservice refactor;
 // docs/BREATHE-MICROSERVICE.md). `CumulativeCounters` is the single counter
@@ -116,6 +116,15 @@ pub fn event_for(receipt: &TickReceipt) -> Option<(EventKind, &'static str, Stri
                 "StorageClass ({provisioner}) can never converge — allowVolumeExpansion={volume_expansion}, perVolumeMetrics={per_volume_metrics}; provision an elastic StorageClass (e.g. ebs-gp3) or accept the fixed size"
             ),
         ),
+        // A dangling targetRef is a distinct, honest arm — never a generic
+        // "ReconcileError" (which reads as a breathe-side fault). It self-heals the
+        // instant the real object appears (re-derived fresh every tick); mirrors the
+        // `CapabilityMissing`->`Unsupported` pattern for storage (task #217).
+        TickReceipt::Error { error: ProviderError::TargetNotFound } => (
+            Warning,
+            "TargetNotFound",
+            "targetRef does not exist (namespace/name/kind) — held; will self-heal automatically once the object is created".to_string(),
+        ),
         TickReceipt::Error { error } => (Warning, "ReconcileError", error.to_string()),
         TickReceipt::DryRunWouldApply { from, to } => {
             (Normal, "ShadowWouldApply", format!("shadow: would carve {from} -> {to} (dryRun — nothing written)"))
@@ -217,8 +226,14 @@ pub fn conditions_for(outcome: &TickOutcome, prior: &[Condition], generation: Op
     );
     let stale = matches!(r, TickReceipt::Stale { .. });
     let conflict = matches!(r, TickReceipt::Conflict { .. });
+    // TARGET FOUND (task #217's honest-arm fix): `false` ONLY when the target
+    // object itself does not exist. Distinct from `Supported=False`
+    // ("can never converge without operator action") — a dangling targetRef is
+    // self-healing (re-derived fresh every tick; the moment the real object
+    // appears this flips back to `true` with no accumulated state).
+    let target_found = !matches!(r, TickReceipt::Error { error: ProviderError::TargetNotFound });
 
-    let mut out = Vec::with_capacity(6);
+    let mut out = Vec::with_capacity(7);
     upsert_condition(&mut out, prior, &now, "Ready", observable,
         if observable { "Reconciling" } else { "NotObservable" },
         if observable { "enrolled, config parses, metric observable" } else { "no metric/limit to reason on" }, generation);
@@ -234,6 +249,10 @@ pub fn conditions_for(outcome: &TickOutcome, prior: &[Condition], generation: Op
     upsert_condition(&mut out, prior, &now, "Supported", supported,
         if supported { "CapabilityOk" } else { "StorageClassUnsupported" },
         "StorageClass allowVolumeExpansion + per-volume metrics — False means this band can NEVER converge without operator action", generation);
+    upsert_condition(&mut out, prior, &now, "TargetFound", target_found,
+        if target_found { "Resolved" } else { "TargetMissing" },
+        if target_found { "targetRef resolves to a live object" } else { "targetRef does not exist — self-heals automatically once the object is created" },
+        generation);
     out
 }
 
@@ -257,6 +276,12 @@ pub enum HealthVerdict {
     /// only StorageBand's `CapabilityMissing` sets this). Takes priority over
     /// `Stuck` — an unsupported band isn't "waiting", it structurally can't.
     Unsupported { reason: String },
+    /// `TargetFound=False` — the band's targetRef points at an object that does
+    /// not (yet) exist (task #217). Distinct from `Stuck`: this is re-derived
+    /// fresh every tick (no accumulated state), so it self-heals the INSTANT the
+    /// real object appears, and is surfaced immediately rather than waiting
+    /// [`STUCK_AFTER_SECS`] behind the generic Ready/Converged timer.
+    TargetNotFound { since_secs: i64 },
     /// A condition that should be transient has held past [`STUCK_AFTER_SECS`] —
     /// no longer "waiting on a warmup/cooldown/race", now needs attention.
     Stuck { condition: String, since_secs: i64, reason: String },
@@ -270,6 +295,7 @@ impl HealthVerdict {
         match self {
             Self::Healthy => "Healthy",
             Self::Unsupported { .. } => "Unsupported",
+            Self::TargetNotFound { .. } => "TargetNotFound",
             Self::Stuck { .. } => "Stuck",
         }
     }
@@ -297,6 +323,16 @@ pub fn health_verdict(conditions: &[Condition], now: &str, stuck_after_secs: i64
     if let Some(c) = find_condition(conditions, "Supported") {
         if c.status != "True" {
             return HealthVerdict::Unsupported { reason: c.message.clone() };
+        }
+    }
+    // TARGET NOT FOUND (task #217): checked early, exactly like `Supported` above
+    // — a dangling targetRef is a distinct, honest fact, not a generic timer-based
+    // `Stuck`. Re-derived fresh every tick, so it self-heals the instant the real
+    // object appears (no accumulated state to unwind).
+    if let Some(c) = find_condition(conditions, "TargetFound") {
+        if c.status != "True" {
+            let since_secs = seconds_since(now, &c.last_transition_time).unwrap_or(0);
+            return HealthVerdict::TargetNotFound { since_secs };
         }
     }
     // Throttled=True covers warmup / cooldown / deferred-crossing / stale-metric —
@@ -339,6 +375,11 @@ pub fn health_event_for(verdict: &HealthVerdict) -> Option<(EventKind, &'static 
         HealthVerdict::Unsupported { reason } => {
             Some((EventKind::Warning, "BandUnsupported", format!("band can never converge without operator action: {reason}")))
         }
+        HealthVerdict::TargetNotFound { since_secs } => Some((
+            EventKind::Warning,
+            "TargetNotFound",
+            format!("targetRef has not resolved for {since_secs}s — will self-heal automatically once the object is created; verify the targetRef name/kind/namespace if this persists"),
+        )),
         HealthVerdict::Stuck { condition, since_secs, reason } => Some((
             EventKind::Warning,
             "BandStuck",
@@ -501,6 +542,14 @@ pub fn status_for(
             // band waits. NOT an error — counted at-rest (converged) in the overview.
             s.phase = Some("Dormant".into());
             s.last_decision = Some("no pods in the label group — waiting (target scaled to zero)".into());
+        }
+        TickReceipt::Error { error: ProviderError::TargetNotFound } => {
+            // the honest, distinct arm (task #217) — never the generic "Error",
+            // which reads as a breathe-side fault. Self-heals automatically once the
+            // targetRef resolves; mirrors CapabilityMissing's own dedicated phase.
+            s.phase = Some("TargetNotFound".into());
+            s.last_decision =
+                Some("targetRef does not exist — held; will self-heal automatically once the object is created".into());
         }
         TickReceipt::Error { error } => {
             s.phase = Some("Error".into());
@@ -1265,6 +1314,47 @@ mod tests {
     }
 
     #[test]
+    fn target_not_found_maps_to_its_own_honest_phase_not_generic_error() {
+        // task #217's fix: a dangling targetRef gets a DISTINCT, legible phase +
+        // a false TargetFound condition — never the generic "Error" (which reads
+        // as a breathe-side fault) and never silently indistinguishable from a
+        // genuine MetricsMissing/ApiTransient outage.
+        use breathe_provider::ProviderError;
+        let s = status_of(&out(TickReceipt::Error { error: ProviderError::TargetNotFound }));
+        assert_eq!(s.phase.as_deref(), Some("TargetNotFound"));
+        assert!(s.last_decision.as_deref().unwrap().contains("self-heal"));
+        let target_found = s.conditions.iter().find(|c| c.type_ == "TargetFound").expect("TargetFound condition present");
+        assert_eq!(target_found.status, "False");
+        assert_eq!(target_found.reason, "TargetMissing");
+        // Supported stays True — this is not a "can never converge" verdict, it is
+        // self-healing (distinct from CapabilityMissing's structural gap).
+        let supported = s.conditions.iter().find(|c| c.type_ == "Supported").unwrap();
+        assert_eq!(supported.status, "True");
+    }
+
+    #[test]
+    fn a_genuine_metrics_outage_keeps_the_generic_error_phase_and_a_true_target_found() {
+        // contrast: a real MetricsMissing (pods exist, usage unreadable) is still
+        // the generic "Error" phase, and TargetFound stays True — only the
+        // specific TargetNotFound provider error gets the distinct treatment.
+        use breathe_provider::ProviderError;
+        let s = status_of(&out(TickReceipt::Error { error: ProviderError::MetricsMissing }));
+        assert_eq!(s.phase.as_deref(), Some("Error"));
+        let target_found = s.conditions.iter().find(|c| c.type_ == "TargetFound").expect("TargetFound condition present");
+        assert_eq!(target_found.status, "True");
+    }
+
+    #[test]
+    fn target_not_found_event_is_a_distinct_warning_not_reconcile_error() {
+        use breathe_provider::ProviderError;
+        let (kind, reason, note) = event_for(&TickReceipt::Error { error: ProviderError::TargetNotFound }).unwrap();
+        assert_eq!(kind, EventKind::Warning);
+        assert_eq!(reason, "TargetNotFound");
+        assert_ne!(reason, "ReconcileError");
+        assert!(note.contains("self-heal"));
+    }
+
+    #[test]
     fn capability_missing_backs_off_far_longer_than_every_other_class() {
         use breathe_provider::ClassCooldowns;
         let cd = ClassCooldowns::default();
@@ -1502,6 +1592,40 @@ mod health_tests {
     }
 
     #[test]
+    fn target_not_found_is_immediate_never_waits_for_the_stuck_timer() {
+        // TargetFound=False, well UNDER the stuck threshold — still reported as
+        // TargetNotFound immediately (task #217), never Healthy-until-stuck.
+        let conditions = vec![cond("Ready", "False", T0), cond("Supported", "True", T0), cond("TargetFound", "False", T0)];
+        assert_eq!(
+            health_verdict(&conditions, NOW_NEAR, STUCK_AFTER_SECS),
+            HealthVerdict::TargetNotFound { since_secs: 600 }
+        );
+    }
+
+    #[test]
+    fn target_not_found_takes_priority_over_a_stuck_ready() {
+        // Ready=False would ALSO be Stuck-eligible past the threshold — TargetFound
+        // takes priority, exactly like Supported does, so the honest arm wins.
+        let conditions = vec![cond("Ready", "False", T0), cond("Supported", "True", T0), cond("TargetFound", "False", T0)];
+        assert_eq!(
+            health_verdict(&conditions, NOW_FAR, STUCK_AFTER_SECS),
+            HealthVerdict::TargetNotFound { since_secs: 3600 }
+        );
+    }
+
+    #[test]
+    fn target_found_true_is_a_no_op_on_the_verdict() {
+        let conditions = vec![
+            cond("Ready", "True", T0),
+            cond("Converged", "True", T0),
+            cond("Throttled", "False", T0),
+            cond("Supported", "True", T0),
+            cond("TargetFound", "True", T0),
+        ];
+        assert_eq!(health_verdict(&conditions, NOW_FAR, STUCK_AFTER_SECS), HealthVerdict::Healthy);
+    }
+
+    #[test]
     fn not_yet_stuck_before_the_threshold_elapses() {
         let conditions = vec![cond("Ready", "False", T0), cond("Supported", "True", T0)];
         assert_eq!(health_verdict(&conditions, NOW_NEAR, STUCK_AFTER_SECS), HealthVerdict::Healthy);
@@ -1567,6 +1691,7 @@ mod health_tests {
     fn label_is_stable_pascal_case() {
         assert_eq!(HealthVerdict::Healthy.label(), "Healthy");
         assert_eq!(HealthVerdict::Unsupported { reason: String::new() }.label(), "Unsupported");
+        assert_eq!(HealthVerdict::TargetNotFound { since_secs: 0 }.label(), "TargetNotFound");
         assert_eq!(HealthVerdict::Stuck { condition: String::new(), since_secs: 0, reason: String::new() }.label(), "Stuck");
     }
 
@@ -1575,6 +1700,14 @@ mod health_tests {
         assert!(health_event_for(&HealthVerdict::Healthy).is_none());
         assert!(health_event_for(&HealthVerdict::Unsupported { reason: "x".into() }).is_some());
         assert!(health_event_for(&HealthVerdict::Stuck { condition: "Ready".into(), since_secs: 99, reason: "x".into() }).is_some());
+    }
+
+    #[test]
+    fn health_event_for_target_not_found_is_a_warning() {
+        let (kind, reason, note) = health_event_for(&HealthVerdict::TargetNotFound { since_secs: 42 }).unwrap();
+        assert_eq!(kind, EventKind::Warning);
+        assert_eq!(reason, "TargetNotFound");
+        assert!(note.contains("42s"));
     }
 
     #[test]
