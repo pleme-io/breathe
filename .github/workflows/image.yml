@@ -1,19 +1,10 @@
 # Build + push EVERY breathe OCI image on merge to main.
 #
-# RUNNER IS A CONFIG CHOICE, NOT A HARDCODED BOX. `runner:` resolves from the
-# repo/org Actions VARIABLE `CAMELOT_IMAGE_RUNNER`, falling back to `rio-build-01`
-# when the variable is unset. This retires the rio SPOF for camelot image builds:
-# set `CAMELOT_IMAGE_RUNNER=camelot-builder-pleme` (the pleme-io-org ARC scale set on
-# camelot's own 100%-spot builder floor — akeylesslabs/k8s clusters/camelot/ci/
-# runner-scale-set-pleme.yaml) and every breathe image builds in-cluster, scale-to-
-# zero, no rio. Until the variable is set (and its scale set is live), the rio
-# fallback keeps builds working — a clean, reversible cutover, never a hard break.
-#
-# WARM CACHE: when running on the camelot builder floor, `CAMELOT_SUI_SUBSTITUTER`
-# (= http://sui.camelot-build.svc) wires the in-cluster sui super-cache daemon as a
-# Nix substituter so heavy crates SUBSTITUTE instead of compiling; the daemon serves
-# unsigned NARs, so `CAMELOT_SUI_REQUIRE_SIGS=false` accepts them. Empty on any
-# non-cluster runner (rio can't reach a ClusterIP) — zero effect there.
+# runner: resolves from vars.CAMELOT_IMAGE_RUNNER, falls back to rio-build-01,
+# with the in-cluster sui super-cache wired as a Nix substituter -- see the
+# camelot skill's "pleme-io-org runner pool" section for the full routing
+# pattern + why (camelot-builder-pleme, the pleme-io-org ARC scale set on
+# camelot's own 100%-spot builder floor).
 #
 # breathe images stay PRIVATE (package visibility set out-of-band).
 #
