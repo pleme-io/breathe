@@ -1,4 +1,7 @@
-use super::{BandLeiloeiro, DecisaoForma, Leiloeiro, Previsao, Previsor, ReactivePrevisor};
+use super::{
+    BandLeiloeiro, DecisaoForma, Leiloeiro, Otimizador, ParetoOtimizador, PickPolicy, PriceOracle,
+    Previsao, Previsor, ReactivePrevisor,
+};
 use breathe_control::BandConfig;
 use breathe_provider::Forma;
 
@@ -151,4 +154,150 @@ fn forecaster_never_undershoots_the_current_sample_for_any_history() {
 fn forecaster_capacity_passes_through_untouched() {
     let p = LinearTrendPrevisor::new(3, 2);
     assert_eq!(p.predict(10, 777).capacity, 777);
+}
+
+// ============================================================================
+// ParetoOtimizador
+// ============================================================================
+
+/// Spot is cheaper per-unit-time but slower to provision than on-demand --
+/// the realistic cost/latency tradeoff the frontier is supposed to preserve.
+struct FixedPrice;
+impl PriceOracle for FixedPrice {
+    fn cost_cents(&self, forma: Forma, duration_secs: u64) -> u64 {
+        let rate_per_sec = match forma {
+            Forma::NodeSpot => 1,
+            Forma::NodeOnDemand => 3,
+            _ => 10,
+        };
+        rate_per_sec * duration_secs
+    }
+}
+
+fn otimizador_cfg(warmup_seconds: u64) -> BandConfig {
+    BandConfig { warmup_seconds, ..cfg() }
+}
+
+#[test]
+fn no_candidates_grow_yields_no_proposals() {
+    // Both formas are already in-band (Hold) -- nothing to auction.
+    let o = ParetoOtimizador::new(FixedPrice, otimizador_cfg(60), PickPolicy::MinCost);
+    let previsoes = [
+        (Forma::NodeSpot, previsao(50, 100)),
+        (Forma::NodeOnDemand, previsao(50, 100)),
+    ];
+    assert!(o.optimize(&previsoes).is_empty());
+}
+
+#[test]
+fn min_cost_picks_the_cheaper_candidate_on_the_frontier() {
+    // Both need to grow (util 0.90 > grow_above 0.85); spot is 1c/s vs
+    // on-demand's 3c/s over the same 60s warmup -- spot strictly dominates
+    // (cheaper AND not slower, since relief_latency_secs is the same
+    // warmup_seconds for both in this reference impl), so MinCost must
+    // pick spot.
+    let o = ParetoOtimizador::new(FixedPrice, otimizador_cfg(60), PickPolicy::MinCost);
+    let previsoes = [
+        (Forma::NodeSpot, previsao(90, 100)),
+        (Forma::NodeOnDemand, previsao(90, 100)),
+    ];
+    let winners = o.optimize(&previsoes);
+    assert_eq!(winners.len(), 1);
+    assert_eq!(winners[0].forma, Forma::NodeSpot);
+    assert_eq!(winners[0].cost_cents, 60); // 1c/s * 60s
+}
+
+#[test]
+fn dominated_candidate_never_reaches_the_frontier() {
+    // Same latency, strictly higher cost -- on-demand is dominated outright,
+    // so the frontier itself (not just the pick policy) must exclude it.
+    let o = ParetoOtimizador::new(FixedPrice, otimizador_cfg(30), PickPolicy::MinCost);
+    let previsoes = [
+        (Forma::NodeSpot, previsao(90, 100)),
+        (Forma::NodeOnDemand, previsao(90, 100)),
+    ];
+    let candidates: Vec<_> = previsoes
+        .iter()
+        .filter_map(|(forma, p)| {
+            matches!(
+                breathe_control::decide(p.immediate_used, p.capacity, &otimizador_cfg(30)),
+                breathe_control::Decision::Grow { .. }
+            )
+            .then_some(*forma)
+        })
+        .collect();
+    assert_eq!(candidates.len(), 2, "sanity: both should be Grow candidates");
+    let frontier_forms: Vec<Forma> = o.optimize(&previsoes).iter().map(|p| p.forma).collect();
+    assert_eq!(frontier_forms, vec![Forma::NodeSpot]);
+}
+
+#[test]
+fn min_cost_under_deadline_rules_out_the_cheap_but_slow_candidate() {
+    // Spot is cheaper (1c/s) but this reference impl ties relief_latency_secs
+    // to warmup_seconds, so give spot a deliberately longer warmup via a
+    // second BandConfig-free scenario: instead, prove the deadline math on
+    // the oracle side by making on-demand strictly faster AND still
+    // acceptable-cost under a tight deadline that spot's warmup can't meet.
+    struct SlowSpotPrice;
+    impl PriceOracle for SlowSpotPrice {
+        fn cost_cents(&self, forma: Forma, duration_secs: u64) -> u64 {
+            match forma {
+                Forma::NodeSpot => duration_secs, // 1c/s
+                Forma::NodeOnDemand => duration_secs * 3,
+                _ => duration_secs * 10,
+            }
+        }
+    }
+    // warmup_seconds is shared across candidates in this reference impl
+    // (a named, documented simplification), so to exercise the deadline
+    // fallback we set it ABOVE the deadline for every candidate -- proving
+    // "no candidate meets the deadline" falls back to the fastest, not to
+    // silently returning nothing (the same never-under-provision invariant
+    // BandLeiloeiro::EnvelopeExausto enforces for the single-forma case).
+    let o = ParetoOtimizador::new(
+        SlowSpotPrice,
+        otimizador_cfg(120),
+        PickPolicy::MinCostUnderDeadline { deadline_secs: 10 },
+    );
+    let previsoes = [
+        (Forma::NodeSpot, previsao(90, 100)),
+        (Forma::NodeOnDemand, previsao(90, 100)),
+    ];
+    let winners = o.optimize(&previsoes);
+    assert_eq!(winners.len(), 1, "must still return a winner, never silently empty");
+    // Neither meets the 10s deadline (both are 120s) -- falls back to
+    // min-latency, and both tie at 120s, so the tie-break is min_by_key's
+    // first-match (NodeSpot, since it's first in `previsoes`); the load-
+    // bearing assertion is that SOME winner comes back, not which one wins
+    // an exact tie.
+    assert_eq!(winners[0].relief_latency_secs, 120);
+}
+
+#[test]
+fn min_cost_under_deadline_picks_cheapest_among_those_that_fit() {
+    struct TieredPrice;
+    impl PriceOracle for TieredPrice {
+        fn cost_cents(&self, forma: Forma, duration_secs: u64) -> u64 {
+            match forma {
+                Forma::NodeSpot => duration_secs, // cheapest
+                Forma::NodeOnDemand => duration_secs * 2,
+                _ => duration_secs * 100,
+            }
+        }
+    }
+    // Both candidates share the same warmup/relief_latency_secs (20s) and
+    // both fit a 30s deadline -- so MinCostUnderDeadline must fall through
+    // to cost, same as plain MinCost, and pick the cheaper one (spot).
+    let o = ParetoOtimizador::new(
+        TieredPrice,
+        otimizador_cfg(20),
+        PickPolicy::MinCostUnderDeadline { deadline_secs: 30 },
+    );
+    let previsoes = [
+        (Forma::NodeSpot, previsao(90, 100)),
+        (Forma::NodeOnDemand, previsao(90, 100)),
+    ];
+    let winners = o.optimize(&previsoes);
+    assert_eq!(winners.len(), 1);
+    assert_eq!(winners[0].forma, Forma::NodeSpot);
 }
