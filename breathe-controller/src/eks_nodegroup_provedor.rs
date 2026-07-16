@@ -377,3 +377,311 @@ impl EksNodegroupEnvironment for KubeEksNodegroupEnvironment {
             })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        clamp_grow, clamp_shrink, nodegroup_is_active, owned_by_nodegroup, EksNodegroupEnvironment, EksNodegroupProvedor,
+        NodegroupState,
+    };
+    use crate::karpenter_provedor::ObservedNode;
+    use async_trait::async_trait;
+    use breathe_provider::{FormaSample, Provedor, ProviderError, ProvisionReceipt};
+    use k8s_openapi::api::core::v1::Node;
+    use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
+    use std::sync::Mutex;
+
+    fn node_with_nodegroup_label(label: Option<&str>) -> Node {
+        let labels = label.map(|v| {
+            let mut m = std::collections::BTreeMap::new();
+            m.insert(super::EKS_NODEGROUP_LABEL.to_string(), v.to_string());
+            m
+        });
+        Node { metadata: ObjectMeta { labels, ..Default::default() }, ..Default::default() }
+    }
+
+    #[test]
+    fn owned_by_nodegroup_matches_only_the_referenced_nodegroup() {
+        assert!(!owned_by_nodegroup(&node_with_nodegroup_label(None), "system"), "an unlabelled node is never owned");
+        assert!(
+            !owned_by_nodegroup(&node_with_nodegroup_label(Some("controllers")), "system"),
+            "another nodegroup's node is not a match"
+        );
+        assert!(owned_by_nodegroup(&node_with_nodegroup_label(Some("system")), "system"), "the referenced nodegroup's own node matches");
+    }
+
+    #[test]
+    fn nodegroup_is_active_accepts_only_the_literal_active_status() {
+        assert!(nodegroup_is_active("ACTIVE"));
+        for status in ["CREATING", "UPDATING", "DELETING", "DEGRADED", "CREATE_FAILED", "DELETE_FAILED", "", "active"] {
+            assert!(!nodegroup_is_active(status), "status {status:?} must not be treated as ACTIVE");
+        }
+    }
+
+    #[test]
+    fn clamp_grow_returns_the_raw_delta_when_well_under_the_ceiling() {
+        assert_eq!(clamp_grow(3, 2, 10), 2, "3 -> 5 is within the ceiling of 10");
+    }
+
+    #[test]
+    fn clamp_grow_clamps_to_the_ceiling_when_the_raw_delta_would_overshoot() {
+        assert_eq!(clamp_grow(8, 5, 10), 2, "8 -> 13 requested, clamped to 8 -> 10 => delta 2");
+    }
+
+    #[test]
+    fn clamp_grow_returns_zero_when_already_at_the_ceiling() {
+        assert_eq!(clamp_grow(10, 5, 10), 0, "already at the ceiling — nothing more to grow");
+    }
+
+    #[test]
+    fn clamp_grow_returns_zero_when_past_the_ceiling() {
+        // Defensive: a nodegroup observed ABOVE its own configured max
+        // (e.g. an operator manually bumped it out-of-band) must never
+        // report a negative-turned-huge delta via saturating arithmetic.
+        assert_eq!(clamp_grow(12, 5, 10), 0);
+    }
+
+    #[test]
+    fn clamp_shrink_returns_the_raw_delta_when_well_above_the_floor() {
+        assert_eq!(clamp_shrink(8, 2, 2), 2, "8 -> 6 is within the floor of 2");
+    }
+
+    #[test]
+    fn clamp_shrink_clamps_to_the_floor_when_the_raw_delta_would_undershoot() {
+        assert_eq!(clamp_shrink(4, 5, 2), 2, "4 -> -1 requested, clamped to 4 -> 2 => delta 2");
+    }
+
+    #[test]
+    fn clamp_shrink_returns_zero_when_already_at_the_floor() {
+        assert_eq!(clamp_shrink(2, 5, 2), 0, "already at the floor — nothing more to shrink");
+    }
+
+    /// The mockable [`EksNodegroupEnvironment`] fixture — proves
+    /// [`EksNodegroupProvedor`]'s translation logic without any live cluster
+    /// or AWS account, the same shape
+    /// [`crate::karpenter_provedor::tests::MockEnv`] uses.
+    struct MockEnv {
+        nodes: Vec<ObservedNode>,
+        pod_demand_milli: u64,
+        state: Result<NodegroupState, ProviderError>,
+        update_calls: Mutex<Vec<u32>>,
+        fail_update: bool,
+    }
+
+    impl MockEnv {
+        fn empty() -> Self {
+            Self {
+                nodes: vec![],
+                pod_demand_milli: 0,
+                state: Ok(NodegroupState { desired_size: 3, min_size: 1, max_size: 10, status: "ACTIVE".into() }),
+                update_calls: Mutex::new(vec![]),
+                fail_update: false,
+            }
+        }
+    }
+
+    #[async_trait]
+    impl EksNodegroupEnvironment for MockEnv {
+        async fn observe_owned_nodes(&self, _nodegroup_name: &str) -> Result<Vec<ObservedNode>, ProviderError> {
+            Ok(self.nodes.clone())
+        }
+        async fn observe_pod_demand_milli(&self) -> Result<u64, ProviderError> {
+            Ok(self.pod_demand_milli)
+        }
+        async fn describe_nodegroup(&self, _cluster_name: &str, _nodegroup_name: &str) -> Result<NodegroupState, ProviderError> {
+            self.state.clone()
+        }
+        async fn update_desired_size(&self, _cluster_name: &str, _nodegroup_name: &str, desired_size: u32) -> Result<(), ProviderError> {
+            if self.fail_update {
+                return Err(ProviderError::ApiTransient("mock UpdateNodegroupConfig failure".into()));
+            }
+            self.update_calls.lock().unwrap().push(desired_size);
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn observe_computes_used_and_capacity_from_mocked_nodes_and_pods() {
+        let env = MockEnv {
+            nodes: vec![
+                ObservedNode { name: "n1".into(), allocatable_cpu_milli: 4000 },
+                ObservedNode { name: "n2".into(), allocatable_cpu_milli: 4000 },
+            ],
+            pod_demand_milli: 6000,
+            ..MockEnv::empty()
+        };
+        let p = EksNodegroupProvedor::new(env, "system".into(), "camelot-eks".into(), "system".into(), false);
+        let sample = p.observe().await.expect("observe succeeds");
+        assert_eq!(sample.capacity, 2, "capacity = count of owned Ready nodes");
+        // per_node = 8000/2 = 4000; used = ceil(6000/4000) = 2
+        assert_eq!(sample, FormaSample { used: 2, capacity: 2 });
+    }
+
+    #[tokio::test]
+    async fn observe_with_zero_owned_nodes_reports_zero_capacity_floored_to_one_and_used_at_least_one() {
+        let env = MockEnv { nodes: vec![], pod_demand_milli: 500, ..MockEnv::empty() };
+        let p = EksNodegroupProvedor::new(env, "pool".into(), "cluster".into(), "nodegroup".into(), false);
+        let sample = p.observe().await.expect("observe succeeds");
+        assert_eq!(sample.capacity, 1, "capacity floors to 1 even with zero owned nodes (never a div-by-zero)");
+        assert!(sample.used >= 1);
+    }
+
+    #[tokio::test]
+    async fn per_node_alloc_milli_is_the_mean_over_owned_nodes_and_floors_to_one_when_empty() {
+        let env = MockEnv {
+            nodes: vec![
+                ObservedNode { name: "n1".into(), allocatable_cpu_milli: 2000 },
+                ObservedNode { name: "n2".into(), allocatable_cpu_milli: 6000 },
+            ],
+            ..MockEnv::empty()
+        };
+        let p = EksNodegroupProvedor::new(env, "pool".into(), "cluster".into(), "nodegroup".into(), false);
+        assert_eq!(p.per_node_alloc_milli().await, 4000);
+
+        let p_empty = EksNodegroupProvedor::new(MockEnv::empty(), "pool".into(), "cluster".into(), "nodegroup".into(), false);
+        assert_eq!(p_empty.per_node_alloc_milli().await, 1, "an empty owned-node set floors to 1, never 0");
+    }
+
+    #[tokio::test]
+    async fn provision_zero_is_noop_and_never_calls_describe_nodegroup() {
+        let env = MockEnv::empty();
+        let p = EksNodegroupProvedor::new(env, "pool".into(), "cluster".into(), "nodegroup".into(), false);
+        assert_eq!(p.provision(0).await.unwrap(), ProvisionReceipt::NoOp);
+        assert!(p.env.update_calls.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn provision_dry_run_reads_real_state_and_reports_the_clamped_would_mutating_nothing() {
+        // desired=3, max=10 -> requesting 5 is well under ceiling, would=5.
+        let env = MockEnv::empty();
+        let p = EksNodegroupProvedor::new(env, "pool".into(), "cluster".into(), "nodegroup".into(), true);
+        let receipt = p.provision(5).await.unwrap();
+        assert_eq!(receipt, ProvisionReceipt::DryRun { would: 5 });
+        assert!(p.env.update_calls.lock().unwrap().is_empty(), "dry-run must call update_desired_size zero times");
+    }
+
+    #[tokio::test]
+    async fn provision_dry_run_clamps_the_would_value_to_the_real_ceiling() {
+        // desired=3, max=10, requesting 20 -> clamps to would=7 (3 -> 10), NOT
+        // a raw unclamped echo of 20. This is the exact behavior task #205
+        // asks for: shadow reads real EKS state and reports the REAL would.
+        let env = MockEnv { state: Ok(NodegroupState { desired_size: 3, min_size: 1, max_size: 10, status: "ACTIVE".into() }), ..MockEnv::empty() };
+        let p = EksNodegroupProvedor::new(env, "pool".into(), "cluster".into(), "nodegroup".into(), true);
+        let receipt = p.provision(20).await.unwrap();
+        assert_eq!(receipt, ProvisionReceipt::DryRun { would: 7 });
+    }
+
+    #[tokio::test]
+    async fn provision_dry_run_at_ceiling_reports_noop_not_a_zero_dry_run() {
+        let env = MockEnv { state: Ok(NodegroupState { desired_size: 10, min_size: 1, max_size: 10, status: "ACTIVE".into() }), ..MockEnv::empty() };
+        let p = EksNodegroupProvedor::new(env, "pool".into(), "cluster".into(), "nodegroup".into(), true);
+        assert_eq!(p.provision(5).await.unwrap(), ProvisionReceipt::NoOp);
+    }
+
+    #[tokio::test]
+    async fn provision_dry_run_reports_the_real_would_even_while_the_nodegroup_is_not_active() {
+        // SHADOW must still compute + report a real, clamped `would` while
+        // the nodegroup is mid-UPDATING — only the LIVE mutation is refused
+        // on a non-ACTIVE status (see the status gate placement in
+        // EksNodegroupProvedor::provision's doc comment).
+        let env = MockEnv { state: Ok(NodegroupState { desired_size: 3, min_size: 1, max_size: 10, status: "UPDATING".into() }), ..MockEnv::empty() };
+        let p = EksNodegroupProvedor::new(env, "pool".into(), "cluster".into(), "nodegroup".into(), true);
+        let receipt = p.provision(4).await.unwrap();
+        assert_eq!(receipt, ProvisionReceipt::DryRun { would: 4 });
+    }
+
+    #[tokio::test]
+    async fn provision_live_writes_the_clamped_desired_size_via_update_desired_size() {
+        let env = MockEnv { state: Ok(NodegroupState { desired_size: 3, min_size: 1, max_size: 10, status: "ACTIVE".into() }), ..MockEnv::empty() };
+        let p = EksNodegroupProvedor::new(env, "camelot-system".into(), "camelot-eks".into(), "system".into(), false);
+        let receipt = p.provision(4).await.unwrap();
+        assert_eq!(receipt, ProvisionReceipt::Applied { delta: 4, plan_id: "eks-nodegroup:provision:camelot-system".into() });
+        assert_eq!(*p.env.update_calls.lock().unwrap(), vec![7u32], "3 + 4 = 7 written as the new desiredSize");
+    }
+
+    #[tokio::test]
+    async fn provision_live_clamps_before_writing_so_the_api_never_sees_an_out_of_bounds_desired_size() {
+        let env = MockEnv { state: Ok(NodegroupState { desired_size: 8, min_size: 1, max_size: 10, status: "ACTIVE".into() }), ..MockEnv::empty() };
+        let p = EksNodegroupProvedor::new(env, "pool".into(), "cluster".into(), "nodegroup".into(), false);
+        let receipt = p.provision(50).await.unwrap();
+        assert_eq!(receipt, ProvisionReceipt::Applied { delta: 2, plan_id: "eks-nodegroup:provision:pool".into() });
+        assert_eq!(*p.env.update_calls.lock().unwrap(), vec![10u32], "clamped to the max_size ceiling, never 58");
+    }
+
+    #[tokio::test]
+    async fn provision_live_non_active_nodegroup_refuses_to_mutate_and_surfaces_the_error() {
+        let env = MockEnv { state: Ok(NodegroupState { desired_size: 3, min_size: 1, max_size: 10, status: "UPDATING".into() }), ..MockEnv::empty() };
+        let p = EksNodegroupProvedor::new(env, "pool".into(), "cluster".into(), "nodegroup".into(), false);
+        let err = p.provision(2).await.expect_err("a non-ACTIVE nodegroup must surface, never be silently skipped");
+        assert!(matches!(err, ProviderError::ApiTransient(_)));
+        assert!(p.env.update_calls.lock().unwrap().is_empty(), "UpdateNodegroupConfig must never be called against a non-ACTIVE nodegroup");
+    }
+
+    #[tokio::test]
+    async fn provision_live_describe_nodegroup_failure_propagates_and_writes_nothing() {
+        let env = MockEnv { state: Err(ProviderError::ApiTransient("mock DescribeNodegroup failure".into())), ..MockEnv::empty() };
+        let p = EksNodegroupProvedor::new(env, "pool".into(), "cluster".into(), "nodegroup".into(), false);
+        let err = p.provision(2).await.expect_err("a DescribeNodegroup failure must surface, never be silently skipped");
+        assert!(matches!(err, ProviderError::ApiTransient(_)));
+        assert!(p.env.update_calls.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn provision_live_update_failure_propagates_the_error() {
+        let env = MockEnv { fail_update: true, ..MockEnv::empty() };
+        let p = EksNodegroupProvedor::new(env, "pool".into(), "cluster".into(), "nodegroup".into(), false);
+        let err = p.provision(2).await.expect_err("an UpdateNodegroupConfig failure must surface, retried next tick");
+        assert!(matches!(err, ProviderError::ApiTransient(_)));
+    }
+
+    #[tokio::test]
+    async fn deprovision_zero_is_noop_and_never_calls_describe_nodegroup() {
+        let env = MockEnv::empty();
+        let p = EksNodegroupProvedor::new(env, "pool".into(), "cluster".into(), "nodegroup".into(), false);
+        assert_eq!(p.deprovision(0).await.unwrap(), ProvisionReceipt::NoOp);
+        assert!(p.env.update_calls.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn deprovision_dry_run_reports_the_clamped_would_mutating_nothing() {
+        let env = MockEnv { state: Ok(NodegroupState { desired_size: 5, min_size: 2, max_size: 10, status: "ACTIVE".into() }), ..MockEnv::empty() };
+        let p = EksNodegroupProvedor::new(env, "pool".into(), "cluster".into(), "nodegroup".into(), true);
+        let receipt = p.deprovision(2).await.unwrap();
+        assert_eq!(receipt, ProvisionReceipt::DryRun { would: -2 });
+        assert!(p.env.update_calls.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn deprovision_dry_run_clamps_the_would_value_to_the_real_floor() {
+        let env = MockEnv { state: Ok(NodegroupState { desired_size: 3, min_size: 2, max_size: 10, status: "ACTIVE".into() }), ..MockEnv::empty() };
+        let p = EksNodegroupProvedor::new(env, "pool".into(), "cluster".into(), "nodegroup".into(), true);
+        let receipt = p.deprovision(10).await.unwrap();
+        assert_eq!(receipt, ProvisionReceipt::DryRun { would: -1 }, "3 -> -7 requested, clamped to 3 -> 2 => would -1");
+    }
+
+    #[tokio::test]
+    async fn deprovision_live_writes_the_clamped_desired_size() {
+        let env = MockEnv { state: Ok(NodegroupState { desired_size: 5, min_size: 2, max_size: 10, status: "ACTIVE".into() }), ..MockEnv::empty() };
+        let p = EksNodegroupProvedor::new(env, "camelot-controllers".into(), "camelot-eks".into(), "controllers".into(), false);
+        let receipt = p.deprovision(2).await.unwrap();
+        assert_eq!(receipt, ProvisionReceipt::Applied { delta: -2, plan_id: "eks-nodegroup:deprovision:camelot-controllers".into() });
+        assert_eq!(*p.env.update_calls.lock().unwrap(), vec![3u32], "5 - 2 = 3 written as the new desiredSize");
+    }
+
+    #[tokio::test]
+    async fn deprovision_live_at_floor_reports_noop_and_writes_nothing() {
+        let env = MockEnv { state: Ok(NodegroupState { desired_size: 2, min_size: 2, max_size: 10, status: "ACTIVE".into() }), ..MockEnv::empty() };
+        let p = EksNodegroupProvedor::new(env, "pool".into(), "cluster".into(), "nodegroup".into(), false);
+        assert_eq!(p.deprovision(3).await.unwrap(), ProvisionReceipt::NoOp);
+        assert!(p.env.update_calls.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn deprovision_live_non_active_nodegroup_refuses_to_mutate_and_surfaces_the_error() {
+        let env = MockEnv { state: Ok(NodegroupState { desired_size: 5, min_size: 2, max_size: 10, status: "DEGRADED".into() }), ..MockEnv::empty() };
+        let p = EksNodegroupProvedor::new(env, "pool".into(), "cluster".into(), "nodegroup".into(), false);
+        let err = p.deprovision(2).await.expect_err("a non-ACTIVE nodegroup must surface, never be silently skipped");
+        assert!(matches!(err, ProviderError::ApiTransient(_)));
+        assert!(p.env.update_calls.lock().unwrap().is_empty());
+    }
+}
