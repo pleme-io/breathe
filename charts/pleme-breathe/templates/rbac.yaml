@@ -94,6 +94,18 @@ rules:
   - apiGroups: [""]
     resources: ["persistentvolumeclaims"]
     verbs: ["get", "list", "watch", "patch"]
+  # The storage capability gate (task #167) reads the PVC's own StorageClass
+  # to detect allowVolumeExpansion + provisioner before ever planning a
+  # carve -- read-only, no patch. Missing this makes the whole gate silently
+  # inert: read_storage_capability's Cluster trait default is Ok(None), so an
+  # RBAC-forbidden read is indistinguishable from "no capability info" and
+  # the CapabilityMissing/Unsupported terminal never fires (caught live
+  # 2026-07-16: kubectl auth can-i get storageclasses returned "no", and both
+  # local-path-backed StorageBands showed Supported=True/CapabilityOk
+  # instead of the expected Unsupported).
+  - apiGroups: ["storage.k8s.io"]
+    resources: ["storageclasses"]
+    verbs: ["get", "list", "watch"]
   # Read pods for owner→pod resolution (metric label scoping); the
   # pods/resize subresource + patch verb close the same class of live-but-
   # uncommitted drift as the block above — in-place pod vertical resize
