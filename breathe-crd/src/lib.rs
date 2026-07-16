@@ -99,6 +99,15 @@ pub struct TrendSample {
 pub struct BandStatus {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub phase: Option<String>,
+    /// Cross-dimension health rollup, derived purely from `conditions` (no new
+    /// per-band state) — `"Healthy"` | `"Stuck"` | `"Unsupported"`. See
+    /// `breathe_runtime::health_verdict`. Generalizes the storage-only
+    /// `Supported=False` terminal into a single normalized signal every band
+    /// kind carries, so a reactive consumer (NATS/escuta, a dashboard, an
+    /// operator) never has to interpret `phase` strings per-dimension to answer
+    /// "is this band OK right now".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub health: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_util: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
