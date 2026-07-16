@@ -36,6 +36,7 @@ use kube::{
 use metrics::{counter, gauge};
 use tracing::{info, warn};
 
+use crate::eks_nodegroup_provedor::{EksNodegroupProvedor, KubeEksNodegroupEnvironment};
 use crate::karpenter_provedor::{KarpenterProvedor, KubeKarpenterEnvironment};
 use crate::{Ctx, Error};
 
@@ -471,24 +472,28 @@ impl Provedor for KwokProvedor {
 
 /// The per-pool executor selected by `spec.provider` + (when `KubeObserve`)
 /// `spec.nodeProvisioningBackend`: typed dispatch (a sum type, no `dyn`) over
-/// the observe-only [`KubeNodeProvedor`], the actuating [`KwokProvedor`], and
-/// the actuating [`KarpenterProvedor`], so `reconcile_forma` is driven from
-/// ONE call site regardless of which executor realizes the pool.
+/// the observe-only [`KubeNodeProvedor`], the actuating [`KwokProvedor`], the
+/// actuating [`KarpenterProvedor`], and the actuating [`EksNodegroupProvedor`],
+/// so `reconcile_forma` is driven from ONE call site regardless of which
+/// executor realizes the pool.
 enum PoolProvedor {
     KubeObserve(KubeNodeProvedor),
     Kwok(KwokProvedor),
     Karpenter(KarpenterProvedor<KubeKarpenterEnvironment>),
+    EksNodegroup(EksNodegroupProvedor<KubeEksNodegroupEnvironment>),
 }
 
 impl PoolProvedor {
     /// The per-unit allocatable (millicores) used to size a minted `NodeRef` for
     /// the admission gate. KubeObserve uses the live cluster mean; Kwok uses its
-    /// fixed fake-node size; Karpenter uses the mean over its OWNED Ready nodes.
+    /// fixed fake-node size; Karpenter/EksNodegroup use the mean over their
+    /// OWNED Ready nodes.
     async fn per_node_alloc_milli(&self) -> u64 {
         match self {
             Self::KubeObserve(p) => p.per_node_alloc_milli().await,
             Self::Kwok(_) => KWOK_NODE_CPU_MILLI,
             Self::Karpenter(p) => p.per_node_alloc_milli().await,
+            Self::EksNodegroup(p) => p.per_node_alloc_milli().await,
         }
     }
 }
@@ -500,6 +505,7 @@ impl Provedor for PoolProvedor {
             Self::KubeObserve(p) => p.observe().await,
             Self::Kwok(p) => p.observe().await,
             Self::Karpenter(p) => p.observe().await,
+            Self::EksNodegroup(p) => p.observe().await,
         }
     }
     async fn provision(&self, n: u64) -> Result<ProvisionReceipt, ProviderError> {
@@ -507,6 +513,7 @@ impl Provedor for PoolProvedor {
             Self::KubeObserve(p) => p.provision(n).await,
             Self::Kwok(p) => p.provision(n).await,
             Self::Karpenter(p) => p.provision(n).await,
+            Self::EksNodegroup(p) => p.provision(n).await,
         }
     }
     async fn deprovision(&self, n: u64) -> Result<ProvisionReceipt, ProviderError> {
@@ -514,6 +521,7 @@ impl Provedor for PoolProvedor {
             Self::KubeObserve(p) => p.deprovision(n).await,
             Self::Kwok(p) => p.deprovision(n).await,
             Self::Karpenter(p) => p.deprovision(n).await,
+            Self::EksNodegroup(p) => p.deprovision(n).await,
         }
     }
 }
@@ -814,6 +822,26 @@ pub async fn reconcile_cloud_pool(cr: Arc<BreatheCloudPool>, ctx: Arc<Ctx>) -> R
                     KubeKarpenterEnvironment::new(ctx.client.clone()),
                     name.clone(),
                     node_pool_ref,
+                    dry_run,
+                ))
+            }
+            breathe_crd::NodeProvisioningBackend::EksManagedNodegroup => {
+                let Some(ng_ref) = cr.spec.eks_managed_nodegroup_ref.clone() else {
+                    warn!(pool = %name, "BreatheCloudPool: eksManagedNodegroup backend requires eksManagedNodegroupRef — skipping");
+                    let st = CloudPoolStatus {
+                        phase: Some("Error".into()),
+                        last_decision: Some("eksManagedNodegroup backend requires spec.eksManagedNodegroupRef".into()),
+                        last_seen_epoch: Some(now_secs()),
+                        ..Default::default()
+                    };
+                    patch_status(&ctx.client, &name, &st).await;
+                    return Ok(Action::requeue(ctx.requeue));
+                };
+                PoolProvedor::EksNodegroup(EksNodegroupProvedor::new(
+                    KubeEksNodegroupEnvironment::new(ctx.client.clone(), ctx.eks_client.clone()),
+                    name.clone(),
+                    ng_ref.cluster_name,
+                    ng_ref.nodegroup_name,
                     dry_run,
                 ))
             }

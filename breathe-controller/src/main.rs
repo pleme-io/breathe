@@ -13,6 +13,7 @@
 use std::{sync::Arc, time::Duration};
 
 mod app_band;
+mod eks_nodegroup_provedor;
 mod karpenter_provedor;
 mod nats_trigger;
 mod node_forma;
@@ -102,6 +103,18 @@ struct Ctx {
     /// config with no reconcile-loop change.
     decisions: Arc<dyn DecisionLog>,
     samples: Arc<dyn SampleCache>,
+    /// The `EksManagedNodegroup` backend's AWS boundary (task #205) —
+    /// `DescribeNodegroup`/`UpdateNodegroupConfig` against the real EKS
+    /// control plane. Built ONCE at startup via the standard SDK
+    /// credential+region chain (`AWS_PROFILE` locally / IRSA in-cluster —
+    /// the same chain `crates/breathe-lifecycle`'s AWS integration test
+    /// documents) and cloned per-reconcile like `client` — cheap: an
+    /// `aws_sdk_eks::Client` is a thin `Arc`-backed handle, and
+    /// `aws_config::ConfigLoader::load()` resolves no credentials at load
+    /// time (lazy — the first real API call is where auth is actually
+    /// checked), so building it costs nothing on clusters that never
+    /// declare an `eksManagedNodegroup` pool.
+    eks_client: aws_sdk_eks::Client,
 }
 
 impl Ctx {
@@ -713,6 +726,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let client = Client::try_default().await?;
     let resize_capable = detect_resize_capable(&client).await;
 
+    // The EksManagedNodegroup backend's AWS boundary (task #205) — built
+    // once, region+credentials resolved via the standard SDK chain. Never
+    // fails here: `load()` only assembles a lazy config, it performs no
+    // network I/O and resolves no credentials until the first real EKS call
+    // — so this line is safe to run unconditionally, even on clusters (or
+    // this dev machine) with no AWS credentials present at all.
+    let aws_config = aws_config::defaults(aws_config::BehaviorVersion::latest()).load().await;
+    let eks_client = aws_sdk_eks::Client::new(&aws_config);
+
     // ── Environment-discovered band-default posture (best fit for THIS cluster).
     // Detected once, read-only; the resolved defaults are the recommendation a
     // foreign/multi-tenant cluster gets least-disruptive shadow-first values,
@@ -794,6 +816,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         // same `Arc<dyn …>` fields, with no reconcile-loop change.
         decisions,
         samples,
+        eks_client,
     });
 
     info!(
