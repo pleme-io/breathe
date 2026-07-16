@@ -1873,6 +1873,18 @@ pub enum NodeProvisioningBackend {
     /// `spec.template.spec` verbatim. Shadow-first via the same
     /// `dryRun`/`writeEnabled` gates as every other backend.
     EksKarpenter,
+    /// Realize against a plain EKS-managed nodegroup — an ASG the EKS
+    /// service itself owns, NOT a real Karpenter install (Camelot's
+    /// `system`/`controllers` pools today: zero Karpenter, plain managed
+    /// nodegroups). Reads the referenced nodegroup's live
+    /// `scalingConfig`/`status` via `DescribeNodegroup` and, on
+    /// `Grew`/`Shrank`, mutates `scalingConfig.desiredSize` via
+    /// `UpdateNodegroupConfig` — the ONLY mutable knob a managed nodegroup
+    /// exposes (see `breathe_controller::eks_nodegroup_provedor`'s module
+    /// doc for why the underlying ASG is never touched directly). Shadow-
+    /// first via the same `dryRun`/`writeEnabled` gates as every other
+    /// backend. Requires `eksManagedNodegroupRef`.
+    EksManagedNodegroup,
 }
 
 impl NodeProvisioningBackend {
@@ -1982,6 +1994,32 @@ pub struct BreatheCloudPoolSpec {
     /// Helm (GitOps-native); breathe never creates or mutates a NodePool.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub karpenter_node_pool_ref: Option<String>,
+    /// The real EKS-managed nodegroup this pool reflects/scales — REQUIRED
+    /// when `nodeProvisioningBackend == eksManagedNodegroup` (validated at
+    /// reconcile time exactly like `karpenterNodePoolRef`: an unset ref
+    /// under that backend reconciles to `phase: Error`, never guesses).
+    /// Ignored under every other backend.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub eks_managed_nodegroup_ref: Option<EksManagedNodegroupRef>,
+}
+
+/// The `(clusterName, nodegroupName)` pair scoping an EKS `DescribeNodegroup`/
+/// `UpdateNodegroupConfig` call. Two fields, unlike `karpenterNodePoolRef`'s
+/// bare `String`: a `karpenter.sh NodePool` name alone is enough (it's a
+/// cluster-scoped k8s object breathe reads via the SAME apiserver connection
+/// it already has), but the EKS control-plane API is scoped by BOTH the
+/// owning EKS cluster's name AND the nodegroup's name — neither is
+/// inferable from the in-cluster `kube::Client` breathe otherwise uses.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct EksManagedNodegroupRef {
+    /// The EKS cluster's name (`DescribeNodegroup`'s own `clusterName`
+    /// parameter — the EKS control-plane's name, not necessarily this
+    /// kube context's own name).
+    pub cluster_name: String,
+    /// The EKS managed nodegroup's name (`DescribeNodegroup`'s own
+    /// `nodegroupName` parameter).
+    pub nodegroup_name: String,
 }
 
 impl ProviderKind {
