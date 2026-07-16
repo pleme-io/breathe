@@ -1033,6 +1033,33 @@ pub trait DimensionDescriptor: Send + Sync + 'static {
         let _ = target;
         None
     }
+
+    /// Bind this descriptor to the OWNING CR's own `(namespace, name)` — the Band
+    /// CR's identity, NOT the k8s object it targets (`Target.namespace`/`.name`,
+    /// which two DIFFERENT CRs of the same dimension can legitimately share, e.g.
+    /// `pangea-operator` and `pangea-operator-cpu` both targeting the same
+    /// Deployment — task #200's root cause). The default is a no-op: a descriptor
+    /// that never calls this keeps [`field_manager_scope`](Self::field_manager_scope)
+    /// at `None`, so its SSA field-manager string is byte-identical to before this
+    /// task landed. `MemoryDescriptor`/`CpuDescriptor`/`StorageDescriptor` override
+    /// it to store the identity; the controller calls it once, right after
+    /// constructing the descriptor, before any `observe`/`assign`.
+    fn set_cr_identity(&mut self, namespace: String, name: String) {
+        let _ = (namespace, name);
+    }
+
+    /// The bound CR identity, if [`set_cr_identity`](Self::set_cr_identity) was
+    /// called — `(namespace, name)`. `Some` scopes the SSA field-manager string
+    /// per-CR (`"{field_manager()}/{namespace}/{name}"`, computed by
+    /// [`BandProvider`]'s `owned_field`/`assign`), turning k8s's OWN
+    /// Server-Side-Apply conflict detection into a real backstop against two
+    /// same-dimension CRs uncoordinatedly double-writing one target — a class of
+    /// bug SSA's `manager` string was structurally blind to while every CR of a
+    /// dimension shared one static manager name. `None` (the default) keeps the
+    /// dimension-wide manager string, byte-identical to before this task.
+    fn field_manager_scope(&self) -> Option<(&str, &str)> {
+        None
+    }
 }
 
 /// The spine — the dyn interface `breathe-core` reconciles through.
@@ -1080,6 +1107,22 @@ impl<C: Cluster + 'static, D: DimensionDescriptor> BandProvider<C, D> {
     pub fn cluster(&self) -> &C {
         &self.cluster
     }
+    /// The SSA field-manager string this provider writes/guards with — the ONE
+    /// place `field_manager()` and `field_manager_scope()` are combined, so
+    /// `owned_field()` (the guard's read) and `assign()` (the actual SSA write)
+    /// can never drift apart. `None` scope ⇒ byte-identical to the bare
+    /// `field_manager()` (every descriptor's behavior before task #200); `Some
+    /// (namespace, name)` ⇒ `"{field_manager()}/{namespace}/{name}"`, so two CRs
+    /// of the same dimension bound to different CR identities become two
+    /// DIFFERENT k8s field managers — SSA's own conflict detection can then
+    /// actually see them fight over a shared target, instead of being
+    /// structurally blind to it behind one shared static manager string.
+    fn scoped_field_manager(&self) -> String {
+        match self.descriptor.field_manager_scope() {
+            Some((namespace, name)) => format!("{}/{namespace}/{name}", self.descriptor.field_manager()),
+            None => self.descriptor.field_manager().to_string(),
+        }
+    }
 }
 
 #[async_trait]
@@ -1092,7 +1135,7 @@ impl<C: Cluster + 'static, D: DimensionDescriptor> ResourceProvider for BandProv
     }
     fn owned_field(&self) -> OwnedField {
         OwnedField {
-            manager: self.descriptor.field_manager().to_string(),
+            manager: self.scoped_field_manager(),
             path: self.descriptor.logical_field().to_string(),
         }
     }
@@ -1211,7 +1254,7 @@ impl<C: Cluster + 'static, D: DimensionDescriptor> ResourceProvider for BandProv
         }
         let patch = SsaPatch {
             target: target.clone(),
-            field_manager: self.descriptor.field_manager().to_string(),
+            field_manager: self.scoped_field_manager(),
             layout,
             resource: self.descriptor.resource().to_string(),
             value: to_value,

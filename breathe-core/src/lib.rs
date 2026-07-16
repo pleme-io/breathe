@@ -350,6 +350,35 @@ mod tests {
         vec![FieldOwner { manager: MEMORY_MANAGER.into(), field: MEMORY_FIELD.into() }]
     }
 
+    /// TASK #200 — the field-manager double-writer fix, proven end-to-end: binding
+    /// a descriptor's CR identity must show up BOTH in the single-writer guard's
+    /// read (`owned_field`) and the actual SSA write (`assign`) — the two must
+    /// never drift, or the guard would check one manager string while the write
+    /// stamps a different one, silently defeating the whole point of scoping.
+    #[tokio::test]
+    async fn cr_scoped_field_manager_flows_through_owned_field_and_the_applied_ssa_patch() {
+        let mut d = MemoryDescriptor::default();
+        d.set_cr_identity("rio".into(), "my-memory-band".into());
+        let prov = BandProvider::new(MockCluster::new(950 * MI, 0, GI, Vec::new()), d);
+        assert_eq!(prov.owned_field().manager, "breathe/memory/rio/my-memory-band");
+
+        prov.assign(&target(), 2 * GI).await.unwrap();
+        let applied = prov.cluster().applied();
+        assert_eq!(applied.len(), 1);
+        assert_eq!(applied[0].field_manager, "breathe/memory/rio/my-memory-band");
+    }
+
+    /// The un-bound default is BYTE-IDENTICAL to before this task landed — a
+    /// descriptor that never calls `set_cr_identity` (every consumer that hasn't
+    /// been wired up yet) keeps the plain dimension-wide manager string.
+    #[tokio::test]
+    async fn an_unbound_descriptor_keeps_the_dimension_wide_manager_unchanged() {
+        let prov = provider(MockCluster::new(950 * MI, 0, GI, Vec::new()));
+        assert_eq!(prov.owned_field().manager, MEMORY_MANAGER);
+        prov.assign(&target(), 2 * GI).await.unwrap();
+        assert_eq!(prov.cluster().applied()[0].field_manager, MEMORY_MANAGER);
+    }
+
     // The headline proof: observe → plan_tick → assign flows end-to-end through
     // the trait against a mock, and exactly one true-SSA patch is carved on the
     // memory field by the memory field-manager. No real cluster.
@@ -816,7 +845,7 @@ mod tests {
     #[tokio::test]
     async fn reconcile_flags_an_unsupported_storage_class_as_capability_missing_never_carving() {
         let cluster = MockCluster::new(GI, 0, GI, Vec::new()).with_storage_capability(Some(unsupported_cap()));
-        let prov = BandProvider::new(cluster, StorageDescriptor);
+        let prov = BandProvider::new(cluster, StorageDescriptor::default());
         let cfg = BandConfig::default();
         let t = pvc_target("rustfs-data-storage");
         let out = reconcile_one(&storage_input(&t, &cfg), &prov).await;
@@ -840,7 +869,7 @@ mod tests {
     async fn reconcile_capability_missing_beats_a_competing_field_manager() {
         let competing = vec![FieldOwner { manager: "k3s".into(), field: "spec.resources.requests.storage".into() }];
         let cluster = MockCluster::new(GI, 0, GI, competing).with_storage_capability(Some(unsupported_cap()));
-        let prov = BandProvider::new(cluster, StorageDescriptor);
+        let prov = BandProvider::new(cluster, StorageDescriptor::default());
         let cfg = BandConfig::default();
         let t = pvc_target("data-mysql-0-storage");
         match reconcile_one(&storage_input(&t, &cfg), &prov).await.receipt {
@@ -857,7 +886,7 @@ mod tests {
     async fn reconcile_never_gates_a_supported_storage_class() {
         let supported = StorageCapability { volume_expansion: true, per_volume_metrics: true, provisioner: "ebs.csi.aws.com".into() };
         let cluster = MockCluster::new(950 * MI, 0, GI, Vec::new()).with_storage_capability(Some(supported));
-        let prov = BandProvider::new(cluster, StorageDescriptor);
+        let prov = BandProvider::new(cluster, StorageDescriptor::default());
         let cfg = BandConfig::default();
         let t = pvc_target("elastic-data");
         match reconcile_one(&storage_input(&t, &cfg), &prov).await.receipt {
