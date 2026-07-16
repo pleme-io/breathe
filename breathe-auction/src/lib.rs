@@ -247,6 +247,40 @@ pub trait PriceOracle: Send + Sync {
     fn cost_cents(&self, forma: Forma, duration_secs: u64) -> u64;
 }
 
+/// Interruption-frequency source for a candidate `Forma` — the same
+/// injected-not-computed seam as [`PriceOracle`], applied to risk data instead
+/// of price data.
+///
+/// **Where a real impl comes from (grounded, not hypothetical).** The sibling
+/// `pleme-io/leilao` crate already ships a sealed, tested model for exactly
+/// this number: `leilao::aws::InterruptionBucket` types AWS's spot-advisor
+/// frequency-of-interruption buckets (`spot-advisor-data.json` `r=0..4`) and
+/// `InterruptionBucket::representative_ppm()` maps them to a monotone
+/// parts-per-million hazard (`leilao/src/aws.rs`); `leilao::refined::Hazard`
+/// and `leilao::survival` go further, sealing the bucket into a Poisson
+/// reclaim rate + a survival probability. **Tier-honest:** leilao's own docs
+/// (`leilao/src/aws.rs` module comment, `AWS_SIGNAL_LEDGER`) mark the *live*
+/// AWS fetch (the SDK call / published-dataset read) as `source-design` — "the
+/// seam is present, no `aws-sdk-ec2` is compiled in" — so this is a real,
+/// sealed, unit-tested CONVERSION model, not yet a live DATA FEED. Nothing in
+/// `leilao` or `breathe` calls the AWS spot-advisor API today.
+///
+/// This trait deliberately does NOT take a dependency on `leilao` (a separate
+/// repo/crate, not a `breathe` workspace member) — pulling in a cross-repo
+/// dependency is a bigger architectural decision than "wire a PickPolicy
+/// variant," and `PriceOracle` itself sets the precedent that this crate
+/// defines the SEAM, not the data source. A real impl can trivially wrap
+/// `leilao::aws::InterruptionBucket::representative_ppm()` (same ppm unit,
+/// chosen for exactly that reason) once leilao's live fetch lands, or wrap
+/// any other calibrated source in the meantime — this crate only needs the
+/// number, never how it was produced.
+pub trait InterruptionOracle: Send + Sync {
+    /// Monthly interruption frequency for `forma`, in parts-per-million
+    /// (matching `leilao::aws::InterruptionBucket::representative_ppm()`'s
+    /// unit convention 1:1, so a real impl needs no conversion).
+    fn interruption_ppm(&self, forma: Forma) -> u64;
+}
+
 /// How [`ParetoOtimizador`] resolves a single winner from the Pareto frontier.
 /// This is where the `CostFloor`/`TimeFloor` duality
 /// (`theory/BREATHABILITY.md`'s auction-objective section) becomes an actual
@@ -254,7 +288,10 @@ pub trait PriceOracle: Send + Sync {
 /// `MinCostUnderDeadline` auctions hard on price *subject to* a latency floor
 /// — the mechanism "choose performance when latency is the binding constraint"
 /// resolves to, not a separate code path.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+// `Eq` dropped (not `PartialEq, Eq`): `MinCostRiskAdjusted`'s `risk_weight: f64`
+// has no total `Eq` — `f64` implements only `PartialEq`. No caller compares
+// `PickPolicy` for equality today (grep-verified), so this is a pure widening.
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum PickPolicy {
     /// Cheapest point on the frontier, latency unconstrained (`CostFloor`).
     MinCost,
@@ -263,6 +300,39 @@ pub enum PickPolicy {
     /// workload's deadline is short, so this naturally rules out the
     /// cheap-but-slow candidates a plain `MinCost` would otherwise pick).
     MinCostUnderDeadline { deadline_secs: u64 },
+    /// Risk-adjusted cost: pick the frontier candidate minimizing
+    /// `cost_cents + risk_weight * interruption_ppm` (interruption sourced
+    /// from [`ParetoOtimizador::interruption`], parts-per-million per
+    /// [`InterruptionOracle`]). `risk_weight` is a cents-per-ppm tradeoff
+    /// knob — 0.0 degrades exactly to [`PickPolicy::MinCost`].
+    ///
+    /// **Deliberately a linear penalty at the PICK step, not a 3rd Pareto
+    /// dominance axis and not a Markowitz mean-variance portfolio.** A real
+    /// variance-aware allocator (covariance across candidates, portfolio
+    /// apportionment) already exists, sealed and tested, in the sibling
+    /// `pleme-io/leilao` crate's `portfolio.rs` — that is a different tier of
+    /// machinery (a joint allocation across MANY pools at once) than this
+    /// auctioneer's job (pick ONE winning `Forma` per tick). Reaching for
+    /// Markowitz here would be exactly the over-build this crate's own
+    /// scope discipline forbids; this variant is the smallest sufficient
+    /// step that makes interruption risk a first-class input to the pick.
+    ///
+    /// **Honest scope today (found while implementing, not assumed up
+    /// front — see `breathe-auction/src/tests.rs`'s `MinCostRiskAdjusted`
+    /// section).** `relief_latency_secs` is the SAME `cfg.warmup_seconds`
+    /// for every candidate within one [`Otimizador::optimize`] call (a
+    /// pre-existing, already-documented simplification). So whenever two
+    /// candidates' `cost_cents` differ, [`ParetoOtimizador::dominates`]
+    /// already collapses the frontier to the single cheapest one BEFORE
+    /// this pick policy ever runs — a risk-adjusted pick cannot resurrect a
+    /// pricier candidate the frontier already dropped. Today this variant
+    /// therefore only has observable effect when candidates tie on cost
+    /// (it then breaks the tie toward the lower-risk one). Once
+    /// `relief_latency_secs` is genuinely per-forma (letting a slower-but-
+    /// safer candidate legitimately survive dominance), this exact same
+    /// arm re-ranks the wider resulting frontier for free — no change
+    /// needed here when that lands.
+    MinCostRiskAdjusted { risk_weight: f64 },
 }
 
 /// The **Pareto-frontier auctioneer** — classical multi-objective optimization
@@ -274,25 +344,33 @@ pub enum PickPolicy {
 /// the true cost/latency trade-off frontier; [`PickPolicy`] then resolves the
 /// single winner the controller acts on.
 ///
-/// **Tier-honest scope (do not round up).** This ranks on the two axes
-/// [`Proposta`] actually carries today (`cost_cents`, `relief_latency_secs`).
-/// The doc's own three-axis frontier (`cost, -latency, buffer`) and a real
-/// Markowitz-style mean-variance risk adjustment under the auction's `$/mo`
-/// cost-variance budget (`theory/BREATHABILITY.md` §100% spot reliability)
-/// both need a per-candidate **interruption-frequency/cost-variance** field
-/// that has no typed source anywhere in this crate or its callers today —
-/// only the qualitative [`crate::quinhao`]-adjacent `Interruption` *strategy*
-/// enum (retry-on-reclaim / graceful-drain / node-drain) exists, not a
-/// calibrated numeric probability. Fabricating that number here (rather than
-/// wiring a real historical-interruption-rate source, e.g. an AWS Spot
-/// Instance Advisor–shaped feed) would be exactly the "parallel cost model"
-/// [`Proposta`]'s own doc comment forbids — so this impl deliberately does
-/// NOT attempt risk-adjusted (variance-aware) selection. That is the named
-/// next step, not invented against absent data.
+/// **Tier-honest scope (do not round up).** The FRONTIER itself still ranks
+/// on exactly the two axes [`Proposta`] carries (`cost_cents`,
+/// `relief_latency_secs`) — dominance filtering stays 2-axis. The doc's own
+/// three-axis frontier (`cost, -latency, buffer`) and a real Markowitz-style
+/// mean-variance risk adjustment under the auction's `$/mo` cost-variance
+/// budget (`theory/BREATHABILITY.md` §100% spot reliability) are NOT what
+/// [`PickPolicy::MinCostRiskAdjusted`] is — see that variant's own doc
+/// comment for why a full covariance-aware portfolio is out of scope here
+/// (it exists, sealed and tested, one layer up in `pleme-io/leilao`'s
+/// `portfolio.rs`). What ships here is smaller and honestly-scoped: an
+/// OPTIONAL, injected [`InterruptionOracle`] the `MinCostRiskAdjusted` pick
+/// policy reads to apply a linear risk penalty when choosing the single
+/// winner off the (still 2-axis) frontier — [`interruption`](Self::interruption)
+/// is `None` by default, in which case that policy degrades to plain
+/// [`PickPolicy::MinCost`] rather than fabricating a risk number (see
+/// [`InterruptionOracle`]'s doc comment for exactly which real source, and
+/// at which tier, exists today).
 pub struct ParetoOtimizador<P: PriceOracle> {
     pub price: P,
     pub cfg: BandConfig,
     pub pick: PickPolicy,
+    /// Interruption-frequency source for [`PickPolicy::MinCostRiskAdjusted`].
+    /// `None` (the [`Self::new`] default) ⇒ that policy treats every
+    /// candidate as zero risk, degrading cleanly to [`PickPolicy::MinCost`]
+    /// — never a silent wrong answer, never a fabricated number. Set via
+    /// [`Self::with_interruption_oracle`].
+    pub interruption: Option<Box<dyn InterruptionOracle>>,
 }
 
 /// Typed rationale renderer for a grow candidate — the one allowed `write!()`
@@ -318,7 +396,18 @@ impl std::fmt::Display for GrowRationale {
 impl<P: PriceOracle> ParetoOtimizador<P> {
     #[must_use]
     pub fn new(price: P, cfg: BandConfig, pick: PickPolicy) -> Self {
-        Self { price, cfg, pick }
+        Self { price, cfg, pick, interruption: None }
+    }
+
+    /// Attach an [`InterruptionOracle`] — required for
+    /// [`PickPolicy::MinCostRiskAdjusted`] to actually weigh risk (without
+    /// one it degrades to [`PickPolicy::MinCost`]). Builder-style so the
+    /// common no-risk-data construction (`Self::new`) stays a 3-argument
+    /// call.
+    #[must_use]
+    pub fn with_interruption_oracle(mut self, oracle: impl InterruptionOracle + 'static) -> Self {
+        self.interruption = Some(Box::new(oracle));
+        self
     }
 
     /// `a` Pareto-dominates `b`: no worse on both axes, strictly better on at
@@ -398,6 +487,19 @@ impl<P: PriceOracle> Otimizador for ParetoOtimizador<P> {
                 // same "never silently under-provision" invariant
                 // `BandLeiloeiro::EnvelopeExausto` already enforces.
                 .or_else(|| frontier.iter().min_by_key(|p| p.relief_latency_secs)),
+            PickPolicy::MinCostRiskAdjusted { risk_weight } => {
+                // score = cost_cents + risk_weight * interruption_ppm. No
+                // oracle attached ⇒ every candidate scores as zero-risk, so
+                // this is byte-identical to MinCost (never a fabricated
+                // number standing in for a real one — see
+                // ParetoOtimizador::interruption's doc comment).
+                #[allow(clippy::cast_precision_loss, reason = "cost_cents/ppm are bounded fleet-scale counters; a ranking score tolerates f64 rounding")]
+                let score = |p: &Proposta| -> f64 {
+                    let ppm = self.interruption.as_deref().map_or(0, |o| o.interruption_ppm(p.forma));
+                    p.cost_cents as f64 + risk_weight * ppm as f64
+                };
+                frontier.iter().min_by(|a, b| score(a).total_cmp(&score(b)))
+            }
         };
 
         winner.into_iter().cloned().collect()

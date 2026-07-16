@@ -1,6 +1,6 @@
 use super::{
-    BandLeiloeiro, DecisaoForma, Leiloeiro, Otimizador, ParetoOtimizador, PickPolicy, PriceOracle,
-    Previsao, Previsor, ReactivePrevisor,
+    BandLeiloeiro, DecisaoForma, InterruptionOracle, Leiloeiro, Otimizador, ParetoOtimizador,
+    PickPolicy, PriceOracle, Previsao, Previsor, ReactivePrevisor,
 };
 use breathe_control::BandConfig;
 use breathe_provider::Forma;
@@ -300,4 +300,146 @@ fn min_cost_under_deadline_picks_cheapest_among_those_that_fit() {
     let winners = o.optimize(&previsoes);
     assert_eq!(winners.len(), 1);
     assert_eq!(winners[0].forma, Forma::NodeSpot);
+}
+
+// ============================================================================
+// PickPolicy::MinCostRiskAdjusted (#209) — linear risk-adjusted pick.
+// ============================================================================
+//
+// LOAD-BEARING SETUP NOTE (found while writing these tests, not assumed up
+// front): `relief_latency_secs` is the SAME `cfg.warmup_seconds` for every
+// candidate within one `optimize()` call (a named, pre-existing, documented
+// simplification -- see `min_cost_under_deadline_rules_out_the_cheap_but_slow_
+// candidate`'s comment above). So whenever two candidates' `cost_cents`
+// differ, `dominates()` already collapses the FRONTIER to the single cheapest
+// one *before* `PickPolicy` ever runs -- a risk-adjusted pick can never
+// resurrect a pricier candidate the frontier already dropped. These tests
+// therefore use a cost TIE (`TiedPrice`), which is the one case where a
+// risk-adjusted re-rank has real, observable effect today; once
+// `relief_latency_secs` is genuinely per-forma, the exact same PickPolicy
+// arm re-ranks a wider frontier for free.
+
+/// Same cost for every forma -- the tie that lets both candidates survive
+/// Pareto dominance filtering (see the module-level note above).
+struct TiedPrice;
+impl PriceOracle for TiedPrice {
+    fn cost_cents(&self, _forma: Forma, duration_secs: u64) -> u64 {
+        duration_secs
+    }
+}
+
+/// Spot is flaky (300_000ppm, leilao's `InterruptionBucket::VeryHigh`);
+/// on-demand is interruption-free -- the realistic risk gap a risk-adjusted
+/// pick is supposed to weigh once cost alone can't decide.
+struct FixedInterruption;
+impl InterruptionOracle for FixedInterruption {
+    fn interruption_ppm(&self, forma: Forma) -> u64 {
+        match forma {
+            Forma::NodeSpot => 300_000,
+            _ => 0,
+        }
+    }
+}
+
+#[test]
+fn risk_adjusted_without_an_oracle_degrades_exactly_to_min_cost() {
+    // No InterruptionOracle attached -> every candidate scores zero-risk
+    // regardless of risk_weight, so the winner must be byte-identical to
+    // plain MinCost for ANY input (uses RiskyPrice's cost gap on purpose,
+    // to prove this holds even where dominance alone would already decide
+    // it -- the point is the score function itself, not just the frontier).
+    struct RiskyPrice;
+    impl PriceOracle for RiskyPrice {
+        fn cost_cents(&self, forma: Forma, duration_secs: u64) -> u64 {
+            let rate_per_sec = if forma == Forma::NodeSpot { 1 } else { 3 };
+            rate_per_sec * duration_secs
+        }
+    }
+    let previsoes = [
+        (Forma::NodeSpot, previsao(90, 100)),
+        (Forma::NodeOnDemand, previsao(90, 100)),
+    ];
+    let plain = ParetoOtimizador::new(RiskyPrice, otimizador_cfg(60), PickPolicy::MinCost);
+    let risk_adjusted = ParetoOtimizador::new(
+        RiskyPrice,
+        otimizador_cfg(60),
+        PickPolicy::MinCostRiskAdjusted { risk_weight: 5.0 },
+    );
+    assert_eq!(plain.optimize(&previsoes), risk_adjusted.optimize(&previsoes));
+}
+
+#[test]
+fn risk_adjusted_ignores_the_oracle_when_risk_weight_is_zero() {
+    // A cost tie + a real (nonzero) oracle attached, but risk_weight = 0.0 --
+    // the risk term must vanish, collapsing both candidates' scores to an
+    // exact tie. `Iterator::min_by`'s documented tie-break (first element
+    // wins) then decides -- NodeSpot, since it is first in `previsoes`. This
+    // pins that deterministic tie-break so a future refactor can't silently
+    // flip which candidate an exact score tie favors.
+    let o = ParetoOtimizador::new(
+        TiedPrice,
+        otimizador_cfg(60),
+        PickPolicy::MinCostRiskAdjusted { risk_weight: 0.0 },
+    )
+    .with_interruption_oracle(FixedInterruption);
+    let previsoes = [
+        (Forma::NodeSpot, previsao(90, 100)),
+        (Forma::NodeOnDemand, previsao(90, 100)),
+    ];
+    let winners = o.optimize(&previsoes);
+    assert_eq!(winners.len(), 1);
+    assert_eq!(winners[0].forma, Forma::NodeSpot);
+}
+
+#[test]
+fn risk_adjusted_flips_a_cost_tied_pick_toward_the_safer_candidate() {
+    // Tied cost (60c each) -- Pareto dominance can't collapse the frontier,
+    // so BOTH candidates survive and the risk-adjusted PICK step is what
+    // decides. Once risk_weight > 0, on-demand's zero interruption must win
+    // even though nothing distinguishes the two on cost.
+    let o = ParetoOtimizador::new(
+        TiedPrice,
+        otimizador_cfg(60),
+        PickPolicy::MinCostRiskAdjusted { risk_weight: 0.001 },
+    )
+    .with_interruption_oracle(FixedInterruption);
+    let previsoes = [
+        (Forma::NodeSpot, previsao(90, 100)),
+        (Forma::NodeOnDemand, previsao(90, 100)),
+    ];
+    let winners = o.optimize(&previsoes);
+    assert_eq!(winners.len(), 1);
+    assert_eq!(
+        winners[0].forma,
+        Forma::NodeOnDemand,
+        "a positive risk_weight must be able to flip a cost-tied pick toward the safer candidate"
+    );
+
+    // Sanity: at the exact same input, plain MinCost (no risk term at all)
+    // ties and falls back to the first element (NodeSpot) -- proving the two
+    // policies genuinely differ here, not that MinCost coincidentally agrees.
+    let blind = ParetoOtimizador::new(TiedPrice, otimizador_cfg(60), PickPolicy::MinCost);
+    assert_eq!(blind.optimize(&previsoes)[0].forma, Forma::NodeSpot);
+}
+
+#[test]
+fn risk_adjusted_never_panics_and_always_returns_a_single_winner_over_many_weights() {
+    // Property-style sweep over a cost-tied frontier: for a range of
+    // risk_weight values, the pick is always exactly one candidate (never
+    // empty, never >1) and total_cmp never panics on any of these finite
+    // f64 scores.
+    let previsoes = [
+        (Forma::NodeSpot, previsao(90, 100)),
+        (Forma::NodeOnDemand, previsao(90, 100)),
+    ];
+    for w in [0.0, 0.0001, 0.001, 0.01, 0.1, 1.0, 100.0, 1_000_000.0] {
+        let o = ParetoOtimizador::new(
+            TiedPrice,
+            otimizador_cfg(60),
+            PickPolicy::MinCostRiskAdjusted { risk_weight: w },
+        )
+        .with_interruption_oracle(FixedInterruption);
+        let winners = o.optimize(&previsoes);
+        assert_eq!(winners.len(), 1, "risk_weight={w} must yield exactly one winner");
+    }
 }
