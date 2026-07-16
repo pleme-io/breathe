@@ -237,6 +237,124 @@ pub fn conditions_for(outcome: &TickOutcome, prior: &[Condition], generation: Op
     out
 }
 
+/// Below this, `Ready=False` / `Converged=False` (while not `Throttled`) /
+/// `Conflict=True` graduate from "waiting" to "stuck" — long enough to clear a
+/// warmup window, a cooldown, or a transient field-manager race, short enough
+/// that a genuinely wedged band surfaces inside one operator session rather than
+/// requiring a human to notice by polling.
+pub const STUCK_AFTER_SECS: i64 = 1800;
+
+/// Cross-dimension health rollup — the generalization of the storage-only
+/// `Supported=False` terminal (task #167) into a single verdict every band kind
+/// gets for free the moment it carries [`conditions_for`]'s output. Computed
+/// purely from the conditions array + `now`; no new per-band state (each
+/// condition's `last_transition_time` is already stable-while-held).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HealthVerdict {
+    /// Resting (`Converged`/`Throttled`) or freshly adjusting — nothing to do.
+    Healthy,
+    /// `Supported=False` — will NEVER converge without operator action (today:
+    /// only StorageBand's `CapabilityMissing` sets this). Takes priority over
+    /// `Stuck` — an unsupported band isn't "waiting", it structurally can't.
+    Unsupported { reason: String },
+    /// A condition that should be transient has held past [`STUCK_AFTER_SECS`] —
+    /// no longer "waiting on a warmup/cooldown/race", now needs attention.
+    Stuck { condition: String, since_secs: i64, reason: String },
+}
+
+impl HealthVerdict {
+    /// The `BandStatus.health` string — stable, PascalCase, jsonpath-queryable
+    /// (`kubectl get bands -o jsonpath='{.items[?(@.status.health!="Healthy")]}'`).
+    #[must_use]
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::Healthy => "Healthy",
+            Self::Unsupported { .. } => "Unsupported",
+            Self::Stuck { .. } => "Stuck",
+        }
+    }
+}
+
+fn find_condition<'a>(conditions: &'a [Condition], type_: &str) -> Option<&'a Condition> {
+    conditions.iter().find(|c| c.type_ == type_)
+}
+
+/// Seconds between two RFC3339 timestamps (`now - since`), floored at 0. `None`
+/// if either fails to parse — a malformed timestamp must never panic or produce
+/// a bogus (possibly negative-then-huge) duration.
+#[must_use]
+pub fn seconds_since(now: &str, since: &str) -> Option<i64> {
+    let now = chrono::DateTime::parse_from_rfc3339(now).ok()?;
+    let since = chrono::DateTime::parse_from_rfc3339(since).ok()?;
+    Some((now - since).num_seconds().max(0))
+}
+
+/// Classify [`HealthVerdict`] from a band's own conditions array. `now` is an
+/// RFC3339 timestamp (injected, not read internally, so this stays pure/testable
+/// — matches this file's existing `conditions_for`/`upsert_condition` style).
+#[must_use]
+pub fn health_verdict(conditions: &[Condition], now: &str, stuck_after_secs: i64) -> HealthVerdict {
+    if let Some(c) = find_condition(conditions, "Supported") {
+        if c.status != "True" {
+            return HealthVerdict::Unsupported { reason: c.message.clone() };
+        }
+    }
+    // Throttled=True covers warmup / cooldown / deferred-crossing / stale-metric —
+    // all EXPECTED, self-resolving holds. A throttled band is never "stuck", even
+    // if Converged has been False the entire time it's been throttled.
+    if find_condition(conditions, "Throttled").is_some_and(|c| c.status == "True") {
+        return HealthVerdict::Healthy;
+    }
+    for type_ in ["Ready", "Converged"] {
+        if let Some(c) = find_condition(conditions, type_) {
+            if c.status == "False" {
+                if let Some(secs) = seconds_since(now, &c.last_transition_time) {
+                    if secs >= stuck_after_secs {
+                        return HealthVerdict::Stuck { condition: type_.into(), since_secs: secs, reason: c.message.clone() };
+                    }
+                }
+            }
+        }
+    }
+    if let Some(c) = find_condition(conditions, "Conflict") {
+        if c.status == "True" {
+            if let Some(secs) = seconds_since(now, &c.last_transition_time) {
+                if secs >= stuck_after_secs {
+                    return HealthVerdict::Stuck { condition: "Conflict".into(), since_secs: secs, reason: c.message.clone() };
+                }
+            }
+        }
+    }
+    HealthVerdict::Healthy
+}
+
+/// Map a [`HealthVerdict`] to a k8s Event `(severity, reason, note)`, or `None`
+/// for `Healthy` (a healthy band emits nothing — no event flood on every tick).
+/// Mirrors [`event_for`]'s shape so the controller's existing `emit_event` call
+/// pattern extends to health with no new plumbing concept.
+#[must_use]
+pub fn health_event_for(verdict: &HealthVerdict) -> Option<(EventKind, &'static str, String)> {
+    match verdict {
+        HealthVerdict::Healthy => None,
+        HealthVerdict::Unsupported { reason } => {
+            Some((EventKind::Warning, "BandUnsupported", format!("band can never converge without operator action: {reason}")))
+        }
+        HealthVerdict::Stuck { condition, since_secs, reason } => Some((
+            EventKind::Warning,
+            "BandStuck",
+            format!("{condition} has held for {since_secs}s (past the {STUCK_AFTER_SECS}s stuck threshold): {reason}"),
+        )),
+    }
+}
+
+/// Transition-gate for health events, mirroring [`should_emit_event`]: emit only
+/// when the health LABEL changed since the prior tick, so a band parked in
+/// `Stuck` for hours emits one event, not one per reconcile tick.
+#[must_use]
+pub fn should_emit_health_event(verdict: &HealthVerdict, prior_health: Option<&str>) -> bool {
+    Some(verdict.label()) != prior_health
+}
+
 /// Map one reconcile OUTCOME to the typed CR status — every branch observable,
 /// none silent. This is the single source of truth for band status semantics
 /// across both reconcile processes. It reports not just *what happened* (phase +
@@ -412,6 +530,12 @@ pub fn status_for(
     // ── M4: observedGeneration + standard conditions (kubectl wait / health). ──
     s.observed_generation = generation;
     s.conditions = conditions_for(outcome, prior.map_or(&[][..], |p| p.conditions.as_slice()), generation);
+
+    // ── HEALTH ROLLUP — derived purely from the conditions just computed above
+    //    (no new tracked state; last_transition_time is already stable-while-held
+    //    per condition). Same across all 5 band kinds for free.
+    let now = now_rfc3339();
+    s.health = Some(health_verdict(&s.conditions, &now, STUCK_AFTER_SECS).label().to_string());
 
     // ── B: per-band TREND (the over-time view as a k8s object, no Grafana) —
     //    append on a carve or a phase change, cap to the last N. A resting band's
@@ -1319,5 +1443,159 @@ mod replica_tests {
         assert_eq!(replica_next_requeue(&ReplicaReceipt::Applied { from: 2, to: 3 }, &cd), Duration::from_secs(cd.restart_free));
         assert_eq!(replica_next_requeue(&ReplicaReceipt::DeferredScaleIn { from: 3, to: 2 }, &cd), Duration::from_secs(cd.restart_requiring));
         assert_eq!(replica_next_requeue(&ReplicaReceipt::Stale { staleness_secs: 9, current: 2 }, &cd), Duration::from_secs(cd.restart_conditional));
+    }
+}
+
+#[cfg(test)]
+mod health_tests {
+    use super::*;
+
+    fn cond(type_: &str, status: &str, last_transition_time: &str) -> Condition {
+        Condition {
+            type_: type_.into(),
+            status: status.into(),
+            reason: "R".into(),
+            message: format!("{type_} is {status}"),
+            last_transition_time: last_transition_time.into(),
+            observed_generation: None,
+        }
+    }
+
+    const T0: &str = "2026-01-01T00:00:00Z"; // an old transition time
+    const NOW_FAR: &str = "2026-01-01T01:00:00Z"; // T0 + 3600s (past the 1800s threshold)
+    const NOW_NEAR: &str = "2026-01-01T00:10:00Z"; // T0 + 600s (under the threshold)
+
+    #[test]
+    fn seconds_since_computes_a_positive_duration() {
+        assert_eq!(seconds_since(NOW_FAR, T0), Some(3600));
+        assert_eq!(seconds_since(NOW_NEAR, T0), Some(600));
+    }
+
+    #[test]
+    fn seconds_since_returns_none_on_unparsable_input() {
+        assert_eq!(seconds_since("not-a-time", T0), None);
+        assert_eq!(seconds_since(NOW_FAR, "not-a-time"), None);
+    }
+
+    #[test]
+    fn healthy_when_ready_and_converged() {
+        let conditions = vec![
+            cond("Ready", "True", T0),
+            cond("Converged", "True", T0),
+            cond("Throttled", "False", T0),
+            cond("Conflict", "False", T0),
+            cond("Supported", "True", T0),
+        ];
+        assert_eq!(health_verdict(&conditions, NOW_FAR, STUCK_AFTER_SECS), HealthVerdict::Healthy);
+    }
+
+    #[test]
+    fn unsupported_takes_priority_regardless_of_other_conditions() {
+        let conditions = vec![
+            cond("Ready", "False", T0), // would ALSO be Stuck-eligible
+            cond("Supported", "False", T0),
+        ];
+        assert_eq!(
+            health_verdict(&conditions, NOW_FAR, STUCK_AFTER_SECS),
+            HealthVerdict::Unsupported { reason: "Supported is False".into() }
+        );
+    }
+
+    #[test]
+    fn not_yet_stuck_before_the_threshold_elapses() {
+        let conditions = vec![cond("Ready", "False", T0), cond("Supported", "True", T0)];
+        assert_eq!(health_verdict(&conditions, NOW_NEAR, STUCK_AFTER_SECS), HealthVerdict::Healthy);
+    }
+
+    #[test]
+    fn ready_false_past_threshold_is_stuck() {
+        let conditions = vec![cond("Ready", "False", T0), cond("Supported", "True", T0)];
+        assert_eq!(
+            health_verdict(&conditions, NOW_FAR, STUCK_AFTER_SECS),
+            HealthVerdict::Stuck { condition: "Ready".into(), since_secs: 3600, reason: "Ready is False".into() }
+        );
+    }
+
+    #[test]
+    fn converged_false_past_threshold_is_stuck() {
+        let conditions = vec![
+            cond("Ready", "True", T0),
+            cond("Converged", "False", T0),
+            cond("Throttled", "False", T0),
+            cond("Supported", "True", T0),
+        ];
+        assert_eq!(
+            health_verdict(&conditions, NOW_FAR, STUCK_AFTER_SECS),
+            HealthVerdict::Stuck { condition: "Converged".into(), since_secs: 3600, reason: "Converged is False".into() }
+        );
+    }
+
+    #[test]
+    fn throttled_shields_a_long_unconverged_hold_from_stuck() {
+        // warmup/cooldown/deferred-crossing/stale-metric can legitimately hold
+        // Converged=False far past the threshold — Throttled=True must shield it.
+        let conditions = vec![
+            cond("Ready", "True", T0),
+            cond("Converged", "False", T0),
+            cond("Throttled", "True", T0),
+            cond("Supported", "True", T0),
+        ];
+        assert_eq!(health_verdict(&conditions, NOW_FAR, STUCK_AFTER_SECS), HealthVerdict::Healthy);
+    }
+
+    #[test]
+    fn conflict_true_past_threshold_is_stuck() {
+        let conditions = vec![
+            cond("Ready", "True", T0),
+            cond("Converged", "True", T0),
+            cond("Throttled", "False", T0),
+            cond("Conflict", "True", T0),
+            cond("Supported", "True", T0),
+        ];
+        assert_eq!(
+            health_verdict(&conditions, NOW_FAR, STUCK_AFTER_SECS),
+            HealthVerdict::Stuck { condition: "Conflict".into(), since_secs: 3600, reason: "Conflict is True".into() }
+        );
+    }
+
+    #[test]
+    fn missing_conditions_never_panics_and_defaults_healthy() {
+        assert_eq!(health_verdict(&[], NOW_FAR, STUCK_AFTER_SECS), HealthVerdict::Healthy);
+    }
+
+    #[test]
+    fn label_is_stable_pascal_case() {
+        assert_eq!(HealthVerdict::Healthy.label(), "Healthy");
+        assert_eq!(HealthVerdict::Unsupported { reason: String::new() }.label(), "Unsupported");
+        assert_eq!(HealthVerdict::Stuck { condition: String::new(), since_secs: 0, reason: String::new() }.label(), "Stuck");
+    }
+
+    #[test]
+    fn health_event_for_is_none_only_for_healthy() {
+        assert!(health_event_for(&HealthVerdict::Healthy).is_none());
+        assert!(health_event_for(&HealthVerdict::Unsupported { reason: "x".into() }).is_some());
+        assert!(health_event_for(&HealthVerdict::Stuck { condition: "Ready".into(), since_secs: 99, reason: "x".into() }).is_some());
+    }
+
+    #[test]
+    fn should_emit_health_event_dedupes_on_unchanged_label() {
+        let stuck = HealthVerdict::Stuck { condition: "Ready".into(), since_secs: 99, reason: "x".into() };
+        assert!(should_emit_health_event(&stuck, None), "first observation always emits");
+        assert!(should_emit_health_event(&stuck, Some("Healthy")), "transition into Stuck emits");
+        assert!(!should_emit_health_event(&stuck, Some("Stuck")), "unchanged label does not re-emit every tick");
+        assert!(should_emit_health_event(&HealthVerdict::Healthy, Some("Stuck")), "recovering out of Stuck is a transition too");
+    }
+
+    #[test]
+    fn status_for_sets_health_field_end_to_end() {
+        let outcome = TickOutcome {
+            receipt: TickReceipt::Conflict { manager: "someone-else".into() },
+            observed: None,
+            policy: DisruptionPolicy::RestartFreeOnly,
+            dry_run: false,
+        };
+        let s = status_for(&outcome, None, 0, None, CumulativeCounters::ZERO.fold(&entry_for(&outcome)));
+        // fresh band, first tick — under the stuck threshold, so Healthy despite Conflict.
+        assert_eq!(s.health.as_deref(), Some("Healthy"));
     }
 }

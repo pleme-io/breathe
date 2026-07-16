@@ -32,8 +32,9 @@ use breathe_dimensions::{CpuDescriptor, MemoryDescriptor, StorageDescriptor};
 use breathe_kube::KubeCluster;
 use breathe_provider::{BandProvider, ClassCooldowns, DimensionDescriptor, ResourceProvider, Target};
 use breathe_runtime::{
-    apply_env_context, counters_from_status, entry_for, error_status, event_for, metrics_for, next_requeue,
-    now_rfc3339, now_secs, patch_status, rfc3339_in_future, should_emit_event, status_for, suspended_status,
+    apply_env_context, counters_from_status, entry_for, error_status, event_for, health_verdict, metrics_for,
+    next_requeue, now_rfc3339, now_secs, patch_status, rfc3339_in_future, should_emit_event,
+    should_emit_health_event, health_event_for, status_for, suspended_status, STUCK_AFTER_SECS,
     BandLabels, CumulativeCounters, EnvContext, EventKind,
 };
 use breathe_store::{BandRef, DecisionLog, InMemDecisionLog, InMemSampleCache, Sample, SampleCache};
@@ -162,6 +163,31 @@ async fn emit_event<B: Band>(ctx: &Ctx, obj: &B, receipt: &breathe_core::TickRec
     let ev = Event { type_, reason: reason.to_string(), note: Some(note), action: "Reconcile".to_string(), secondary: None };
     if let Err(e) = recorder.publish(ev).await {
         warn!(error = %e, "event publish failed (non-fatal)");
+    }
+}
+
+/// Publish a k8s Event on a health-label transition (Healthy -> Stuck/Unsupported
+/// or vice versa), transition-gated the same way `emit_event` gates on phase — a
+/// band parked in `Stuck` emits exactly once, not every tick. This is the piece
+/// that makes "ensure all bands are always healthy" a reactive property rather
+/// than something an operator/agent has to notice by polling: the existing
+/// NATS/escuta nervous-system path (nats_trigger.rs) already reacts to k8s
+/// Events, so a band going Stuck now nudges its OWN next reconcile sooner with no
+/// new wiring on that side.
+async fn emit_health_event<B: Band>(ctx: &Ctx, obj: &B, conditions: &[breathe_crd::Condition], prior_health: Option<&str>) {
+    let verdict = health_verdict(conditions, &now_rfc3339(), STUCK_AFTER_SECS);
+    if !should_emit_health_event(&verdict, prior_health) {
+        return;
+    }
+    let Some((kind, reason, note)) = health_event_for(&verdict) else { return };
+    let type_ = match kind {
+        EventKind::Normal => EventType::Normal,
+        EventKind::Warning => EventType::Warning,
+    };
+    let recorder = Recorder::new(ctx.client.clone(), ctx.reporter.clone(), obj.object_ref(&()));
+    let ev = Event { type_, reason: reason.to_string(), note: Some(note), action: "Reconcile".to_string(), secondary: None };
+    if let Err(e) = recorder.publish(ev).await {
+        warn!(error = %e, "health event publish failed (non-fatal)");
     }
 }
 
@@ -400,6 +426,7 @@ async fn reconcile<B: Band, D: DimensionDescriptor + Default>(
 
     let outcome = reconcile_one(&input, &provider).await;
     let prior_phase = obj.status().and_then(|s| s.phase.as_deref()).map(String::from);
+    let prior_health = obj.status().and_then(|s| s.health.as_deref()).map(String::from);
     let kind = <B as kube::Resource>::kind(&());
     let band_ref = BandRef::new(&kind, &ns, &name);
     let counters = fold_counters(&ctx, &band_ref, obj.status(), &outcome).await;
@@ -421,8 +448,9 @@ async fn reconcile<B: Band, D: DimensionDescriptor + Default>(
     // Densa) ⇒ no change (the rio default).
     let env_ctx = read_env_context(&ctx.client, &ns).await;
     apply_env_context(&mut status, &env_ctx);
-    info!(dim = %provider.id(), band = %name, target = %target.name, phase = ?status.phase, "reconciled");
+    info!(dim = %provider.id(), band = %name, target = %target.name, phase = ?status.phase, health = ?status.health, "reconciled");
     emit_event(&ctx, obj.as_ref(), &outcome.receipt, status.phase.as_deref(), prior_phase.as_deref()).await;
+    emit_health_event(&ctx, obj.as_ref(), &status.conditions, prior_health.as_deref()).await;
     metrics_for(
         &BandLabels { dim: provider.id().to_string(), namespace: ns.clone(), name: name.clone() },
         &outcome,
