@@ -11,7 +11,7 @@
 
 use async_trait::async_trait;
 
-pub use breathe_control::{Directionality, FieldOwner, Observation};
+pub use breathe_control::{Directionality, FieldOwner, Observation, StorageCapability};
 
 /// Typed category atom — keys the registry, equals the catalog `:name`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -905,6 +905,28 @@ pub trait Cluster: Send + Sync {
         let _ = (target, layout, resource);
         Ok(false)
     }
+
+    /// The discovered STORAGE CAPABILITY of `target`'s backing StorageClass —
+    /// `Ok(None)` for every cluster impl / layout with no PVC/StorageClass
+    /// concept (host/mock, and every non-storage layout). This is the CAPABILITY-
+    /// DISCOVERY half of the fail-fast fix: a `GrowOnly` dimension whose
+    /// StorageClass cannot online-expand and/or cannot report per-volume usage
+    /// would otherwise grind for days (`data-mysql-0-storage` stuck `Conflict`,
+    /// `rustfs-data-storage` stuck `MetricUnrepresentable` — the SAME
+    /// `local-path` root cause, two different phases). `KubeCluster` overrides
+    /// this ONLY for `LimitLayout::PvcRequest`/`ClusterStorage`, exactly like
+    /// `read_resize_restart_free` exists ONLY for `PodResize`. The default is
+    /// deliberately the WEAKEST answer (`None` = "unknown, don't gate") so a
+    /// cluster impl that can't determine the class never spuriously blocks a
+    /// carve — see [`breathe_control::StorageCapability`].
+    async fn read_storage_capability(
+        &self,
+        target: &Target,
+        layout: &LimitLayout,
+    ) -> Result<Option<StorageCapability>, ProviderError> {
+        let _ = (target, layout);
+        Ok(None)
+    }
 }
 
 /// Whether a band's layout has a GOLDEN path to its setpoint — the eclusa
@@ -1124,6 +1146,17 @@ impl<C: Cluster + 'static, D: DimensionDescriptor> ResourceProvider for BandProv
             .read_restarting(target, &layout, self.descriptor.resource())
             .await
             .unwrap_or(false);
+        // CAPABILITY-DISCOVERY READ (the fail-fast fix): only a `PvcRequest`/
+        // `ClusterStorage` layout on `KubeCluster` ever returns `Some` here —
+        // every other layout/impl keeps the default `Ok(None)`. Fail-SAFE like
+        // the throttle read above: a transient StorageClass-lookup failure
+        // (RBAC, a momentary API blip) maps to `None` (unknown ⇒ don't gate),
+        // so a read hiccup never spuriously blocks a carve that was otherwise fine.
+        let storage_capability = self
+            .cluster
+            .read_storage_capability(target, &layout)
+            .await
+            .unwrap_or(None);
         Ok(Observation {
             used: used.value,
             // The provider is HISTORY-FREE: it reports the instantaneous peak (==
@@ -1143,6 +1176,7 @@ impl<C: Cluster + 'static, D: DimensionDescriptor> ResourceProvider for BandProv
             request_floor,
             throttle_signal,
             restarting,
+            storage_capability,
         })
     }
 
@@ -1533,7 +1567,7 @@ mod tests {
 pub mod mock {
     use super::{
         AppliedReceipt, Cluster, FieldOwner, LimitLayout, MetricSource, ProviderError, Sample,
-        SsaPatch, Target,
+        SsaPatch, StorageCapability, Target,
     };
     use async_trait::async_trait;
     use std::sync::Mutex;
@@ -1566,6 +1600,11 @@ pub mod mock {
         /// `throttle_signal` instead of `used` (so a CPU descriptor's throttle read is
         /// driveable end-to-end against the mock).
         pub throttle_source: Option<MetricSource>,
+        /// What `read_storage_capability` returns (default `None` = unknown, don't
+        /// gate). Set it to model a discovered StorageClass — `Some(cap)` where
+        /// `cap.is_supported()` is false drives the `TickPlan::CapabilityMissing`
+        /// gate end-to-end against the mock.
+        pub storage_capability: Option<StorageCapability>,
         applied: Mutex<Vec<SsaPatch>>,
     }
 
@@ -1582,6 +1621,7 @@ pub mod mock {
                 throttle_signal: 0,
                 restarting: false,
                 throttle_source: None,
+                storage_capability: None,
                 applied: Mutex::new(Vec::new()),
             }
         }
@@ -1627,6 +1667,14 @@ pub mod mock {
         #[must_use]
         pub fn with_read_used_error(mut self, e: ProviderError) -> Self {
             self.read_used_error = Some(e);
+            self
+        }
+        /// Model a discovered StorageClass capability — set `Some(cap)` where
+        /// `cap.is_supported()` is false to drive `TickPlan::CapabilityMissing`
+        /// end-to-end against the mock (the local-path fail-fast fix).
+        #[must_use]
+        pub fn with_storage_capability(mut self, cap: Option<StorageCapability>) -> Self {
+            self.storage_capability = cap;
             self
         }
         #[must_use]
@@ -1697,6 +1745,13 @@ pub mod mock {
             _resource: &str,
         ) -> Result<bool, ProviderError> {
             Ok(self.restarting)
+        }
+        async fn read_storage_capability(
+            &self,
+            _t: &Target,
+            _layout: &LimitLayout,
+        ) -> Result<Option<StorageCapability>, ProviderError> {
+            Ok(self.storage_capability.clone())
         }
     }
 }

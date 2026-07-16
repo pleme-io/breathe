@@ -1462,6 +1462,53 @@ pub enum Directionality {
     ObserveOnly,
 }
 
+/// The STORAGE CAPABILITY CONTRACT — what a `GrowOnly` dimension's backing
+/// StorageClass can actually do, discovered once per tick
+/// (`Cluster::read_storage_capability`) and folded into
+/// [`Observation::storage_capability`]. `None` on the `Observation` (every
+/// non-storage dimension, and a storage read that couldn't determine the
+/// class) means "not applicable / unknown" — the [`plan_tick`] gate is
+/// skipped entirely, byte-identical to before this contract existed. `Some`
+/// means the class WAS determined, and [`StorageCapability::is_supported`]
+/// decides whether breathe can safely converge on it at all.
+///
+/// The two properties are independent failure modes with the SAME symptom (a
+/// `StorageBand` that never converges) but different root causes: no
+/// `allowVolumeExpansion` means a `Grow` decision would apply a patch that
+/// never actually resizes anything (the CSI driver silently ignores it or the
+/// apiserver rejects it); no per-volume metrics means `used`/`capacity` are
+/// not about THIS entity at all — the `local-path`/`host-path` case, where
+/// `kubelet_volume_stats_used_bytes` reports the whole node filesystem, not
+/// the volume (the same lie `TickPlan::Unrepresentable` already catches when
+/// it manifests as `used > capacity`; a StorageClass on the denylist is
+/// caught EARLIER, before a bad sample even has to land). Either alone is
+/// fatal to convergence, so `is_supported` requires both.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StorageCapability {
+    /// `StorageClass.allowVolumeExpansion` — `false` means an online resize
+    /// is not honored by the CSI driver; a `Grow` carve would be a no-op.
+    pub volume_expansion: bool,
+    /// `false` for a provisioner known to report NODE-WIDE (not per-volume)
+    /// usage via `kubelet_volume_stats_*` (a small typed denylist — see the
+    /// `KubeCluster` impl). `true` for every other provisioner (the honest
+    /// default: absence from the denylist is not proof of correctness, but a
+    /// StorageClass we have no reason to distrust).
+    pub per_volume_metrics: bool,
+    /// `StorageClass.provisioner` — carried through to the CRD status /
+    /// `TickPlan::CapabilityMissing` so the operator sees WHICH provisioner
+    /// is unsupported (and can act — e.g. switch to `ebs-gp3`).
+    pub provisioner: String,
+}
+
+impl StorageCapability {
+    /// Both properties breathe needs to safely carve this StorageClass. See
+    /// the type doc for why either alone is fatal to convergence.
+    #[must_use]
+    pub fn is_supported(&self) -> bool {
+        self.volume_expansion && self.per_volume_metrics
+    }
+}
+
 /// The dimension-agnostic projection a provider's `observe` yields: every
 /// resident problem category reduces to `(used, capacity)` in its base unit
 /// (bytes / bytes / milli-cores) plus the field-managers currently owning the
@@ -1538,6 +1585,15 @@ pub struct Observation {
     /// `restarting: true`). `false` = stable / not applicable. The reconcile layer
     /// sets it from the target's pod restart status.
     pub restarting: bool,
+    /// The discovered STORAGE CAPABILITY of this target's backing
+    /// StorageClass — `None` for every non-storage dimension (the default),
+    /// and for a storage read that couldn't determine the class (unknown ⇒
+    /// don't gate, fail-safe). `Some` drives the [`plan_tick`] capability
+    /// gate (`TickPlan::CapabilityMissing`), checked BEFORE the single-writer
+    /// guard so a `Conflict`/`Unrepresentable`-inducing StorageClass gap is
+    /// caught on the very first tick, regardless of field-manager noise. See
+    /// [`StorageCapability`].
+    pub storage_capability: Option<StorageCapability>,
 }
 
 /// The WARMUP GATE: hold a SHRINK while the workload is still warming up. A
@@ -1648,6 +1704,20 @@ pub enum TickPlan {
     /// (storage), where `used ≤ capacity` is an invariant a real gauge always honours
     /// (reserved blocks keep even a 100%-full filesystem strictly below capacity).
     Unrepresentable { used: u64, capacity: u64 },
+    /// A `GrowOnly` dimension's backing StorageClass cannot support what
+    /// breathe needs to safely carve it — either it can't online-expand
+    /// (`allowVolumeExpansion: false`, so a `Grow` would apply a patch that
+    /// never actually resizes anything) or its provisioner doesn't report
+    /// PER-VOLUME usage (`local-path`/`host-path`, whose metric is the
+    /// `Unrepresentable` lie above, structurally). A typed, observable,
+    /// NEVER-carves terminal — checked FIRST, BEFORE the single-writer guard,
+    /// so this is reached on the very FIRST tick regardless of who else owns
+    /// the field. This collapses what would otherwise be two different
+    /// phases for the IDENTICAL root cause (`Conflict` when a competing
+    /// manager owns the field, `Unrepresentable` when it doesn't) into one:
+    /// the operator sees "this StorageClass is unsupported" instead of
+    /// chasing a field-ownership red herring.
+    CapabilityMissing { volume_expansion: bool, per_volume_metrics: bool, provisioner: String },
     /// A SHRINK is warranted but the workload is still in its warmup window — held
     /// + surfaced. The idle reading is not yet proof the slack is safe to reclaim
     /// (the un-observed-boot-spike OOM); the band waits until a full duty cycle has
@@ -1674,13 +1744,23 @@ pub enum TickPlan {
     Observe { decision: Decision },
 }
 
-/// The pure per-tick planner, embodying the Viggy beats in order: Observe (the
-/// passed `obs`) → Diff/guard (field-granular single-writer, fail-loud) →
-/// Classify/Decide (the proven band law) → directionality gate → **freshness
-/// gate** → cooldown gate. No I/O, no clock, no cluster — fully unit-testable.
-/// The single-writer guard runs FIRST so the controller never computes a
-/// decision for a field it doesn't own; the freshness gate runs before any
-/// mutation so a stale sample can never carve in the wrong direction.
+/// The pure per-tick planner, embodying the Viggy beats in order: **Step 0 —
+/// capability gate** (a `GrowOnly` dimension's StorageClass must actually
+/// support what breathe needs to do) → Observe (the passed `obs`) →
+/// Diff/guard (field-granular single-writer, fail-loud) → Classify/Decide
+/// (the proven band law) → directionality gate → **freshness gate** →
+/// cooldown gate. No I/O, no clock, no cluster — fully unit-testable.
+///
+/// The capability gate runs BEFORE EVEN the single-writer guard: a
+/// StorageClass that cannot online-expand and/or cannot report per-volume
+/// usage can never converge no matter who owns the field or how fresh the
+/// sample is, so naming that FIRST means the operator always sees the one
+/// true cause (`CapabilityMissing`) instead of whichever red herring
+/// (`Conflict` / `Unrepresentable`) the field-manager/metric noise happened
+/// to produce for THIS target. The single-writer guard then runs first among
+/// what remains, so the controller never computes a decision for a field it
+/// doesn't own; the freshness gate runs before any mutation so a stale
+/// sample can never carve in the wrong direction.
 #[must_use]
 pub fn plan_tick(
     obs: &Observation,
@@ -1692,6 +1772,21 @@ pub fn plan_tick(
     max_staleness_secs: u64,
     predictive: Option<(i64, f64)>,
 ) -> TickPlan {
+    // STEP 0 — CAPABILITY GATE. Scoped to `GrowOnly` (storage is the only
+    // dimension that ever populates `storage_capability`); `None` (every
+    // non-storage dimension, and a storage read that couldn't determine the
+    // class) skips this entirely — behaviour-identical to before this gate
+    // existed.
+    if dir == Directionality::GrowOnly
+        && let Some(cap) = &obs.storage_capability
+        && !cap.is_supported()
+    {
+        return TickPlan::CapabilityMissing {
+            volume_expansion: cap.volume_expansion,
+            per_volume_metrics: cap.per_volume_metrics,
+            provisioner: cap.provisioner.clone(),
+        };
+    }
     if let Some(manager) = competing_field_manager(&obs.owners, our_manager, our_field) {
         return TickPlan::Conflict { manager };
     }
@@ -2336,12 +2431,12 @@ mod tests {
     fn obs(used: u64, cap: u64, owners: Vec<FieldOwner>) -> Observation {
         // peak == used: no trailing-window history ⇒ instantaneous-equivalent.
         // observed_for u64::MAX ⇒ past warmup (warmup is exercised in its own tests).
-        Observation { used, peak_used: used, capacity: cap, owners, staleness_secs: 0, memory_shrink_restart_free: false, observed_for_secs: u64::MAX, request_floor: 0, throttle_signal: 0, restarting: false }
+        Observation { used, peak_used: used, capacity: cap, owners, staleness_secs: 0, memory_shrink_restart_free: false, observed_for_secs: u64::MAX, request_floor: 0, throttle_signal: 0, restarting: false, storage_capability: None }
     }
     /// An observation with an explicit trailing-window peak (peak ≥ used).
     #[allow(dead_code)] // a shared test helper retained for peak-keyed observations.
     fn obs_peak(used: u64, peak: u64, cap: u64, owners: Vec<FieldOwner>) -> Observation {
-        Observation { used, peak_used: peak.max(used), capacity: cap, owners, staleness_secs: 0, memory_shrink_restart_free: false, observed_for_secs: u64::MAX, request_floor: 0, throttle_signal: 0, restarting: false }
+        Observation { used, peak_used: peak.max(used), capacity: cap, owners, staleness_secs: 0, memory_shrink_restart_free: false, observed_for_secs: u64::MAX, request_floor: 0, throttle_signal: 0, restarting: false, storage_capability: None }
     }
     fn ours() -> Vec<FieldOwner> {
         vec![owns("breathe-memory", MEMORY_LIMIT_FIELD)]
@@ -2427,11 +2522,99 @@ mod tests {
         }
     }
 
+    // ── STORAGE CAPABILITY GATE (the fail-fast fix — Step 0 of plan_tick) ────────
+
+    fn unsupported_cap() -> StorageCapability {
+        StorageCapability { volume_expansion: false, per_volume_metrics: false, provisioner: "rancher.io/local-path".into() }
+    }
+    fn supported_cap() -> StorageCapability {
+        StorageCapability { volume_expansion: true, per_volume_metrics: true, provisioner: "ebs.csi.aws.com".into() }
+    }
+
+    #[test]
+    fn storage_capability_requires_both_properties() {
+        assert!(supported_cap().is_supported());
+        assert!(!unsupported_cap().is_supported());
+        // either property alone missing is still unsupported — no partial credit.
+        assert!(!StorageCapability { volume_expansion: false, per_volume_metrics: true, provisioner: String::new() }.is_supported());
+        assert!(!StorageCapability { volume_expansion: true, per_volume_metrics: false, provisioner: String::new() }.is_supported());
+    }
+
+    #[test]
+    fn plan_flags_an_unsupported_storage_class_as_capability_missing() {
+        // the rustfs-data-storage case: no competing owner, so BEFORE this gate it
+        // would fall through to whatever the metric happened to say — now it never
+        // reaches that far.
+        let o = Observation { storage_capability: Some(unsupported_cap()), ..obs(GI, GI, ours()) };
+        match plan_tick(&o, &cfg(), Directionality::GrowOnly, false, "breathe-memory", MEMORY_LIMIT_FIELD, FRESH, None) {
+            TickPlan::CapabilityMissing { volume_expansion, per_volume_metrics, provisioner } => {
+                assert!(!volume_expansion);
+                assert!(!per_volume_metrics);
+                assert_eq!(provisioner, "rancher.io/local-path");
+            }
+            p => panic!("expected CapabilityMissing, got {p:?}"),
+        }
+    }
+
+    #[test]
+    fn plan_capability_gate_runs_before_the_single_writer_guard() {
+        // THE collapse this fix exists for: the data-mysql-0-storage case — a
+        // competing field manager (k3s's own controller-manager) owns the field,
+        // which WITHOUT this gate would report Conflict. With the same unsupported
+        // StorageClass, both mysql's (Conflict-shaped) and rustfs's
+        // (Unrepresentable-shaped) targets must land on the IDENTICAL
+        // CapabilityMissing terminal — never Conflict.
+        let competing_owner = vec![owns("k3s-controller-manager", "spec.resources.requests.storage")];
+        let o = Observation { storage_capability: Some(unsupported_cap()), ..obs(GI, GI, competing_owner) };
+        assert_eq!(
+            plan_tick(&o, &cfg(), Directionality::GrowOnly, false, "breathe-storage", "spec.resources.requests.storage", FRESH, None),
+            TickPlan::CapabilityMissing {
+                volume_expansion: false,
+                per_volume_metrics: false,
+                provisioner: "rancher.io/local-path".into(),
+            }
+        );
+    }
+
+    #[test]
+    fn plan_never_gates_a_supported_storage_class() {
+        // a StorageClass that DOES support both properties must carve normally —
+        // the gate is additive, never a regression on the golden path.
+        let o = Observation { storage_capability: Some(supported_cap()), ..obs(GI, GI, ours()) };
+        match plan_tick(&o, &cfg(), Directionality::GrowOnly, false, "breathe-memory", MEMORY_LIMIT_FIELD, FRESH, None) {
+            TickPlan::Act { decision: Decision::Grow { .. } } => {}
+            p => panic!("expected Act(Grow) for a supported StorageClass, got {p:?}"),
+        }
+    }
+
+    #[test]
+    fn plan_never_gates_a_bidirectional_dimension_even_with_an_unsupported_capability() {
+        // defensive scoping: the gate is GrowOnly-only (storage is the only
+        // dimension that ever populates storage_capability) — a hypothetical
+        // Bidirectional observation carrying `Some` must never be gated.
+        let o = Observation { storage_capability: Some(unsupported_cap()), ..obs(950 * MI, GI, ours()) };
+        match plan_tick(&o, &cfg(), Directionality::Bidirectional, false, "breathe-memory", MEMORY_LIMIT_FIELD, FRESH, None) {
+            TickPlan::Act { decision: Decision::Grow { .. } } => {}
+            p => panic!("expected Act(Grow) — the capability gate is scoped to GrowOnly, got {p:?}"),
+        }
+    }
+
+    #[test]
+    fn plan_never_gates_when_capability_is_unknown() {
+        // `None` (every non-storage dimension, and a storage read that couldn't
+        // determine the class) is byte-identical to before this gate existed.
+        let o = Observation { storage_capability: None, ..obs(GI, GI, ours()) };
+        match plan_tick(&o, &cfg(), Directionality::GrowOnly, false, "breathe-memory", MEMORY_LIMIT_FIELD, FRESH, None) {
+            TickPlan::Act { decision: Decision::Grow { .. } } => {}
+            p => panic!("expected Act(Grow) for an unknown (None) capability, got {p:?}"),
+        }
+    }
+
     #[test]
     fn plan_refuses_to_mutate_on_stale_metric() {
         // util 0.95 would Act(Grow), but a sample older than the bound must never
         // carve — the never-OOM proof holds only on a fresh metric.
-        let stale = Observation { used: 950 * MI, peak_used: 950 * MI, capacity: GI, owners: ours(), staleness_secs: 120, memory_shrink_restart_free: false, observed_for_secs: u64::MAX, request_floor: 0, throttle_signal: 0, restarting: false };
+        let stale = Observation { used: 950 * MI, peak_used: 950 * MI, capacity: GI, owners: ours(), staleness_secs: 120, memory_shrink_restart_free: false, observed_for_secs: u64::MAX, request_floor: 0, throttle_signal: 0, restarting: false, storage_capability: None };
         match plan_tick(&stale, &cfg(), Directionality::Bidirectional, false, "breathe-memory", MEMORY_LIMIT_FIELD, FRESH, None) {
             TickPlan::Stale { staleness_secs: 120, decision: Decision::Grow { .. } } => {}
             p => panic!("expected Stale(Grow), got {p:?}"),
@@ -2932,7 +3115,7 @@ mod tests {
         let mut trail = Vec::with_capacity(samples.len());
         for &used in samples {
             peak = update_peak(peak, used, decay);
-            let o = Observation { used, peak_used: peak, capacity: limit, owners: ours(), staleness_secs: 0, memory_shrink_restart_free: false, observed_for_secs: u64::MAX, request_floor: 0, throttle_signal: 0, restarting: false };
+            let o = Observation { used, peak_used: peak, capacity: limit, owners: ours(), staleness_secs: 0, memory_shrink_restart_free: false, observed_for_secs: u64::MAX, request_floor: 0, throttle_signal: 0, restarting: false, storage_capability: None };
             match plan_tick(&o, c, Directionality::Bidirectional, false, "breathe-memory", MEMORY_LIMIT_FIELD, FRESH, None) {
                 TickPlan::Act { decision: Decision::Grow { to, .. } | Decision::Shrink { to, .. } } => limit = to,
                 _ => {}
@@ -3002,7 +3185,7 @@ mod tests {
                             // — the floor must hold the peak at least the tick it is seen.
                             peak = update_peak(peak, used, 0.0); // = max(peak, used)
                             let floor = ((peak as f64 / c.setpoint).ceil() as u64).max(c.floor_bytes);
-                            let o = Observation { used, peak_used: peak, capacity: limit, owners: ours(), staleness_secs: 0, memory_shrink_restart_free: false, observed_for_secs: u64::MAX, request_floor: 0, throttle_signal: 0, restarting: false };
+                            let o = Observation { used, peak_used: peak, capacity: limit, owners: ours(), staleness_secs: 0, memory_shrink_restart_free: false, observed_for_secs: u64::MAX, request_floor: 0, throttle_signal: 0, restarting: false, storage_capability: None };
                             match plan_tick(&o, &c, Directionality::Bidirectional, false, "breathe-memory", MEMORY_LIMIT_FIELD, FRESH, None) {
                                 TickPlan::Act { decision: Decision::Shrink { to, .. } } => {
                                     assert!(
@@ -3035,7 +3218,7 @@ mod tests {
             d => panic!("expected a request-floor-bound Shrink/NoSafeShrink, got {d:?}"),
         }
         // and the request floor composes with the peak floor (max of the two binds).
-        let o = Observation { used: 100 * MI, peak_used: GI + 200 * MI, capacity: 4 * GI, owners: ours(), staleness_secs: 0, memory_shrink_restart_free: false, observed_for_secs: u64::MAX, request_floor: 0, throttle_signal: 0, restarting: false };
+        let o = Observation { used: 100 * MI, peak_used: GI + 200 * MI, capacity: 4 * GI, owners: ours(), staleness_secs: 0, memory_shrink_restart_free: false, observed_for_secs: u64::MAX, request_floor: 0, throttle_signal: 0, restarting: false, storage_capability: None };
         if let TickPlan::Act { decision: Decision::Shrink { to, .. } } =
             plan_tick(&o, &c, Directionality::Bidirectional, false, "breathe-memory", MEMORY_LIMIT_FIELD, FRESH, None)
         {
@@ -3365,7 +3548,7 @@ mod tests {
             for &observed_for in &[0u64, 1, 60, 300, 599] {
                 let o = Observation {
                     used, peak_used: used, capacity: 2 * GI, owners: ours(),
-                    staleness_secs: 0, memory_shrink_restart_free: false, observed_for_secs: observed_for, request_floor: 0, throttle_signal: 0, restarting: false,
+                    staleness_secs: 0, memory_shrink_restart_free: false, observed_for_secs: observed_for, request_floor: 0, throttle_signal: 0, restarting: false, storage_capability: None,
                 };
                 let plan = plan_tick(&o, &c, Directionality::Bidirectional, false, "breathe-memory", MEMORY_LIMIT_FIELD, FRESH, None);
                 assert!(
@@ -3379,7 +3562,7 @@ mod tests {
         // past warmup, the same idle workload DOES shrink (the gate only delays).
         let warm = Observation {
             used: 100 * MI, peak_used: 100 * MI, capacity: 2 * GI, owners: ours(),
-            staleness_secs: 0, memory_shrink_restart_free: false, observed_for_secs: 601, request_floor: 0, throttle_signal: 0, restarting: false,
+            staleness_secs: 0, memory_shrink_restart_free: false, observed_for_secs: 601, request_floor: 0, throttle_signal: 0, restarting: false, storage_capability: None,
         };
         assert!(
             matches!(plan_tick(&warm, &c, Directionality::Bidirectional, false, "breathe-memory", MEMORY_LIMIT_FIELD, FRESH, None), TickPlan::Act { decision: Decision::Shrink { .. } }),
@@ -3395,7 +3578,7 @@ mod tests {
         // util 0.93 @ 1Gi, restarted 5s ago (deep in warmup) ⇒ STILL grows.
         let booting = Observation {
             used: 950 * MI, peak_used: 950 * MI, capacity: GI, owners: ours(),
-            staleness_secs: 0, memory_shrink_restart_free: false, observed_for_secs: 5, request_floor: 0, throttle_signal: 0, restarting: false,
+            staleness_secs: 0, memory_shrink_restart_free: false, observed_for_secs: 5, request_floor: 0, throttle_signal: 0, restarting: false, storage_capability: None,
         };
         assert!(
             matches!(plan_tick(&booting, &c, Directionality::Bidirectional, false, "breathe-memory", MEMORY_LIMIT_FIELD, FRESH, None), TickPlan::Act { decision: Decision::Grow { .. } }),
@@ -3421,7 +3604,7 @@ mod tests {
             peak = update_peak(peak, used, 0.99);
             let o = Observation {
                 used, peak_used: peak, capacity: limit, owners: ours(),
-                staleness_secs: 0, memory_shrink_restart_free: false, observed_for_secs: observed_for, request_floor: 0, throttle_signal: 0, restarting: false,
+                staleness_secs: 0, memory_shrink_restart_free: false, observed_for_secs: observed_for, request_floor: 0, throttle_signal: 0, restarting: false, storage_capability: None,
             };
             match plan_tick(&o, &c, Directionality::Bidirectional, false, "breathe-memory", MEMORY_LIMIT_FIELD, FRESH, None) {
                 TickPlan::Act { decision: Decision::Shrink { to, .. } } => { if i < 2 { ever_shrank_before_spike = true; } limit = to; }
@@ -3445,7 +3628,7 @@ mod tests {
         Observation {
             used, peak_used: used, capacity: cap, owners: ours(),
             staleness_secs: 0, memory_shrink_restart_free: false, observed_for_secs: u64::MAX,
-            request_floor: 0, throttle_signal: throttle, restarting,
+            request_floor: 0, throttle_signal: throttle, restarting, storage_capability: None,
         }
     }
 
