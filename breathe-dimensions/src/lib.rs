@@ -42,9 +42,20 @@ fn pod_layout(target: &Target, in_place: bool) -> LimitLayout {
 pub struct MemoryDescriptor {
     /// Carve the live pods in-place (no restart) instead of rolling the template.
     pub in_place: bool,
+    /// The owning `MemoryBand` CR's own `(namespace, name)` — set via
+    /// [`DimensionDescriptor::set_cr_identity`] by the controller right after
+    /// construction. Scopes the SSA field-manager string per-CR (task #200) so two
+    /// `MemoryBand` CRs uncoordinatedly targeting the SAME object become two
+    /// DIFFERENT k8s field managers, turning SSA's own conflict detection into a
+    /// real backstop instead of being structurally blind behind one shared static
+    /// manager string. `None` (never bound) keeps the byte-identical
+    /// dimension-wide `"breathe/memory"` manager.
+    cr_identity: Option<(String, String)>,
 }
 impl DimensionDescriptor for MemoryDescriptor {
-    fn with_resize_capability(resize_capable: bool) -> Self { Self { in_place: resize_capable } }
+    fn with_resize_capability(resize_capable: bool) -> Self {
+        Self { in_place: resize_capable, cr_identity: None }
+    }
     fn id(&self) -> DimensionId { DimensionId::Memory }
     fn directionality(&self) -> Directionality { Directionality::Bidirectional }
     fn field_manager(&self) -> &'static str { "breathe/memory" }
@@ -65,6 +76,12 @@ impl DimensionDescriptor for MemoryDescriptor {
     fn suppressed_demand(&self) -> SuppressedDemand {
         SuppressedDemand::WorkingSetExceedsSoftLimit
     }
+    fn set_cr_identity(&mut self, namespace: String, name: String) {
+        self.cr_identity = Some((namespace, name));
+    }
+    fn field_manager_scope(&self) -> Option<(&str, &str)> {
+        self.cr_identity.as_ref().map(|(ns, name)| (ns.as_str(), name.as_str()))
+    }
 }
 
 /// **CPU** — bidirectional; carve `limits.cpu` (millicores). `used` is the live
@@ -74,9 +91,20 @@ impl DimensionDescriptor for MemoryDescriptor {
 pub struct CpuDescriptor {
     /// Carve the live pods in-place (no restart) instead of rolling the template.
     pub in_place: bool,
+    /// The owning `CpuBand` CR's own `(namespace, name)` — set via
+    /// [`DimensionDescriptor::set_cr_identity`] by the controller right after
+    /// construction. Scopes the SSA field-manager string per-CR (task #200):
+    /// confirmed LIVE that `pangea-operator` and `pangea-operator-cpu`, two
+    /// DIFFERENT `CpuBand` CRs, both target the same Deployment via the
+    /// identical static `"breathe/cpu"` manager string, so k8s's own SSA
+    /// conflict detection was structurally blind to the double-writer. `None`
+    /// (never bound) keeps the byte-identical dimension-wide manager.
+    cr_identity: Option<(String, String)>,
 }
 impl DimensionDescriptor for CpuDescriptor {
-    fn with_resize_capability(resize_capable: bool) -> Self { Self { in_place: resize_capable } }
+    fn with_resize_capability(resize_capable: bool) -> Self {
+        Self { in_place: resize_capable, cr_identity: None }
+    }
     fn id(&self) -> DimensionId { DimensionId::Cpu }
     fn directionality(&self) -> Directionality { Directionality::Bidirectional }
     fn field_manager(&self) -> &'static str { "breathe/cpu" }
@@ -136,13 +164,28 @@ impl DimensionDescriptor for CpuDescriptor {
             r#"ceil(sum(rate(container_cpu_cfs_throttled_periods_total{{{sel},container!=""}}[2m])))"#
         )))
     }
+    fn set_cr_identity(&mut self, namespace: String, name: String) {
+        self.cr_identity = Some((namespace, name));
+    }
+    fn field_manager_scope(&self) -> Option<(&str, &str)> {
+        self.cr_identity.as_ref().map(|(ns, name)| (ns.as_str(), name.as_str()))
+    }
 }
 
 /// **Storage** — grow-only (data persists); grow PVC `requests.storage` (CSI
 /// online-resize). `used` is volume stats via PromQL (no metrics-server analog).
 /// The shrink path is mechanically disabled by the core's directionality clamp.
 #[derive(Default)]
-pub struct StorageDescriptor;
+pub struct StorageDescriptor {
+    /// The owning `StorageBand` CR's own `(namespace, name)` — set via
+    /// [`DimensionDescriptor::set_cr_identity`] by the controller right after
+    /// construction. Scopes the SSA field-manager string per-CR (task #200's
+    /// class): two `StorageBand` CRs targeting the same PVC/CNPG `Cluster` become
+    /// two DIFFERENT k8s field managers instead of sharing one static
+    /// `"breathe/storage"` manager SSA's conflict detection can't see through.
+    /// `None` (never bound) keeps the byte-identical dimension-wide manager.
+    cr_identity: Option<(String, String)>,
+}
 impl DimensionDescriptor for StorageDescriptor {
     fn id(&self) -> DimensionId { DimensionId::Storage }
     fn directionality(&self) -> Directionality { Directionality::GrowOnly }
@@ -171,6 +214,12 @@ impl DimensionDescriptor for StorageDescriptor {
     /// non-issue by construction (the down-cliff is unrepresentable). No throttle read.
     fn suppressed_demand(&self) -> SuppressedDemand {
         SuppressedDemand::GrowOnly
+    }
+    fn set_cr_identity(&mut self, namespace: String, name: String) {
+        self.cr_identity = Some((namespace, name));
+    }
+    fn field_manager_scope(&self) -> Option<(&str, &str)> {
+        self.cr_identity.as_ref().map(|(ns, name)| (ns.as_str(), name.as_str()))
     }
 }
 
@@ -220,7 +269,10 @@ mod tests {
         // to roll, so memory/cpu ALWAYS go PodResize (in-place, zero restart) — even
         // with in_place=false — and the metric reads the SAME label selector.
         let r = runner();
-        for d in [MemoryDescriptor { in_place: false }, MemoryDescriptor { in_place: true }] {
+        for d in [
+            MemoryDescriptor { in_place: false, ..Default::default() },
+            MemoryDescriptor { in_place: true, ..Default::default() },
+        ] {
             assert!(matches!(d.layout(&r), LimitLayout::PodResize { container: Some(c) } if c == "runner"));
             match d.metric_source(&r) {
                 MetricSource::PodMetricsMax { resource, pod_prefix, selector } => {
@@ -275,8 +327,8 @@ mod tests {
         // memory + storage declare their own variants and carry NO throttle read.
         assert_eq!(MemoryDescriptor::default().suppressed_demand(), SuppressedDemand::WorkingSetExceedsSoftLimit);
         assert!(MemoryDescriptor::default().throttle_source(&deploy()).is_none(), "memory has no separate throttle read");
-        assert_eq!(StorageDescriptor.suppressed_demand(), SuppressedDemand::GrowOnly);
-        assert!(StorageDescriptor.throttle_source(&deploy()).is_none(), "storage is grow-only — no throttle read");
+        assert_eq!(StorageDescriptor::default().suppressed_demand(), SuppressedDemand::GrowOnly);
+        assert!(StorageDescriptor::default().throttle_source(&deploy()).is_none(), "storage is grow-only — no throttle read");
     }
 
     #[test]
@@ -289,14 +341,14 @@ mod tests {
         use breathe_provider::DisruptionClass;
         let t = deploy();
         for layout in [
-            MemoryDescriptor { in_place: true }.layout(&t),
-            CpuDescriptor { in_place: true }.layout(&t),
-            StorageDescriptor.layout(&t),
+            MemoryDescriptor { in_place: true, ..Default::default() }.layout(&t),
+            CpuDescriptor { in_place: true, ..Default::default() }.layout(&t),
+            StorageDescriptor::default().layout(&t),
         ] {
             assert_ne!(layout.disruption_class(), DisruptionClass::RestartRequiring);
         }
         // storage is the strongest: fully RestartFree.
-        assert_eq!(StorageDescriptor.layout(&t).disruption_class(), DisruptionClass::RestartFree);
+        assert_eq!(StorageDescriptor::default().layout(&t).disruption_class(), DisruptionClass::RestartFree);
     }
 
     #[test]
@@ -315,17 +367,17 @@ mod tests {
         // in_place memory on a Deployment → PodResize (zero-restart); a CNPG
         // Cluster still goes top-level (CNPG owns its own resize). Default
         // (in_place: false) keeps the template-roll behaviour unchanged.
-        let inplace = MemoryDescriptor { in_place: true };
+        let inplace = MemoryDescriptor { in_place: true, ..Default::default() };
         assert!(matches!(inplace.layout(&deploy()), LimitLayout::PodResize { .. }));
         assert_eq!(inplace.layout(&cnpg()), LimitLayout::ClusterTopLevel);
         assert!(matches!(MemoryDescriptor::default().layout(&deploy()), LimitLayout::PodTemplate { .. }));
         // cpu likewise.
-        assert!(matches!(CpuDescriptor { in_place: true }.layout(&deploy()), LimitLayout::PodResize { .. }));
+        assert!(matches!(CpuDescriptor { in_place: true, ..Default::default() }.layout(&deploy()), LimitLayout::PodResize { .. }));
     }
 
     #[test]
     fn storage_is_grow_only_kind_aware_promql() {
-        let d = StorageDescriptor;
+        let d = StorageDescriptor::default();
         assert_eq!(d.directionality(), Directionality::GrowOnly);
         // A raw PVC target carves its own requests.storage, keyed on its exact name.
         let pvc = Target { namespace: "drive".into(), name: "data-garage-0".into(), kind: "PersistentVolumeClaim".into(), api_version: "v1".into(), container: None, pod_selector: None };
@@ -346,5 +398,36 @@ mod tests {
             }
             other => panic!("storage uses PromQL, got {other:?}"),
         }
+    }
+
+    /// TASK #200 — the field-manager double-writer fix: a descriptor never bound
+    /// to a CR identity keeps the byte-identical dimension-wide manager string
+    /// (`field_manager_scope() == None`); once bound, two DIFFERENT CRs of the
+    /// SAME dimension produce two DIFFERENT scopes. Confirmed LIVE for
+    /// `CpuBand`: `pangea-operator` and `pangea-operator-cpu` both target the
+    /// same Deployment through the identical static `"breathe/cpu"` manager, so
+    /// k8s's own SSA conflict detection was structurally blind to the
+    /// double-writer — this is what makes it a real backstop instead.
+    #[test]
+    fn cr_identity_scopes_the_field_manager_only_when_bound_and_differs_per_cr() {
+        let unbound = CpuDescriptor::default();
+        assert_eq!(unbound.field_manager_scope(), None, "never bound ⇒ dimension-wide manager, unchanged");
+
+        let mut a = CpuDescriptor::default();
+        a.set_cr_identity("rio".into(), "pangea-operator".into());
+        let mut b = CpuDescriptor::default();
+        b.set_cr_identity("rio".into(), "pangea-operator-cpu".into());
+        assert_eq!(a.field_manager_scope(), Some(("rio", "pangea-operator")));
+        assert_eq!(b.field_manager_scope(), Some(("rio", "pangea-operator-cpu")));
+        assert_ne!(a.field_manager_scope(), b.field_manager_scope(), "two CRs of the same dimension must scope DIFFERENTLY");
+
+        // the SAME mechanism, wired on every dimension prone to the class (not just cpu).
+        let mut m = MemoryDescriptor::default();
+        m.set_cr_identity("rio".into(), "my-memory-band".into());
+        assert_eq!(m.field_manager_scope(), Some(("rio", "my-memory-band")));
+
+        let mut s = StorageDescriptor::default();
+        s.set_cr_identity("rio".into(), "my-storage-band".into());
+        assert_eq!(s.field_manager_scope(), Some(("rio", "my-storage-band")));
     }
 }

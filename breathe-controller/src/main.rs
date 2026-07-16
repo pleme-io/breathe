@@ -384,9 +384,18 @@ async fn reconcile<B: Band, D: DimensionDescriptor + Default>(
         .last_change_epoch()
         .is_some_and(|last| now_secs().saturating_sub(last) < obj.cooldown_seconds() as i64);
 
+    // Bind the descriptor to THIS CR's own identity (namespace/name of the Band
+    // CR itself, NOT `target` — the k8s object it carves) so its SSA field
+    // manager scopes per-CR (task #200): two CRs of the same dimension
+    // uncoordinatedly targeting the SAME object (confirmed live for CpuBand --
+    // `pangea-operator` + `pangea-operator-cpu` both targeting one Deployment via
+    // the identical static "breathe/cpu" manager) become two DIFFERENT k8s field
+    // managers, so SSA's own conflict detection can actually see them collide.
+    let mut descriptor = D::with_resize_capability(ctx.resize_capable);
+    descriptor.set_cr_identity(ns.clone(), name.clone());
     let provider = BandProvider::new(
         KubeCluster::new(ctx.client.clone(), ctx.prometheus_url.clone()),
-        D::with_resize_capability(ctx.resize_capable),
+        descriptor,
     );
     // BREAK-GLASS forceLimit: active iff set AND (no expiry OR expiry in the future).
     let force = obj.force_limit_value().filter(|_| obj.force_limit_expiry().map_or(true, rfc3339_in_future));
