@@ -1107,8 +1107,31 @@ impl<C: Cluster + 'static, D: DimensionDescriptor> ResourceProvider for BandProv
     }
 
     async fn observe(&self, target: &Target) -> Result<Observation, ProviderError> {
-        let used = self.cluster.read_used(&self.descriptor.metric_source(target)).await?;
         let layout = self.descriptor.layout(target);
+        let source = self.descriptor.metric_source(target);
+        let used = match self.cluster.read_used(&source).await {
+            // A `PodMetricsMax` read with NO selector is the owner-name-PREFIX scan
+            // (Deployment/StatefulSet/CNPG owners) — by design it reports
+            // `MetricsMissing` on zero matching pods (an owner with no pods is
+            // abnormal), which is ambiguous: the owner may simply have no pods YET
+            // (transient — the original diagnosis stands), or the targetRef itself
+            // may be dangling (a stale/typo'd owner — task #217's root cause).
+            // Disambiguate with the SAME owner GET `read_limit` performs below (never
+            // duplicated — this literally calls it): a 404 there means the owner is
+            // genuinely gone and `read_limit` already maps that to `TargetNotFound`,
+            // which `?` propagates here so it self-heals the instant the real owner
+            // appears; any other outcome means the owner exists and the original
+            // `MetricsMissing` diagnosis stands. A `selector`-scoped read (label-
+            // selected pod groups — ARC runners) already reports the distinct
+            // `NoTargetPods`/`Dormant`, never reaches this arm.
+            Err(ProviderError::MetricsMissing)
+                if matches!(&source, MetricSource::PodMetricsMax { selector: None, .. }) =>
+            {
+                self.cluster.read_limit(target, &layout, self.descriptor.resource()).await?;
+                return Err(ProviderError::MetricsMissing);
+            }
+            other => other?,
+        };
         let capacity = self.cluster.read_limit(target, &layout, self.descriptor.resource()).await?;
         let owners = self
             .cluster
@@ -1583,6 +1606,12 @@ pub mod mock {
         /// dormant target (`NoTargetPods`) or a metric outage (`MetricsMissing`) so
         /// the reconcile loop's error/dormant arms are testable.
         pub read_used_error: Option<ProviderError>,
+        /// When set, `read_limit` returns this error instead of `Ok(limit)` — models
+        /// a dangling targetRef (`TargetNotFound`, the owner GET 404s) so
+        /// `observe()`'s `MetricsMissing`-vs-`TargetNotFound` disambiguation (task
+        /// #217) is testable against the mock, the same way `read_used_error` models
+        /// a metric-side failure.
+        pub read_limit_error: Option<ProviderError>,
         /// What `read_request_floor` returns — the live declared `requests.<resource>`
         /// (default 0 = none). Set it to model a pod with a declared request floor
         /// that a shrink may never carve beneath (Part 3).
@@ -1617,6 +1646,7 @@ pub mod mock {
                 owners,
                 resize_restart_free: false,
                 read_used_error: None,
+                read_limit_error: None,
                 request_floor: 0,
                 throttle_signal: 0,
                 restarting: false,
@@ -1669,6 +1699,14 @@ pub mod mock {
             self.read_used_error = Some(e);
             self
         }
+        /// Make `read_limit` fail with `e` — model the owner GET 404ing
+        /// (`TargetNotFound`), so `observe()`'s zero-match-prefix-scan
+        /// disambiguation (task #217) is testable end-to-end against the mock.
+        #[must_use]
+        pub fn with_read_limit_error(mut self, e: ProviderError) -> Self {
+            self.read_limit_error = Some(e);
+            self
+        }
         /// Model a discovered StorageClass capability — set `Some(cap)` where
         /// `cap.is_supported()` is false to drive `TickPlan::CapabilityMissing`
         /// end-to-end against the mock (the local-path fail-fast fix).
@@ -1707,7 +1745,10 @@ pub mod mock {
             _layout: &LimitLayout,
             _resource: &str,
         ) -> Result<u64, ProviderError> {
-            Ok(self.limit)
+            match &self.read_limit_error {
+                Some(e) => Err(e.clone()),
+                None => Ok(self.limit),
+            }
         }
         async fn field_owners(
             &self,

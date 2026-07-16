@@ -435,6 +435,47 @@ mod tests {
         );
     }
 
+    /// TASK #217 — the disambiguation fix: a zero-match OWNER-PREFIX scan
+    /// (`MetricsMissing`) is ambiguous (the owner may simply have no pods YET, or
+    /// the targetRef itself may be dangling). `observe()` issues the SAME owner
+    /// GET `read_limit` performs; when that GET 404s (`TargetNotFound`), the
+    /// honest diagnosis propagates instead of the misleading generic
+    /// `MetricsMissing` — so a dangling targetRef self-heals the instant the real
+    /// owner appears, instead of a silent-then-alarming timer.
+    #[tokio::test]
+    async fn reconcile_disambiguates_a_dangling_targetref_from_a_genuine_metrics_outage() {
+        let dangling = provider(
+            MockCluster::new(0, 0, 0, we_own())
+                .with_read_used_error(ProviderError::MetricsMissing)
+                .with_read_limit_error(ProviderError::TargetNotFound),
+        );
+        let cfg = BandConfig::default();
+        let t = target();
+        let input = ReconcileInput { target: &t, cfg: &cfg, max_staleness_secs: 60, in_cooldown: false, dry_run: false, policy: DisruptionPolicy::AllowRestart, force: None, predictive: None, peak_used: None, observed_for_secs: None, hard_plane_grow_only: false };
+        assert_eq!(
+            reconcile_one(&input, &dangling).await.receipt,
+            TickReceipt::Error { error: ProviderError::TargetNotFound },
+            "a 404 on the owner GET must surface as TargetNotFound, not the original MetricsMissing"
+        );
+    }
+
+    /// The disambiguation guard is scoped to the owner-PREFIX scan only — a
+    /// label-selected pod group's OWN distinct diagnosis (`NoTargetPods`) passes
+    /// through unchanged and never consults `read_limit` at all (an owner-GET on
+    /// a selector-scoped, owner-less target — an ARC runner — would be wrong).
+    #[tokio::test]
+    async fn selector_scoped_dormant_never_triggers_the_targetref_disambiguation() {
+        let cluster = MockCluster::new(0, 0, 0, we_own())
+            .with_read_used_error(ProviderError::NoTargetPods)
+            .with_read_limit_error(ProviderError::TargetNotFound); // must NEVER be consulted
+        let prov = provider(cluster);
+        let cfg = BandConfig::default();
+        let mut t = target();
+        t.pod_selector = Some("app=runner".into());
+        let input = ReconcileInput { target: &t, cfg: &cfg, max_staleness_secs: 60, in_cooldown: false, dry_run: false, policy: DisruptionPolicy::AllowRestart, force: None, predictive: None, peak_used: None, observed_for_secs: None, hard_plane_grow_only: false };
+        assert_eq!(reconcile_one(&input, &prov).await.receipt, TickReceipt::Dormant);
+    }
+
     /// The golden-edge gate: a CNPG `Cluster` target carves at `ClusterTopLevel`
     /// (RestartRequiring), so under the DEFAULT `RestartFreeOnly` policy breathe
     /// DEFERS the carve (never silently rolls) — the workload stays golden,
