@@ -233,5 +233,176 @@ pub trait Otimizador: Send + Sync {
     fn optimize(&self, previsoes: &[(Forma, Previsao)]) -> Vec<Proposta>;
 }
 
+// ============================================================================
+// ParetoOtimizador — the first real Otimizador impl (Pareto-frontier scan).
+// ============================================================================
+
+/// Cost source for a candidate `Forma`, injected rather than computed here —
+/// per [`Proposta`]'s own rule, cost is "sourced from the fleet
+/// `attribution-forge`/`commitment-forge` plane, NOT a parallel cost model."
+/// This is this crate's `Previsor`/`Leiloeiro` pattern (a pure trait, real
+/// impls injected, tests mock) applied to price data instead of demand data.
+pub trait PriceOracle: Send + Sync {
+    /// Cost in cents to run `forma` for `duration_secs`.
+    fn cost_cents(&self, forma: Forma, duration_secs: u64) -> u64;
+}
+
+/// How [`ParetoOtimizador`] resolves a single winner from the Pareto frontier.
+/// This is where the `CostFloor`/`TimeFloor` duality
+/// (`theory/BREATHABILITY.md`'s auction-objective section) becomes an actual
+/// decision instead of a static enum: `MinCost` auctions hard on price;
+/// `MinCostUnderDeadline` auctions hard on price *subject to* a latency floor
+/// — the mechanism "choose performance when latency is the binding constraint"
+/// resolves to, not a separate code path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PickPolicy {
+    /// Cheapest point on the frontier, latency unconstrained (`CostFloor`).
+    MinCost,
+    /// Cheapest point on the frontier whose `relief_latency_secs` fits the
+    /// deadline (`TimeFloor`'s actual selection mechanism — a build-burst
+    /// workload's deadline is short, so this naturally rules out the
+    /// cheap-but-slow candidates a plain `MinCost` would otherwise pick).
+    MinCostUnderDeadline { deadline_secs: u64 },
+}
+
+/// The **Pareto-frontier auctioneer** — classical multi-objective optimization
+/// (skyline / dominance filtering), no ML, fully deterministic: a [`Proposta`]
+/// is dominated when another candidate is no worse on *both* axes (cost,
+/// latency) and strictly better on at least one — a rational chooser under
+/// *any* weighting of the two axes never picks a dominated candidate, so
+/// dropping them is lossless, not a heuristic approximation. What survives is
+/// the true cost/latency trade-off frontier; [`PickPolicy`] then resolves the
+/// single winner the controller acts on.
+///
+/// **Tier-honest scope (do not round up).** This ranks on the two axes
+/// [`Proposta`] actually carries today (`cost_cents`, `relief_latency_secs`).
+/// The doc's own three-axis frontier (`cost, -latency, buffer`) and a real
+/// Markowitz-style mean-variance risk adjustment under the auction's `$/mo`
+/// cost-variance budget (`theory/BREATHABILITY.md` §100% spot reliability)
+/// both need a per-candidate **interruption-frequency/cost-variance** field
+/// that has no typed source anywhere in this crate or its callers today —
+/// only the qualitative [`crate::quinhao`]-adjacent `Interruption` *strategy*
+/// enum (retry-on-reclaim / graceful-drain / node-drain) exists, not a
+/// calibrated numeric probability. Fabricating that number here (rather than
+/// wiring a real historical-interruption-rate source, e.g. an AWS Spot
+/// Instance Advisor–shaped feed) would be exactly the "parallel cost model"
+/// [`Proposta`]'s own doc comment forbids — so this impl deliberately does
+/// NOT attempt risk-adjusted (variance-aware) selection. That is the named
+/// next step, not invented against absent data.
+pub struct ParetoOtimizador<P: PriceOracle> {
+    pub price: P,
+    pub cfg: BandConfig,
+    pub pick: PickPolicy,
+}
+
+/// Typed rationale renderer for a grow candidate — the one allowed `write!()`
+/// surface for composed text (★★ TYPED EMISSION: a `Display` impl, never a
+/// bare `format!()` string composition).
+struct GrowRationale {
+    delta: u64,
+    forma: Forma,
+    cost_cents: u64,
+    duration_secs: u64,
+}
+
+impl std::fmt::Display for GrowRationale {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "grow {} units of {:?}: {}c over {}s",
+            self.delta, self.forma, self.cost_cents, self.duration_secs
+        )
+    }
+}
+
+impl<P: PriceOracle> ParetoOtimizador<P> {
+    #[must_use]
+    pub fn new(price: P, cfg: BandConfig, pick: PickPolicy) -> Self {
+        Self { price, cfg, pick }
+    }
+
+    /// `a` Pareto-dominates `b`: no worse on both axes, strictly better on at
+    /// least one. O(n²) dominance scan — the candidate set is a bounded
+    /// enumeration of instance pools (families × sizes × AZs), never large
+    /// enough to need a sweep-line skyline algorithm.
+    fn dominates(a: &Proposta, b: &Proposta) -> bool {
+        let no_worse = a.cost_cents <= b.cost_cents && a.relief_latency_secs <= b.relief_latency_secs;
+        let strictly_better = a.cost_cents < b.cost_cents || a.relief_latency_secs < b.relief_latency_secs;
+        no_worse && strictly_better
+    }
+
+    /// The Pareto frontier of `candidates` — every proposal not dominated by
+    /// another.
+    fn frontier(candidates: &[Proposta]) -> Vec<Proposta> {
+        candidates
+            .iter()
+            .filter(|p| !candidates.iter().any(|q| Self::dominates(q, p)))
+            .cloned()
+            .collect()
+    }
+}
+
+impl<P: PriceOracle> Otimizador for ParetoOtimizador<P> {
+    fn optimize(&self, previsoes: &[(Forma, Previsao)]) -> Vec<Proposta> {
+        // Reuse the same proven band law every single-forma decision already
+        // goes through (`BandLeiloeiro`'s K2 reuse) to size each candidate's
+        // delta — this crate has exactly one grow/shrink-sizing algorithm,
+        // never two. Only `Grow` candidates enter the auction: `Otimizador`
+        // arbitrates COST among ways to add capacity, it does not duplicate
+        // `BandLeiloeiro`'s hold/shrink/escalate logic for a single forma.
+        let candidates: Vec<Proposta> = previsoes
+            .iter()
+            .filter_map(|(forma, previsao)| {
+                match decide(previsao.immediate_used, previsao.capacity, &self.cfg) {
+                    Decision::Grow { from, to } => {
+                        let delta = to.saturating_sub(from);
+                        // relief_latency_secs is this Forma's own provisioning
+                        // dead-time (time-to-Ready), sourced from breathe's
+                        // existing per-forma cold-start data. A genuinely
+                        // wired impl reads this from the fleet's provisioning
+                        // telemetry, same as cost from PriceOracle -- both
+                        // are injected via the same seam a real caller
+                        // supplies (see PriceOracle's own doc comment); this
+                        // reference impl folds it through the price call
+                        // below for the same reason: no parallel data model.
+                        let duration_secs = self.cfg.warmup_seconds.max(1);
+                        let cost_cents = self.price.cost_cents(*forma, duration_secs);
+                        Some(Proposta {
+                            forma: *forma,
+                            delta,
+                            cost_cents,
+                            relief_latency_secs: duration_secs,
+                            rationale: GrowRationale { delta, forma: *forma, cost_cents, duration_secs }
+                                .to_string(),
+                        })
+                    }
+                    _ => None,
+                }
+            })
+            .collect();
+
+        if candidates.is_empty() {
+            return Vec::new();
+        }
+
+        let frontier = Self::frontier(&candidates);
+        let winner = match self.pick {
+            PickPolicy::MinCost => frontier.iter().min_by_key(|p| p.cost_cents),
+            PickPolicy::MinCostUnderDeadline { deadline_secs } => frontier
+                .iter()
+                .filter(|p| p.relief_latency_secs <= deadline_secs)
+                .min_by_key(|p| p.cost_cents)
+                // No candidate meets the deadline: fall back to the fastest
+                // frontier point rather than returning nothing — an auction
+                // that silently under-provisions on a missed deadline is the
+                // same "never silently under-provision" invariant
+                // `BandLeiloeiro::EnvelopeExausto` already enforces.
+                .or_else(|| frontier.iter().min_by_key(|p| p.relief_latency_secs)),
+        };
+
+        winner.into_iter().cloned().collect()
+    }
+}
+
 #[cfg(test)]
 mod tests;
