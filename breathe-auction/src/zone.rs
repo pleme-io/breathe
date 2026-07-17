@@ -26,7 +26,7 @@
 
 use std::collections::HashMap;
 
-use breathe_catalog::{dependency_graph_is_acyclic, lookup, ALL_DIMENSIONS};
+use breathe_catalog::{lookup, ALL_DIMENSIONS};
 use breathe_provider::{DimensionId, Forma};
 use shigoto_dag::Dag;
 use shigoto_types::{JobId, JobKindId, JobScope, JobSubject};
@@ -131,12 +131,28 @@ pub enum ZoneError {
     /// A dim in `gated_dims` is not also in `dims` — a gate on a dimension
     /// this zone doesn't even enroll.
     GatedDimNotEnrolled { dim: DimensionId },
-    /// The within-catalog `depends_on` edges, restricted to this zone's own
-    /// `dims`, are NOT acyclic. Cannot happen against the shipped catalog
-    /// today (its own reflection test already proves the FULL graph acyclic,
-    /// and a subgraph of an acyclic graph is acyclic) — checked anyway,
-    /// because a future catalog edit could still introduce one, and this
-    /// zone must never silently build a cyclic Dag from it.
+    /// The within-catalog `depends_on` edges, restricted to THIS ZONE'S OWN
+    /// `dims` (not the whole catalog), are NOT acyclic. Cannot happen against
+    /// the shipped catalog today (`breathe_catalog`'s own reflection test
+    /// already proves the FULL graph acyclic, and a subgraph of an acyclic
+    /// graph is acyclic) — checked anyway, because a future catalog edit
+    /// could still introduce one, and this zone must never silently build a
+    /// cyclic Dag from it. `Forma` nodes can never participate in a cycle
+    /// (they only ever have OUTGOING edges into `gated_dims`, never an
+    /// incoming one — no mechanism in this module lets a `DimensionId`
+    /// depend back on a `Forma`), so checking just the `DimensionId`
+    /// subgraph is sufficient, not merely convenient.
+    ///
+    /// **Tier-honest gap, stated not hidden:** this arm has NO unit test.
+    /// `dimension_tick_dag` reads the real, `'static`, hardcoded
+    /// `breathe_catalog::CATALOG` — there is no injectable/mockable catalog
+    /// seam to construct a fake cycle through, and adding one solely to
+    /// test an arm that cannot fire against any real data today would be
+    /// over-engineering ahead of need. The defense stays: a genuine future
+    /// catalog edit that introduced a cycle would still be caught here
+    /// (and by `breathe_catalog`'s own `dependency_graph_is_acyclic` CI
+    /// gate, first, fleet-wide) — untested-but-structurally-present, not
+    /// unrepresentable.
     DimensionCycle,
 }
 
@@ -167,10 +183,13 @@ impl BreatheZone {
                 return Err(ZoneError::GatedDimNotEnrolled { dim });
             }
         }
-        // The catalog's OWN acyclicity is already proven fleet-wide
-        // (breathe_catalog's own reflection test); this re-checks only the
-        // zone's own restricted subgraph, cheaply, defensively.
-        if !dependency_graph_is_acyclic() {
+        // Reuse shigoto's OWN cycle detection (Dag::toposort) over THIS
+        // zone's restricted dimension subgraph, rather than hand-rolling a
+        // second DFS or (an earlier, corrected draft of this function)
+        // checking the whole catalog's unrelated dimensions. `dims` alone
+        // is sufficient — see DimensionCycle's own doc comment for why
+        // `formas` can never introduce a cycle.
+        if dimension_tick_dag(&self.scope, self.dims).toposort().is_err() {
             return Err(ZoneError::DimensionCycle);
         }
         Ok(())
