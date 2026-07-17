@@ -1,12 +1,19 @@
 # Build + push EVERY breathe OCI image on merge to main.
 #
-# runner: resolves from vars.CAMELOT_IMAGE_RUNNER, falls back to rio-build-01,
-# with the in-cluster sui super-cache wired as a Nix substituter -- see the
-# camelot skill's "pleme-io-org runner pool" section for the full routing
-# pattern + why (camelot-builder-pleme, the pleme-io-org ARC scale set on
-# camelot's own 100%-spot builder floor).
+# runner: resolves from vars.CAMELOT_IMAGE_RUNNER, falls back to
+# camelot-builder-pleme (was rio-build-01 -- confirmed dead 2026-07-17, 0
+# registered runners fleet-wide; see pangea-operator's release.yml for the
+# sibling fix + the full routing writeup), with the in-cluster sui
+# super-cache wired as a Nix substituter -- see the camelot skill's
+# "pleme-io-org runner pool" section for the full routing pattern + why
+# (camelot-builder-pleme, the pleme-io-org ARC scale set on camelot's own
+# 100%-spot builder floor, registered at githubConfigUrl:
+# https://github.com/pleme-io into the org's Default runner group).
 #
 # breathe images stay PRIVATE (package visibility set out-of-band).
+#
+# CVE gate: each image is scanned (blocking, zero-tolerance) immediately
+# after its own push -- see the cve-scan-* jobs below.
 #
 # ★ AUTOBUMP + the camelot CHANNEL extension (2026-07-11). Every push emits a
 # sortable, exact, immutable tag — never :latest as a deploy source (org ★
@@ -63,7 +70,7 @@ jobs:
       imageName: pleme-io/breathe-controller
       tag: amd64-${{ startsWith(github.ref_name, 'camelot/') && 'camelot-' || '' }}r${{ github.run_number }}-${{ github.sha }}
       additionalTags: ${{ startsWith(github.ref_name, 'camelot/') && 'amd64-camelot-latest' || 'amd64-latest' }}
-      runner: ${{ inputs.runnerOverride || vars.CAMELOT_IMAGE_RUNNER || 'rio-build-01' }}
+      runner: ${{ inputs.runnerOverride || vars.CAMELOT_IMAGE_RUNNER || 'camelot-builder-pleme' }}
       extraSubstituters: ${{ vars.CAMELOT_SUI_SUBSTITUTER }}
       requireSigs: ${{ vars.CAMELOT_SUI_REQUIRE_SIGS }}
     secrets: inherit
@@ -75,7 +82,7 @@ jobs:
       imageName: pleme-io/breathe-host-agent
       tag: amd64-${{ startsWith(github.ref_name, 'camelot/') && 'camelot-' || '' }}r${{ github.run_number }}-${{ github.sha }}
       additionalTags: ${{ startsWith(github.ref_name, 'camelot/') && 'amd64-camelot-latest' || 'amd64-latest' }}
-      runner: ${{ inputs.runnerOverride || vars.CAMELOT_IMAGE_RUNNER || 'rio-build-01' }}
+      runner: ${{ inputs.runnerOverride || vars.CAMELOT_IMAGE_RUNNER || 'camelot-builder-pleme' }}
       extraSubstituters: ${{ vars.CAMELOT_SUI_SUBSTITUTER }}
       requireSigs: ${{ vars.CAMELOT_SUI_REQUIRE_SIGS }}
     secrets: inherit
@@ -87,7 +94,45 @@ jobs:
       imageName: pleme-io/breathe-api-server
       tag: amd64-${{ startsWith(github.ref_name, 'camelot/') && 'camelot-' || '' }}r${{ github.run_number }}-${{ github.sha }}
       additionalTags: ${{ startsWith(github.ref_name, 'camelot/') && 'amd64-camelot-latest' || 'amd64-latest' }}
-      runner: ${{ inputs.runnerOverride || vars.CAMELOT_IMAGE_RUNNER || 'rio-build-01' }}
+      runner: ${{ inputs.runnerOverride || vars.CAMELOT_IMAGE_RUNNER || 'camelot-builder-pleme' }}
       extraSubstituters: ${{ vars.CAMELOT_SUI_SUBSTITUTER }}
       requireSigs: ${{ vars.CAMELOT_SUI_REQUIRE_SIGS }}
     secrets: inherit
+
+  # Zero-tolerance CVE gate on each JUST-published image (2026-07-17 —
+  # breathe had never scanned its own published artifacts; same gap closed
+  # in pangea-operator's release.yml the same pass). Real, blocking gate
+  # from the start (no advisory grace period) — one job per image so a
+  # finding in one component never masks the others. Tier-honest: this is
+  # a POST-publish gate (image-push.yml builds+pushes as one step; a real
+  # pre-publish gate needs image-scan's `local-archive:` input wired ahead
+  # of the push, a change to the shared substrate reusable, not this repo).
+  cve-scan-controller:
+    name: zero-tolerance CVE scan — breathe-controller
+    needs: controller
+    runs-on: ubuntu-latest
+    steps:
+      - uses: pleme-io/actions/image-scan@main
+        with:
+          image-ref: ghcr.io/pleme-io/breathe-controller:amd64-${{ startsWith(github.ref_name, 'camelot/') && 'camelot-' || '' }}r${{ github.run_number }}-${{ github.sha }}
+          fail-on-severity: HIGH
+
+  cve-scan-host-agent:
+    name: zero-tolerance CVE scan — breathe-host-agent
+    needs: host-agent
+    runs-on: ubuntu-latest
+    steps:
+      - uses: pleme-io/actions/image-scan@main
+        with:
+          image-ref: ghcr.io/pleme-io/breathe-host-agent:amd64-${{ startsWith(github.ref_name, 'camelot/') && 'camelot-' || '' }}r${{ github.run_number }}-${{ github.sha }}
+          fail-on-severity: HIGH
+
+  cve-scan-api-server:
+    name: zero-tolerance CVE scan — breathe-api-server
+    needs: api-server
+    runs-on: ubuntu-latest
+    steps:
+      - uses: pleme-io/actions/image-scan@main
+        with:
+          image-ref: ghcr.io/pleme-io/breathe-api-server:amd64-${{ startsWith(github.ref_name, 'camelot/') && 'camelot-' || '' }}r${{ github.run_number }}-${{ github.sha }}
+          fail-on-severity: HIGH
