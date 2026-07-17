@@ -1,0 +1,131 @@
+{{- if .Values.agent.enabled }}
+# The HANDS. One pod per node -- host mutations need host access, so this
+# runs privileged with the host PID namespace shared in (BREATHE_NSENTER_PID
+# below needs a real host init visible at /proc/1 to setns() into the host's
+# mount/uts/ipc/net namespaces for `systemctl` calls; the pod's own /proc
+# would otherwise show only this pod's own init). See
+# breathe-host-agent/src/main.rs + breathe-host/src/lib.rs::SystemdSysfsEnv
+# for the full host-access contract this template wires.
+#
+# Uses the ServiceAccount/ClusterRole/ClusterRoleBinding already rendered
+# above under the SAME `.Values.agent.enabled` gate (rbac.yaml) -- no RBAC
+# is duplicated here. Per that file's own header comment, this role is
+# deliberately narrow (breathe host-dim CRs only); the agent's actual host
+# power comes from the privileged securityContext below, not from RBAC.
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: breathe-host-agent
+  namespace: {{ .Values.agent.namespace }}
+  labels:
+    app.kubernetes.io/name: pleme-breathe
+    app.kubernetes.io/component: host-agent
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: pleme-breathe
+      app.kubernetes.io/component: host-agent
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: pleme-breathe
+        app.kubernetes.io/component: host-agent
+      # Same self-observability gate as the controller Deployment
+      # (deployment.yaml) -- main.rs installs the :9101 /metrics listener
+      # unconditionally; this only controls whether it's discoverable via
+      # annotation-based scrape config.
+      {{- if .Values.metrics.enabled }}
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9101"
+        prometheus.io/path: /metrics
+      {{- end }}
+    spec:
+      serviceAccountName: {{ .Values.agent.serviceAccount.name }}
+      hostPID: true
+      {{- with .Values.agent.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.agent.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: host-agent
+          # Same digest-wins-over-tag contract as the controller image
+          # (deployment.yaml) -- see this repo's own live-verification
+          # incident notes there for why a digest pin exists at all.
+          {{- if .Values.agent.image.digest }}
+          image: "{{ .Values.agent.image.repository }}@{{ .Values.agent.image.digest }}"
+          {{- else }}
+          image: "{{ .Values.agent.image.repository }}:{{ .Values.agent.image.tag | default .Chart.AppVersion }}"
+          {{- end }}
+          imagePullPolicy: {{ .Values.agent.image.pullPolicy }}
+          {{- if .Values.metrics.enabled }}
+          ports:
+            - name: metrics
+              containerPort: 9101
+              protocol: TCP
+          {{- end }}
+          env:
+            # NODE_NAME / HOST_ROOT / BREATHE_NSENTER_PID / BREATHE_SYSTEMCTL_BIN
+            # are the exact env contract breathe-host-agent/src/main.rs +
+            # breathe-host/src/lib.rs::SystemdSysfsEnv::from_env() document --
+            # see values.yaml's agent.hostRoot/nsenterPid/systemctlBin comments.
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: spec.nodeName
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: metadata.name
+            - name: BREATHE_REQUEUE_SECONDS
+              value: {{ .Values.agent.requeueSeconds | quote }}
+            - name: RUST_LOG
+              value: {{ .Values.agent.logLevel | quote }}
+            - name: HOST_ROOT
+              value: {{ .Values.agent.hostRoot | quote }}
+            - name: BREATHE_NSENTER_PID
+              value: {{ .Values.agent.nsenterPid | quote }}
+            - name: BREATHE_SYSTEMCTL_BIN
+              value: {{ .Values.agent.systemctlBin | quote }}
+          resources:
+            {{- toYaml .Values.agent.resources | nindent 12 }}
+          securityContext:
+            # The HANDS' host power comes from here, not from k8s RBAC (see
+            # rbac.yaml's header comment above) -- privileged is what lets
+            # nsenter setns() into the host's namespaces and lets the real
+            # sysfs/cgroupfs writes below land.
+            privileged: true
+            readOnlyRootFilesystem: true
+          volumeMounts:
+            # HOST_ROOT (default "/host") prefixes every sysfs/procfs path
+            # SystemdSysfsEnv touches (ZFS_ARC_MAX_PATH, ARCSTATS_PATH,
+            # MEMINFO_PATH, CGROUP_V2_ROOT, the PSI files under
+            # /proc/pressure/*) -- all of them live under /sys or /proc, so
+            # these two targeted host mounts cover the full contract without
+            # exposing the rest of the host root filesystem.
+            - name: host-proc
+              mountPath: /host/proc
+              readOnly: true
+            - name: host-sys
+              mountPath: /host/sys
+              readOnly: false
+      volumes:
+        - name: host-proc
+          hostPath:
+            path: /proc
+            type: Directory
+        - name: host-sys
+          hostPath:
+            path: /sys
+            type: Directory
+{{- end }}
