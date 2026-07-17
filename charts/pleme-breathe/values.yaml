@@ -49,18 +49,73 @@ serviceAccount:
   create: true
   name: breathe-controller
 
-# The HANDS' RBAC (breathe-host-agent DaemonSet identity). Off by default --
-# no DaemonSet template exists in this chart yet (the agent is deployed
-# out-of-band today); this only controls whether its narrow, host-agent-only
-# ClusterRole/ClusterRoleBinding render. Was never defined here at all until
-# `helm lint` caught templates/rbac.yaml's unconditional `.Values.agent.enabled`
-# reference as the chart's first-ever lint (2026-07-11) -- genuinely never
-# tested until this pass.
+# The HANDS -- templates/daemonset.yaml (gated by agent.enabled, same flag
+# rbac.yaml's narrow host-agent-only ClusterRole/ClusterRoleBinding already
+# gates) + templates/rbac.yaml's ServiceAccount. Off by default; Camelot's
+# HelmRelease already sets agent.enabled: true (previously RBAC-only -- no
+# DaemonSet template existed until this pass closed that gap, task #188).
 agent:
   enabled: false
   namespace: breathe-system
   serviceAccount:
     name: breathe-host-agent
+  # ghcr.io/pleme-io/breathe-host-agent (published by this repo's own
+  # .github/workflows/image.yml "host-agent" job). Same tag/digest contract
+  # as the controller's image.* below -- an unset tag falls back to
+  # .Chart.AppVersion, which is NOT a real published AUTOBUMP tag (★
+  # AUTOBUMP publishes amd64-r<run>-<sha> exact tags only, never :latest as
+  # a deploy source) -- a real deployment overrides agent.image.tag (or
+  # agent.image.digest) exactly the way the live Camelot HelmRelease
+  # already overrides the controller's image.tag below.
+  image:
+    repository: ghcr.io/pleme-io/breathe-host-agent
+    tag: ""
+    digest: ""
+    pullPolicy: IfNotPresent
+  # Mirrors the controller's own "contained, never-die" resources -- the
+  # agent does periodic host I/O (sysfs reads + nsenter'd systemctl calls),
+  # never heavy work.
+  resources:
+    requests:
+      cpu: 25m
+      memory: 64Mi
+    limits:
+      cpu: 200m
+      memory: 128Mi
+  # Host metrics are live (no scrape lag to smooth over) -- a tighter cadence
+  # than the k8s-dimension controller's 60s default is appropriate.
+  requeueSeconds: 30
+  logLevel: "info,breathe_host_agent=info"
+  # The host-access seam SystemdSysfsEnv::from_env() reads
+  # (breathe-host/src/lib.rs). hostRoot is the sysfs/procfs prefix and MUST
+  # match the daemonset.yaml host-proc/host-sys mountPaths. nsenterPid is the
+  # host PID `nsenter -t <pid>` enters to reach the host's mount/uts/ipc/net
+  # namespaces for `systemctl` calls the pod's own systemd (there isn't one)
+  # can't make -- 1 (the host init) is always correct once hostPID: true
+  # (daemonset.yaml) shares the host PID namespace into this pod.
+  # systemctlBin is the host's systemctl absolute path -- bare "systemctl"
+  # only resolves if it's on PATH inside the ENTERED host mount namespace;
+  # override per-cluster (e.g. NixOS clusters need
+  # "/run/current-system/sw/bin/systemctl", as breathe-host's own tests
+  # document).
+  hostRoot: "/host"
+  nsenterPid: 1
+  systemctlBin: "systemctl"
+  # A per-node DaemonSet's whole job is host management -- correctness
+  # depends on scheduling onto EVERY node the fleet enrolls into a
+  # BreatheNodePool, INCLUDING nodes carrying scheduling taints for workload
+  # isolation (e.g. Camelot's `breathe.pleme.io/pool` taint) -- those are
+  # exactly the nodes whose host resources it manages. Unlike the
+  # controller (a single reconciler that only needs to land somewhere
+  # untainted, see the top-level tolerations below), the agent needs the
+  # blanket "tolerate everything" shape node-level DaemonSets use fleet-wide
+  # (kube-proxy, cilium, node-exporter, ...) so this chart's default needs
+  # no per-cluster override to actually land on a tainted pool. An
+  # unenrolled node (no matching BreatheNodePool CR) is a safe no-op --
+  # reconcile_host_with holds and reports, never writes blind.
+  tolerations:
+    - operator: Exists
+  nodeSelector: {}
 
 # Self-observability: prometheus.io/* scrape annotations + the metrics
 # containerPort on the controller pod. The controller's own :9100 /metrics
