@@ -944,6 +944,33 @@ pub async fn patch_status<B: Band>(
     Ok(())
 }
 
+/// [`patch_status`], but DIFF-GATED: skip the write entirely when `status` is
+/// byte-identical to `prior` (task #220). Every reconcile — default
+/// `BREATHE_REQUEUE_SECONDS=60`, more often under NATS-reactive triggering —
+/// otherwise wrote to etcd via the apiserver even when nothing about the band
+/// changed. `BandStatus`'s `PartialEq` makes this a real structural
+/// comparison (mirrors the field-by-field DIFF-GATE `reconcile_overview`
+/// already hand-rolls in `breathe-controller/src/main.rs` for
+/// `OverviewStatus`, generalized here via the derive since `BandStatus`
+/// carries far more fields).
+///
+/// Returns whether a patch was actually issued — the test seam that lets a
+/// caller (or a test) prove zero-vs-one API calls without inspecting the
+/// client's transport directly.
+pub async fn patch_status_if_changed<B: Band>(
+    client: &Client,
+    ns: &str,
+    name: &str,
+    prior: Option<&BandStatus>,
+    status: &BandStatus,
+) -> Result<bool, kube::Error> {
+    if prior == Some(status) {
+        return Ok(false);
+    }
+    patch_status::<B>(client, ns, name, status).await?;
+    Ok(true)
+}
+
 // ═════════════════════ HORIZONTAL (ReplicaBand) status mapping ═════════════════════
 //
 // The ReplicaBand does NOT produce a `TickOutcome` (that keystone models the
@@ -1804,5 +1831,120 @@ mod health_tests {
         let s = status_for(&outcome, None, 0, None, CumulativeCounters::ZERO.fold(&entry_for(&outcome)));
         // fresh band, first tick — under the stuck threshold, so Healthy despite Conflict.
         assert_eq!(s.health.as_deref(), Some("Healthy"));
+    }
+}
+
+/// Task #220 — the diff-gate that keeps a resting band from writing to etcd
+/// on every tick. Mocks the k8s apiserver transport the same way
+/// `kube-client`'s own test suite does (`tower_test::mock::pair` stood in as
+/// the service under `kube::Client::new` — see `kube-client-0.96.0/src/
+/// client/mod.rs`'s `test_mock`), so these prove REAL zero-vs-one HTTP calls
+/// through `patch_status_if_changed`, not just the pure `BandStatus`
+/// comparison it's built on.
+#[cfg(test)]
+mod patch_status_diff_gate_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    use breathe_crd::MemoryBand;
+    use http::{Request, Response};
+    use kube::client::Body;
+    use tokio::time::timeout;
+    use tower_test::mock;
+
+    /// Spawn a background responder that answers every request it receives
+    /// with a minimal-but-valid `MemoryBand` (so `Api::patch_status`'s
+    /// response deserialization succeeds) and counts how many requests
+    /// actually arrived. The count is the test's "did we call the
+    /// apiserver" oracle — the thing task #220 is about avoiding.
+    fn spawn_counting_responder(mut handle: mock::Handle<Request<Body>, Response<Body>>) -> Arc<AtomicUsize> {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let calls_task = calls.clone();
+        tokio::spawn(async move {
+            while let Some((_req, send)) = handle.next_request().await {
+                calls_task.fetch_add(1, Ordering::SeqCst);
+                let body = serde_json::to_vec(&serde_json::json!({
+                    "apiVersion": "breathe.pleme.io/v1",
+                    "kind": "MemoryBand",
+                    "metadata": { "name": "demo", "namespace": "default" },
+                    "spec": { "targetRef": { "kind": "Deployment", "name": "demo-app" } },
+                }))
+                .expect("fixture MemoryBand serializes");
+                send.send_response(Response::builder().status(200).body(Body::from(body)).unwrap());
+            }
+        });
+        calls
+    }
+
+    fn sample_status(util: f64) -> BandStatus {
+        BandStatus { phase: Some("Holding".into()), observed_util: Some(util), ..Default::default() }
+    }
+
+    #[tokio::test]
+    async fn unchanged_status_skips_the_patch_call() {
+        let (mock_service, handle) = mock::pair::<Request<Body>, Response<Body>>();
+        let calls = spawn_counting_responder(handle);
+        let client = Client::new(mock_service, "default");
+
+        // Byte-identical to the CR's current live status — the resting-band case.
+        let live = sample_status(0.42);
+        let recomputed = live.clone();
+
+        let patched = timeout(
+            Duration::from_millis(500),
+            patch_status_if_changed::<MemoryBand>(&client, "default", "demo", Some(&live), &recomputed),
+        )
+        .await
+        .expect("patch_status_if_changed hung — it must never wait on the apiserver when status is unchanged")
+        .expect("patch_status_if_changed returned an error");
+
+        assert!(!patched, "an unchanged status must report that no patch was issued");
+        assert_eq!(calls.load(Ordering::SeqCst), 0, "an unchanged status must never call the apiserver");
+    }
+
+    #[tokio::test]
+    async fn changed_status_still_patches_exactly_once() {
+        let (mock_service, handle) = mock::pair::<Request<Body>, Response<Body>>();
+        let calls = spawn_counting_responder(handle);
+        let client = Client::new(mock_service, "default");
+
+        let live = sample_status(0.10);
+        let recomputed = sample_status(0.90); // genuinely different observed_util
+
+        let patched = timeout(
+            Duration::from_millis(500),
+            patch_status_if_changed::<MemoryBand>(&client, "default", "demo", Some(&live), &recomputed),
+        )
+        .await
+        .expect("patch_status_if_changed timed out waiting on the mock apiserver")
+        .expect("patch_status_if_changed returned an error");
+
+        assert!(patched, "a genuinely changed status must report that a patch was issued");
+        assert_eq!(calls.load(Ordering::SeqCst), 1, "a genuinely changed status must patch exactly once");
+    }
+
+    #[tokio::test]
+    async fn no_prior_status_always_patches() {
+        // The very first reconcile of a fresh CR has no prior status at all
+        // (`obj.status()` is `None`) — must still patch, never silently hold
+        // the band's status unset forever just because there's nothing to diff.
+        let (mock_service, handle) = mock::pair::<Request<Body>, Response<Body>>();
+        let calls = spawn_counting_responder(handle);
+        let client = Client::new(mock_service, "default");
+
+        let recomputed = sample_status(0.5);
+
+        let patched = timeout(
+            Duration::from_millis(500),
+            patch_status_if_changed::<MemoryBand>(&client, "default", "demo", None, &recomputed),
+        )
+        .await
+        .expect("patch_status_if_changed timed out waiting on the mock apiserver")
+        .expect("patch_status_if_changed returned an error");
+
+        assert!(patched, "the first-ever status write (no prior) must always patch");
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
     }
 }

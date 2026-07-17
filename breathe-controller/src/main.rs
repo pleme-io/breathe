@@ -34,7 +34,7 @@ use breathe_kube::KubeCluster;
 use breathe_provider::{BandProvider, ClassCooldowns, DimensionDescriptor, ResourceProvider, Target};
 use breathe_runtime::{
     apply_env_context, counters_from_status, entry_for, error_status, event_for, health_verdict, metrics_for,
-    next_requeue, now_rfc3339, now_secs, patch_status, rfc3339_in_future, should_emit_event,
+    next_requeue, now_rfc3339, now_secs, patch_status, patch_status_if_changed, rfc3339_in_future, should_emit_event,
     should_emit_health_event, health_event_for, status_for, suspended_status, STUCK_AFTER_SECS,
     BandLabels, CumulativeCounters, EnvContext, EventKind,
 };
@@ -485,7 +485,14 @@ async fn reconcile<B: Band, D: DimensionDescriptor + Default>(
         &cfg,
         status.cooldown_remaining_seconds.unwrap_or(0),
     );
-    patch_status::<B>(&ctx.client, &ns, &name, &status).await?;
+    // DIFF-GATE (task #220): skip the write entirely when this tick's status is
+    // byte-identical to the CR's current live status — a resting band (the
+    // common case at the default 60s requeue, and especially so under
+    // NATS-reactive triggering) otherwise wrote to etcd via the apiserver on
+    // EVERY tick for no observable change. `obj.status()` is the prior status
+    // this same reconcile already read at the top (used for `prior_phase`/
+    // `prior_health`/`fold_counters` above) — reused here, not re-fetched.
+    patch_status_if_changed::<B>(&ctx.client, &ns, &name, obj.status(), &status).await?;
     // requeue keyed on the action class just taken — golden carves re-tick fast.
     Ok(Action::requeue(next_requeue(&outcome.receipt, &ctx.cooldowns)))
 }
