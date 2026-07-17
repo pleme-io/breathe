@@ -14,6 +14,13 @@ breathe-provider = { path = "../breathe-provider", version = "0.1.0" }
 
 [dev-dependencies]
 proptest = "1"
+# Dev-only: proves theory/BREATHABILITY.md §II.6.8's O6 claim (cross-surface
+# structural dependency resolved as a shigoto Dag) against shigoto's REAL
+# API, for the concrete camelot 17-pod incident -- a worked example, not
+# production wiring (the real per-tick controller integration is a named
+# follow-up, tracked in the theory doc, not this crate).
+shigoto-types = "0.1.10"
+shigoto-dag = "0.1.10"
 
 [lints]
 workspace = true
