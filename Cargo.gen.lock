@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "cargo_lock_sha256": "105a3de6b38eaa38c91f1969bdc79cfe9770ef353b105d1e13631c0d2b2e4285",
+  "cargo_lock_sha256": "79d99e7d1dc1c599e558aeeaf1a77174c98c913a485b1ffcba7bf7b309fc8441",
   "target_resolves": {
     "base": {
       "Inflector-0.11.4": {
@@ -1334,6 +1334,2675 @@
         "build_dependencies": [],
         "features": []
       },
+      "aws-config-1.8.18": {
+        "runtime_dependencies": [
+          {
+            "name": "aws_credential_types",
+            "package_key": "aws-credential-types-1.2.14",
+            "kind": "normal",
+            "features": [
+              "test-util"
+            ],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "aws_runtime",
+            "package_key": "aws-runtime-1.7.5",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "aws_sdk_sso",
+            "package_key": "aws-sdk-sso-1.102.0",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": false,
+            "optional": true,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "aws_sdk_ssooidc",
+            "package_key": "aws-sdk-ssooidc-1.104.0",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": false,
+            "optional": true,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "aws_sdk_sts",
+            "package_key": "aws-sdk-sts-1.107.0",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": false,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "aws_smithy_async",
+            "package_key": "aws-smithy-async-1.2.14",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "aws_smithy_http",
+            "package_key": "aws-smithy-http-0.63.6",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "aws_smithy_json",
+            "package_key": "aws-smithy-json-0.62.7",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "aws_smithy_runtime",
+            "package_key": "aws-smithy-runtime-1.11.3",
+            "kind": "normal",
+            "features": [
+              "client"
+            ],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "aws_smithy_runtime_api",
+            "package_key": "aws-smithy-runtime-api-1.12.3",
+            "kind": "normal",
+            "features": [
+              "client"
+            ],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "aws_smithy_schema",
+            "package_key": "aws-smithy-schema-0.1.0",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "aws_smithy_types",
+            "package_key": "aws-smithy-types-1.5.0",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "aws_types",
+            "package_key": "aws-types-1.3.16",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "bytes",
+            "package_key": "bytes-1.11.1",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "fastrand",
+            "package_key": "fastrand-2.4.1",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "hex",
+            "package_key": "hex-0.4.3",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": true,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "http",
+            "package_key": "http-1.4.1",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "sha1",
+            "package_key": "sha1-0.10.6",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": true,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "time",
+            "package_key": "time-0.3.53",
+            "kind": "normal",
+            "features": [
+              "parsing"
+            ],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "tokio",
+            "package_key": "tokio-1.52.3",
+            "kind": "normal",
+            "features": [
+              "sync"
+            ],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "tracing",
+            "package_key": "tracing-0.1.44",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "url",
+            "package_key": "url-2.5.8",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "zeroize",
+            "package_key": "zeroize-1.8.2",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": true,
+            "target": null,
+            "tree": "target"
+          }
+        ],
+        "build_dependencies": [],
+        "features": [
+          "behavior-version-latest",
+          "credentials-process",
+          "default",
+          "default-https-client",
+          "rt-tokio",
+          "sso"
+        ]
+      },
+      "aws-credential-types-1.2.14": {
+        "runtime_dependencies": [
+          {
+            "name": "aws_smithy_async",
+            "package_key": "aws-smithy-async-1.2.14",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "aws_smithy_runtime_api",
+            "package_key": "aws-smithy-runtime-api-1.12.3",
+            "kind": "normal",
+            "features": [
+              "client",
+              "http-auth"
+            ],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "aws_smithy_types",
+            "package_key": "aws-smithy-types-1.5.0",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "zeroize",
+            "package_key": "zeroize-1.8.2",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          }
+        ],
+        "build_dependencies": [],
+        "features": [
+          "test-util"
+        ]
+      },
+      "aws-lc-rs-1.17.1": {
+        "runtime_dependencies": [
+          {
+            "name": "aws_lc_sys",
+            "package_key": "aws-lc-sys-0.42.0",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": false,
+            "optional": true,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "zeroize",
+            "package_key": "zeroize-1.8.2",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          }
+        ],
+        "build_dependencies": [],
+        "features": [
+          "aws-lc-sys",
+          "prebuilt-nasm"
+        ]
+      },
+      "aws-lc-sys-0.42.0": {
+        "runtime_dependencies": [],
+        "build_dependencies": [
+          {
+            "name": "cc",
+            "package_key": "cc-1.2.63",
+            "kind": "build",
+            "features": [
+              "parallel"
+            ],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "host"
+          },
+          {
+            "name": "cmake",
+            "package_key": "cmake-0.1.58",
+            "kind": "build",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "host"
+          },
+          {
+            "name": "dunce",
+            "package_key": "dunce-1.0.5",
+            "kind": "build",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "host"
+          },
+          {
+            "name": "fs_extra",
+            "package_key": "fs_extra-1.3.0",
+            "kind": "build",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "host"
+          },
+          {
+            "name": "pkg_config",
+            "package_key": "pkg-config-0.3.33",
+            "kind": "build",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": "cfg(unix)",
+            "tree": "host"
+          }
+        ],
+        "features": [
+          "prebuilt-nasm"
+        ]
+      },
+      "aws-runtime-1.7.5": {
+        "runtime_dependencies": [
+          {
+            "name": "aws_credential_types",
+            "package_key": "aws-credential-types-1.2.14",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "aws_sigv4",
+            "package_key": "aws-sigv4-1.4.5",
+            "kind": "normal",
+            "features": [
+              "http0-compat"
+            ],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "aws_smithy_async",
+            "package_key": "aws-smithy-async-1.2.14",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "aws_smithy_http",
+            "package_key": "aws-smithy-http-0.63.6",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "aws_smithy_runtime",
+            "package_key": "aws-smithy-runtime-1.11.3",
+            "kind": "normal",
+            "features": [
+              "client"
+            ],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "aws_smithy_runtime_api",
+            "package_key": "aws-smithy-runtime-api-1.12.3",
+            "kind": "normal",
+            "features": [
+              "client",
+              "http-1x"
+            ],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "aws_smithy_types",
+            "package_key": "aws-smithy-types-1.5.0",
+            "kind": "normal",
+            "features": [
+              "http-body-1-x"
+            ],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "aws_types",
+            "package_key": "aws-types-1.3.16",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "bytes",
+            "package_key": "bytes-1.11.1",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "bytes_utils",
+            "package_key": "bytes-utils-0.1.4",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "fastrand",
+            "package_key": "fastrand-2.4.1",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "http_1x",
+            "package_key": "http-1.4.1",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "http_body_1x",
+            "package_key": "http-body-1.0.1",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "percent_encoding",
+            "package_key": "percent-encoding-2.3.2",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "pin_project_lite",
+            "package_key": "pin-project-lite-0.2.17",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "tracing",
+            "package_key": "tracing-0.1.44",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "uuid",
+            "package_key": "uuid-1.24.0",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          }
+        ],
+        "build_dependencies": [],
+        "features": []
+      },
+      "aws-sdk-eks-1.137.0": {
+        "runtime_dependencies": [
+          {
+            "name": "arc_swap",
+            "package_key": "arc-swap-1.9.1",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "aws_credential_types",
+            "package_key": "aws-credential-types-1.2.14",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "aws_runtime",
+            "package_key": "aws-runtime-1.7.5",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "aws_smithy_async",
+            "package_key": "aws-smithy-async-1.2.14",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "aws_smithy_http",
+            "package_key": "aws-smithy-http-0.63.6",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "aws_smithy_json",
+            "package_key": "aws-smithy-json-0.62.7",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "aws_smithy_observability",
+            "package_key": "aws-smithy-observability-0.2.6",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "aws_smithy_runtime",
+            "package_key": "aws-smithy-runtime-1.11.3",
+            "kind": "normal",
+            "features": [
+              "client"
+            ],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "aws_smithy_runtime_api",
+            "package_key": "aws-smithy-runtime-api-1.12.3",
+            "kind": "normal",
+            "features": [
+              "client",
+              "http-1x"
+            ],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "aws_smithy_types",
+            "package_key": "aws-smithy-types-1.5.0",
+            "kind": "normal",
+            "features": [
+              "http-body-1-x"
+            ],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "aws_types",
+            "package_key": "aws-types-1.3.16",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "bytes",
+            "package_key": "bytes-1.11.1",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "fastrand",
+            "package_key": "fastrand-2.4.1",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "http",
+            "package_key": "http-0.2.12",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "http_1x",
+            "package_key": "http-1.4.1",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "regex_lite",
+            "package_key": "regex-lite-0.1.9",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "tracing",
+            "package_key": "tracing-0.1.44",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          }
+        ],
+        "build_dependencies": [],
+        "features": [
+          "default",
+          "default-https-client",
+          "rt-tokio",
+          "rustls"
+        ]
+      },
+      "aws-sdk-sso-1.102.0": {
+        "runtime_dependencies": [
+          {
+            "name": "arc_swap",
+            "package_key": "arc-swap-1.9.1",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "aws_credential_types",
+            "package_key": "aws-credential-types-1.2.14",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "aws_runtime",
+            "package_key": "aws-runtime-1.7.5",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "aws_smithy_async",
+            "package_key": "aws-smithy-async-1.2.14",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "aws_smithy_http",
+            "package_key": "aws-smithy-http-0.63.6",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "aws_smithy_json",
+            "package_key": "aws-smithy-json-0.62.7",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "aws_smithy_observability",
+            "package_key": "aws-smithy-observability-0.2.6",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "aws_smithy_runtime",
+            "package_key": "aws-smithy-runtime-1.11.3",
+            "kind": "normal",
+            "features": [
+              "client"
+            ],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "aws_smithy_runtime_api",
+            "package_key": "aws-smithy-runtime-api-1.12.3",
+            "kind": "normal",
+            "features": [
+              "client",
+              "http-1x"
+            ],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "aws_smithy_types",
+            "package_key": "aws-smithy-types-1.5.0",
+            "kind": "normal",
+            "features": [
+              "http-body-1-x"
+            ],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "aws_types",
+            "package_key": "aws-types-1.3.16",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "bytes",
+            "package_key": "bytes-1.11.1",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "fastrand",
+            "package_key": "fastrand-2.4.1",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "http",
+            "package_key": "http-0.2.12",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "http_1x",
+            "package_key": "http-1.4.1",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "regex_lite",
+            "package_key": "regex-lite-0.1.9",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "tracing",
+            "package_key": "tracing-0.1.44",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          }
+        ],
+        "build_dependencies": [],
+        "features": []
+      },
+      "aws-sdk-ssooidc-1.104.0": {
+        "runtime_dependencies": [
+          {
+            "name": "arc_swap",
+            "package_key": "arc-swap-1.9.1",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "aws_credential_types",
+            "package_key": "aws-credential-types-1.2.14",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "aws_runtime",
+            "package_key": "aws-runtime-1.7.5",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "aws_smithy_async",
+            "package_key": "aws-smithy-async-1.2.14",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "aws_smithy_http",
+            "package_key": "aws-smithy-http-0.63.6",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "aws_smithy_json",
+            "package_key": "aws-smithy-json-0.62.7",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "aws_smithy_observability",
+            "package_key": "aws-smithy-observability-0.2.6",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "aws_smithy_runtime",
+            "package_key": "aws-smithy-runtime-1.11.3",
+            "kind": "normal",
+            "features": [
+              "client"
+            ],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "aws_smithy_runtime_api",
+            "package_key": "aws-smithy-runtime-api-1.12.3",
+            "kind": "normal",
+            "features": [
+              "client",
+              "http-1x"
+            ],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "aws_smithy_types",
+            "package_key": "aws-smithy-types-1.5.0",
+            "kind": "normal",
+            "features": [
+              "http-body-1-x"
+            ],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "aws_types",
+            "package_key": "aws-types-1.3.16",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "bytes",
+            "package_key": "bytes-1.11.1",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "fastrand",
+            "package_key": "fastrand-2.4.1",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "http",
+            "package_key": "http-0.2.12",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "http_1x",
+            "package_key": "http-1.4.1",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "regex_lite",
+            "package_key": "regex-lite-0.1.9",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "tracing",
+            "package_key": "tracing-0.1.44",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          }
+        ],
+        "build_dependencies": [],
+        "features": []
+      },
+      "aws-sdk-sts-1.107.0": {
+        "runtime_dependencies": [
+          {
+            "name": "arc_swap",
+            "package_key": "arc-swap-1.9.1",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "aws_credential_types",
+            "package_key": "aws-credential-types-1.2.14",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "aws_runtime",
+            "package_key": "aws-runtime-1.7.5",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "aws_smithy_async",
+            "package_key": "aws-smithy-async-1.2.14",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "aws_smithy_http",
+            "package_key": "aws-smithy-http-0.63.6",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "aws_smithy_json",
+            "package_key": "aws-smithy-json-0.62.7",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "aws_smithy_observability",
+            "package_key": "aws-smithy-observability-0.2.6",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "aws_smithy_query",
+            "package_key": "aws-smithy-query-0.60.15",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "aws_smithy_runtime",
+            "package_key": "aws-smithy-runtime-1.11.3",
+            "kind": "normal",
+            "features": [
+              "client"
+            ],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "aws_smithy_runtime_api",
+            "package_key": "aws-smithy-runtime-api-1.12.3",
+            "kind": "normal",
+            "features": [
+              "client",
+              "http-1x"
+            ],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "aws_smithy_types",
+            "package_key": "aws-smithy-types-1.5.0",
+            "kind": "normal",
+            "features": [
+              "http-body-1-x"
+            ],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "aws_smithy_xml",
+            "package_key": "aws-smithy-xml-0.60.15",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "aws_types",
+            "package_key": "aws-types-1.3.16",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "fastrand",
+            "package_key": "fastrand-2.4.1",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "http",
+            "package_key": "http-0.2.12",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "http_1x",
+            "package_key": "http-1.4.1",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "regex_lite",
+            "package_key": "regex-lite-0.1.9",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "tracing",
+            "package_key": "tracing-0.1.44",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          }
+        ],
+        "build_dependencies": [],
+        "features": []
+      },
+      "aws-sigv4-1.4.5": {
+        "runtime_dependencies": [
+          {
+            "name": "aws_credential_types",
+            "package_key": "aws-credential-types-1.2.14",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "aws_smithy_http",
+            "package_key": "aws-smithy-http-0.63.6",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "aws_smithy_runtime_api",
+            "package_key": "aws-smithy-runtime-api-1.12.3",
+            "kind": "normal",
+            "features": [
+              "client"
+            ],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "aws_smithy_types",
+            "package_key": "aws-smithy-types-1.5.0",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "bytes",
+            "package_key": "bytes-1.11.1",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "form_urlencoded",
+            "package_key": "form_urlencoded-1.2.2",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": true,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "hex",
+            "package_key": "hex-0.4.3",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "hmac",
+            "package_key": "hmac-0.13.0",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "http0",
+            "package_key": "http-0.2.12",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": true,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "http",
+            "package_key": "http-1.4.1",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": true,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "percent_encoding",
+            "package_key": "percent-encoding-2.3.2",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": true,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "sha2",
+            "package_key": "sha2-0.11.0",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "time",
+            "package_key": "time-0.3.53",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "tracing",
+            "package_key": "tracing-0.1.44",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          }
+        ],
+        "build_dependencies": [],
+        "features": [
+          "default",
+          "http0-compat",
+          "http1",
+          "sign-http"
+        ]
+      },
+      "aws-smithy-async-1.2.14": {
+        "runtime_dependencies": [
+          {
+            "name": "futures_util",
+            "package_key": "futures-util-0.3.32",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": false,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "pin_project_lite",
+            "package_key": "pin-project-lite-0.2.17",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "tokio",
+            "package_key": "tokio-1.52.3",
+            "kind": "normal",
+            "features": [
+              "sync"
+            ],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          }
+        ],
+        "build_dependencies": [],
+        "features": [
+          "rt-tokio"
+        ]
+      },
+      "aws-smithy-http-0.63.6": {
+        "runtime_dependencies": [
+          {
+            "name": "aws_smithy_runtime_api",
+            "package_key": "aws-smithy-runtime-api-1.12.3",
+            "kind": "normal",
+            "features": [
+              "client",
+              "http-1x"
+            ],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "aws_smithy_types",
+            "package_key": "aws-smithy-types-1.5.0",
+            "kind": "normal",
+            "features": [
+              "byte-stream-poll-next",
+              "http-body-1-x"
+            ],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "bytes",
+            "package_key": "bytes-1.11.1",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "bytes_utils",
+            "package_key": "bytes-utils-0.1.4",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "futures_core",
+            "package_key": "futures-core-0.3.32",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "futures_util",
+            "package_key": "futures-util-0.3.32",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": false,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "http_1x",
+            "package_key": "http-1.4.1",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "http_body_1x",
+            "package_key": "http-body-1.0.1",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "http_body_util",
+            "package_key": "http-body-util-0.1.3",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "percent_encoding",
+            "package_key": "percent-encoding-2.3.2",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "pin_project_lite",
+            "package_key": "pin-project-lite-0.2.17",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "pin_utils",
+            "package_key": "pin-utils-0.1.0",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "tracing",
+            "package_key": "tracing-0.1.44",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          }
+        ],
+        "build_dependencies": [],
+        "features": []
+      },
+      "aws-smithy-http-client-1.1.13": {
+        "runtime_dependencies": [
+          {
+            "name": "aws_smithy_async",
+            "package_key": "aws-smithy-async-1.2.14",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "aws_smithy_runtime_api",
+            "package_key": "aws-smithy-runtime-api-1.12.3",
+            "kind": "normal",
+            "features": [
+              "client"
+            ],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "aws_smithy_types",
+            "package_key": "aws-smithy-types-1.5.0",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "h2_0_3",
+            "package_key": "h2-0.3.27",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": true,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "h2",
+            "package_key": "h2-0.4.14",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": false,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "http_02x",
+            "package_key": "http-0.2.12",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": true,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "http_1x",
+            "package_key": "http-1.4.1",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": true,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "http_body_04x",
+            "package_key": "http-body-0.4.6",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": true,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "hyper_0_14",
+            "package_key": "hyper-0.14.32",
+            "kind": "normal",
+            "features": [
+              "client",
+              "http1",
+              "http2",
+              "stream",
+              "tcp"
+            ],
+            "uses_default_features": false,
+            "optional": true,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "hyper",
+            "package_key": "hyper-1.10.1",
+            "kind": "normal",
+            "features": [
+              "client",
+              "http1",
+              "http2"
+            ],
+            "uses_default_features": true,
+            "optional": true,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "legacy_hyper_rustls",
+            "package_key": "hyper-rustls-0.24.2",
+            "kind": "normal",
+            "features": [
+              "acceptor",
+              "http1",
+              "http2",
+              "logging",
+              "tls12",
+              "tokio-runtime"
+            ],
+            "uses_default_features": false,
+            "optional": true,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "hyper_rustls",
+            "package_key": "hyper-rustls-0.27.9",
+            "kind": "normal",
+            "features": [
+              "http1",
+              "http2",
+              "native-tokio",
+              "tls12"
+            ],
+            "uses_default_features": false,
+            "optional": true,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "hyper_util",
+            "package_key": "hyper-util-0.1.20",
+            "kind": "normal",
+            "features": [
+              "http1",
+              "http2"
+            ],
+            "uses_default_features": true,
+            "optional": true,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "pin_project_lite",
+            "package_key": "pin-project-lite-0.2.17",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "legacy_rustls",
+            "package_key": "rustls-0.21.12",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": true,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "rustls",
+            "package_key": "rustls-0.23.40",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": false,
+            "optional": true,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "rustls_native_certs",
+            "package_key": "rustls-native-certs-0.8.4",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": true,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "rustls_pki_types",
+            "package_key": "rustls-pki-types-1.14.1",
+            "kind": "normal",
+            "features": [
+              "std"
+            ],
+            "uses_default_features": true,
+            "optional": true,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "tokio",
+            "package_key": "tokio-1.52.3",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "tokio_rustls",
+            "package_key": "tokio-rustls-0.26.4",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": false,
+            "optional": true,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "tower",
+            "package_key": "tower-0.5.3",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": true,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "tracing",
+            "package_key": "tracing-0.1.44",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          }
+        ],
+        "build_dependencies": [],
+        "features": [
+          "__rustls",
+          "default-client",
+          "hyper-014",
+          "legacy-rustls-ring",
+          "rustls-aws-lc"
+        ]
+      },
+      "aws-smithy-json-0.62.7": {
+        "runtime_dependencies": [
+          {
+            "name": "aws_smithy_runtime_api",
+            "package_key": "aws-smithy-runtime-api-1.12.3",
+            "kind": "normal",
+            "features": [
+              "client"
+            ],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "aws_smithy_schema",
+            "package_key": "aws-smithy-schema-0.1.0",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "aws_smithy_types",
+            "package_key": "aws-smithy-types-1.5.0",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          }
+        ],
+        "build_dependencies": [],
+        "features": []
+      },
+      "aws-smithy-observability-0.2.6": {
+        "runtime_dependencies": [
+          {
+            "name": "aws_smithy_runtime_api",
+            "package_key": "aws-smithy-runtime-api-1.12.3",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          }
+        ],
+        "build_dependencies": [],
+        "features": []
+      },
+      "aws-smithy-query-0.60.15": {
+        "runtime_dependencies": [
+          {
+            "name": "aws_smithy_types",
+            "package_key": "aws-smithy-types-1.5.0",
+            "kind": "normal",
+            "features": [
+              "http-body-1-x"
+            ],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "urlencoding",
+            "package_key": "urlencoding-2.1.3",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          }
+        ],
+        "build_dependencies": [],
+        "features": []
+      },
+      "aws-smithy-runtime-1.11.3": {
+        "runtime_dependencies": [
+          {
+            "name": "aws_smithy_async",
+            "package_key": "aws-smithy-async-1.2.14",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "aws_smithy_http",
+            "package_key": "aws-smithy-http-0.63.6",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "aws_smithy_http_client",
+            "package_key": "aws-smithy-http-client-1.1.13",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": true,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "aws_smithy_observability",
+            "package_key": "aws-smithy-observability-0.2.6",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "aws_smithy_runtime_api",
+            "package_key": "aws-smithy-runtime-api-1.12.3",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "aws_smithy_schema",
+            "package_key": "aws-smithy-schema-0.1.0",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "aws_smithy_types",
+            "package_key": "aws-smithy-types-1.5.0",
+            "kind": "normal",
+            "features": [
+              "http-body-0-4-x"
+            ],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "bytes",
+            "package_key": "bytes-1.11.1",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "fastrand",
+            "package_key": "fastrand-2.4.1",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "http_02x",
+            "package_key": "http-0.2.12",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "http_1x",
+            "package_key": "http-1.4.1",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "http_body_04x",
+            "package_key": "http-body-0.4.6",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "http_body_1x",
+            "package_key": "http-body-1.0.1",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "http_body_util",
+            "package_key": "http-body-util-0.1.3",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "pin_project_lite",
+            "package_key": "pin-project-lite-0.2.17",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "pin_utils",
+            "package_key": "pin-utils-0.1.0",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "tokio",
+            "package_key": "tokio-1.52.3",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "tracing",
+            "package_key": "tracing-0.1.44",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          }
+        ],
+        "build_dependencies": [],
+        "features": [
+          "client",
+          "connector-hyper-0-14-x",
+          "default-https-client",
+          "rt-tokio",
+          "tls-rustls"
+        ]
+      },
+      "aws-smithy-runtime-api-1.12.3": {
+        "runtime_dependencies": [
+          {
+            "name": "aws_smithy_async",
+            "package_key": "aws-smithy-async-1.2.14",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "aws_smithy_runtime_api_macros",
+            "package_key": "aws-smithy-runtime-api-macros-1.0.0",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "host"
+          },
+          {
+            "name": "aws_smithy_types",
+            "package_key": "aws-smithy-types-1.5.0",
+            "kind": "normal",
+            "features": [
+              "http-body-1-x"
+            ],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "bytes",
+            "package_key": "bytes-1.11.1",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "http_02x",
+            "package_key": "http-0.2.12",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "http_1x",
+            "package_key": "http-1.4.1",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "pin_project_lite",
+            "package_key": "pin-project-lite-0.2.17",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "tokio",
+            "package_key": "tokio-1.52.3",
+            "kind": "normal",
+            "features": [
+              "sync"
+            ],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "tracing",
+            "package_key": "tracing-0.1.44",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "zeroize",
+            "package_key": "zeroize-1.8.2",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": true,
+            "target": null,
+            "tree": "target"
+          }
+        ],
+        "build_dependencies": [],
+        "features": [
+          "client",
+          "default",
+          "http-02x",
+          "http-1x",
+          "http-auth",
+          "test-util"
+        ]
+      },
+      "aws-smithy-runtime-api-macros-1.0.0": {
+        "runtime_dependencies": [
+          {
+            "name": "proc_macro2",
+            "package_key": "proc-macro2-1.0.106",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "quote",
+            "package_key": "quote-1.0.45",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "syn",
+            "package_key": "syn-2.0.117",
+            "kind": "normal",
+            "features": [
+              "full"
+            ],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          }
+        ],
+        "build_dependencies": [],
+        "features": []
+      },
+      "aws-smithy-schema-0.1.0": {
+        "runtime_dependencies": [
+          {
+            "name": "aws_smithy_runtime_api",
+            "package_key": "aws-smithy-runtime-api-1.12.3",
+            "kind": "normal",
+            "features": [
+              "client"
+            ],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "aws_smithy_types",
+            "package_key": "aws-smithy-types-1.5.0",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": false,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "http",
+            "package_key": "http-1.4.1",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          }
+        ],
+        "build_dependencies": [],
+        "features": []
+      },
+      "aws-smithy-types-1.5.0": {
+        "runtime_dependencies": [
+          {
+            "name": "base64_simd",
+            "package_key": "base64-simd-0.8.0",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "bytes",
+            "package_key": "bytes-1.11.1",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "bytes_utils",
+            "package_key": "bytes-utils-0.1.4",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "futures_core",
+            "package_key": "futures-core-0.3.32",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": true,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "http",
+            "package_key": "http-0.2.12",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": true,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "http_1x",
+            "package_key": "http-1.4.1",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "http_body_0_4",
+            "package_key": "http-body-0.4.6",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": true,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "http_body_1_0",
+            "package_key": "http-body-1.0.1",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": true,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "http_body_util",
+            "package_key": "http-body-util-0.1.3",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": true,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "itoa",
+            "package_key": "itoa-1.0.18",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "num_integer",
+            "package_key": "num-integer-0.1.46",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "pin_project_lite",
+            "package_key": "pin-project-lite-0.2.17",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "pin_utils",
+            "package_key": "pin-utils-0.1.0",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "ryu",
+            "package_key": "ryu-1.0.23",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "time",
+            "package_key": "time-0.3.53",
+            "kind": "normal",
+            "features": [
+              "parsing"
+            ],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "tokio",
+            "package_key": "tokio-1.52.3",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": true,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "tokio_util",
+            "package_key": "tokio-util-0.7.18",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": true,
+            "target": null,
+            "tree": "target"
+          }
+        ],
+        "build_dependencies": [],
+        "features": [
+          "byte-stream-poll-next",
+          "http-body-0-4-x",
+          "http-body-1-x",
+          "rt-tokio",
+          "test-util"
+        ]
+      },
+      "aws-smithy-xml-0.60.15": {
+        "runtime_dependencies": [
+          {
+            "name": "xmlparser",
+            "package_key": "xmlparser-0.13.6",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          }
+        ],
+        "build_dependencies": [],
+        "features": []
+      },
+      "aws-types-1.3.16": {
+        "runtime_dependencies": [
+          {
+            "name": "aws_credential_types",
+            "package_key": "aws-credential-types-1.2.14",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "aws_smithy_async",
+            "package_key": "aws-smithy-async-1.2.14",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "aws_smithy_runtime_api",
+            "package_key": "aws-smithy-runtime-api-1.12.3",
+            "kind": "normal",
+            "features": [
+              "client"
+            ],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "aws_smithy_schema",
+            "package_key": "aws-smithy-schema-0.1.0",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "aws_smithy_types",
+            "package_key": "aws-smithy-types-1.5.0",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "tracing",
+            "package_key": "tracing-0.1.44",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          }
+        ],
+        "build_dependencies": [
+          {
+            "name": "rustc_version",
+            "package_key": "rustc_version-0.4.1",
+            "kind": "build",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "host"
+          }
+        ],
+        "features": []
+      },
       "axum-0.7.9": {
         "runtime_dependencies": [
           {
@@ -2247,6 +4916,37 @@
           "std"
         ]
       },
+      "base64-simd-0.8.0": {
+        "runtime_dependencies": [
+          {
+            "name": "outref",
+            "package_key": "outref-0.5.2",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "vsimd",
+            "package_key": "vsimd-0.8.0",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          }
+        ],
+        "build_dependencies": [],
+        "features": [
+          "alloc",
+          "default",
+          "detect",
+          "std"
+        ]
+      },
       "base64ct-1.8.3": {
         "runtime_dependencies": [],
         "build_dependencies": [],
@@ -2313,6 +5013,22 @@
           {
             "name": "generic_array",
             "package_key": "generic-array-0.14.7",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          }
+        ],
+        "build_dependencies": [],
+        "features": []
+      },
+      "block-buffer-0.12.1": {
+        "runtime_dependencies": [
+          {
+            "name": "hybrid_array",
+            "package_key": "hybrid-array-0.4.13",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -2911,6 +5627,28 @@
             "optional": false,
             "target": null,
             "tree": "host"
+          },
+          {
+            "name": "aws_config",
+            "package_key": "aws-config-1.8.18",
+            "kind": "normal",
+            "features": [
+              "behavior-version-latest"
+            ],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "aws_sdk_eks",
+            "package_key": "aws-sdk-eks-1.137.0",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
           },
           {
             "name": "breathe_actuator",
@@ -4222,6 +6960,35 @@
           "std"
         ]
       },
+      "bytes-utils-0.1.4": {
+        "runtime_dependencies": [
+          {
+            "name": "bytes",
+            "package_key": "bytes-1.11.1",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": false,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "either",
+            "package_key": "either-1.16.0",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": false,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          }
+        ],
+        "build_dependencies": [],
+        "features": [
+          "default",
+          "std"
+        ]
+      },
       "cc-1.2.63": {
         "runtime_dependencies": [
           {
@@ -4232,6 +6999,26 @@
             "uses_default_features": true,
             "optional": false,
             "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "jobserver",
+            "package_key": "jobserver-0.1.35",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": false,
+            "optional": true,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "libc",
+            "package_key": "libc-0.2.186",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": false,
+            "optional": true,
+            "target": "cfg(unix)",
             "tree": "target"
           },
           {
@@ -4246,7 +7033,9 @@
           }
         ],
         "build_dependencies": [],
-        "features": []
+        "features": [
+          "parallel"
+        ]
       },
       "cfg-if-1.0.4": {
         "runtime_dependencies": [],
@@ -4309,6 +7098,27 @@
           "winapi",
           "windows-link"
         ]
+      },
+      "cmake-0.1.58": {
+        "runtime_dependencies": [
+          {
+            "name": "cc",
+            "package_key": "cc-1.2.63",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          }
+        ],
+        "build_dependencies": [],
+        "features": []
+      },
+      "cmov-0.5.4": {
+        "runtime_dependencies": [],
+        "build_dependencies": [],
+        "features": []
       },
       "combine-4.6.7": {
         "runtime_dependencies": [
@@ -4405,6 +7215,11 @@
           "default",
           "std"
         ]
+      },
+      "const-oid-0.10.2": {
+        "runtime_dependencies": [],
+        "build_dependencies": [],
+        "features": []
       },
       "const-oid-0.9.6": {
         "runtime_dependencies": [],
@@ -4515,6 +7330,38 @@
         "features": [
           "std"
         ]
+      },
+      "crypto-common-0.2.2": {
+        "runtime_dependencies": [
+          {
+            "name": "hybrid_array",
+            "package_key": "hybrid-array-0.4.13",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          }
+        ],
+        "build_dependencies": [],
+        "features": []
+      },
+      "ctutils-0.4.2": {
+        "runtime_dependencies": [
+          {
+            "name": "cmov",
+            "package_key": "cmov-0.5.4",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          }
+        ],
+        "build_dependencies": [],
+        "features": []
       },
       "darling-0.20.11": {
         "runtime_dependencies": [
@@ -5009,6 +7856,58 @@
           "subtle"
         ]
       },
+      "digest-0.11.3": {
+        "runtime_dependencies": [
+          {
+            "name": "block_buffer",
+            "package_key": "block-buffer-0.12.1",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": true,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "const_oid",
+            "package_key": "const-oid-0.10.2",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": true,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "common",
+            "package_key": "crypto-common-0.2.2",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "ctutils",
+            "package_key": "ctutils-0.4.2",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": true,
+            "target": null,
+            "tree": "target"
+          }
+        ],
+        "build_dependencies": [],
+        "features": [
+          "alloc",
+          "block-api",
+          "default",
+          "mac",
+          "oid"
+        ]
+      },
       "displaydoc-0.2.6": {
         "runtime_dependencies": [
           {
@@ -5046,6 +7945,11 @@
         "features": []
       },
       "dotenvy-0.15.7": {
+        "runtime_dependencies": [],
+        "build_dependencies": [],
+        "features": []
+      },
+      "dunce-1.0.5": {
         "runtime_dependencies": [],
         "build_dependencies": [],
         "features": []
@@ -5596,6 +8500,11 @@
           "default",
           "std"
         ]
+      },
+      "fs_extra-1.3.0": {
+        "runtime_dependencies": [],
+        "build_dependencies": [],
+        "features": []
       },
       "futures-0.3.32": {
         "runtime_dependencies": [
@@ -6357,6 +9266,229 @@
           "wasm_js"
         ]
       },
+      "getrandom-0.4.3": {
+        "runtime_dependencies": [
+          {
+            "name": "cfg_if",
+            "package_key": "cfg-if-1.0.4",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "libc",
+            "package_key": "libc-0.2.186",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": false,
+            "optional": false,
+            "target": "cfg(all(any(target_os = \"linux\", target_os = \"android\"), not(any(all(target_os = \"linux\", target_env = \"\"), getrandom_backend = \"custom\", getrandom_backend = \"linux_raw\", getrandom_backend = \"rdrand\", getrandom_backend = \"rndr\"))))",
+            "tree": "target"
+          },
+          {
+            "name": "libc",
+            "package_key": "libc-0.2.186",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": false,
+            "optional": false,
+            "target": "cfg(any(target_os = \"dragonfly\", target_os = \"freebsd\", target_os = \"hurd\", target_os = \"illumos\", target_os = \"cygwin\", all(target_os = \"horizon\", target_arch = \"arm\")))",
+            "tree": "target"
+          },
+          {
+            "name": "libc",
+            "package_key": "libc-0.2.186",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": false,
+            "optional": false,
+            "target": "cfg(any(target_os = \"haiku\", target_os = \"redox\", target_os = \"nto\", target_os = \"aix\"))",
+            "tree": "target"
+          },
+          {
+            "name": "libc",
+            "package_key": "libc-0.2.186",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": false,
+            "optional": false,
+            "target": "cfg(any(target_os = \"ios\", target_os = \"visionos\", target_os = \"watchos\", target_os = \"tvos\"))",
+            "tree": "target"
+          },
+          {
+            "name": "libc",
+            "package_key": "libc-0.2.186",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": false,
+            "optional": false,
+            "target": "cfg(any(target_os = \"macos\", target_os = \"openbsd\", target_os = \"vita\", target_os = \"emscripten\"))",
+            "tree": "target"
+          },
+          {
+            "name": "libc",
+            "package_key": "libc-0.2.186",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": false,
+            "optional": false,
+            "target": "cfg(target_os = \"netbsd\")",
+            "tree": "target"
+          },
+          {
+            "name": "libc",
+            "package_key": "libc-0.2.186",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": false,
+            "optional": false,
+            "target": "cfg(target_os = \"solaris\")",
+            "tree": "target"
+          },
+          {
+            "name": "libc",
+            "package_key": "libc-0.2.186",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": false,
+            "optional": false,
+            "target": "cfg(target_os = \"vxworks\")",
+            "tree": "target"
+          }
+        ],
+        "build_dependencies": [],
+        "features": [
+          "std"
+        ]
+      },
+      "h2-0.3.27": {
+        "runtime_dependencies": [
+          {
+            "name": "bytes",
+            "package_key": "bytes-1.11.1",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "fnv",
+            "package_key": "fnv-1.0.7",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "futures_core",
+            "package_key": "futures-core-0.3.32",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": false,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "futures_sink",
+            "package_key": "futures-sink-0.3.32",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": false,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "futures_util",
+            "package_key": "futures-util-0.3.32",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": false,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "http",
+            "package_key": "http-0.2.12",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "indexmap",
+            "package_key": "indexmap-2.14.0",
+            "kind": "normal",
+            "features": [
+              "std"
+            ],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "slab",
+            "package_key": "slab-0.4.12",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "tokio",
+            "package_key": "tokio-1.52.3",
+            "kind": "normal",
+            "features": [
+              "io-util"
+            ],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "tokio_util",
+            "package_key": "tokio-util-0.7.18",
+            "kind": "normal",
+            "features": [
+              "codec",
+              "io"
+            ],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "tracing",
+            "package_key": "tracing-0.1.44",
+            "kind": "normal",
+            "features": [
+              "std"
+            ],
+            "uses_default_features": false,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          }
+        ],
+        "build_dependencies": [],
+        "features": []
+      },
       "h2-0.4.14": {
         "runtime_dependencies": [
           {
@@ -6821,8 +9953,62 @@
           "reset"
         ]
       },
+      "hmac-0.13.0": {
+        "runtime_dependencies": [
+          {
+            "name": "digest",
+            "package_key": "digest-0.11.3",
+            "kind": "normal",
+            "features": [
+              "mac"
+            ],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          }
+        ],
+        "build_dependencies": [],
+        "features": []
+      },
       "home-0.5.12": {
         "runtime_dependencies": [],
+        "build_dependencies": [],
+        "features": []
+      },
+      "http-0.2.12": {
+        "runtime_dependencies": [
+          {
+            "name": "bytes",
+            "package_key": "bytes-1.11.1",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "fnv",
+            "package_key": "fnv-1.0.7",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "itoa",
+            "package_key": "itoa-1.0.18",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          }
+        ],
         "build_dependencies": [],
         "features": []
       },
@@ -6854,6 +10040,42 @@
           "default",
           "std"
         ]
+      },
+      "http-body-0.4.6": {
+        "runtime_dependencies": [
+          {
+            "name": "bytes",
+            "package_key": "bytes-1.11.1",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "http",
+            "package_key": "http-0.2.12",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "pin_project_lite",
+            "package_key": "pin-project-lite-0.2.17",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          }
+        ],
+        "build_dependencies": [],
+        "features": []
       },
       "http-body-1.0.1": {
         "runtime_dependencies": [
@@ -6951,6 +10173,206 @@
         "runtime_dependencies": [],
         "build_dependencies": [],
         "features": []
+      },
+      "hybrid-array-0.4.13": {
+        "runtime_dependencies": [
+          {
+            "name": "typenum",
+            "package_key": "typenum-1.20.1",
+            "kind": "normal",
+            "features": [
+              "const-generics"
+            ],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          }
+        ],
+        "build_dependencies": [],
+        "features": []
+      },
+      "hyper-0.14.32": {
+        "runtime_dependencies": [
+          {
+            "name": "bytes",
+            "package_key": "bytes-1.11.1",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "futures_channel",
+            "package_key": "futures-channel-0.3.32",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "futures_core",
+            "package_key": "futures-core-0.3.32",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": false,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "futures_util",
+            "package_key": "futures-util-0.3.32",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": false,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "h2",
+            "package_key": "h2-0.3.27",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": true,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "http",
+            "package_key": "http-0.2.12",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "http_body",
+            "package_key": "http-body-0.4.6",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "httparse",
+            "package_key": "httparse-1.10.1",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "httpdate",
+            "package_key": "httpdate-1.0.3",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "itoa",
+            "package_key": "itoa-1.0.18",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "pin_project_lite",
+            "package_key": "pin-project-lite-0.2.17",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "socket2",
+            "package_key": "socket2-0.5.10",
+            "kind": "normal",
+            "features": [
+              "all"
+            ],
+            "uses_default_features": true,
+            "optional": true,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "tokio",
+            "package_key": "tokio-1.52.3",
+            "kind": "normal",
+            "features": [
+              "sync"
+            ],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "tower_service",
+            "package_key": "tower-service-0.3.3",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "tracing",
+            "package_key": "tracing-0.1.44",
+            "kind": "normal",
+            "features": [
+              "std"
+            ],
+            "uses_default_features": false,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "want",
+            "package_key": "want-0.3.1",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          }
+        ],
+        "build_dependencies": [],
+        "features": [
+          "client",
+          "h2",
+          "http1",
+          "http2",
+          "runtime",
+          "server",
+          "socket2",
+          "stream",
+          "tcp"
+        ]
       },
       "hyper-1.10.1": {
         "runtime_dependencies": [
@@ -7248,6 +10670,92 @@
           "rustls-tls-native-roots"
         ]
       },
+      "hyper-rustls-0.24.2": {
+        "runtime_dependencies": [
+          {
+            "name": "futures_util",
+            "package_key": "futures-util-0.3.32",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": false,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "http",
+            "package_key": "http-0.2.12",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "hyper",
+            "package_key": "hyper-0.14.32",
+            "kind": "normal",
+            "features": [
+              "client"
+            ],
+            "uses_default_features": false,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "log",
+            "package_key": "log-0.4.31",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": true,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "rustls",
+            "package_key": "rustls-0.21.12",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": false,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "tokio",
+            "package_key": "tokio-1.52.3",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "tokio_rustls",
+            "package_key": "tokio-rustls-0.24.1",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": false,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          }
+        ],
+        "build_dependencies": [],
+        "features": [
+          "acceptor",
+          "http1",
+          "http2",
+          "log",
+          "logging",
+          "tls12",
+          "tokio-runtime"
+        ]
+      },
       "hyper-rustls-0.27.9": {
         "runtime_dependencies": [
           {
@@ -7357,6 +10865,7 @@
         "build_dependencies": [],
         "features": [
           "http1",
+          "http2",
           "log",
           "logging",
           "native-tokio",
@@ -8178,6 +11687,22 @@
       },
       "itoa-1.0.18": {
         "runtime_dependencies": [],
+        "build_dependencies": [],
+        "features": []
+      },
+      "jobserver-0.1.35": {
+        "runtime_dependencies": [
+          {
+            "name": "libc",
+            "package_key": "libc-0.2.186",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": "cfg(unix)",
+            "tree": "target"
+          }
+        ],
         "build_dependencies": [],
         "features": []
       },
@@ -10088,6 +13613,7 @@
         ],
         "build_dependencies": [],
         "features": [
+          "default",
           "i128",
           "std"
         ]
@@ -10216,6 +13742,11 @@
           "default",
           "std"
         ]
+      },
+      "outref-0.5.2": {
+        "runtime_dependencies": [],
+        "build_dependencies": [],
+        "features": []
       },
       "parking-2.2.1": {
         "runtime_dependencies": [],
@@ -10821,6 +14352,11 @@
         "features": []
       },
       "pin-project-lite-0.2.17": {
+        "runtime_dependencies": [],
+        "build_dependencies": [],
+        "features": []
+      },
+      "pin-utils-0.1.0": {
         "runtime_dependencies": [],
         "build_dependencies": [],
         "features": []
@@ -12519,6 +16055,15 @@
           "unicode-word-boundary"
         ]
       },
+      "regex-lite-0.1.9": {
+        "runtime_dependencies": [],
+        "build_dependencies": [],
+        "features": [
+          "default",
+          "std",
+          "string"
+        ]
+      },
       "regex-syntax-0.8.10": {
         "runtime_dependencies": [],
         "build_dependencies": [],
@@ -13254,8 +16799,72 @@
         "build_dependencies": [],
         "features": []
       },
+      "rustls-0.21.12": {
+        "runtime_dependencies": [
+          {
+            "name": "log",
+            "package_key": "log-0.4.31",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": true,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "ring",
+            "package_key": "ring-0.17.14",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "webpki",
+            "package_key": "rustls-webpki-0.101.7",
+            "kind": "normal",
+            "features": [
+              "alloc",
+              "std"
+            ],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "sct",
+            "package_key": "sct-0.7.1",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          }
+        ],
+        "build_dependencies": [],
+        "features": [
+          "default",
+          "log",
+          "logging",
+          "tls12"
+        ]
+      },
       "rustls-0.23.40": {
         "runtime_dependencies": [
+          {
+            "name": "aws_lc_rs",
+            "package_key": "aws-lc-rs-1.17.1",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": false,
+            "optional": true,
+            "target": null,
+            "tree": "target"
+          },
           {
             "name": "log",
             "package_key": "log-0.4.31",
@@ -13336,8 +16945,11 @@
         ],
         "build_dependencies": [],
         "features": [
+          "aws-lc-rs",
+          "aws_lc_rs",
           "log",
           "logging",
+          "prefer-post-quantum",
           "ring",
           "std",
           "tls12"
@@ -13384,6 +16996,36 @@
           "web-time"
         ]
       },
+      "rustls-webpki-0.101.7": {
+        "runtime_dependencies": [
+          {
+            "name": "ring",
+            "package_key": "ring-0.17.14",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": false,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "untrusted",
+            "package_key": "untrusted-0.9.0",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          }
+        ],
+        "build_dependencies": [],
+        "features": [
+          "alloc",
+          "default",
+          "std"
+        ]
+      },
       "rustls-webpki-0.102.8": {
         "runtime_dependencies": [
           {
@@ -13428,6 +17070,16 @@
       "rustls-webpki-0.103.13": {
         "runtime_dependencies": [
           {
+            "name": "aws_lc_rs",
+            "package_key": "aws-lc-rs-1.17.1",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": false,
+            "optional": true,
+            "target": null,
+            "tree": "target"
+          },
+          {
             "name": "ring",
             "package_key": "ring-0.17.14",
             "kind": "normal",
@@ -13461,6 +17113,7 @@
         "build_dependencies": [],
         "features": [
           "alloc",
+          "aws-lc-rs",
           "ring",
           "std"
         ]
@@ -13753,6 +17406,32 @@
       },
       "scopeguard-1.2.0": {
         "runtime_dependencies": [],
+        "build_dependencies": [],
+        "features": []
+      },
+      "sct-0.7.1": {
+        "runtime_dependencies": [
+          {
+            "name": "ring",
+            "package_key": "ring-0.17.14",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "untrusted",
+            "package_key": "untrusted-0.9.0",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          }
+        ],
         "build_dependencies": [],
         "features": []
       },
@@ -14270,6 +17949,46 @@
         "features": [
           "default",
           "std"
+        ]
+      },
+      "sha2-0.11.0": {
+        "runtime_dependencies": [
+          {
+            "name": "cfg_if",
+            "package_key": "cfg-if-1.0.4",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "cpufeatures",
+            "package_key": "cpufeatures-0.3.0",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": "cfg(any(target_arch = \"aarch64\", target_arch = \"x86_64\", target_arch = \"x86\"))",
+            "tree": "target"
+          },
+          {
+            "name": "digest",
+            "package_key": "digest-0.11.3",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          }
+        ],
+        "build_dependencies": [],
+        "features": [
+          "alloc",
+          "default",
+          "oid"
         ]
       },
       "sharded-slab-0.1.7": {
@@ -16481,7 +20200,7 @@
           },
           {
             "name": "getrandom",
-            "package_key": "getrandom-0.3.4",
+            "package_key": "getrandom-0.4.3",
             "kind": "normal",
             "features": [],
             "uses_default_features": false,
@@ -16914,6 +20633,7 @@
           "macros",
           "mio",
           "net",
+          "process",
           "rt",
           "rt-multi-thread",
           "signal",
@@ -16963,6 +20683,35 @@
         ],
         "build_dependencies": [],
         "features": []
+      },
+      "tokio-rustls-0.24.1": {
+        "runtime_dependencies": [
+          {
+            "name": "rustls",
+            "package_key": "rustls-0.21.12",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": false,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "tokio",
+            "package_key": "tokio-1.52.3",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          }
+        ],
+        "build_dependencies": [],
+        "features": [
+          "logging",
+          "tls12"
+        ]
       },
       "tokio-rustls-0.26.4": {
         "runtime_dependencies": [
@@ -17038,6 +20787,47 @@
           "net",
           "time"
         ]
+      },
+      "tokio-test-0.4.5": {
+        "runtime_dependencies": [
+          {
+            "name": "futures_core",
+            "package_key": "futures-core-0.3.32",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "tokio",
+            "package_key": "tokio-1.52.3",
+            "kind": "normal",
+            "features": [
+              "rt",
+              "sync",
+              "test-util",
+              "time"
+            ],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "tokio_stream",
+            "package_key": "tokio-stream-0.1.18",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          }
+        ],
+        "build_dependencies": [],
+        "features": []
       },
       "tokio-tungstenite-0.29.0": {
         "runtime_dependencies": [
@@ -18158,6 +21948,74 @@
         "build_dependencies": [],
         "features": []
       },
+      "tower-test-0.4.0": {
+        "runtime_dependencies": [
+          {
+            "name": "futures_util",
+            "package_key": "futures-util-0.3.32",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": false,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "pin_project",
+            "package_key": "pin-project-1.1.13",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "tokio",
+            "package_key": "tokio-1.52.3",
+            "kind": "normal",
+            "features": [
+              "sync"
+            ],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "tokio_test",
+            "package_key": "tokio-test-0.4.5",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "tower_layer",
+            "package_key": "tower-layer-0.3.3",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "tower_service",
+            "package_key": "tower-service-0.3.3",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          }
+        ],
+        "build_dependencies": [],
+        "features": []
+      },
       "tracing-0.1.44": {
         "runtime_dependencies": [
           {
@@ -18632,7 +22490,9 @@
       "typenum-1.20.1": {
         "runtime_dependencies": [],
         "build_dependencies": [],
-        "features": []
+        "features": [
+          "const-generics"
+        ]
       },
       "ucd-trie-0.1.7": {
         "runtime_dependencies": [],
@@ -18765,10 +22625,23 @@
           "std"
         ]
       },
+      "urlencoding-2.1.3": {
+        "runtime_dependencies": [],
+        "build_dependencies": [],
+        "features": []
+      },
       "utf8_iter-1.0.4": {
         "runtime_dependencies": [],
         "build_dependencies": [],
         "features": []
+      },
+      "uuid-1.24.0": {
+        "runtime_dependencies": [],
+        "build_dependencies": [],
+        "features": [
+          "default",
+          "std"
+        ]
       },
       "vcpkg-0.2.15": {
         "runtime_dependencies": [],
@@ -18779,6 +22652,15 @@
         "runtime_dependencies": [],
         "build_dependencies": [],
         "features": []
+      },
+      "vsimd-0.8.0": {
+        "runtime_dependencies": [],
+        "build_dependencies": [],
+        "features": [
+          "alloc",
+          "detect",
+          "std"
+        ]
       },
       "wait-timeout-0.2.1": {
         "runtime_dependencies": [
@@ -18929,6 +22811,14 @@
         "runtime_dependencies": [],
         "build_dependencies": [],
         "features": []
+      },
+      "xmlparser-0.13.6": {
+        "runtime_dependencies": [],
+        "build_dependencies": [],
+        "features": [
+          "default",
+          "std"
+        ]
       },
       "yansi-1.0.1": {
         "runtime_dependencies": [],
@@ -19390,6 +23280,52 @@
                 "uses_default_features": false,
                 "optional": false,
                 "target": "aarch64-linux-android",
+                "tree": "target"
+              },
+              {
+                "name": "libc",
+                "package_key": "libc-0.2.186",
+                "kind": "normal",
+                "features": [],
+                "uses_default_features": false,
+                "optional": false,
+                "target": "cfg(all(target_arch = \"aarch64\", target_os = \"linux\"))",
+                "tree": "target"
+              },
+              {
+                "name": "libc",
+                "package_key": "libc-0.2.186",
+                "kind": "normal",
+                "features": [],
+                "uses_default_features": false,
+                "optional": false,
+                "target": "cfg(all(target_arch = \"aarch64\", target_vendor = \"apple\"))",
+                "tree": "target"
+              },
+              {
+                "name": "libc",
+                "package_key": "libc-0.2.186",
+                "kind": "normal",
+                "features": [],
+                "uses_default_features": false,
+                "optional": false,
+                "target": "cfg(all(target_arch = \"loongarch64\", target_os = \"linux\"))",
+                "tree": "target"
+              }
+            ],
+            "build_dependencies": [],
+            "features": []
+          },
+          "cpufeatures-0.3.0": {
+            "runtime_dependencies": [
+              {
+                "name": "libc",
+                "package_key": "libc-0.2.186",
+                "kind": "normal",
+                "features": [],
+                "uses_default_features": false,
+                "optional": false,
+                "target": "cfg(all(target_arch = \"aarch64\", target_os = \"android\"))",
                 "tree": "target"
               },
               {
@@ -21536,6 +25472,52 @@
             "build_dependencies": [],
             "features": []
           },
+          "cpufeatures-0.3.0": {
+            "runtime_dependencies": [
+              {
+                "name": "libc",
+                "package_key": "libc-0.2.186",
+                "kind": "normal",
+                "features": [],
+                "uses_default_features": false,
+                "optional": false,
+                "target": "cfg(all(target_arch = \"aarch64\", target_os = \"android\"))",
+                "tree": "target"
+              },
+              {
+                "name": "libc",
+                "package_key": "libc-0.2.186",
+                "kind": "normal",
+                "features": [],
+                "uses_default_features": false,
+                "optional": false,
+                "target": "cfg(all(target_arch = \"aarch64\", target_os = \"linux\"))",
+                "tree": "target"
+              },
+              {
+                "name": "libc",
+                "package_key": "libc-0.2.186",
+                "kind": "normal",
+                "features": [],
+                "uses_default_features": false,
+                "optional": false,
+                "target": "cfg(all(target_arch = \"aarch64\", target_vendor = \"apple\"))",
+                "tree": "target"
+              },
+              {
+                "name": "libc",
+                "package_key": "libc-0.2.186",
+                "kind": "normal",
+                "features": [],
+                "uses_default_features": false,
+                "optional": false,
+                "target": "cfg(all(target_arch = \"loongarch64\", target_os = \"linux\"))",
+                "tree": "target"
+              }
+            ],
+            "build_dependencies": [],
+            "features": []
+          },
           "curve25519-dalek-4.1.3": {
             "runtime_dependencies": [
               {
@@ -22258,6 +26240,52 @@
                 "uses_default_features": false,
                 "optional": false,
                 "target": "aarch64-linux-android",
+                "tree": "target"
+              },
+              {
+                "name": "libc",
+                "package_key": "libc-0.2.186",
+                "kind": "normal",
+                "features": [],
+                "uses_default_features": false,
+                "optional": false,
+                "target": "cfg(all(target_arch = \"aarch64\", target_os = \"linux\"))",
+                "tree": "target"
+              },
+              {
+                "name": "libc",
+                "package_key": "libc-0.2.186",
+                "kind": "normal",
+                "features": [],
+                "uses_default_features": false,
+                "optional": false,
+                "target": "cfg(all(target_arch = \"aarch64\", target_vendor = \"apple\"))",
+                "tree": "target"
+              },
+              {
+                "name": "libc",
+                "package_key": "libc-0.2.186",
+                "kind": "normal",
+                "features": [],
+                "uses_default_features": false,
+                "optional": false,
+                "target": "cfg(all(target_arch = \"loongarch64\", target_os = \"linux\"))",
+                "tree": "target"
+              }
+            ],
+            "build_dependencies": [],
+            "features": []
+          },
+          "cpufeatures-0.3.0": {
+            "runtime_dependencies": [
+              {
+                "name": "libc",
+                "package_key": "libc-0.2.186",
+                "kind": "normal",
+                "features": [],
+                "uses_default_features": false,
+                "optional": false,
+                "target": "cfg(all(target_arch = \"aarch64\", target_os = \"android\"))",
                 "tree": "target"
               },
               {
@@ -26885,6 +30913,81 @@
     "autocfg-1.5.1": {
       "edition": "2015"
     },
+    "aws-config-1.8.18": {
+      "edition": "2021"
+    },
+    "aws-credential-types-1.2.14": {
+      "edition": "2021"
+    },
+    "aws-lc-rs-1.17.1": {
+      "edition": "2021",
+      "build_script": "build.rs",
+      "links": "aws_lc_rs_1_17_1_sys"
+    },
+    "aws-lc-sys-0.42.0": {
+      "edition": "2021",
+      "build_script": "builder/main.rs",
+      "links": "aws_lc_0_42_0"
+    },
+    "aws-runtime-1.7.5": {
+      "edition": "2021"
+    },
+    "aws-sdk-eks-1.137.0": {
+      "edition": "2021"
+    },
+    "aws-sdk-sso-1.102.0": {
+      "edition": "2021"
+    },
+    "aws-sdk-ssooidc-1.104.0": {
+      "edition": "2021"
+    },
+    "aws-sdk-sts-1.107.0": {
+      "edition": "2021"
+    },
+    "aws-sigv4-1.4.5": {
+      "edition": "2021"
+    },
+    "aws-smithy-async-1.2.14": {
+      "edition": "2021"
+    },
+    "aws-smithy-http-0.63.6": {
+      "edition": "2021"
+    },
+    "aws-smithy-http-client-1.1.13": {
+      "edition": "2021"
+    },
+    "aws-smithy-json-0.62.7": {
+      "edition": "2021"
+    },
+    "aws-smithy-observability-0.2.6": {
+      "edition": "2021"
+    },
+    "aws-smithy-query-0.60.15": {
+      "edition": "2021"
+    },
+    "aws-smithy-runtime-1.11.3": {
+      "edition": "2021"
+    },
+    "aws-smithy-runtime-api-1.12.3": {
+      "edition": "2021"
+    },
+    "aws-smithy-runtime-api-macros-1.0.0": {
+      "edition": "2021",
+      "proc_macro": true
+    },
+    "aws-smithy-schema-0.1.0": {
+      "edition": "2021"
+    },
+    "aws-smithy-types-1.5.0": {
+      "edition": "2021"
+    },
+    "aws-smithy-xml-0.60.15": {
+      "edition": "2021"
+    },
+    "aws-types-1.3.16": {
+      "edition": "2021",
+      "build_script": "build.rs"
+    },
     "axum-0.7.9": {
       "edition": "2021"
     },
@@ -26905,6 +31008,9 @@
     },
     "base64-0.22.1": {
       "edition": "2018"
+    },
+    "base64-simd-0.8.0": {
+      "edition": "2021"
     },
     "base64ct-1.8.3": {
       "edition": "2024"
@@ -26927,6 +31033,9 @@
     },
     "block-buffer-0.10.4": {
       "edition": "2018"
+    },
+    "block-buffer-0.12.1": {
+      "edition": "2024"
     },
     "block2-0.6.2": {
       "edition": "2021"
@@ -27135,6 +31244,9 @@
     "bytes-1.11.1": {
       "edition": "2021"
     },
+    "bytes-utils-0.1.4": {
+      "edition": "2021"
+    },
     "cc-1.2.63": {
       "edition": "2018"
     },
@@ -27147,11 +31259,20 @@
     "chrono-0.4.44": {
       "edition": "2021"
     },
+    "cmake-0.1.58": {
+      "edition": "2021"
+    },
+    "cmov-0.5.4": {
+      "edition": "2024"
+    },
     "combine-4.6.7": {
       "edition": "2018"
     },
     "concurrent-queue-2.5.0": {
       "edition": "2021"
+    },
+    "const-oid-0.10.2": {
+      "edition": "2024"
     },
     "const-oid-0.9.6": {
       "edition": "2021"
@@ -27192,6 +31313,12 @@
     },
     "crypto-common-0.1.7": {
       "edition": "2018"
+    },
+    "crypto-common-0.2.2": {
+      "edition": "2024"
+    },
+    "ctutils-0.4.2": {
+      "edition": "2024"
     },
     "curve25519-dalek-4.1.3": {
       "edition": "2021",
@@ -27243,6 +31370,9 @@
     "digest-0.10.7": {
       "edition": "2018"
     },
+    "digest-0.11.3": {
+      "edition": "2024"
+    },
     "dispatch2-0.3.1": {
       "edition": "2021"
     },
@@ -27258,6 +31388,9 @@
           "path": "src/bin/dotenvy.rs"
         }
       ]
+    },
+    "dunce-1.0.5": {
+      "edition": "2021"
     },
     "dyn-clone-1.0.20": {
       "edition": "2018"
@@ -27332,6 +31465,9 @@
     "form_urlencoded-1.2.2": {
       "edition": "2018"
     },
+    "fs_extra-1.3.0": {
+      "edition": "2018"
+    },
     "futures-0.3.32": {
       "edition": "2018"
     },
@@ -27387,6 +31523,13 @@
       "edition": "2021",
       "build_script": "build.rs"
     },
+    "getrandom-0.4.3": {
+      "edition": "2024",
+      "build_script": "build.rs"
+    },
+    "h2-0.3.27": {
+      "edition": "2018"
+    },
     "h2-0.4.14": {
       "edition": "2021"
     },
@@ -27426,11 +31569,20 @@
     "hmac-0.12.1": {
       "edition": "2018"
     },
+    "hmac-0.13.0": {
+      "edition": "2024"
+    },
     "home-0.5.12": {
       "edition": "2024"
     },
+    "http-0.2.12": {
+      "edition": "2018"
+    },
     "http-1.4.1": {
       "edition": "2021"
+    },
+    "http-body-0.4.6": {
+      "edition": "2018"
     },
     "http-body-1.0.1": {
       "edition": "2018"
@@ -27445,10 +31597,19 @@
     "httpdate-1.0.3": {
       "edition": "2021"
     },
+    "hybrid-array-0.4.13": {
+      "edition": "2024"
+    },
+    "hyper-0.14.32": {
+      "edition": "2018"
+    },
     "hyper-1.10.1": {
       "edition": "2021"
     },
     "hyper-http-proxy-1.1.0": {
+      "edition": "2021"
+    },
+    "hyper-rustls-0.24.2": {
       "edition": "2021"
     },
     "hyper-rustls-0.27.9": {
@@ -27527,6 +31688,9 @@
       "edition": "2018"
     },
     "itoa-1.0.18": {
+      "edition": "2021"
+    },
+    "jobserver-0.1.35": {
       "edition": "2021"
     },
     "json-patch-2.0.0": {
@@ -27742,6 +31906,9 @@
     "ordered-float-2.10.1": {
       "edition": "2018"
     },
+    "outref-0.5.2": {
+      "edition": "2021"
+    },
     "parking-2.2.1": {
       "edition": "2018"
     },
@@ -27811,6 +31978,9 @@
       "proc_macro": true
     },
     "pin-project-lite-0.2.17": {
+      "edition": "2018"
+    },
+    "pin-utils-0.1.0": {
       "edition": "2018"
     },
     "pkcs1-0.7.5": {
@@ -27987,6 +32157,9 @@
     "regex-automata-0.4.14": {
       "edition": "2021"
     },
+    "regex-lite-0.1.9": {
+      "edition": "2021"
+    },
     "regex-syntax-0.8.10": {
       "edition": "2021"
     },
@@ -28023,6 +32196,10 @@
       "edition": "2021",
       "build_script": "build.rs"
     },
+    "rustls-0.21.12": {
+      "edition": "2021",
+      "build_script": "build.rs"
+    },
     "rustls-0.23.40": {
       "edition": "2021",
       "build_script": "build.rs"
@@ -28038,6 +32215,13 @@
     },
     "rustls-pki-types-1.14.1": {
       "edition": "2021"
+    },
+    "rustls-webpki-0.101.7": {
+      "edition": "2021",
+      "lib_target": {
+        "name": "webpki",
+        "path": "src/lib.rs"
+      }
     },
     "rustls-webpki-0.102.8": {
       "edition": "2021",
@@ -28084,6 +32268,9 @@
     },
     "scopeguard-1.2.0": {
       "edition": "2015"
+    },
+    "sct-0.7.1": {
+      "edition": "2021"
     },
     "secrecy-0.10.3": {
       "edition": "2021"
@@ -28150,6 +32337,9 @@
     },
     "sha2-0.10.9": {
       "edition": "2018"
+    },
+    "sha2-0.11.0": {
+      "edition": "2024"
     },
     "sharded-slab-0.1.7": {
       "edition": "2018"
@@ -28294,10 +32484,16 @@
       "edition": "2021",
       "proc_macro": true
     },
+    "tokio-rustls-0.24.1": {
+      "edition": "2018"
+    },
     "tokio-rustls-0.26.4": {
       "edition": "2021"
     },
     "tokio-stream-0.1.18": {
+      "edition": "2021"
+    },
+    "tokio-test-0.4.5": {
       "edition": "2021"
     },
     "tokio-tungstenite-0.29.0": {
@@ -28346,6 +32542,9 @@
       "edition": "2018"
     },
     "tower-service-0.3.3": {
+      "edition": "2018"
+    },
+    "tower-test-0.4.0": {
       "edition": "2018"
     },
     "tracing-0.1.44": {
@@ -28420,7 +32619,13 @@
     "url-2.5.8": {
       "edition": "2018"
     },
+    "urlencoding-2.1.3": {
+      "edition": "2021"
+    },
     "utf8_iter-1.0.4": {
+      "edition": "2021"
+    },
+    "uuid-1.24.0": {
       "edition": "2021"
     },
     "vcpkg-0.2.15": {
@@ -28428,6 +32633,9 @@
     },
     "version_check-0.9.5": {
       "edition": "2015"
+    },
+    "vsimd-0.8.0": {
+      "edition": "2021"
     },
     "wait-timeout-0.2.1": {
       "edition": "2015",
@@ -28472,6 +32680,9 @@
     },
     "writeable-0.6.3": {
       "edition": "2021"
+    },
+    "xmlparser-0.13.6": {
+      "edition": "2018"
     },
     "yansi-1.0.1": {
       "edition": "2021"
