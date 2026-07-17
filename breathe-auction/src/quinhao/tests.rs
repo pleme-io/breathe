@@ -1,7 +1,8 @@
 //! Unit tests for the `quinhão` hierarchical-vector fair-share allocator.
 
 use super::{
-    allocate_even, allocate_fabric, Demand, DemandVector, Dim, FabricError, PoolCapacity, Quinhao,
+    allocate_drf, allocate_even, allocate_fabric, Demand, DemandVector, Dim, FabricError, GrantVector,
+    PoolCapacity, Quinhao,
 };
 
 // ── allocate_even — the single-level kernel ─────────────────────────────────
@@ -284,4 +285,101 @@ fn dim_round_trips_through_its_wire_string() {
         assert_eq!(Dim::from_str(d.as_str()), Some(d));
     }
     assert_eq!(Dim::from_str("nonsense"), None);
+}
+
+// ── allocate_drf — the Dominant Resource Fairness kernel ────────────────────
+//
+// Every expected value below is hand-derived from the algorithm's OWN
+// definition (progressive filling: grow every active claimant's dominant
+// share in lockstep until the first resource saturates), not recited from
+// memory of the Ghodsi et al. paper — the two-resource/two-claimant case
+// happens to be structurally identical to that paper's worked example, which
+// is a useful independent cross-check, not the source of the expected values.
+
+fn cs(storage: u64, cpu: u64) -> DemandVector {
+    DemandVector::new(
+        Demand { weight: 1, min: 0, max: u64::MAX, demand: storage },
+        Demand { weight: 1, min: 0, max: u64::MAX, demand: cpu },
+        Demand::absent(),
+        Demand::absent(),
+    )
+}
+
+#[test]
+fn drf_equalizes_dominant_share_not_raw_units() {
+    // capacity: storage=18, cpu=9. A wants (storage=4, cpu=1) per task
+    // (storage-dominant: 4/18=0.222 > 1/9=0.111). B wants (storage=1, cpu=3)
+    // per task (cpu-dominant: 3/9=0.333 > 1/18=0.056).
+    //
+    // Hand derivation: dominant_ratio(A) = 4/18 = 2/9. dominant_ratio(B) = 3/9 = 1/3.
+    // storage-axis saturation: s_storage = 18 / (4/(2/9) + 1/(1/3)) = 18 / (18+3) = 18/21 = 6/7.
+    // cpu-axis saturation:     s_cpu     = 9  / (1/(2/9) + 3/(1/3)) = 9  / (4.5+9) = 9/13.5 = 2/3.
+    // s* = min(6/7, 2/3) = 2/3 (cpu binds first).
+    // k_A = s*/dominant_ratio(A) = (2/3)/(2/9) = 3.  grant_A = 3*(storage=4,cpu=1) = (12,3).
+    // k_B = s*/dominant_ratio(B) = (2/3)/(1/3) = 2.  grant_B = 2*(storage=1,cpu=3) = (2,6).
+    let claims = vec![cs(4, 1), cs(1, 3)];
+    let g = allocate_drf(PoolCapacity::new(18, 9, 0, 0), 1.0, &claims);
+
+    assert_eq!(g[0].get(Dim::Storage), 12, "A's storage grant");
+    assert_eq!(g[0].get(Dim::Cpu), 3, "A's cpu grant");
+    assert_eq!(g[1].get(Dim::Storage), 2, "B's storage grant");
+    assert_eq!(g[1].get(Dim::Cpu), 6, "B's cpu grant");
+
+    // cpu is the binding resource — saturates exactly.
+    assert_eq!(g[0].get(Dim::Cpu) + g[1].get(Dim::Cpu), 9, "cpu saturates exactly");
+    // storage is non-binding — carries slack (14 < 18).
+    assert!(g[0].get(Dim::Storage) + g[1].get(Dim::Storage) <= 18);
+
+    // THE defining DRF property: equal dominant share, not equal raw grants
+    // (A's grant vector (12,3) and B's (2,6) are very different in raw units,
+    // yet both represent the same fraction of their respective bottleneck).
+    let dom_a = (g[0].get(Dim::Storage) as f64 / 18.0).max(g[0].get(Dim::Cpu) as f64 / 9.0);
+    let dom_b = (g[1].get(Dim::Storage) as f64 / 18.0).max(g[1].get(Dim::Cpu) as f64 / 9.0);
+    assert!((dom_a - dom_b).abs() < 1e-9, "dominant shares equalized: {dom_a} vs {dom_b}");
+}
+
+#[test]
+fn drf_never_exceeds_capacity_on_any_axis() {
+    let claims = vec![cs(4, 1), cs(1, 3), cs(2, 2)];
+    let g = allocate_drf(PoolCapacity::new(18, 9, 0, 0), 1.0, &claims);
+    let total_storage: u64 = g.iter().map(|gv| gv.get(Dim::Storage)).sum();
+    let total_cpu: u64 = g.iter().map(|gv| gv.get(Dim::Cpu)).sum();
+    assert!(total_storage <= 18, "storage never exceeds capacity: {total_storage}");
+    assert!(total_cpu <= 9, "cpu never exceeds capacity: {total_cpu}");
+}
+
+#[test]
+fn drf_gives_identical_shaped_claimants_identical_grants() {
+    // symmetry: two claimants with the SAME demand shape must land equal.
+    let claims = vec![cs(4, 1), cs(4, 1)];
+    let g = allocate_drf(PoolCapacity::new(18, 9, 0, 0), 1.0, &claims);
+    assert_eq!(g[0], g[1], "identical claimants get identical grants");
+}
+
+#[test]
+fn drf_respects_the_setpoint_band_not_raw_capacity() {
+    // setpoint 0.5 of (storage=18, cpu=9) → band (9, 4) [cpu floors: 9*0.5=4.5→4].
+    // Two identical claimants split it evenly by symmetry — assert the band
+    // shrank, not the raw-capacity result from the 1.0 case above.
+    let claims = vec![cs(4, 1), cs(4, 1)];
+    let full = allocate_drf(PoolCapacity::new(18, 9, 0, 0), 1.0, &claims);
+    let half = allocate_drf(PoolCapacity::new(18, 9, 0, 0), 0.5, &claims);
+    assert!(half[0].get(Dim::Storage) < full[0].get(Dim::Storage));
+    assert!(half[0].get(Dim::Cpu) <= full[0].get(Dim::Cpu));
+}
+
+#[test]
+fn drf_empty_and_zero_capacity_are_handled() {
+    assert_eq!(allocate_drf(PoolCapacity::new(0, 0, 0, 0), 1.0, &[]), Vec::<GrantVector>::new());
+    let g = allocate_drf(PoolCapacity::new(0, 0, 0, 0), 1.0, &[cs(4, 1)]);
+    assert_eq!(g, vec![GrantVector::default()], "zero capacity ⇒ zero grant, never a divide-by-zero panic");
+}
+
+#[test]
+fn drf_a_claimant_absent_on_every_axis_gets_nothing_and_does_not_starve_others() {
+    let absent = DemandVector::new(Demand::absent(), Demand::absent(), Demand::absent(), Demand::absent());
+    let claims = vec![cs(4, 1), absent];
+    let g = allocate_drf(PoolCapacity::new(18, 9, 0, 0), 1.0, &claims);
+    assert_eq!(g[1], GrantVector::default(), "an absent claimant gets nothing");
+    assert!(g[0].get(Dim::Storage) > 0, "the real claimant still gets its DRF share");
 }
