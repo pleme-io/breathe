@@ -19,5 +19,14 @@ metrics = "0.24"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 serde_json = "1.0"
 
+[dev-dependencies]
+# patch_status_if_changed's diff-gate test (task #220) mocks the k8s apiserver
+# the same way kube-client's own test suite does: a `tower_test::mock::pair`
+# stood in for the real HTTP transport under `kube::Client::new`, so the test
+# proves zero-vs-one real API calls rather than just the pure comparison.
+tokio = { version = "1.40", features = ["macros", "rt-multi-thread", "time"] }
+tower-test = "0.4"
+http = "1"
+
 [lints]
 workspace = true

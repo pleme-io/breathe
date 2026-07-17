@@ -94,7 +94,13 @@ pub struct TrendSample {
 }
 
 /// The per-cycle typed status receipt — shared across all band kinds.
-#[derive(Serialize, Deserialize, Clone, Debug, JsonSchema, Default)]
+///
+/// Derives `PartialEq` so the controller can diff a freshly-computed status
+/// against the CR's current live status and skip the `patch_status` write
+/// entirely when they're byte-identical (task #220) — every field here is
+/// itself `PartialEq` (`Condition`/`TrendSample` included), so the derive is
+/// a real structural comparison, not a stand-in.
+#[derive(Serialize, Deserialize, Clone, Debug, JsonSchema, Default, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct BandStatus {
     #[serde(default, skip_serializing_if = "Option::is_none")]
