@@ -117,6 +117,16 @@ impl KubeStore {
     pub fn new(client: Client) -> Self {
         Self { client }
     }
+    /// The underlying `kube::Client` — for callers that need to drive a
+    /// second `Api<T>` (a different CRD, a `DynamicObject`) against the SAME
+    /// connection this facade already holds, rather than opening a second
+    /// kubeconfig-derived client. breathe-facade owns connection setup once;
+    /// this is the seam other in-process consumers (e.g. vendaval's
+    /// `CamelotStormEnv`) reuse it through.
+    #[must_use]
+    pub fn client(&self) -> &Client {
+        &self.client
+    }
 }
 
 /// A tiny error wrapper so this crate needn't pull `anyhow` just for `from_env`.
