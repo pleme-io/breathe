@@ -7,6 +7,10 @@ metadata:
   labels:
     app.kubernetes.io/name: pleme-breathe
     app.kubernetes.io/managed-by: {{ .Release.Service }}
+  {{- with .Values.serviceAccount.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
 {{- end }}
 {{- if .Values.rbac.create }}
 ---
