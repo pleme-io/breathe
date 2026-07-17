@@ -48,6 +48,12 @@ rbac:
 serviceAccount:
   create: true
   name: breathe-controller
+  # IRSA (EKS) or Workload Identity annotations for the controller's own
+  # ServiceAccount -- e.g. eks.amazonaws.com/role-arn. Empty by default
+  # (unset annotations are byte-identical to before this key existed);
+  # set per-release when the controller needs a federated cloud identity
+  # (task #219 -- BreatheCloudPool's EksManagedNodegroup actuator).
+  annotations: {}
 
 # The HANDS -- templates/daemonset.yaml (gated by agent.enabled, same flag
 # rbac.yaml's narrow host-agent-only ClusterRole/ClusterRoleBinding already
