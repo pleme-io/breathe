@@ -508,3 +508,6 @@ impl<P: PriceOracle> Otimizador for ParetoOtimizador<P> {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod o6_dag;
