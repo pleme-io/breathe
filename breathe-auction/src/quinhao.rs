@@ -600,6 +600,149 @@ fn allocate_subtree(
     }
 }
 
+// ============================================================================
+// allocate_drf — the second single-level kernel (Dominant Resource Fairness).
+// ============================================================================
+//
+// theory/BREATHABILITY.md §II.6.8 names this: a "breathable autonomous zone"
+// that jointly allocates CPU + Memory + Storage + Network-IP across enrolled
+// surfaces needs a policy that couples the axes (equalizes each claimant's
+// *dominant* share across ALL resources at once) — the opposite design choice
+// from `allocate_even`/`allocate_fabric` above, which deliberately divide each
+// [`Dim`] independently. This is Dominant Resource Fairness (DRF; Ghodsi et
+// al., NSDI 2011 — the Mesos/YARN multi-resource scheduler algorithm),
+// reusing `quinhao`'s existing types end to end: zero new types, one new
+// kernel selectable alongside `allocate_even`.
+//
+// **Scoped v0 — stated honestly, not rounded up.** This is the FLAT
+// (single-level, non-hierarchical) kernel — the DRF analogue of
+// `allocate_even`, not yet the recursive analogue of `allocate_fabric`.
+// `Demand.weight`/`.min`/`.max` are NOT consumed here (DRF's own per-claimant
+// clamping is a genuine multi-round extension — a claimant hitting a max
+// before its dominant resource saturates gets frozen and the remaining
+// claimants re-solve over the freed capacity, exactly like `allocate_even`'s
+// freeze loop) — only `.demand` (the claimant's per-resource consumption
+// quantity) is read. A `Demand::absent()` axis (`demand == 0`) does not count
+// toward that claimant's dominant share; a `Demand::even()` axis
+// (`demand == u64::MAX`, "unbounded") is likewise excluded — DRF requires a
+// FINITE, differentiated per-resource demand vector to compute a meaningful
+// dominant share, so callers must supply real consumption quantities on the
+// axes a claimant is meant to contend on, not `even()`'s "give me everything"
+// convention (that convention belongs to `allocate_even`'s water-fill model,
+// not DRF's proportional-task model). The hierarchical (nested-forest)
+// extension is a named follow-up, not attempted here.
+
+/// One claimant's dominant share ratio at `band` — `max_r(demand[r] / band[r])`
+/// over the axes it actually contends on (`demand` finite and nonzero). `0.0`
+/// for a claimant with no finite demand on any axis (it is excluded from the
+/// allocation entirely — see [`allocate_drf`]).
+fn dominant_ratio(demand: &DemandVector, band: &[f64; 4]) -> f64 {
+    #[allow(clippy::cast_precision_loss)]
+    Dim::ALL
+        .iter()
+        .enumerate()
+        .map(|(i, dim)| {
+            let d = demand.get(*dim).demand;
+            if d == 0 || d == u64::MAX || band[i] <= 0.0 { 0.0 } else { d as f64 / band[i] }
+        })
+        .fold(0.0_f64, f64::max)
+}
+
+/// Divide `capacity`'s `setpoint` band among `claims` by **Dominant Resource
+/// Fairness** — the progressive-filling closed form for the single-round
+/// (unclamped) case: every claimant's dominant share grows in lockstep at a
+/// shared rate `s`, until the FIRST resource saturates across the whole
+/// claimant set; that `s*` is the equalized dominant share every claimant
+/// receives, and each claimant's per-axis grant is `s* * demand[axis] /
+/// dominant_ratio(claimant)` (i.e. its demand vector scaled by its own
+/// "number of tasks" at that share).
+///
+/// Returns one [`GrantVector`] per input claim, **index-aligned to `claims`**
+/// (matching [`allocate_even`]'s convention), with the theorems the tests
+/// prove:
+/// - **band-bounded**: `Σ grants[dim] ≤ band[dim]` on every axis (never
+///   over-allocates; the non-binding axes carry slack by construction).
+/// - **dominant-share-equalized**: every claimant with nonzero demand ends up
+///   at the SAME dominant share (`max_r(grant[r] / band[r])` is equal across
+///   claimants) — the property `allocate_even` does not have, and the reason
+///   this kernel exists alongside it.
+/// - **proportional**: a claimant's grant vector is a scalar multiple of its
+///   demand vector (the allocation preserves the claimant's own resource
+///   shape, unlike per-axis-independent water-filling).
+#[must_use]
+pub fn allocate_drf(capacity: PoolCapacity, setpoint: f64, claims: &[DemandVector]) -> Vec<GrantVector> {
+    let n = claims.len();
+    if n == 0 {
+        return Vec::new();
+    }
+
+    let setpoint = if setpoint > 0.0 && setpoint <= 1.0 { setpoint } else { 1.0 };
+    #[allow(clippy::cast_precision_loss)]
+    let band: [f64; 4] = Dim::ALL.map(|d| capacity.get(d) as f64 * setpoint);
+
+    let dom_ratios: Vec<f64> = claims.iter().map(|c| dominant_ratio(c, &band)).collect();
+
+    // s* = the smallest per-axis saturation point, weighted by each
+    // contending claimant's OWN dominant ratio (so growth is in units of
+    // "dominant share", not raw demand) — the closed form of progressive
+    // filling for the unclamped, single-round case (derivation + a
+    // hand-verified worked example in `tests.rs`).
+    let mut s_star = f64::INFINITY;
+    for (i, dim) in Dim::ALL.iter().enumerate() {
+        if band[i] <= 0.0 {
+            continue;
+        }
+        #[allow(clippy::cast_precision_loss)]
+        let sum_weighted: f64 = claims
+            .iter()
+            .zip(&dom_ratios)
+            .map(|(c, &dr)| {
+                if dr <= 0.0 {
+                    return 0.0;
+                }
+                let d = c.get(*dim).demand;
+                if d == 0 || d == u64::MAX {
+                    0.0
+                } else {
+                    (d as f64) / dr
+                }
+            })
+            .sum();
+        if sum_weighted > 0.0 {
+            let s_r = band[i] / sum_weighted;
+            if s_r < s_star {
+                s_star = s_r;
+            }
+        }
+    }
+    if !s_star.is_finite() {
+        // No claimant demands anything finite on any axis — nothing to divide.
+        return vec![GrantVector::default(); n];
+    }
+
+    claims
+        .iter()
+        .zip(&dom_ratios)
+        .map(|(c, &dr)| {
+            let mut g = GrantVector::default();
+            if dr <= 0.0 {
+                return g;
+            }
+            let k = s_star / dr; // this claimant's "number of tasks" at s*
+            for dim in Dim::ALL {
+                let d = c.get(dim).demand;
+                if d == 0 || d == u64::MAX {
+                    continue;
+                }
+                #[allow(clippy::cast_precision_loss, clippy::cast_sign_loss, clippy::cast_possible_truncation)]
+                let alloc = (k * d as f64).floor().max(0.0) as u64;
+                g.set(dim, alloc);
+            }
+            g
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests;
 
