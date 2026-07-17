@@ -1,8 +1,8 @@
 //! Unit tests for the `quinhão` hierarchical-vector fair-share allocator.
 
 use super::{
-    allocate_drf, allocate_even, allocate_fabric, Demand, DemandVector, Dim, FabricError, GrantVector,
-    PoolCapacity, Quinhao,
+    allocate_drf, allocate_drf_fabric, allocate_even, allocate_fabric, Demand, DemandVector, Dim, FabricError,
+    GrantVector, PoolCapacity, Quinhao,
 };
 
 // ── allocate_even — the single-level kernel ─────────────────────────────────
@@ -382,4 +382,62 @@ fn drf_a_claimant_absent_on_every_axis_gets_nothing_and_does_not_starve_others()
     let g = allocate_drf(PoolCapacity::new(18, 9, 0, 0), 1.0, &claims);
     assert_eq!(g[1], GrantVector::default(), "an absent claimant gets nothing");
     assert!(g[0].get(Dim::Storage) > 0, "the real claimant still gets its DRF share");
+}
+
+// ── allocate_drf_fabric — the hierarchical DRF recursion ────────────────────
+
+#[test]
+fn drf_fabric_flat_top_level_matches_the_already_verified_flat_drf_result() {
+    // A single-level forest (no children) MUST reduce exactly to allocate_drf's
+    // own result -- the recursion's base case is the already-proven kernel, so
+    // this is a regression guard tying the two entry points together.
+    let claimants = vec![Quinhao::root("a", cs(4, 1)), Quinhao::root("b", cs(1, 3))];
+    let flat = allocate_drf(PoolCapacity::new(18, 9, 0, 0), 1.0, &[cs(4, 1), cs(1, 3)]);
+    let fabric = allocate_drf_fabric(PoolCapacity::new(18, 9, 0, 0), 1.0, &claimants).unwrap();
+
+    assert_eq!(fabric.get("a"), flat[0], "top-level 'a' matches the flat kernel's claim-0 result exactly");
+    assert_eq!(fabric.get("b"), flat[1], "top-level 'b' matches the flat kernel's claim-1 result exactly");
+    // The hand-verified numbers from drf_equalizes_dominant_share_not_raw_units.
+    assert_eq!(fabric.get_dim("a", Dim::Storage), 12);
+    assert_eq!(fabric.get_dim("a", Dim::Cpu), 3);
+    assert_eq!(fabric.get_dim("b", Dim::Storage), 2);
+    assert_eq!(fabric.get_dim("b", Dim::Cpu), 6);
+}
+
+#[test]
+fn drf_fabric_is_tree_respecting() {
+    // Two groups, each with 2 members with DIFFERENT demand shapes (so DRF's
+    // coupling actually matters within each group) -- a child's grant must
+    // never exceed what its own group was granted, on every dim.
+    let claimants = vec![
+        Quinhao::root("groupA", cs(4, 1)),
+        Quinhao::root("groupB", cs(1, 3)),
+        Quinhao::child("a1", "groupA", cs(4, 1)),
+        Quinhao::child("a2", "groupA", cs(1, 2)),
+        Quinhao::child("b1", "groupB", cs(2, 2)),
+        Quinhao::child("b2", "groupB", cs(1, 3)),
+    ];
+    let g = allocate_drf_fabric(PoolCapacity::new(180, 90, 0, 0), 1.0, &claimants).unwrap();
+
+    for dim in [Dim::Storage, Dim::Cpu] {
+        let a_children = g.get_dim("a1", dim) + g.get_dim("a2", dim);
+        let b_children = g.get_dim("b1", dim) + g.get_dim("b2", dim);
+        assert!(a_children <= g.get_dim("groupA", dim), "groupA's children ({a_children}) exceed its own grant ({}) on {dim:?}", g.get_dim("groupA", dim));
+        assert!(b_children <= g.get_dim("groupB", dim), "groupB's children ({b_children}) exceed its own grant ({}) on {dim:?}", g.get_dim("groupB", dim));
+    }
+}
+
+#[test]
+fn drf_fabric_refuses_malformed_forests_the_same_way_allocate_fabric_does() {
+    let dup = vec![Quinhao::root("x", cs(1, 1)), Quinhao::root("x", cs(1, 1))];
+    assert!(matches!(
+        allocate_drf_fabric(PoolCapacity::new(10, 10, 0, 0), 1.0, &dup),
+        Err(FabricError::DuplicateId { .. })
+    ));
+
+    let orphan = vec![Quinhao::child("y", "ghost", cs(1, 1))];
+    assert!(matches!(
+        allocate_drf_fabric(PoolCapacity::new(10, 10, 0, 0), 1.0, &orphan),
+        Err(FabricError::UnknownParent { .. })
+    ));
 }

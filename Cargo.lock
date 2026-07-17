@@ -1026,6 +1026,7 @@ dependencies = [
 name = "breathe-auction"
 version = "0.1.0"
 dependencies = [
+ "breathe-catalog",
  "breathe-control",
  "breathe-provider",
  "proptest",
