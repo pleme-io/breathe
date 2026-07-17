@@ -11,16 +11,18 @@ description = "The predict → optimize → auction decision layer for the breat
 [dependencies]
 breathe-control = { path = "../breathe-control", version = "0.1.0" }
 breathe-provider = { path = "../breathe-provider", version = "0.1.0" }
+# Promoted from a dev-only worked-example dependency (2026-07-17): `zone`
+# below is a real, reusable library surface -- theory/BREATHABILITY.md
+# §II.6.8's "breathable autonomous zone" mechanism, consuming
+# breathe-catalog's ALREADY-SHIPPED `DimensionSpec.depends_on` DAG (never
+# previously consumed for tick-time ordering, only rendered to JSON) via
+# shigoto's real Dag/JobId types.
+breathe-catalog = { path = "../breathe-catalog", version = "0.1.0" }
+shigoto-types = "0.1.10"
+shigoto-dag = "0.1.10"
 
 [dev-dependencies]
 proptest = "1"
-# Dev-only: proves theory/BREATHABILITY.md §II.6.8's O6 claim (cross-surface
-# structural dependency resolved as a shigoto Dag) against shigoto's REAL
-# API, for the concrete camelot 17-pod incident -- a worked example, not
-# production wiring (the real per-tick controller integration is a named
-# follow-up, tracked in the theory doc, not this crate).
-shigoto-types = "0.1.10"
-shigoto-dag = "0.1.10"
 
 [lints]
 workspace = true

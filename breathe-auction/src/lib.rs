@@ -26,6 +26,13 @@ use breathe_provider::Forma;
 /// 80/20 band) — it adds no new safety surface.
 pub mod quinhao;
 
+/// The **breathable autonomous zone** (theory/BREATHABILITY.md §II.6.8) — the
+/// per-tick shigoto `Dag` that resolves `breathe-catalog`'s already-shipped
+/// `DimensionSpec.depends_on` edges (never previously consumed for tick-time
+/// ordering) plus a zone's own cross-catalog `Forma`→`DimensionId` gates, the
+/// bridge neither catalog natively expresses. See [`zone`] for the full model.
+pub mod zone;
+
 // ============================================================================
 // DecisaoForma — the auctioneer's typed verdict.
 // ============================================================================
@@ -508,6 +515,3 @@ impl<P: PriceOracle> Otimizador for ParetoOtimizador<P> {
 
 #[cfg(test)]
 mod tests;
-
-#[cfg(test)]
-mod o6_dag;

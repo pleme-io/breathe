@@ -527,7 +527,27 @@ pub fn allocate_fabric(
     setpoint: f64,
     claimants: &[Quinhao],
 ) -> Result<FabricGrants, FabricError> {
-    // ── Parse-gate the forest: ids unique, parents resolve, no cycles. ──────
+    let (by_id, children) = parse_forest(claimants)?;
+    let setpoint = if setpoint > 0.0 && setpoint <= 1.0 { setpoint } else { 1.0 };
+    let mut grants = FabricGrants::default();
+
+    // ── Allocate each dimension independently (the vector is per-axis). ──────
+    for dim in Dim::ALL {
+        #[allow(clippy::cast_precision_loss, clippy::cast_sign_loss, clippy::cast_possible_truncation)]
+        let band = (capacity.get(dim) as f64 * setpoint) as u64;
+        allocate_subtree(dim, band, None, &children, &by_id, &mut grants);
+    }
+
+    Ok(grants)
+}
+
+/// Parse-gate a claimant list into a well-formed forest: ids unique, parents
+/// resolve, no cycles. Shared by every fabric-level allocator ([`allocate_fabric`]
+/// and [`allocate_drf_fabric`]) so the forest-validation invariant is proven
+/// once, not re-derived per kernel.
+fn parse_forest(
+    claimants: &[Quinhao],
+) -> Result<(BTreeMap<&str, &Quinhao>, BTreeMap<Option<&str>, Vec<&str>>), FabricError> {
     let mut by_id: BTreeMap<&str, &Quinhao> = BTreeMap::new();
     for q in claimants {
         if by_id.insert(q.id.as_str(), q).is_some() {
@@ -563,17 +583,7 @@ pub fn allocate_fabric(
         children.entry(q.parent.as_deref()).or_default().push(q.id.as_str());
     }
 
-    let setpoint = if setpoint > 0.0 && setpoint <= 1.0 { setpoint } else { 1.0 };
-    let mut grants = FabricGrants::default();
-
-    // ── Allocate each dimension independently (the vector is per-axis). ──────
-    for dim in Dim::ALL {
-        #[allow(clippy::cast_precision_loss, clippy::cast_sign_loss, clippy::cast_possible_truncation)]
-        let band = (capacity.get(dim) as f64 * setpoint) as u64;
-        allocate_subtree(dim, band, None, &children, &by_id, &mut grants);
-    }
-
-    Ok(grants)
+    Ok((by_id, children))
 }
 
 /// Recursively split `band` (the sub-pool for this dim) among the children of
@@ -630,7 +640,9 @@ fn allocate_subtree(
 // axes a claimant is meant to contend on, not `even()`'s "give me everything"
 // convention (that convention belongs to `allocate_even`'s water-fill model,
 // not DRF's proportional-task model). The hierarchical (nested-forest)
-// extension is a named follow-up, not attempted here.
+// extension shipped 2026-07-17 as `allocate_drf_fabric`, below. Per-claimant
+// `.min`/`.max` clamping (DRF's own multi-round freeze extension) remains a
+// named follow-up, not attempted here or there.
 
 /// One claimant's dominant share ratio at `band` — `max_r(demand[r] / band[r])`
 /// over the axes it actually contends on (`demand` finite and nonzero). `0.0`
@@ -671,14 +683,22 @@ fn dominant_ratio(demand: &DemandVector, band: &[f64; 4]) -> f64 {
 ///   shape, unlike per-axis-independent water-filling).
 #[must_use]
 pub fn allocate_drf(capacity: PoolCapacity, setpoint: f64, claims: &[DemandVector]) -> Vec<GrantVector> {
+    let setpoint = if setpoint > 0.0 && setpoint <= 1.0 { setpoint } else { 1.0 };
+    #[allow(clippy::cast_precision_loss)]
+    let band: [f64; 4] = Dim::ALL.map(|d| capacity.get(d) as f64 * setpoint);
+    allocate_drf_band(band, claims)
+}
+
+/// The band-taking DRF core — [`allocate_drf`] with the `PoolCapacity`/`setpoint`
+/// wrapping stripped, so [`allocate_drf_fabric`]'s recursion can hand a CHILD's
+/// own per-dim grant (already a `u64` band, no capacity/setpoint concept at that
+/// level) directly to the same kernel `allocate_drf` calls — one DRF core, two
+/// entry points, exactly [`allocate_even`]/[`allocate_subtree`]'s existing shape.
+fn allocate_drf_band(band: [f64; 4], claims: &[DemandVector]) -> Vec<GrantVector> {
     let n = claims.len();
     if n == 0 {
         return Vec::new();
     }
-
-    let setpoint = if setpoint > 0.0 && setpoint <= 1.0 { setpoint } else { 1.0 };
-    #[allow(clippy::cast_precision_loss)]
-    let band: [f64; 4] = Dim::ALL.map(|d| capacity.get(d) as f64 * setpoint);
 
     let dom_ratios: Vec<f64> = claims.iter().map(|c| dominant_ratio(c, &band)).collect();
 
@@ -741,6 +761,80 @@ pub fn allocate_drf(capacity: PoolCapacity, setpoint: f64, claims: &[DemandVecto
             g
         })
         .collect()
+}
+
+// ============================================================================
+// allocate_drf_fabric — the hierarchical, DRF-kernelled recursion (2026-07-17).
+// ============================================================================
+//
+// The recursive analogue of `allocate_fabric`, now shipped (was the named
+// follow-up in the doc comment above `allocate_drf`). Reuses `parse_forest`
+// (the SAME forest-validation `allocate_fabric` already proves) and recurses
+// EXACTLY like `allocate_subtree` — a child's grant becomes the band its own
+// children split — but at each tree level it calls `allocate_drf_band` ONCE,
+// jointly across all 4 dims, instead of `allocate_even` once per dim: DRF's
+// dominant-share coupling is a property of one claimant's WHOLE demand vector
+// at once, so the recursion cannot walk `Dim::ALL` independently the way the
+// per-axis-independent kernel does.
+
+/// Recursively split `band` among the children of `parent` by [`allocate_drf_band`]
+/// (jointly across every dim, ONE call per level — not once per dim), then
+/// recurse into each child with ITS grant vector as the new band.
+fn allocate_drf_subtree(
+    band: [f64; 4],
+    parent: Option<&str>,
+    children: &BTreeMap<Option<&str>, Vec<&str>>,
+    by_id: &BTreeMap<&str, &Quinhao>,
+    grants: &mut FabricGrants,
+) {
+    let Some(kids) = children.get(&parent) else { return };
+    if kids.is_empty() {
+        return;
+    }
+    let demands: Vec<DemandVector> = kids.iter().map(|id| by_id[*id].demand).collect();
+    let shares = allocate_drf_band(band, &demands);
+    for (id, share) in kids.iter().zip(shares) {
+        grants.grants.insert((*id).to_string(), share);
+        #[allow(clippy::cast_precision_loss)]
+        let child_band: [f64; 4] = Dim::ALL.map(|d| share.get(d) as f64);
+        allocate_drf_subtree(child_band, Some(*id), children, by_id, grants);
+    }
+}
+
+/// **The hierarchical DRF allocator.** Split the pool's `capacity * setpoint`
+/// band across the claimant forest by recursive Dominant Resource Fairness —
+/// the DRF analogue of [`allocate_fabric`], selectable alongside it exactly
+/// like [`allocate_drf`] is selectable alongside [`allocate_even`] at the flat
+/// level. Same forest (parse-gated by the SAME [`parse_forest`] `allocate_fabric`
+/// uses), same tree-respecting recursion shape, different per-level kernel.
+///
+/// Returns one [`GrantVector`] per claimant id. Theorems the tests prove:
+/// - **tree-respecting**: a group's children's grants never exceed what the
+///   group itself was granted (Σ children ≤ parent, on every dim) — the SAME
+///   property `allocate_fabric` proves, now under DRF's coupled kernel.
+/// - **dominant-share-equalized WITHIN each level**: siblings splitting the
+///   same parent band land at equal dominant share (inherited from
+///   [`allocate_drf_band`]'s own proven property, applied once per tree level).
+/// - **a single top-level group (no children) reduces exactly to the flat
+///   [`allocate_drf`] result** — the recursion's base case is the kernel
+///   already proven correct.
+///
+/// # Errors
+/// A typed [`FabricError`] when the claimant set is not a well-formed forest
+/// (duplicate id / unknown parent / cycle) — rejected, never half-allocated,
+/// the same discipline [`allocate_fabric`] holds.
+pub fn allocate_drf_fabric(
+    capacity: PoolCapacity,
+    setpoint: f64,
+    claimants: &[Quinhao],
+) -> Result<FabricGrants, FabricError> {
+    let (by_id, children) = parse_forest(claimants)?;
+    let setpoint = if setpoint > 0.0 && setpoint <= 1.0 { setpoint } else { 1.0 };
+    #[allow(clippy::cast_precision_loss)]
+    let band: [f64; 4] = Dim::ALL.map(|d| capacity.get(d) as f64 * setpoint);
+    let mut grants = FabricGrants::default();
+    allocate_drf_subtree(band, None, &children, &by_id, &mut grants);
+    Ok(grants)
 }
 
 #[cfg(test)]
