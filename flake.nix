@@ -40,15 +40,45 @@
       linuxSystems = [ "x86_64-linux" "aarch64-linux" ];
       lib = nixpkgs.lib;
 
+      # Per-member build accommodations for gen's src=workspaceSrc model —
+      # ported over from the pre-3669c84 flake.nix's `memberOverrides`, which
+      # the gen-pattern conversion silently dropped (root cause of the first
+      # post-fix CI failure: breathe-store's sqlx::migrate!("./migrations")
+      # canonicalizes against the build root, which under gen IS the
+      # workspace root, so the bare "./migrations" relative path misses —
+      # the files live at breathe-store/migrations).
+      sharedCrateOverrides = {
+        breathe-store = attrs: {
+          prePatch = (attrs.prePatch or "") + ''
+            [ -e migrations ] || ln -s breathe-store/migrations migrations
+          '';
+        };
+      };
+
       # One `substrate.rust.library` build per workspace member — the shape
       # only builds a single binary per call (see the sibling breathe-mcp
       # graft this file carried even before this rewrite).
-      memberFlake = member: substrate.rust.library { src = ./.; inherit member; };
+      memberFlake = member: extra: substrate.rust.library ({
+        src = ./.;
+        inherit member;
+        crateOverrides = sharedCrateOverrides // (extra.crateOverrides or { });
+      } // (removeAttrs extra [ "crateOverrides" ]));
 
-      controllerFlake = memberFlake "breathe-controller";
-      agentFlake      = memberFlake "breathe-host-agent";
-      mcpFlake        = memberFlake "breathe-mcp";
-      apiServerFlake  = memberFlake "breathe-api-server";
+      controllerFlake = memberFlake "breathe-controller" { };
+      agentFlake      = memberFlake "breathe-host-agent" { };
+      mcpFlake        = memberFlake "breathe-mcp" { };
+      # breathe-api-server's build.rs compiles proto/breathe.proto via
+      # tonic-build → prost-build, which shells out to `protoc` — the
+      # gen-pattern analog of buildRustPackage's nativeBuildInputs =
+      # [ protobuf ]. `nativeBuildInputs` here is a list of nixpkgs
+      # attribute NAMES (resolved per-target-system by tool-release.nix),
+      # not derivations, so no per-system `pkgs` needs to be in scope here.
+      apiServerFlake  = memberFlake "breathe-api-server" {
+        nativeBuildInputs = [ "protobuf" ];
+        crateOverrides = {
+          breathe-api-server = attrs: { PROTOC = "protoc"; };
+        };
+      };
 
       binFor = flake: system: flake.packages.${system}.default;
 
