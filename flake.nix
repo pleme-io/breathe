@@ -73,11 +73,22 @@
       # [ protobuf ]. `nativeBuildInputs` here is a list of nixpkgs
       # attribute NAMES (resolved per-target-system by tool-release.nix),
       # not derivations, so no per-system `pkgs` needs to be in scope here.
+      #
+      # NOTE: do NOT also pass a `crateOverrides.breathe-api-server` entry
+      # here -- tool-release.nix's own merge is `defaultCrateOverrides //
+      # plemeCrateOverrides // { ${crateKey} = <the nativeBuildInputs-
+      # wiring closure> } // crateOverrides`, a shallow `//`, not a deep
+      # merge. A caller-supplied `crateOverrides.breathe-api-server` entry
+      # REPLACES that closure wholesale, silently discarding the
+      # `nativeBuildInputs` wiring above -- confirmed live 2026-07-18: a
+      # first attempt that also set `PROTOC = "protoc"` via crateOverrides
+      # clobbered the protobuf nativeBuildInput and the build failed with
+      # "Could not find `protoc`" even though `nativeBuildInputs =
+      # ["protobuf"]" was right there. Once protobuf is genuinely on PATH
+      # via nativeBuildInputs, prost-build's own `which protoc` fallback
+      # finds it -- no PROTOC env var needed at all.
       apiServerFlake  = memberFlake "breathe-api-server" {
         nativeBuildInputs = [ "protobuf" ];
-        crateOverrides = {
-          breathe-api-server = attrs: { PROTOC = "protoc"; };
-        };
       };
 
       binFor = flake: system: flake.packages.${system}.default;
