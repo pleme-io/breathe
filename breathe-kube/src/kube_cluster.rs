@@ -315,10 +315,7 @@ impl KubeCluster {
             Some(s) => ListParams::default().labels(s),
             None => ListParams::default(),
         };
-        let list = api
-            .list(&lp)
-            .await
-            .map_err(|e| ProviderError::ApiTransient(e.to_string()))?;
+        let list = api.list(&lp).await.map_err(|e| Self::classify_pod_metrics_error(e.to_string()))?;
         // A label-selected group with ZERO matching pods is DORMANT (the ephemeral
         // target is scaled to zero — no runner between builds), not an error. The
         // server already filtered by label, so an empty list IS an empty group.
@@ -354,6 +351,30 @@ impl KubeCluster {
         }
         // metrics-server samples are recent (scrape window ~15-30s); treat as fresh.
         Ok(Sample { value: max, age_secs: 0 })
+    }
+
+    /// Recognize the "metrics.k8s.io API group is not registered at all"
+    /// signature and turn it into an actionable message instead of an opaque
+    /// one. When metrics-server has never been installed, the apiserver's
+    /// generic 404 handler answers with a raw, non-JSON `"404 page not
+    /// found\n"` body (no metrics-server aggregated API to route to) — kube-rs
+    /// can't parse that as a structured `Status`, so it surfaces as
+    /// `ErrorResponse { reason: "Failed to parse error data", .. }`. That reads
+    /// identically to a genuinely transient hiccup even though the underlying
+    /// gap (no metrics-server deployed) will not resolve on its own retry —
+    /// distinguishing it here means `kubectl describe cpuband`/`memoryband`
+    /// names the real cause instead of a generic "transient API error".
+    /// Stays `ApiTransient` (not a new enum variant): the band should still
+    /// retry-and-recover for free the moment metrics-server is installed,
+    /// with zero controller restart.
+    fn classify_pod_metrics_error(raw: String) -> ProviderError {
+        if raw.contains("404 page not found") {
+            ProviderError::ApiTransient(format!(
+                "metrics-server not installed (metrics.k8s.io/v1beta1 PodMetrics API is not registered in this cluster — install metrics-server): {raw}"
+            ))
+        } else {
+            ProviderError::ApiTransient(raw)
+        }
     }
 }
 
@@ -965,5 +986,37 @@ mod tests {
         assert!(cap.per_volume_metrics); // not on the denylist
         assert!(!cap.volume_expansion); // but expansion is off
         assert!(!cap.is_supported());
+    }
+
+    #[test]
+    fn pod_metrics_404_signature_is_classified_as_metrics_server_missing() {
+        // The exact raw string kube-rs produces when metrics.k8s.io/v1beta1
+        // isn't registered at all (metrics-server never installed) — a plain
+        // 404 body the apiserver's generic handler returns, not a structured
+        // Status the client can parse (live-cluster-observed on Camelot EKS).
+        let raw = "ApiError: \"404 page not found\\n\": Failed to parse error data \
+                    (ErrorResponse { status: \"404 Not Found\", message: \"\\\"404 page not found\\\\n\\\"\", \
+                    reason: \"Failed to parse error data\", code: 404 })"
+            .to_string();
+        match super::KubeCluster::classify_pod_metrics_error(raw.clone()) {
+            breathe_provider::ProviderError::ApiTransient(msg) => {
+                assert!(msg.contains("metrics-server not installed"), "message was: {msg}");
+                assert!(msg.contains("metrics.k8s.io"), "message was: {msg}");
+                assert!(msg.contains(&raw), "original error text must stay in the message for debugging");
+            }
+            other => panic!("expected ApiTransient, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn other_pod_metrics_errors_pass_through_unmodified() {
+        // Anything that isn't the "API group doesn't exist" 404 signature
+        // (e.g. a real connection error, a genuine transient 5xx) must not be
+        // relabeled — only the specific missing-metrics-server case is enriched.
+        let raw = "error trying to connect: tcp connect error".to_string();
+        assert_eq!(
+            super::KubeCluster::classify_pod_metrics_error(raw.clone()),
+            breathe_provider::ProviderError::ApiTransient(raw)
+        );
     }
 }
