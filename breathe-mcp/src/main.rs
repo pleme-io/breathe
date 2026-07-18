@@ -11,6 +11,14 @@ use tracing_subscriber::EnvFilter;
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // See breathe-controller/src/main.rs for the full story -- same
+    // workspace-wide ambiguous-CryptoProvider panic risk, same fix,
+    // applied here too before this binary's own first TLS use (the
+    // in-cluster/default kube client this module's doc comment names).
+    rustls::crypto::aws_lc_rs::default_provider()
+        .install_default()
+        .expect("install_default() should only be called once, at startup");
+
     tracing_subscriber::fmt()
         .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("breathe_mcp=info")))
         .with_writer(std::io::stderr)

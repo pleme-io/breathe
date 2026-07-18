@@ -418,6 +418,15 @@ fn pool_error_policy(_obj: Arc<BreatheNodePool>, err: &Error, ctx: Arc<Ctx>) -> 
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // See breathe-controller/src/main.rs for the full story -- same
+    // workspace-wide ambiguous-CryptoProvider panic risk (rustls 0.21
+    // and 0.23 both resolve across different transitive consumers),
+    // same fix, applied here too before this binary's own first TLS use
+    // (`Client::try_default()` below).
+    rustls::crypto::aws_lc_rs::default_provider()
+        .install_default()
+        .expect("install_default() should only be called once, at startup");
+
     tracing_subscriber::fmt()
         .json()
         .with_env_filter(

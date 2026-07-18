@@ -737,6 +737,17 @@ async fn build_stores(
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Explicit CryptoProvider install -- must run before any TLS use
+    // (the very first is `Client::try_default()` below). The workspace
+    // resolves both rustls 0.21 (ring-only) and 0.23 (aws-lc-rs + ring)
+    // across different transitive consumers, so rustls 0.23's own
+    // single-feature auto-detection is ambiguous and panics without
+    // this. Confirmed live 2026-07-18: this exact panic crash-looped the
+    // deployed controller and caused a Flux rollback.
+    rustls::crypto::aws_lc_rs::default_provider()
+        .install_default()
+        .expect("install_default() should only be called once, at startup");
+
     tracing_subscriber::fmt()
         .json()
         .with_env_filter(

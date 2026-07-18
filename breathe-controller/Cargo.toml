@@ -47,6 +47,15 @@ aws-sdk-eks = "=1.137.0"
 # same 0.35 pin escuta uses, for one version across the fleet's NATS clients.
 async-nats = "0.35"
 kube = { version = "0.96", features = ["client", "runtime", "derive", "rustls-tls", "unstable-runtime"], default-features = false }
+# Explicit process-wide CryptoProvider install (main.rs) -- the workspace
+# resolves BOTH rustls 0.21 (ring-only) and 0.23 (aws-lc-rs + ring) across
+# different transitive consumers, so rustls 0.23's own single-feature
+# auto-detection is ambiguous and panics at the first TLS use ("Could not
+# automatically determine the process-level CryptoProvider") -- confirmed
+# live 2026-07-18, crash-looping the deployed controller. aws-lc-rs is
+# already the real backend present in the tree (kube-rs's rustls-tls
+# resolves it); pin explicitly so the choice is never ambiguous again.
+rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs"] }
 k8s-openapi = { version = "0.23", features = ["latest"] }
 tokio = { version = "1.40", features = ["macros", "rt-multi-thread"] }
 futures = "0.3"
