@@ -288,6 +288,38 @@ pub trait InterruptionOracle: Send + Sync {
     fn interruption_ppm(&self, forma: Forma) -> u64;
 }
 
+/// Provisioning-latency source for a candidate `Forma` — the same
+/// injected-not-computed seam as [`PriceOracle`]/[`InterruptionOracle`],
+/// applied to relief-latency data instead of price/risk data.
+///
+/// **Why this exists (found by `/algorithmic-prowess-seal`'s adversarial
+/// verify pass, 2026-07-17, not assumed up front).** Before this trait,
+/// [`ParetoOtimizador::optimize`] set every candidate's `relief_latency_secs`
+/// to the SAME shared `cfg.warmup_seconds` regardless of `forma` — a
+/// pre-existing simplification [`PickPolicy::MinCostRiskAdjusted`]'s own doc
+/// comment already disclosed the consequence of (candidates never differ in
+/// latency ⇒ [`ParetoOtimizador::dominates`] always collapses the frontier to
+/// the single cheapest point before any latency-aware pick policy runs).
+/// `breathe_catalog::forma::FLORESTA` carries a REAL `relief_latency_secs`
+/// per `FormaSpec`, but ships only ONE row (`Forma::NodeOnDemand`) today — so
+/// reading directly from the catalog would still degrade to the same
+/// single-value behavior for any OTHER forma, silently, until `FLORESTA`
+/// grows more rows (a separately-tracked M3+ catalog gap, not this crate's
+/// to close). An injected, `Option`-with-safe-default oracle — the SAME shape
+/// `PriceOracle`/`InterruptionOracle` already establish — is honestly scoped
+/// either way: `None` reproduces today's exact behavior byte-for-byte (a pure
+/// widening, zero behavior change for every existing caller), and a real
+/// caller can supply per-forma latencies (from `FLORESTA` once it grows, from
+/// fleet telemetry, or from a test mock) without this crate hard-depending on
+/// `breathe_catalog::forma`'s current one-row scope.
+pub trait LatencyOracle: Send + Sync {
+    /// This forma's own provisioning dead-time (seconds) — time until a
+    /// freshly-provisioned unit becomes usable capacity (the P8 dead-time,
+    /// BREATHABILITY-MATH §5.3; the same quantity `FormaSpec.relief_latency_secs`
+    /// names, for formas a real impl can source it for).
+    fn relief_latency_secs(&self, forma: Forma) -> u64;
+}
+
 /// How [`ParetoOtimizador`] resolves a single winner from the Pareto frontier.
 /// This is where the `CostFloor`/`TimeFloor` duality
 /// (`theory/BREATHABILITY.md`'s auction-objective section) becomes an actual
@@ -334,12 +366,31 @@ pub enum PickPolicy {
     /// this pick policy ever runs — a risk-adjusted pick cannot resurrect a
     /// pricier candidate the frontier already dropped. Today this variant
     /// therefore only has observable effect when candidates tie on cost
-    /// (it then breaks the tie toward the lower-risk one). Once
-    /// `relief_latency_secs` is genuinely per-forma (letting a slower-but-
-    /// safer candidate legitimately survive dominance), this exact same
-    /// arm re-ranks the wider resulting frontier for free — no change
-    /// needed here when that lands.
+    /// (it then breaks the tie toward the lower-risk one). **Updated
+    /// 2026-07-17:** `relief_latency_secs` CAN now be genuinely per-forma —
+    /// attach a [`LatencyOracle`] via [`ParetoOtimizador::with_latency_oracle`]
+    /// — at which point this exact same arm re-ranks the wider resulting
+    /// frontier for free, no change needed here. Without one attached,
+    /// today's collapsed-frontier behavior is unchanged (a pure widening).
     MinCostRiskAdjusted { risk_weight: f64 },
+    /// **The lexicographic performance-then-cost maxim, as a typed mechanism**
+    /// (theory/BREATHABILITY.md §II.6.8 — "never sacrifice performance;
+    /// minimize cost only among allocations that hold it; that is the default
+    /// state"). A TWO-STAGE ARGMIN over the frontier, not a weighted sum and
+    /// not a satisficing filter: stage 1 finds the frontier's own minimum
+    /// `relief_latency_secs` (unconditional — optimized over the FULL
+    /// feasible set, never bounded by an externally-chosen threshold, unlike
+    /// [`PickPolicy::MinCostUnderDeadline`]'s fixed deadline bar); stage 2
+    /// minimizes `cost_cents` ONLY among candidates exactly tied at stage 1's
+    /// optimum. Cost can never buy back a fraction of the performance stage 1
+    /// already fixed — the same leximin technique DRF applies to N claimants
+    /// (`quinhao::allocate_drf`'s dominant-share equalization), applied here
+    /// to 2 OBJECTIVES instead. Requires a [`LatencyOracle`] to have real
+    /// effect (see that trait's doc comment) — without one, every candidate
+    /// ties on latency and this degrades to plain [`PickPolicy::MinCost`],
+    /// same honest default-to-safe shape [`InterruptionOracle`]'s absence
+    /// already establishes for [`PickPolicy::MinCostRiskAdjusted`].
+    TopPerformanceThenMinCost,
 }
 
 /// The **Pareto-frontier auctioneer** — classical multi-objective optimization
@@ -378,6 +429,13 @@ pub struct ParetoOtimizador<P: PriceOracle> {
     /// — never a silent wrong answer, never a fabricated number. Set via
     /// [`Self::with_interruption_oracle`].
     pub interruption: Option<Box<dyn InterruptionOracle>>,
+    /// Per-forma provisioning-latency source. `None` (the [`Self::new`]
+    /// default) ⇒ every candidate's `relief_latency_secs` is `cfg.warmup_seconds`
+    /// (today's exact pre-existing behavior, unchanged) — never a fabricated
+    /// per-forma number. Set via [`Self::with_latency_oracle`]; required for
+    /// [`PickPolicy::TopPerformanceThenMinCost`] and the latency-aware half of
+    /// [`PickPolicy::MinCostRiskAdjusted`] to have real (non-degraded) effect.
+    pub latency: Option<Box<dyn LatencyOracle>>,
 }
 
 /// Typed rationale renderer for a grow candidate — the one allowed `write!()`
@@ -403,7 +461,7 @@ impl std::fmt::Display for GrowRationale {
 impl<P: PriceOracle> ParetoOtimizador<P> {
     #[must_use]
     pub fn new(price: P, cfg: BandConfig, pick: PickPolicy) -> Self {
-        Self { price, cfg, pick, interruption: None }
+        Self { price, cfg, pick, interruption: None, latency: None }
     }
 
     /// Attach an [`InterruptionOracle`] — required for
@@ -414,6 +472,18 @@ impl<P: PriceOracle> ParetoOtimizador<P> {
     #[must_use]
     pub fn with_interruption_oracle(mut self, oracle: impl InterruptionOracle + 'static) -> Self {
         self.interruption = Some(Box::new(oracle));
+        self
+    }
+
+    /// Attach a [`LatencyOracle`] — required for
+    /// [`PickPolicy::TopPerformanceThenMinCost`] to have real (non-degraded)
+    /// effect, and for [`PickPolicy::MinCostRiskAdjusted`] to see a frontier
+    /// wider than "the single cheapest point" (without one, every candidate
+    /// ties on latency and the frontier collapses to cost alone, same as
+    /// today's pre-existing behavior).
+    #[must_use]
+    pub fn with_latency_oracle(mut self, oracle: impl LatencyOracle + 'static) -> Self {
+        self.latency = Some(Box::new(oracle));
         self
     }
 
@@ -452,22 +522,25 @@ impl<P: PriceOracle> Otimizador for ParetoOtimizador<P> {
                 match decide(previsao.immediate_used, previsao.capacity, &self.cfg) {
                     Decision::Grow { from, to } => {
                         let delta = to.saturating_sub(from);
-                        // relief_latency_secs is this Forma's own provisioning
-                        // dead-time (time-to-Ready), sourced from breathe's
-                        // existing per-forma cold-start data. A genuinely
-                        // wired impl reads this from the fleet's provisioning
-                        // telemetry, same as cost from PriceOracle -- both
-                        // are injected via the same seam a real caller
-                        // supplies (see PriceOracle's own doc comment); this
-                        // reference impl folds it through the price call
-                        // below for the same reason: no parallel data model.
+                        // duration_secs is the BILLING basis PriceOracle costs
+                        // against -- cfg.warmup_seconds, unchanged from before.
                         let duration_secs = self.cfg.warmup_seconds.max(1);
                         let cost_cents = self.price.cost_cents(*forma, duration_secs);
+                        // relief_latency_secs is a DIFFERENT quantity -- this
+                        // forma's own provisioning dead-time (time-to-Ready),
+                        // genuinely per-forma via LatencyOracle when attached
+                        // (see that trait's doc comment for why this seam
+                        // exists rather than reading breathe_catalog::forma
+                        // directly). No oracle attached -> falls back to the
+                        // SAME duration_secs value as before this fix, byte-
+                        // identical to prior behavior.
+                        let relief_latency_secs =
+                            self.latency.as_deref().map_or(duration_secs, |o| o.relief_latency_secs(*forma));
                         Some(Proposta {
                             forma: *forma,
                             delta,
                             cost_cents,
-                            relief_latency_secs: duration_secs,
+                            relief_latency_secs,
                             rationale: GrowRationale { delta, forma: *forma, cost_cents, duration_secs }
                                 .to_string(),
                         })
@@ -506,6 +579,22 @@ impl<P: PriceOracle> Otimizador for ParetoOtimizador<P> {
                     p.cost_cents as f64 + risk_weight * ppm as f64
                 };
                 frontier.iter().min_by(|a, b| score(a).total_cmp(&score(b)))
+            }
+            PickPolicy::TopPerformanceThenMinCost => {
+                // Stage 1: the frontier's own minimum relief_latency_secs --
+                // unconditional, over the FULL feasible set, never bounded by
+                // an external threshold (unlike MinCostUnderDeadline's fixed
+                // deadline_secs bar). An empty frontier can't reach this arm
+                // (optimize() already early-returns on empty candidates).
+                frontier.iter().map(|p| p.relief_latency_secs).min().and_then(|min_latency| {
+                    // Stage 2: minimize cost ONLY among candidates exactly
+                    // tied at stage 1's optimum -- cost can never buy back
+                    // performance stage 1 already fixed.
+                    frontier
+                        .iter()
+                        .filter(|p| p.relief_latency_secs == min_latency)
+                        .min_by_key(|p| p.cost_cents)
+                })
             }
         };
 
