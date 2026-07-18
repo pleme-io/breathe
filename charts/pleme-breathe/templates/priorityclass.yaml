@@ -1,0 +1,14 @@
+{{- if .Values.priorityClass.create }}
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: {{ .Values.priorityClass.name }}
+value: {{ .Values.priorityClass.value | int }}
+globalDefault: false
+description: >-
+  breathe-controller is a cluster-critical singleton reconciler -- on a
+  capacity-constrained node it must win scheduling (and preempt where
+  necessary) against transient, default-priority workloads such as
+  ephemeral CI runner pods, rather than racing them for the last free
+  slot on a first-come-first-served basis.
+{{- end }}
