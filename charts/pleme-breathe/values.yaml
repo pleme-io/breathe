@@ -138,3 +138,22 @@ imagePullSecrets: []
 # Pin the controller pod (e.g. to a tainted, isolated node pool).
 nodeSelector: {}
 tolerations: []
+
+# Explicit priorityClassName override; wins over priorityClass.create below.
+priorityClassName: ""
+
+# breathe-controller is a cluster-critical singleton reconciler -- its
+# Deployment uses strategy.Recreate (only ever one replica; never two
+# reconcilers racing one field), which means every rollout has a real gap
+# where zero pods exist. On a capacity-constrained node, a default-priority
+# transient workload (e.g. an ephemeral CI runner pod) can win that gap
+# before the replacement schedules, stalling the rollout for its full
+# timeout on a first-come-first-served race it has no reason to lose.
+# Found live 2026-07-17 on camelot-eks: the upgrade + its own rollback both
+# failed repeatedly this exact way. A dedicated PriorityClass (default-on,
+# created by this chart) lets the scheduler prefer -- and if needed, preempt
+# for -- this pod instead of leaving the outcome to timing.
+priorityClass:
+  create: true
+  name: "pleme-breathe-controller"
+  value: 1000000
