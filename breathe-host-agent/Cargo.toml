@@ -20,6 +20,9 @@ breathe-crd = { path = "../breathe-crd", version = "0.1.0" }
 breathe-host = { path = "../breathe-host", version = "0.1.0" }
 breathe-runtime = { path = "../breathe-runtime", version = "0.1.0" }
 kube = { version = "0.96", features = ["client", "runtime", "derive", "rustls-tls", "unstable-runtime"], default-features = false }
+# Explicit process-wide CryptoProvider install (main.rs) -- see
+# breathe-controller/Cargo.toml for the full story.
+rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs"] }
 k8s-openapi = { version = "0.23", features = ["latest"] }
 tokio = { version = "1.40", features = ["macros", "rt-multi-thread"] }
 futures = "0.3"

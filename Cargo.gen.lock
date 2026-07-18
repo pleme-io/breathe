@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "cargo_lock_sha256": "c522bea0fd9372e8ca7a36682f894ea6fbabd11d50f93d4e1a6188987b8bf1e4",
+  "cargo_lock_sha256": "7a02bb2611ec1c36619314a4ad81a3b0fc7c27137fbe8fcd152e90e0765a6cb4",
   "target_resolves": {
     "base": {
       "Inflector-0.11.4": {
@@ -5257,6 +5257,18 @@
             "tree": "target"
           },
           {
+            "name": "rustls",
+            "package_key": "rustls-0.23.40",
+            "kind": "normal",
+            "features": [
+              "aws_lc_rs"
+            ],
+            "uses_default_features": false,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
             "name": "serde",
             "package_key": "serde-1.0.228",
             "kind": "normal",
@@ -5883,6 +5895,18 @@
             "tree": "target"
           },
           {
+            "name": "rustls",
+            "package_key": "rustls-0.23.40",
+            "kind": "normal",
+            "features": [
+              "aws_lc_rs"
+            ],
+            "uses_default_features": false,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
             "name": "serde_json",
             "package_key": "serde_json-1.0.150",
             "kind": "normal",
@@ -6372,6 +6396,18 @@
             "tree": "target"
           },
           {
+            "name": "rustls",
+            "package_key": "rustls-0.23.40",
+            "kind": "normal",
+            "features": [
+              "aws_lc_rs"
+            ],
+            "uses_default_features": false,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
             "name": "serde_json",
             "package_key": "serde_json-1.0.150",
             "kind": "normal",
@@ -6594,6 +6630,18 @@
               "transport-io"
             ],
             "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "rustls",
+            "package_key": "rustls-0.23.40",
+            "kind": "normal",
+            "features": [
+              "aws_lc_rs"
+            ],
+            "uses_default_features": false,
             "optional": false,
             "target": null,
             "tree": "target"
