@@ -12,6 +12,11 @@ description = "The MemoryBand CRD (breathe.pleme.io/v1) — the typed per-target
 breathe-control = { path = "../breathe-control", version = "0.1.0" }
 breathe-provider = { path = "../breathe-provider", version = "0.1.0" }
 breathe-auction = { path = "../breathe-auction", version = "0.1.0" }
+# The generic progressive-authority promotion FSM (shadow → confirm → effect,
+# + a fleet freeze) — a k8s-free lift of THIS crate's own `Band` promotion
+# lifecycle, extracted 2026-06-30 into formigueiro so it and breathe share one
+# tested FSM. Not yet on crates.io — pinned by git rev for reproducibility.
+outorga = { git = "https://github.com/pleme-io/formigueiro", rev = "88b91e58292450e7a2884683f711c3009595d425" }
 kube = { version = "0.96", features = ["derive"], default-features = false }
 k8s-openapi = { version = "0.23", features = ["latest"] }
 schemars = "0.8"

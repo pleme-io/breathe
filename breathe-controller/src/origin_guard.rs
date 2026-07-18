@@ -40,7 +40,7 @@ use kube::{
     Client, ResourceExt,
 };
 use metrics::{counter, gauge};
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 use crate::node_forma::upsert_taint;
 use crate::{Ctx, Error};
@@ -209,7 +209,15 @@ pub(crate) fn isolation_band_status(nodes_tainted: i64, unauthorized: &[String],
 /// standing posture, not an event response.
 pub async fn reconcile_isolation_band(cr: Arc<IsolationBand>, ctx: Arc<Ctx>) -> Result<Action, Error> {
     let name = cr.name_any();
-    let dry_run = cr.spec.dry_run || !cr.spec.write_enabled;
+    // Threaded through the SAME two-key `outorga::PromotionPolicy::decide` every
+    // `Band` uses (`breathe_crd::legacy_effective_dry_run` — see its doc for the
+    // full migration note; `IsolationBand` has no `mode` field or Ready/Stale/
+    // Conflict status yet, so it rides the pure two-state Shadow/Effect arm).
+    let promotion = breathe_crd::legacy_effective_dry_run(cr.spec.dry_run, !cr.spec.write_enabled);
+    let dry_run = promotion.is_shadow();
+    if let Some(reason) = promotion.shadow_reason() {
+        debug!(band = %name, reason = ?reason, "IsolationBand: held in shadow");
+    }
 
     let mut nodes_tainted: i64 = 0;
     let mut unauthorized: Vec<String> = Vec::new();

@@ -1124,6 +1124,7 @@ dependencies = [
  "chrono",
  "k8s-openapi",
  "kube",
+ "outorga",
  "schemars 0.8.22",
  "serde",
  "serde_json",
@@ -3544,6 +3545,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "68f19d67e5a2795c94e73e0bb1cc1a7edeb2e28efd39e2e1c9b7a40c1108b11c"
 dependencies = [
  "num-traits",
+]
+
+[[package]]
+name = "outorga"
+version = "0.1.1"
+source = "git+https://github.com/pleme-io/formigueiro?rev=88b91e58292450e7a2884683f711c3009595d425#88b91e58292450e7a2884683f711c3009595d425"
+dependencies = [
+ "serde",
 ]
 
 [[package]]
