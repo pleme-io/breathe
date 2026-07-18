@@ -34,7 +34,7 @@ use kube::{
     Client, ResourceExt,
 };
 use metrics::{counter, gauge};
-use tracing::{info, warn};
+use tracing::{error, info, warn};
 
 use crate::eks_nodegroup_provedor::{EksNodegroupProvedor, KubeEksNodegroupEnvironment};
 use crate::karpenter_provedor::{KarpenterProvedor, KubeKarpenterEnvironment};
@@ -719,11 +719,12 @@ pub fn cloud_pool_status(
             s.phase = Some("Held".into());
             s.last_decision = Some("in band — held".into());
         }
-        FormaTick::Grew { requested, admitted, rejected, .. } => {
+        FormaTick::Grew { requested, admitted, rejected, provision_error, .. } => {
             s.phase = Some("Growing".into());
             s.would_provision = Some(*requested as i64);
             s.last_decision =
                 Some(format!("would provision {requested} (admitted {admitted}, rejected {rejected})"));
+            s.last_provision_error = provision_error.clone();
         }
         FormaTick::Shrank { released, .. } => {
             s.phase = Some("Shrinking".into());
@@ -889,6 +890,15 @@ pub async fn reconcile_cloud_pool(cr: Arc<BreatheCloudPool>, ctx: Arc<Ctx>) -> R
     .await;
 
     counter!("breathe_forma_ticks_total", "forma" => "node-on-demand", "pool" => name.clone(), "outcome" => outcome_of(&tick)).increment(1);
+    // Real actuator failures (a non-ACTIVE nodegroup, an IAM error, a
+    // throttled AWS call) used to be silently discarded here -- see
+    // FormaTick::Grew::provision_error's doc comment for the full incident.
+    // Log loudly at ERROR (not the routine INFO reconcile line below) so
+    // `kubectl logs` surfaces it independently of anyone reading the CR
+    // status.
+    if let FormaTick::Grew { provision_error: Some(e), .. } = &tick {
+        error!(pool = %name, error = %e, "BreatheCloudPool: provision() failed -- capacity will NOT grow this tick");
+    }
     let mut status = cloud_pool_status(&tick, sample.as_ref().map(|s| s.used), sample.as_ref().map(|s| s.capacity), dry_run);
     // BU(fillPolicy): surface the scheduler scoring hint the pool's fillPolicy
     // implies — breathe SETS the posture; the scheduler (profile-configured) binds.
@@ -1120,7 +1130,13 @@ mod tests {
     #[test]
     fn status_maps_grow_to_would_provision_and_records_observed() {
         let s = cloud_pool_status(
-            &FormaTick::Grew { forma: Forma::NodeOnDemand, requested: 2, admitted: 2, rejected: 0 },
+            &FormaTick::Grew {
+                forma: Forma::NodeOnDemand,
+                requested: 2,
+                admitted: 2,
+                rejected: 0,
+                provision_error: None,
+            },
             Some(5),
             Some(4),
             true,

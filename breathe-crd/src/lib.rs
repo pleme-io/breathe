@@ -2101,6 +2101,18 @@ pub struct CloudPoolStatus {
     /// mutation ran (`effectiveDryRun == false` and a candidate existed).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tainted_node: Option<String>,
+    /// The underlying `provedor.provision()` call's error, when the actuator
+    /// itself failed (a non-ACTIVE nodegroup, an IAM permission error, a
+    /// throttled API call) -- distinct from `lastDecision`, which only ever
+    /// describes the BAND'S decision, never whether acting on it actually
+    /// succeeded. `None` means the last provision attempt (if any this tick)
+    /// succeeded; this field is only ever set on a `Growing` phase. Added
+    /// 2026-07-18 after a real incident: this Result used to be silently
+    /// discarded, so a perpetually-failing actuator produced "would provision
+    /// N" forever with no observable evidence anywhere of why capacity never
+    /// actually grew.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_provision_error: Option<String>,
 }
 
 // ─────────────────── IsolationBand — membership-CLOSING node reservation ────────

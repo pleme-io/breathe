@@ -164,7 +164,10 @@ spec:
             - targetRef
             type: object
           status:
-            description: The per-cycle typed status receipt — shared across all band kinds.
+            description: |-
+              The per-cycle typed status receipt — shared across all band kinds.
+
+              Derives `PartialEq` so the controller can diff a freshly-computed status against the CR's current live status and skip the `patch_status` write entirely when they're byte-identical (task #220) — every field here is itself `PartialEq` (`Condition`/`TrendSample` included), so the derive is a real structural comparison, not a stand-in.
             nullable: true
             properties:
               carvesTotal:
@@ -508,7 +511,10 @@ spec:
             - targetRef
             type: object
           status:
-            description: The per-cycle typed status receipt — shared across all band kinds.
+            description: |-
+              The per-cycle typed status receipt — shared across all band kinds.
+
+              Derives `PartialEq` so the controller can diff a freshly-computed status against the CR's current live status and skip the `patch_status` write entirely when they're byte-identical (task #220) — every field here is itself `PartialEq` (`Condition`/`TrendSample` included), so the derive is a real structural comparison, not a stand-in.
             nullable: true
             properties:
               carvesTotal:
@@ -852,7 +858,10 @@ spec:
             - targetRef
             type: object
           status:
-            description: The per-cycle typed status receipt — shared across all band kinds.
+            description: |-
+              The per-cycle typed status receipt — shared across all band kinds.
+
+              Derives `PartialEq` so the controller can diff a freshly-computed status against the CR's current live status and skip the `patch_status` write entirely when they're byte-identical (task #220) — every field here is itself `PartialEq` (`Condition`/`TrendSample` included), so the derive is a real structural comparison, not a stand-in.
             nullable: true
             properties:
               carvesTotal:
@@ -1249,7 +1258,10 @@ spec:
             - targetRef
             type: object
           status:
-            description: The per-cycle typed status receipt — shared across all band kinds.
+            description: |-
+              The per-cycle typed status receipt — shared across all band kinds.
+
+              Derives `PartialEq` so the controller can diff a freshly-computed status against the CR's current live status and skip the `patch_status` write entirely when they're byte-identical (task #220) — every field here is itself `PartialEq` (`Condition`/`TrendSample` included), so the derive is a real structural comparison, not a stand-in.
             nullable: true
             properties:
               carvesTotal:
@@ -1593,7 +1605,10 @@ spec:
             - targetRef
             type: object
           status:
-            description: The per-cycle typed status receipt — shared across all band kinds.
+            description: |-
+              The per-cycle typed status receipt — shared across all band kinds.
+
+              Derives `PartialEq` so the controller can diff a freshly-computed status against the CR's current live status and skip the `patch_status` write entirely when they're byte-identical (task #220) — every field here is itself `PartialEq` (`Condition`/`TrendSample` included), so the derive is a real structural comparison, not a stand-in.
             nullable: true
             properties:
               carvesTotal:
@@ -1937,7 +1952,10 @@ spec:
             - targetRef
             type: object
           status:
-            description: The per-cycle typed status receipt — shared across all band kinds.
+            description: |-
+              The per-cycle typed status receipt — shared across all band kinds.
+
+              Derives `PartialEq` so the controller can diff a freshly-computed status against the CR's current live status and skip the `patch_status` write entirely when they're byte-identical (task #220) — every field here is itself `PartialEq` (`Condition`/`TrendSample` included), so the derive is a real structural comparison, not a stand-in.
             nullable: true
             properties:
               carvesTotal:
@@ -2281,7 +2299,10 @@ spec:
             - targetRef
             type: object
           status:
-            description: The per-cycle typed status receipt — shared across all band kinds.
+            description: |-
+              The per-cycle typed status receipt — shared across all band kinds.
+
+              Derives `PartialEq` so the controller can diff a freshly-computed status against the CR's current live status and skip the `patch_status` write entirely when they're byte-identical (task #220) — every field here is itself `PartialEq` (`Condition`/`TrendSample` included), so the derive is a real structural comparison, not a stand-in.
             nullable: true
             properties:
               carvesTotal:
@@ -2710,7 +2731,10 @@ spec:
             - targetRef
             type: object
           status:
-            description: The per-cycle typed status receipt — shared across all band kinds.
+            description: |-
+              The per-cycle typed status receipt — shared across all band kinds.
+
+              Derives `PartialEq` so the controller can diff a freshly-computed status against the CR's current live status and skip the `patch_status` write entirely when they're byte-identical (task #220) — every field here is itself `PartialEq` (`Condition`/`TrendSample` included), so the derive is a real structural comparison, not a stand-in.
             nullable: true
             properties:
               carvesTotal:
@@ -3110,7 +3134,10 @@ spec:
             - targetRef
             type: object
           status:
-            description: The per-cycle typed status receipt — shared across all band kinds.
+            description: |-
+              The per-cycle typed status receipt — shared across all band kinds.
+
+              Derives `PartialEq` so the controller can diff a freshly-computed status against the CR's current live status and skip the `patch_status` write entirely when they're byte-identical (task #220) — every field here is itself `PartialEq` (`Condition`/`TrendSample` included), so the derive is a real structural comparison, not a stand-in.
             nullable: true
             properties:
               carvesTotal:
@@ -3496,7 +3523,10 @@ spec:
             - targetRef
             type: object
           status:
-            description: The per-cycle typed status receipt — shared across all band kinds.
+            description: |-
+              The per-cycle typed status receipt — shared across all band kinds.
+
+              Derives `PartialEq` so the controller can diff a freshly-computed status against the CR's current live status and skip the `patch_status` write entirely when they're byte-identical (task #220) — every field here is itself `PartialEq` (`Condition`/`TrendSample` included), so the derive is a real structural comparison, not a stand-in.
             nullable: true
             properties:
               carvesTotal:
@@ -4054,6 +4084,10 @@ spec:
                 nullable: true
                 type: boolean
               lastDecision:
+                nullable: true
+                type: string
+              lastProvisionError:
+                description: 'The underlying `provedor.provision()` call''s error, when the actuator itself failed (a non-ACTIVE nodegroup, an IAM permission error, a throttled API call) -- distinct from `lastDecision`, which only ever describes the BAND''S decision, never whether acting on it actually succeeded. `None` means the last provision attempt (if any this tick) succeeded; this field is only ever set on a `Growing` phase. Added 2026-07-18 after a real incident: this Result used to be silently discarded, so a perpetually-failing actuator produced "would provision N" forever with no observable evidence anywhere of why capacity never actually grew.'
                 nullable: true
                 type: string
               lastSeenEpoch:
