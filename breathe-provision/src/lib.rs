@@ -33,7 +33,25 @@ pub enum FormaTick {
     Held,
     /// Grew the shape: `requested` units provisioned, `admitted` cleared the
     /// admission gates into the `Viveiro`, `rejected` did not.
-    Grew { forma: Forma, requested: u64, admitted: u64, rejected: u64 },
+    ///
+    /// `provision_error` is `Some` when the underlying `provedor.provision()`
+    /// call itself failed (a real actuator error -- e.g. AWS `Update
+    /// NodegroupConfig` rejected, a non-ACTIVE nodegroup, a permissions
+    /// error). Confirmed live 2026-07-18: this Result used to be discarded
+    /// entirely (`let _ = provedor.provision(delta).await;`), so a
+    /// perpetually-failing actuator produced a `Growing` phase + "would
+    /// provision N" forever with ZERO log line or status field anywhere
+    /// explaining why capacity never actually grew -- the admission-gate
+    /// simulation below runs unconditionally regardless of whether
+    /// provisioning itself succeeded, so `admitted`/`rejected` alone can't
+    /// reveal this either. Never silently drop this again.
+    Grew {
+        forma: Forma,
+        requested: u64,
+        admitted: u64,
+        rejected: u64,
+        provision_error: Option<String>,
+    },
     /// Shrank the shape by `released` units (drain-first).
     Shrank { forma: Forma, released: u64 },
     /// Demand exceeds the envelope — escalated, never silently under-provisioned.
@@ -83,9 +101,12 @@ where
 
         DecisaoForma::Crescer { forma, delta } => {
             // Dispatch the provision (a magma Plan at M2; a DryRun mock at M0).
-            // Non-fatal: a provision error still lets the admission loop run on
-            // whatever did come up (idempotent provision is retried next tick).
-            let _ = provedor.provision(delta).await;
+            // Non-fatal to the admission loop below -- it still runs on
+            // whatever did come up, and idempotent provision is retried next
+            // tick -- but the Result is captured (never discarded) so a real
+            // actuator failure is visible in the tick + the CR status, not
+            // silent. See the `Grew::provision_error` doc comment for why.
+            let provision_error = provedor.provision(delta).await.err().map(|e| e.to_string());
 
             let mut admitted = 0u64;
             let mut rejected = 0u64;
@@ -113,7 +134,7 @@ where
                     _ => rejected += 1,
                 }
             }
-            FormaTick::Grew { forma, requested: delta, admitted, rejected }
+            FormaTick::Grew { forma, requested: delta, admitted, rejected, provision_error }
         }
 
         DecisaoForma::Encolher { forma, delta, drain: _ } => {

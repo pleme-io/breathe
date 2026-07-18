@@ -43,6 +43,28 @@ impl Provedor for MockProvedor {
     }
 }
 
+/// A `Provedor` double whose `provision()` always fails -- reproduces a real
+/// actuator error (a non-ACTIVE nodegroup, an IAM permission error, a
+/// throttled API call) so `reconcile_forma` can be proven to surface it via
+/// `FormaTick::Grew::provision_error` instead of silently discarding it (the
+/// real 2026-07-18 bug this guards against).
+struct FailingProvisionProvedor {
+    used: u64,
+    capacity: u64,
+}
+#[async_trait::async_trait]
+impl Provedor for FailingProvisionProvedor {
+    async fn observe(&self) -> Result<FormaSample, ProviderError> {
+        Ok(FormaSample { used: self.used, capacity: self.capacity })
+    }
+    async fn provision(&self, _n: u64) -> Result<ProvisionReceipt, ProviderError> {
+        Err(ProviderError::ApiPermanent("nodegroup not ACTIVE".into()))
+    }
+    async fn deprovision(&self, n: u64) -> Result<ProvisionReceipt, ProviderError> {
+        Ok(ProvisionReceipt::DryRun { would: -(n as i64) })
+    }
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct NodeRef {
     pub(crate) allocatable: u64,
@@ -90,7 +112,8 @@ fn grow_provisions_and_admits_into_the_viveiro() {
         |_id| NodeRef { allocatable: 64 },
     ));
     match tick {
-        FormaTick::Grew { forma, requested, admitted, rejected } => {
+        FormaTick::Grew { forma, requested, admitted, rejected, provision_error } => {
+            assert_eq!(provision_error, None, "the mock provedor never fails provision()");
             assert_eq!(forma, Forma::NodeOnDemand);
             assert!(requested > 0);
             assert_eq!(admitted, requested, "every provisioned unit cleared the gate");
@@ -123,6 +146,41 @@ fn an_undersized_node_is_provisioned_but_never_admitted() {
             assert_eq!(admitted, 0, "an undersized node must NOT be admitted");
             assert_eq!(rejected, requested);
             assert!(viveiro.is_empty(), "the pool stays empty — no unvalidated unit");
+        }
+        other => panic!("expected Grew, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_failing_provision_surfaces_the_error_never_silently() {
+    // The real 2026-07-18 bug: `let _ = provedor.provision(delta).await;`
+    // discarded the Result entirely, so a permanently-failing actuator (a
+    // non-ACTIVE EKS nodegroup, an IAM error) produced a `Growing` phase +
+    // "would provision N" forever with ZERO evidence anywhere that
+    // provisioning itself never actually succeeded. This proves the fix:
+    // the error is captured and threaded through `FormaTick::Grew`, not
+    // dropped, regardless of what the (deliberately decoupled) admission
+    // gate simulation below decides.
+    let provedor = FailingProvisionProvedor { used: 90, capacity: 100 };
+    let mut viveiro: Viveiro<NodeRef> = Viveiro::new();
+    let tick = block_on(reconcile_forma(
+        Forma::NodeOnDemand,
+        &provedor,
+        &ReactivePrevisor,
+        &BandLeiloeiro,
+        &open_cfg(),
+        &capacidade_gate(8),
+        3,
+        &mut viveiro,
+        |_id| NodeRef { allocatable: 64 },
+    ));
+    match tick {
+        FormaTick::Grew { provision_error, .. } => {
+            assert_eq!(
+                provision_error.as_deref(),
+                Some("permanent API error: nodegroup not ACTIVE"),
+                "a real provision() failure must be surfaced, never silently dropped"
+            );
         }
         other => panic!("expected Grew, got {other:?}"),
     }
