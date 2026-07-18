@@ -34,7 +34,7 @@ use kube::{
     Client, ResourceExt,
 };
 use metrics::{counter, gauge};
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 use crate::eks_nodegroup_provedor::{EksNodegroupProvedor, KubeEksNodegroupEnvironment};
 use crate::karpenter_provedor::{KarpenterProvedor, KubeKarpenterEnvironment};
@@ -789,11 +789,19 @@ pub async fn reconcile_cloud_pool(cr: Arc<BreatheCloudPool>, ctx: Arc<Ctx>) -> R
         return Ok(Action::requeue(ctx.requeue));
     };
     // Effective shadow = per-pool dryRun OR pool master writeEnabled off — BOTH
-    // gates. This single value is the actuation switch: it is handed to the
-    // provider so an actuating provider (Kwok) mutates NOTHING unless the pool
-    // is live on both gates. The observe-only KubeObserve provider ignores it
-    // (it is DryRun by construction — it can never mutate).
-    let dry_run = cr.spec.dry_run || !cr.spec.write_enabled;
+    // gates, threaded through the SAME two-key `outorga::PromotionPolicy::decide`
+    // every `Band` uses (`breathe_crd::legacy_effective_dry_run` — this CRD kind
+    // has no `mode` field or Ready/Stale/Conflict status yet, so it rides the
+    // pure two-state Shadow/Effect arm; see that function's doc for the full
+    // migration note). This single value is the actuation switch: it is handed
+    // to the provider so an actuating provider (Kwok) mutates NOTHING unless the
+    // pool is live on both gates. The observe-only KubeObserve provider ignores
+    // it (it is DryRun by construction — it can never mutate).
+    let promotion = breathe_crd::legacy_effective_dry_run(cr.spec.dry_run, !cr.spec.write_enabled);
+    let dry_run = promotion.is_shadow();
+    if let Some(reason) = promotion.shadow_reason() {
+        debug!(pool = %name, reason = ?reason, "BreatheCloudPool: held in shadow");
+    }
 
     // Select the executor. Default KubeObserve can never actuate on its own —
     // it further dispatches on `nodeProvisioningBackend` (the REALIZATION

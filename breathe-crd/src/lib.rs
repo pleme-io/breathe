@@ -306,34 +306,41 @@ pub trait Band:
     /// confirmed, OR the band has held Ready ∧ ¬Stale ∧ ¬Conflict continuously
     /// for `confirmAfterSeconds`. Reads the prior status conditions — a band that
     /// loses its metric (Ready=False) safely falls back to shadow.
+    ///
+    /// Delegates to `outorga::PromotionPolicy::confirm_gate` — the k8s-free lift
+    /// of this exact algebra ([`formigueiro`](https://github.com/pleme-io/formigueiro)),
+    /// extracted from this trait on 2026-06-30. `mode` is fixed to
+    /// `ShadowConfirmEffect` here because this method IS the confirm-gate check;
+    /// `outorga`'s `confirm_gate` itself never consults the policy's mode.
     fn confirm_gate_passed(&self, now_epoch: i64) -> bool {
-        if self.operator_confirmed() {
-            return true;
-        }
-        let Some(st) = self.status() else {
-            return false;
-        };
-        let cond = |t: &str| st.conditions.iter().find(|c| c.type_ == t);
-        let is_true = |t: &str| cond(t).is_some_and(|c| c.status == "True");
-        if is_true("Stale") || is_true("Conflict") {
-            return false;
-        }
-        match cond("Ready") {
-            Some(r) if r.status == "True" => chrono::DateTime::parse_from_rfc3339(&r.last_transition_time)
-                .map(|t| now_epoch - t.timestamp() >= self.confirm_after_seconds() as i64)
-                .unwrap_or(false),
-            _ => false,
-        }
+        let policy = outorga::PromotionPolicy::new(outorga::PromotionMode::ShadowConfirmEffect)
+            .confirm_after(self.confirm_after_seconds());
+        matches!(policy.confirm_gate(&BandObservation(self), now_epoch), outorga::ConfirmGate::Passed)
     }
 
     /// The EFFECTIVE dry-run for this tick, derived from the promotion lifecycle.
-    /// THIS — not the raw `dryRun` field — is what gates the carve.
+    /// THIS — not the raw `dryRun` field — is what gates the carve. Equivalent to
+    /// [`Band::effective_dry_run_frozen`] with `frozen = false` (no external
+    /// freeze key applies at this trait's own call sites).
     fn effective_dry_run(&self, now_epoch: i64) -> bool {
-        match self.promotion_mode() {
-            PromotionMode::Effect => false,
-            PromotionMode::Shadow | PromotionMode::Suspended => true,
-            PromotionMode::ShadowConfirmEffect => !self.confirm_gate_passed(now_epoch),
-        }
+        self.effective_dry_run_frozen(now_epoch, false)
+    }
+
+    /// The full TWO-KEY effective dry-run: this band's own promotion gate AND an
+    /// external FREEZE (a pool/fleet master write switch) — `outorga`'s two-key
+    /// rule (`PromotionPolicy::decide`'s `frozen` parameter) threaded through
+    /// explicitly instead of folded into the raw `dry_run()` field. A blind
+    /// `dry_run() || !some_switch` composition is exactly the bug this closes:
+    /// `breathe-host-agent`'s generic host reconcile (ArcBand/CgroupBand/
+    /// CgroupCpuBand/HostParamBand) used to compose the RAW `dry_run()` field
+    /// with the node's `BreatheNodePool.writeEnabled`, bypassing the
+    /// confirm-gate/auto-promote lifecycle the k8s-plane controller already
+    /// gives the SAME CRD kinds — call this instead, with
+    /// `frozen = !pool.spec.write_enabled`.
+    fn effective_dry_run_frozen(&self, now_epoch: i64, frozen: bool) -> bool {
+        let policy = outorga::PromotionPolicy::new(self.promotion_mode().to_outorga())
+            .confirm_after(self.confirm_after_seconds());
+        policy.effective_dry_run(&BandObservation(self), now_epoch, frozen)
     }
     /// M0 PREDICTIVE: `Some(lookahead_secs)` when the band opts into preemptive
     /// carving (`predictive: true`) — the controller measures the working-set
@@ -360,6 +367,130 @@ pub trait Band:
     fn generation(&self) -> Option<i64> {
         self.meta().generation
     }
+}
+
+// ─────────────── outorga — the shared promotion-lifecycle FSM ───────────────
+//
+// `outorga` (https://github.com/pleme-io/formigueiro) is the k8s-free lift of
+// THIS trait's own shadow→confirm→effect algebra, extracted from this crate
+// on 2026-06-30 so formigueiro (fleet updates) and breathe (resource
+// homeostasis) stand on one tested FSM. Since extraction, `Band`'s own
+// `confirm_gate_passed`/`effective_dry_run` had never migrated onto their own
+// extracted copy — the two crates carried byte-identical, driftable logic.
+// The methods above now delegate here; the two helpers below are what makes
+// that delegation possible.
+
+impl PromotionMode {
+    /// The `outorga`-side mirror of this mode (identical variant set). This
+    /// crate's [`PromotionMode`] stays a distinct local type because it needs
+    /// `JsonSchema` for the CRD surface, which `outorga::PromotionMode`
+    /// deliberately does not carry (it has no k8s dependency at all).
+    #[must_use]
+    fn to_outorga(self) -> outorga::PromotionMode {
+        match self {
+            Self::Shadow => outorga::PromotionMode::Shadow,
+            Self::Effect => outorga::PromotionMode::Effect,
+            Self::ShadowConfirmEffect => outorga::PromotionMode::ShadowConfirmEffect,
+            Self::Suspended => outorga::PromotionMode::Suspended,
+        }
+    }
+}
+
+/// Adapts any [`Band`] to `outorga::Observation` — reads the Ready/Stale/
+/// Conflict conditions from the band's own [`BandStatus`] (via [`Band::status`]),
+/// the exact signal the confirm-gate needs. Generic over `B: Band` rather than
+/// implemented once per band kind: `Observation` is `outorga`'s foreign trait,
+/// and every band kind's `status()`/`operator_confirmed()` already expose
+/// everything it needs uniformly through the `Band` trait itself.
+struct BandObservation<'a, B: Band>(&'a B);
+
+impl<B: Band> outorga::Observation for BandObservation<'_, B> {
+    fn ready(&self) -> bool {
+        self.ready_since().is_some()
+    }
+    fn stale(&self) -> bool {
+        self.0
+            .status()
+            .is_some_and(|st| st.conditions.iter().any(|c| c.type_ == "Stale" && c.status == "True"))
+    }
+    fn conflict(&self) -> bool {
+        self.0
+            .status()
+            .is_some_and(|st| st.conditions.iter().any(|c| c.type_ == "Conflict" && c.status == "True"))
+    }
+    fn ready_since(&self) -> Option<i64> {
+        let st = self.0.status()?;
+        let cond = st.conditions.iter().find(|c| c.type_ == "Ready")?;
+        if cond.status != "True" {
+            return None;
+        }
+        chrono::DateTime::parse_from_rfc3339(&cond.last_transition_time).ok().map(|t| t.timestamp())
+    }
+    fn operator_confirmed(&self) -> bool {
+        self.0.operator_confirmed()
+    }
+}
+
+/// A trivially-ready `outorga::Observation` — always ready (since epoch 0),
+/// never stale, never conflicted, never operator-confirmed. Used by
+/// [`legacy_effective_dry_run`] for the Tier-B CRD kinds
+/// (`BreatheCloudPool`/`IsolationBand`/the `PodMemoryHigh` dispatch) that carry
+/// a bare `dryRun` boolean and no `mode` field yet, and whose status has no
+/// Ready/Stale/Conflict conditions to observe at all. Because
+/// [`legacy_effective_dry_run`] only ever constructs `outorga::PromotionMode::
+/// Shadow` or `::Effect` (never `ShadowConfirmEffect`), this observation is
+/// never actually consulted for its readiness window — it exists purely so
+/// the SAME typed `outorga::PromotionPolicy::decide` two-key call handles
+/// these CRD kinds too, rather than a hand re-derived `a || !b` boolean
+/// expression at each call site.
+struct AlwaysReady;
+
+impl outorga::Observation for AlwaysReady {
+    fn ready(&self) -> bool {
+        true
+    }
+    fn stale(&self) -> bool {
+        false
+    }
+    fn conflict(&self) -> bool {
+        false
+    }
+    fn ready_since(&self) -> Option<i64> {
+        Some(0)
+    }
+    fn operator_confirmed(&self) -> bool {
+        false
+    }
+}
+
+/// The TWO-KEY promotion decision for a LEGACY-boolean Tier-B CRD kind — one
+/// that carries a bare `dryRun`/`writeEnabled` pair and no `mode` field or
+/// Ready/Stale/Conflict status yet (`BreatheCloudPool`, `IsolationBand`, the
+/// `PodMemoryHigh` dispatch). `dry_run` selects Shadow-vs-Effect directly (pure
+/// two-state — exactly [`HostParamBand`]'s own established pattern for
+/// pre-FSM CRDs); `frozen` is the pool/node master write switch (mirrors
+/// `BreatheNodePool.spec.writeEnabled` / `BreatheCloudPool.spec.writeEnabled` /
+/// `IsolationBand.spec.writeEnabled`). Threads BOTH keys through the SAME
+/// `outorga::PromotionPolicy::decide` two-key rule every `Band` uses, so every
+/// "is this thing allowed to write" decision in the fleet is one tested
+/// function, never three-plus hand re-derived `a || !b` expressions — and the
+/// caller gets a typed [`outorga::ShadowReason`] back (was it explicitly
+/// `dryRun`? frozen by the pool switch?) instead of a bare bool.
+///
+/// A genuine `ShadowConfirmEffect` lifecycle (calibrate, then auto-promote)
+/// for these CRD kinds is a real, NAMED follow-on, not silently dropped: it
+/// needs a `mode` spec field plus real Ready/Stale/Conflict status conditions
+/// on `CloudPoolStatus`/`IsolationBandStatus`/`PodMemoryHighStatus` (they carry
+/// none today), at which point this function's `AlwaysReady` observation is
+/// swapped for a real one and `dry_run` becomes just the fallback when `mode`
+/// is unset — mirroring exactly how `Band::promotion_mode`'s own
+/// `mode_spec().unwrap_or(ShadowConfirmEffect)` already works. Deliberately not
+/// done here: it would add CRD schema fields to CRD kinds live on rio, out of
+/// scope for a same-behavior migration.
+#[must_use]
+pub fn legacy_effective_dry_run(dry_run: bool, frozen: bool) -> outorga::PromotionDecision {
+    let mode = if dry_run { outorga::PromotionMode::Shadow } else { outorga::PromotionMode::Effect };
+    outorga::PromotionPolicy::new(mode).decide(&AlwaysReady, 0, frozen)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -3630,6 +3761,91 @@ mod tests {
             Some(serde_json::json!({ "breathe.pleme.io/confirmed": "true" })),
         );
         assert!(!b.effective_dry_run(0), "the operator fast-path confirms immediately");
+    }
+
+    // ── outorga migration (2026-07-18): the two-key `effective_dry_run_frozen` +
+    //    the Tier-B `legacy_effective_dry_run` helper ─────────────────────────
+
+    /// The `frozen` key overrides EVERY promotion state, exactly like
+    /// `outorga`'s `freeze_is_the_master_switch_overriding_every_mode` unit
+    /// test proves at the FSM layer — this is that same law observed through
+    /// the `Band` trait's own two-key method. Even a band whose OWN gate has
+    /// long passed (Effect mode) is shadowed when an external freeze applies.
+    #[test]
+    fn effective_dry_run_frozen_key_overrides_even_effect_mode() {
+        let b = mk_band(serde_json::json!({ "mode": "effect" }), None, None);
+        assert!(!b.effective_dry_run_frozen(0, false), "unfrozen + effect mode ⇒ apply");
+        assert!(b.effective_dry_run_frozen(0, true), "frozen must shadow even explicit effect mode");
+    }
+
+    /// REGRESSION for the `breathe-host-agent/src/main.rs` bug fixed 2026-07-18:
+    /// before the fix, the host reconcile composed the RAW `dry_run()` field
+    /// (`obj.dry_run() || !write_enabled`) instead of the confirm-gated
+    /// `effective_dry_run`. A freshly-created `ArcBand` — the exact CRD kind the
+    /// host agent watches — with `dryRun` unset (defaults false) and NO status
+    /// yet (never observed, so no `Ready` condition has ever been recorded) is
+    /// the case that was SILENTLY WRONG: the old formula said "go live now"
+    /// purely because the raw boolean defaulted false, even though the band had
+    /// never proven itself Ready for even one tick. Prove the two formulas
+    /// actually diverge on this exact input, and that the new one is the safe
+    /// (still-shadow) answer.
+    #[test]
+    fn host_agent_bug_fresh_arc_band_no_longer_treated_as_confirmed_live() {
+        let b: ArcBand = serde_json::from_value(serde_json::json!({
+            "apiVersion": "breathe.pleme.io/v1", "kind": "ArcBand",
+            "metadata": { "name": "rio" },
+            "spec": { "targetRef": { "kind": "Node", "name": "rio" } }
+        }))
+        .expect("a minimal ArcBand must deserialize");
+        let write_enabled = true;
+        let now = 0i64;
+
+        // The OLD (buggy) formula, reproduced verbatim for the comparison.
+        let old_effective_dry_run = b.dry_run() || !write_enabled;
+        assert!(!old_effective_dry_run, "the bug: the raw boolean alone said 'go live now'");
+
+        // The NEW (fixed) formula: still shadow — no Ready condition has ever
+        // been observed, so the ShadowConfirmEffect confirm-gate correctly
+        // blocks on NotReady.
+        let new_effective_dry_run = b.effective_dry_run_frozen(now, !write_enabled);
+        assert!(new_effective_dry_run, "FIX: a never-observed band must stay shadowed, not go live");
+        assert_ne!(
+            old_effective_dry_run, new_effective_dry_run,
+            "the two formulas must diverge on this exact input — that divergence IS the bug"
+        );
+    }
+
+    /// The Tier-B legacy-boolean composition (`BreatheCloudPool`/`IsolationBand`/
+    /// the `PodMemoryHigh` dispatch): `legacy_effective_dry_run` must reproduce
+    /// the exact truth table of the `dry_run || !write_enabled` expression it
+    /// replaces at every call site, while also surfacing a typed
+    /// [`outorga::ShadowReason`] distinguishing WHY (explicit dryRun vs an
+    /// external freeze) — a real improvement no bare bool could carry.
+    #[test]
+    fn legacy_effective_dry_run_matches_the_old_truth_table_and_types_the_reason() {
+        // (dry_run, frozen) -> is_shadow, matching `dry_run || frozen` exactly.
+        let cases = [(false, false, false), (false, true, true), (true, false, true), (true, true, true)];
+        for (dry_run, frozen, want_shadow) in cases {
+            let d = legacy_effective_dry_run(dry_run, frozen);
+            assert_eq!(
+                d.is_shadow(),
+                want_shadow,
+                "legacy_effective_dry_run({dry_run}, {frozen}) must match dry_run || frozen"
+            );
+        }
+        // The NEW capability: the reason distinguishes explicit dryRun from an
+        // external freeze — previously both collapsed into the same bare bool.
+        assert_eq!(
+            legacy_effective_dry_run(true, false).shadow_reason(),
+            Some(outorga::ShadowReason::ModeShadow),
+            "an explicit dryRun:true is reported as ModeShadow"
+        );
+        assert_eq!(
+            legacy_effective_dry_run(false, true).shadow_reason(),
+            Some(outorga::ShadowReason::Frozen),
+            "a frozen pool/node is reported as Frozen, even with dryRun:false"
+        );
+        assert_eq!(legacy_effective_dry_run(false, false).shadow_reason(), None, "an applied decision carries no shadow reason");
     }
 
     // ── ReplicaBand (the HORIZONTAL band) ─────────────────────────────────────

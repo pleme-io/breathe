@@ -8,12 +8,18 @@
 //! `reconcile_one` the brain uses — only the `Cluster` impl differs.
 //!
 //! ### Shadow-first by construction
-//! `effective_dry_run = band.dryRun || !pool.writeEnabled`. The node-level master
-//! switch forces shadow regardless of any band's setting, and `HostCluster` is
-//! built with `write_enabled = pool.writeEnabled` as the second wall — so when the
-//! node is in shadow the agent reports `ShadowWouldApply` and `apply` is a no-op.
-//! A host write happens only when BOTH the pool master switch is on AND the band's
-//! `dryRun` is off — and even then never above the L2 ceiling.
+//! `effective_dry_run = Band::effective_dry_run_frozen(band, now, !pool.writeEnabled)`
+//! — the TWO-KEY `outorga`-backed promotion gate (this band's own confirm-gate
+//! lifecycle AND the node's master switch as an explicit `frozen` key), not the
+//! raw `dryRun` boolean OR'd by hand. The node-level master switch forces shadow
+//! regardless of any band's own promotion state, and `HostCluster` is built with
+//! `write_enabled = pool.writeEnabled` as the second wall — so when the node is
+//! in shadow the agent reports `ShadowWouldApply` and `apply` is a no-op. A host
+//! write happens only when BOTH the pool master switch is on AND the band's own
+//! promotion gate has passed — and even then never above the L2 ceiling. (Fixed
+//! 2026-07-18: this reconcile used to compose the RAW `dry_run()` field, which
+//! bypassed the confirm-gate/auto-promote lifecycle the k8s-plane controller
+//! already gave the SAME CRD kinds — see `effective_dry_run_frozen`'s doc.)
 //!
 //! Config via env:
 //!   NODE_NAME               — the node this agent runs on (downward API spec.nodeName)
@@ -48,7 +54,7 @@ use kube::{
     Client, ResourceExt,
 };
 use serde_json::json;
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 const GIB: u64 = 1024 * 1024 * 1024;
 
@@ -193,8 +199,17 @@ async fn reconcile_host_with<B: Band, D: DimensionDescriptor>(
         .is_some_and(|last| now_secs().saturating_sub(last) < obj.cooldown_seconds() as i64);
 
     // The node master switch forces shadow: never report Applied when the agent
-    // is not permitted to write the host.
-    let effective_dry_run = obj.dry_run() || !write_enabled;
+    // is not permitted to write the host. `effective_dry_run_frozen` is the
+    // TWO-KEY `outorga`-backed gate (`Band::effective_dry_run` + an explicit
+    // `frozen` key) — NOT the raw `dry_run()` field. Before this fix the host
+    // reconcile composed the raw field directly, which bypassed the confirm-
+    // gate/auto-promote lifecycle the k8s-plane controller already gives the
+    // SAME CRD kinds (ArcBand/CgroupBand never auto-promoted off shadow on the
+    // host side, even after their k8s-side sibling had). `frozen` carries the
+    // node's `BreatheNodePool.writeEnabled` master switch as the external
+    // freeze key, exactly like the k8s-plane controller's own per-pool/per-node
+    // switches now do via `breathe_crd::legacy_effective_dry_run`.
+    let effective_dry_run = obj.effective_dry_run_frozen(now_secs(), !write_enabled);
 
     let provider = BandProvider::new(
         HostCluster::new(SystemdSysfsEnv::from_env(), envelopes, write_enabled)
@@ -355,8 +370,17 @@ async fn reconcile_pod_memory_high(obj: Arc<PodMemoryHigh>, ctx: Arc<Ctx>) -> Re
             return Ok(Action::requeue(ctx.requeue));
         }
     };
-    // SHADOW unless BOTH the node master switch is on AND the dispatch is not dryRun.
-    let do_write = write_enabled && !obj.spec.dry_run;
+    // SHADOW unless BOTH the node master switch is on AND the dispatch is not
+    // dryRun — threaded through the SAME two-key `outorga::PromotionPolicy::decide`
+    // every `Band` and the node-Forma/isolation-band controllers use
+    // (`breathe_crd::legacy_effective_dry_run`; `PodMemoryHigh` is a
+    // controller-computed VALUE dispatch, not a self-deciding band, so it rides
+    // the pure two-state Shadow/Effect arm — see that function's doc).
+    let promotion = breathe_crd::legacy_effective_dry_run(obj.spec.dry_run, !write_enabled);
+    let do_write = promotion.is_apply();
+    if let Some(reason) = promotion.shadow_reason() {
+        debug!(node = %ctx.node_name, pmh = %name, reason = ?reason, "pod memory.high: held in shadow");
+    }
     // The pod memory.high lever has no L2 envelope (it is bounded by the pod's own
     // memory.max + the band's CRD ceiling), so empty NodeEnvelopes is correct here.
     let cluster = HostCluster::new(SystemdSysfsEnv::from_env(), NodeEnvelopes::default(), do_write);
