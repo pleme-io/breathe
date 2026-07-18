@@ -1,5 +1,5 @@
 use super::{
-    BandLeiloeiro, DecisaoForma, InterruptionOracle, Leiloeiro, Otimizador, ParetoOtimizador,
+    BandLeiloeiro, DecisaoForma, InterruptionOracle, LatencyOracle, Leiloeiro, Otimizador, ParetoOtimizador,
     PickPolicy, PriceOracle, Previsao, Previsor, ReactivePrevisor,
 };
 use breathe_control::BandConfig;
@@ -441,5 +441,155 @@ fn risk_adjusted_never_panics_and_always_returns_a_single_winner_over_many_weigh
         .with_interruption_oracle(FixedInterruption);
         let winners = o.optimize(&previsoes);
         assert_eq!(winners.len(), 1, "risk_weight={w} must yield exactly one winner");
+    }
+}
+
+// ============================================================================
+// PickPolicy::TopPerformanceThenMinCost — the lexicographic performance-then-
+// cost maxim (theory/BREATHABILITY.md §II.6.8), as a typed mechanism.
+// ============================================================================
+//
+// Found by an /algorithmic-prowess-seal adversarial verify pass (2026-07-17):
+// the FIRST draft of this arm would have been a silent no-op, because
+// relief_latency_secs was the SAME cfg.warmup_seconds for every candidate --
+// exactly the pre-existing simplification MinCostRiskAdjusted's own tests
+// above already work around. LatencyOracle closes that gap; these tests
+// prove the new arm has REAL, non-degraded effect once one is attached, not
+// just that it compiles.
+
+/// Spot is cheaper but has a genuinely longer cold-start; on-demand costs
+/// more but is ready sooner -- the realistic latency/cost tradeoff a
+/// performance-first pick is supposed to resolve in favor of speed.
+struct SpotSlowOnDemandFast;
+impl LatencyOracle for SpotSlowOnDemandFast {
+    fn relief_latency_secs(&self, forma: Forma) -> u64 {
+        match forma {
+            Forma::NodeSpot => 180,
+            Forma::NodeOnDemand => 30,
+            _ => 600,
+        }
+    }
+}
+
+/// Spot is cheap; on-demand costs 5x more -- large enough that, without a
+/// LatencyOracle, plain cost-dominance would always pick spot.
+struct SpotCheapOnDemandExpensive;
+impl PriceOracle for SpotCheapOnDemandExpensive {
+    fn cost_cents(&self, forma: Forma, duration_secs: u64) -> u64 {
+        match forma {
+            Forma::NodeSpot => duration_secs,
+            Forma::NodeOnDemand => duration_secs * 5,
+            _ => duration_secs * 100,
+        }
+    }
+}
+
+#[test]
+fn top_performance_without_a_latency_oracle_degrades_exactly_to_min_cost() {
+    // No LatencyOracle attached -> every candidate ties on relief_latency_secs
+    // (cfg.warmup_seconds), so stage 1 never discriminates and stage 2 alone
+    // decides -- byte-identical to plain MinCost.
+    let previsoes = [
+        (Forma::NodeSpot, previsao(90, 100)),
+        (Forma::NodeOnDemand, previsao(90, 100)),
+    ];
+    let top_perf =
+        ParetoOtimizador::new(SpotCheapOnDemandExpensive, otimizador_cfg(60), PickPolicy::TopPerformanceThenMinCost);
+    let min_cost = ParetoOtimizador::new(SpotCheapOnDemandExpensive, otimizador_cfg(60), PickPolicy::MinCost);
+    assert_eq!(top_perf.optimize(&previsoes), min_cost.optimize(&previsoes));
+}
+
+#[test]
+fn top_performance_genuinely_diverges_from_min_cost_once_latency_varies() {
+    // THE load-bearing test: spot is 5x cheaper but 6x slower to be ready.
+    // Plain MinCost picks spot (cheapest). TopPerformanceThenMinCost MUST
+    // pick on-demand (fastest) regardless of the price gap -- "never
+    // sacrifice performance" as an actual, observable, non-degraded effect,
+    // not just a doc comment.
+    let previsoes = [
+        (Forma::NodeSpot, previsao(90, 100)),
+        (Forma::NodeOnDemand, previsao(90, 100)),
+    ];
+    let min_cost = ParetoOtimizador::new(SpotCheapOnDemandExpensive, otimizador_cfg(60), PickPolicy::MinCost);
+    assert_eq!(min_cost.optimize(&previsoes)[0].forma, Forma::NodeSpot, "sanity: plain MinCost picks the cheap one");
+
+    let top_perf =
+        ParetoOtimizador::new(SpotCheapOnDemandExpensive, otimizador_cfg(60), PickPolicy::TopPerformanceThenMinCost)
+            .with_latency_oracle(SpotSlowOnDemandFast);
+    let winners = top_perf.optimize(&previsoes);
+    assert_eq!(winners.len(), 1);
+    assert_eq!(winners[0].forma, Forma::NodeOnDemand, "performance-first picks the FASTEST candidate, never the cheap-but-slow one");
+    assert_eq!(winners[0].relief_latency_secs, 30, "the actual fastest latency, not a fabricated number");
+}
+
+#[test]
+fn top_performance_picks_cheapest_among_candidates_tied_at_the_fastest_latency() {
+    // 3 candidates: on-demand and a third forma both tie at the fastest
+    // latency (30s); spot is slower (180s) but would be cheapest overall.
+    // Stage 2 must break the tie by cost WITHIN the fastest set only --
+    // never resurrect spot just because it's cheaper globally.
+    struct ThreeWayLatency;
+    impl LatencyOracle for ThreeWayLatency {
+        fn relief_latency_secs(&self, forma: Forma) -> u64 {
+            match forma {
+                Forma::NodeSpot => 180,
+                Forma::NodeOnDemand => 30,
+                Forma::Accelerator => 30, // tied with on-demand at the fastest
+                _ => 999,
+            }
+        }
+    }
+    struct ThreeWayPrice;
+    impl PriceOracle for ThreeWayPrice {
+        fn cost_cents(&self, forma: Forma, duration_secs: u64) -> u64 {
+            match forma {
+                Forma::NodeSpot => duration_secs,          // cheapest overall, but slow
+                Forma::NodeOnDemand => duration_secs * 10, // fast, expensive
+                Forma::Accelerator => duration_secs * 4,   // fast, CHEAPER than on-demand
+                _ => duration_secs * 1000,
+            }
+        }
+    }
+    let previsoes = [
+        (Forma::NodeSpot, previsao(90, 100)),
+        (Forma::NodeOnDemand, previsao(90, 100)),
+        (Forma::Accelerator, previsao(90, 100)),
+    ];
+    let o = ParetoOtimizador::new(ThreeWayPrice, otimizador_cfg(60), PickPolicy::TopPerformanceThenMinCost)
+        .with_latency_oracle(ThreeWayLatency);
+    let winners = o.optimize(&previsoes);
+    assert_eq!(winners.len(), 1);
+    assert_eq!(winners[0].forma, Forma::Accelerator, "cheapest among the two tied-fastest candidates, never the globally-cheapest-but-slow spot");
+}
+
+#[test]
+fn top_performance_winner_always_has_the_frontiers_true_minimum_latency() {
+    // Property-style sweep: across several price/latency mixes, the winner's
+    // relief_latency_secs must ALWAYS equal the true minimum across every
+    // candidate offered -- the maxim holding for real, not just in one
+    // hand-picked scenario.
+    struct VariedLatency(u64, u64, u64);
+    impl LatencyOracle for VariedLatency {
+        fn relief_latency_secs(&self, forma: Forma) -> u64 {
+            match forma {
+                Forma::NodeSpot => self.0,
+                Forma::NodeOnDemand => self.1,
+                Forma::Accelerator => self.2,
+                _ => u64::MAX,
+            }
+        }
+    }
+    let previsoes = [
+        (Forma::NodeSpot, previsao(90, 100)),
+        (Forma::NodeOnDemand, previsao(90, 100)),
+        (Forma::Accelerator, previsao(90, 100)),
+    ];
+    for (a, b, c) in [(10, 20, 30), (300, 5, 300), (1, 1, 1), (50, 50, 1), (999, 1, 999)] {
+        let true_min = a.min(b).min(c);
+        let o = ParetoOtimizador::new(SpotCheapOnDemandExpensive, otimizador_cfg(60), PickPolicy::TopPerformanceThenMinCost)
+            .with_latency_oracle(VariedLatency(a, b, c));
+        let winners = o.optimize(&previsoes);
+        assert_eq!(winners.len(), 1, "case ({a},{b},{c}) must yield exactly one winner");
+        assert_eq!(winners[0].relief_latency_secs, true_min, "case ({a},{b},{c}): winner must hold the true minimum latency");
     }
 }

@@ -10,7 +10,7 @@
 //!  - monotone-remove: removing a sibling never lowers a remaining one's grant.
 //!  - deterministic: the allocation is a pure function (same input ⇒ same output).
 
-use super::{allocate_even, allocate_fabric, Demand, DemandVector, Dim, PoolCapacity, Quinhao};
+use super::{allocate_drf, allocate_even, allocate_fabric, Demand, DemandVector, Dim, GrantVector, PoolCapacity, Quinhao};
 use proptest::prelude::*;
 
 /// A bounded random `Demand` on the storage axis (values kept small so Σ math
@@ -151,5 +151,83 @@ proptest! {
         let a = allocate_fabric(PoolCapacity::storage_only(cap), 0.80, &members).unwrap();
         let b = allocate_fabric(PoolCapacity::storage_only(cap), 0.80, &members).unwrap();
         prop_assert_eq!(a, b);
+    }
+}
+
+// ============================================================================
+// allocate_drf — envy-freeness (Ghodsi et al.'s own proven DRF property),
+// generated-instance coverage. Found missing by an /algorithmic-prowess-seal
+// adversarial verify pass (2026-07-17): the only prior proof was one
+// hand-picked numeric example (quinhao::tests::drf_equalizes_dominant_share_
+// not_raw_units) -- real, but a single fixed case, not a mechanically-checked
+// regression gate a future kernel edit could silently violate.
+// ============================================================================
+
+/// A bounded random FINITE demand for one axis, matching `allocate_drf`'s own
+/// demand model (only `.demand` is read; `weight`/`min`/`max` are ignored, and
+/// `Demand::even()`'s `u64::MAX` convention is deliberately NOT used here —
+/// see `allocate_drf`'s doc comment for why DRF needs a real, differentiated
+/// quantity, not "unbounded").
+fn drf_demand_vector_strategy() -> impl Strategy<Value = DemandVector> {
+    (1u64..1000, 1u64..1000).prop_map(|(storage, cpu)| {
+        DemandVector::new(
+            Demand { weight: 1, min: 0, max: u64::MAX, demand: storage },
+            Demand { weight: 1, min: 0, max: u64::MAX, demand: cpu },
+            Demand::absent(),
+            Demand::absent(),
+        )
+    })
+}
+
+/// Claimant `demand`'s utility for `bundle`, evaluated under the claimant's
+/// OWN demand ratios — the number of "tasks" `bundle` represents
+/// (`min` over the claimant's contended axes of `bundle[r] / demand[r]`).
+/// Envy-freeness compares a claimant's utility for its OWN grant against its
+/// utility for another claimant's grant.
+fn drf_utility(demand: &DemandVector, bundle: GrantVector) -> f64 {
+    let mut min_tasks = f64::INFINITY;
+    for dim in [Dim::Storage, Dim::Cpu] {
+        let d = demand.get(dim).demand;
+        if d == 0 {
+            continue;
+        }
+        #[allow(clippy::cast_precision_loss)]
+        let tasks = bundle.get(dim) as f64 / d as f64;
+        if tasks < min_tasks {
+            min_tasks = tasks;
+        }
+    }
+    if min_tasks.is_finite() { min_tasks } else { 0.0 }
+}
+
+proptest! {
+    /// DRF is envy-free: no claimant would prefer another claimant's ACTUAL
+    /// grant, evaluated under its own demand ratios — mechanically
+    /// re-verifying (against the shipped implementation, across generated
+    /// instances, not just one hand-picked case) the property Ghodsi et
+    /// al.'s own paper proves for DRF. Tolerance of 1.0 "task" absorbs the
+    /// legitimate per-claimant integer-floor rounding `allocate_drf` performs
+    /// (each grant is independently floored from its exact fractional share)
+    /// — a real envy-freeness violation is far larger than one rounding unit.
+    #[test]
+    fn drf_is_envy_free(
+        claims in proptest::collection::vec(drf_demand_vector_strategy(), 2..6),
+        storage_cap in 10u64..10_000,
+        cpu_cap in 10u64..10_000,
+    ) {
+        let grants = allocate_drf(PoolCapacity::new(storage_cap, cpu_cap, 0, 0), 1.0, &claims);
+        for i in 0..claims.len() {
+            let own_utility = drf_utility(&claims[i], grants[i]);
+            for j in 0..claims.len() {
+                if i == j {
+                    continue;
+                }
+                let envy_utility = drf_utility(&claims[i], grants[j]);
+                prop_assert!(
+                    own_utility >= envy_utility - 1.0,
+                    "claimant {i} envies claimant {j}'s bundle: own_utility={own_utility}, envy_utility={envy_utility}"
+                );
+            }
+        }
     }
 }
