@@ -852,6 +852,16 @@ pub async fn reconcile_cloud_pool(cr: Arc<BreatheCloudPool>, ctx: Arc<Ctx>) -> R
                     ng_ref.cluster_name,
                     ng_ref.nodegroup_name,
                     dry_run,
+                    // The pool's OWN declared ceiling/floor (BreatheCloudPoolSpec) —
+                    // the one static, human-declared boundary; AWS's real
+                    // scalingConfig.maxSize/minSize now breathe toward these
+                    // algorithmically instead of staying a second, independently
+                    // static Terraform-authored value (see eks_nodegroup_provedor's
+                    // module doc, "minSize/maxSize are ALGORITHMIC" section).
+                    u32::try_from(cr.spec.ceiling).unwrap_or(u32::MAX),
+                    u32::try_from(cr.spec.floor).unwrap_or(0),
+                    cr.spec.grow_factor,
+                    cr.spec.shrink_factor,
                 ))
             }
         },
