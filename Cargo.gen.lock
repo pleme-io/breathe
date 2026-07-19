@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "cargo_lock_sha256": "ee494156b766072565178bd289b48ceccc02a5bef389e2961e248fb3328d12c1",
+  "cargo_lock_sha256": "af9db676822cafe3305d1f5be37875bff57ba6269e28598dc9f81e891f3a6aa0",
   "target_resolves": {
     "base": {
       "Inflector-0.11.4": {
@@ -5685,6 +5685,16 @@
           {
             "name": "aws_sdk_eks",
             "package_key": "aws-sdk-eks-1.137.0",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "aws_smithy_types",
+            "package_key": "aws-smithy-types-1.5.0",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
