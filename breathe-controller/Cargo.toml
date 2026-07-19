@@ -43,6 +43,11 @@ async-trait = "0.1"
 # supported alternative (see eks_nodegroup_provedor.rs's module doc).
 aws-config = { version = "=1.8.18", features = ["behavior-version-latest"] }
 aws-sdk-eks = "=1.137.0"
+# DisplayErrorContext -- SdkError's own Display truncates ServiceError to the
+# literal string "service error" (aws-smithy-runtime-api's Display impl);
+# DisplayErrorContext walks the full std::error::Error source() chain to
+# surface the real AWS error code + message instead.
+aws-smithy-types = "=1.5.0"
 # NATS reactive-reconcile trigger (task #90, nervous-system integration) — the
 # same 0.35 pin escuta uses, for one version across the fleet's NATS clients.
 async-nats = "0.35"

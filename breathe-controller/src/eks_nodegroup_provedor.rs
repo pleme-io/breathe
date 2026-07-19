@@ -84,6 +84,7 @@
 
 use async_trait::async_trait;
 use aws_sdk_eks::types::NodegroupScalingConfig;
+use aws_smithy_types::error::display::DisplayErrorContext;
 use breathe_provider::{FormaSample, Provedor, ProviderError, ProvisionReceipt};
 use k8s_openapi::api::core::v1::{Node, Pod};
 use kube::{
@@ -463,7 +464,7 @@ impl EksNodegroupEnvironment for KubeEksNodegroupEnvironment {
             .nodegroup_name(nodegroup_name)
             .send()
             .await
-            .map_err(|e| ProviderError::ApiTransient(e.to_string()))?;
+            .map_err(|e| ProviderError::ApiTransient(DisplayErrorContext(e).to_string()))?;
         let ng = resp
             .nodegroup()
             .ok_or_else(|| ProviderError::ApiPermanent(format!("DescribeNodegroup returned no nodegroup for {cluster_name}/{nodegroup_name}")))?;
@@ -503,11 +504,12 @@ impl EksNodegroupEnvironment for KubeEksNodegroupEnvironment {
             .await
             .map(|_| ())
             .map_err(|e| {
+                let detail = DisplayErrorContext(e).to_string();
                 warn!(
-                    cluster_name, nodegroup_name, desired_size, ?new_max_size, ?new_min_size, error = %e,
+                    cluster_name, nodegroup_name, desired_size, ?new_max_size, ?new_min_size, error = %detail,
                     "UpdateNodegroupConfig failed (non-fatal; retried next tick)"
                 );
-                ProviderError::ApiTransient(e.to_string())
+                ProviderError::ApiTransient(detail)
             })
     }
 }

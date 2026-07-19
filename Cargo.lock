@@ -1076,6 +1076,7 @@ dependencies = [
  "async-trait",
  "aws-config",
  "aws-sdk-eks",
+ "aws-smithy-types",
  "breathe-actuator",
  "breathe-admission",
  "breathe-auction",
