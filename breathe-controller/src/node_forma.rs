@@ -30,8 +30,11 @@ use k8s_openapi::apimachinery::pkg::api::resource::Quantity;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
 use kube::{
     api::{Api, DeleteParams, ListParams, Patch, PatchParams, PostParams},
-    runtime::controller::Action,
-    Client, ResourceExt,
+    runtime::{
+        controller::Action,
+        events::{Event, EventType, Recorder},
+    },
+    Client, Resource, ResourceExt,
 };
 use metrics::{counter, gauge};
 use tracing::{debug, error, info, warn};
@@ -754,6 +757,82 @@ fn outcome_of(tick: &FormaTick) -> &'static str {
     }
 }
 
+// ============================================================================
+// Flap/stuck detection (task #51) — a pool can decide `Growing` tick after
+// tick while `observedCapacity` never actually moves (the live Camelot-EKS
+// bug this closes: `phase: Growing`, `lastDecision: "would provision 1
+// (admitted 1, rejected 0)"` held for an extended period with nothing ever
+// landing). Nothing previously distinguished "still climbing toward target"
+// from "wedged — the decide loop keeps repeating the same no-op forever".
+//
+// Shape mirrors `pangea-operator`'s `ReactivePolicy::failure_escalation`
+// (`FailureEscalation.maxConsecutiveFailures` → `onExhaustion`): count
+// consecutive BAD ticks, escalate once a threshold is crossed, self-clear the
+// instant a good tick lands. Here "bad" = phase stayed `Growing` AND
+// `observedCapacity` did not increase since the prior tick.
+// ============================================================================
+
+/// After this many consecutive no-progress `Growing` ticks, flag the pool as
+/// flapping/stuck. Mirrors `pangea-operator`'s `default_max_consecutive_failures`
+/// (5) — same shape, same default magnitude, applied to a different signal.
+pub const MAX_CONSECUTIVE_STUCK_TICKS: u32 = 5;
+
+/// PURE (tested): compute this tick's `(consecutiveStuckTicks, flapDetected,
+/// flapReason)` from the tick's own `(phase, observedCapacity)` plus the
+/// PRIOR status's `(phase, observedCapacity, consecutiveStuckTicks)`.
+///
+/// Rules, in order:
+///   1. `phase != "Growing"` this tick → fully reset (`0`, `false`, `None`).
+///      Any non-Growing phase (Held/Shrinking/EnvelopeExhausted/Error) means
+///      the band isn't mid-grow-attempt, so there is nothing to flap-detect.
+///   2. `phase == "Growing"` but the PRIOR tick wasn't (a fresh entry into
+///      Growing) → this tick has no comparable baseline yet; counter starts
+///      at `0`, never flagged from tick one.
+///   3. `phase == "Growing"` and the prior tick was too → compare
+///      `observedCapacity`. Strictly increased ⇒ real progress, counter
+///      resets to `0` (this tick becomes the new baseline). Flat or
+///      decreased (or either sample is missing, which can't prove progress)
+///      ⇒ counter = `prior + 1`.
+///   4. `flapDetected = counter >= MAX_CONSECUTIVE_STUCK_TICKS`; `flapReason`
+///      is `Some` iff `flapDetected`.
+///
+/// A pool making SLOW-BUT-REAL progress (capacity strictly increases every
+/// tick, however far from target) always resets to `0` at step 3 and can
+/// never be flagged — the false-positive case task #51 explicitly guards
+/// against.
+#[must_use]
+pub fn flap_status(
+    phase: Option<&str>,
+    observed_capacity: Option<i64>,
+    prior_phase: Option<&str>,
+    prior_observed_capacity: Option<i64>,
+    prior_consecutive_stuck_ticks: u32,
+) -> (u32, bool, Option<String>) {
+    if phase != Some("Growing") {
+        return (0, false, None);
+    }
+    let was_growing_before = prior_phase == Some("Growing");
+    let made_progress = match (observed_capacity, prior_observed_capacity) {
+        (Some(cur), Some(prior)) => cur > prior,
+        // Missing either sample can't PROVE progress happened — treat as no
+        // progress rather than silently trusting an absent metric.
+        _ => false,
+    };
+    let consecutive = if !was_growing_before || made_progress {
+        0
+    } else {
+        prior_consecutive_stuck_ticks.saturating_add(1)
+    };
+    let flap_detected = consecutive >= MAX_CONSECUTIVE_STUCK_TICKS;
+    let reason = flap_detected.then(|| {
+        format!(
+            "phase stuck at Growing for {consecutive} consecutive ticks with no observedCapacity increase (last observed {})",
+            observed_capacity.map_or_else(|| "none".to_string(), |c| c.to_string())
+        )
+    });
+    (consecutive, flap_detected, reason)
+}
+
 /// Reconcile ONE `BreatheCloudPool` — observe→decide→(would-provision)→admit via
 /// The per-pool demand previsor selected by `spec.predictive`: typed dispatch
 /// (a sum type, no `dyn`) between the reactive echo and the stateful forecaster,
@@ -947,6 +1026,50 @@ pub async fn reconcile_cloud_pool(cr: Arc<BreatheCloudPool>, ctx: Arc<Ctx>) -> R
     if let Some(w) = status.would_provision {
         gauge!("breathe_forma_would_provision", "forma" => "node-on-demand", "pool" => name.clone()).set(w as f64);
     }
+
+    // task #51 — flap/stuck detection: compare THIS tick's (phase, capacity)
+    // against the PRIOR status (the last thing patch_status wrote for this
+    // pool) via the pure `flap_status`. Read prior BEFORE `status` overwrites
+    // anything on the CR — `cr.status` is the reflector's view from the last
+    // successful patch, exactly the durable state a flap counter needs.
+    let prior_status = cr.status.as_ref();
+    let prior_flap_detected = prior_status.and_then(|s| s.flap_detected).unwrap_or(false);
+    let (consecutive_stuck_ticks, flap_detected, flap_reason) = flap_status(
+        status.phase.as_deref(),
+        status.observed_capacity,
+        prior_status.and_then(|s| s.phase.as_deref()),
+        prior_status.and_then(|s| s.observed_capacity),
+        prior_status.and_then(|s| s.consecutive_stuck_ticks).unwrap_or(0),
+    );
+    status.consecutive_stuck_ticks = Some(consecutive_stuck_ticks);
+    status.flap_detected = Some(flap_detected);
+    status.flap_reason = flap_reason.clone();
+    counter!("breathe_forma_flap_detected_total", "pool" => name.clone()).increment(u64::from(flap_detected && !prior_flap_detected));
+    gauge!("breathe_forma_consecutive_stuck_ticks", "pool" => name.clone()).set(f64::from(consecutive_stuck_ticks));
+
+    // Transition-gated k8s Event — the SAME dedup shape `breathe_runtime`'s
+    // `should_emit_event` already uses for band ticks (emit on CHANGE, not on
+    // every tick a resting/stuck state holds): fire exactly once per stuck
+    // EPISODE, the tick `flapDetected` flips false -> true. A pool wedged in
+    // Growing for hours must not flood `kubectl get events` with one entry
+    // per 60s requeue; it clears (and can re-fire) the tick capacity moves or
+    // the phase leaves Growing, since `flap_status` resets the counter then.
+    if flap_detected && !prior_flap_detected {
+        let reason_text = flap_reason.clone().unwrap_or_default();
+        warn!(pool = %name, reason = %reason_text, "BreatheCloudPool: flap/stuck detected — Growing with no observedCapacity progress");
+        let recorder = Recorder::new(ctx.client.clone(), ctx.reporter.clone(), cr.object_ref(&()));
+        let ev = Event {
+            type_: EventType::Warning,
+            reason: "StuckGrowing".to_string(),
+            note: Some(reason_text),
+            action: "Reconcile".to_string(),
+            secondary: None,
+        };
+        if let Err(e) = recorder.publish(ev).await {
+            warn!(pool = %name, error = %e, "flap-detection event publish failed (non-fatal)");
+        }
+    }
+
     info!(pool = %name, forma = ?forma, fill = %cr.spec.fill_policy, phase = ?status.phase, decision = ?status.last_decision, dry_run, "node-Forma reconciled");
     patch_status(&ctx.client, &name, &status).await;
 
@@ -976,9 +1099,9 @@ pub fn error_policy_cloud_pool(_cr: Arc<BreatheCloudPool>, err: &Error, ctx: Arc
 mod tests {
     use super::{
         apply_claim_to_status, claim_outcome_label, claim_patch, cloud_pool_status,
-        fake_node_object, forma_from_str, is_claim_candidate, is_kwok_managed, node_imbalance,
+        fake_node_object, flap_status, forma_from_str, is_claim_candidate, is_kwok_managed, node_imbalance,
         outcome_of, parse_cpu_milli, pick_claim_candidate, upsert_taint, ClaimOutcome, CLAIM_POOL_LABEL,
-        KWOK_MANAGED_LABEL,
+        KWOK_MANAGED_LABEL, MAX_CONSECUTIVE_STUCK_TICKS,
     };
     use breathe_crd::CloudPoolStatus;
     use breathe_provider::Forma;
@@ -1313,5 +1436,150 @@ mod tests {
         .into_iter()
         .collect();
         assert_eq!(labels.len(), 4, "every claim outcome gets a distinct metric label");
+    }
+
+    // ── task #51: flap/stuck detection ──────────────────────────────────────
+
+    /// Drive `flap_status` across a scripted sequence of `(phase, capacity)`
+    /// ticks, threading each tick's output as the next tick's "prior" — the
+    /// same fold `reconcile_cloud_pool` performs one tick at a time against
+    /// the CR's durable status. Returns the `(consecutive, flap_detected)`
+    /// after EVERY tick, in order, so a test can assert on the whole episode.
+    fn run_ticks(ticks: &[(&str, Option<i64>)]) -> Vec<(u32, bool)> {
+        let mut prior_phase: Option<String> = None;
+        let mut prior_capacity: Option<i64> = None;
+        let mut prior_consecutive = 0u32;
+        let mut out = Vec::with_capacity(ticks.len());
+        for (phase, capacity) in ticks {
+            let (consecutive, flap, _reason) = flap_status(
+                Some(*phase),
+                *capacity,
+                prior_phase.as_deref(),
+                prior_capacity,
+                prior_consecutive,
+            );
+            out.push((consecutive, flap));
+            prior_phase = Some((*phase).to_string());
+            prior_capacity = *capacity;
+            prior_consecutive = consecutive;
+        }
+        out
+    }
+
+    #[test]
+    fn flap_never_fires_on_a_pool_that_resolves_within_the_threshold() {
+        // Growing for 2 ticks (capacity flat — normal boot latency, well under
+        // MAX_CONSECUTIVE_STUCK_TICKS) then resolves to Held. Must never flag.
+        assert!(MAX_CONSECUTIVE_STUCK_TICKS > 2, "test assumes the default threshold leaves headroom");
+        let outcomes = run_ticks(&[
+            ("Growing", Some(3)), // fresh entry — no baseline yet
+            ("Growing", Some(3)), // capacity hasn't landed yet, 1 no-progress tick
+            ("Held", Some(4)),    // capacity landed, band settled
+        ]);
+        assert!(outcomes.iter().all(|(_, flap)| !flap), "a pool that resolves within the threshold is never flagged: {outcomes:?}");
+        assert_eq!(outcomes.last().unwrap().0, 0, "leaving Growing resets the counter to 0");
+    }
+
+    #[test]
+    fn flap_fires_when_growing_is_genuinely_wedged() {
+        // Capacity pinned at 4 for MAX_CONSECUTIVE_STUCK_TICKS+1 consecutive
+        // Growing ticks (the live camelot-eks-pool bug: "would provision 1"
+        // forever, nothing ever lands) — must flag before the episode ends.
+        let mut ticks: Vec<(&str, Option<i64>)> = vec![("Growing", Some(4))]; // baseline tick
+        for _ in 0..(MAX_CONSECUTIVE_STUCK_TICKS as usize + 1) {
+            ticks.push(("Growing", Some(4))); // capacity never moves
+        }
+        let outcomes = run_ticks(&ticks);
+        assert!(outcomes.iter().any(|(_, flap)| *flap), "a genuinely wedged pool must be flagged: {outcomes:?}");
+        // The FIRST tick to cross the threshold is exactly the
+        // MAX_CONSECUTIVE_STUCK_TICKS-th no-progress tick, not earlier.
+        let first_flap_index = outcomes.iter().position(|(_, flap)| *flap).unwrap();
+        assert_eq!(outcomes[first_flap_index].0, MAX_CONSECUTIVE_STUCK_TICKS, "flags at exactly the threshold, not before");
+        for (consecutive, flap) in &outcomes[..first_flap_index] {
+            assert!(!flap, "no tick before the threshold crossing may be flagged (consecutive={consecutive})");
+        }
+    }
+
+    #[test]
+    fn flap_never_fires_on_slow_but_real_progress() {
+        // Capacity increases EVERY tick (1 -> 2 -> 3 -> ... ) for well past
+        // MAX_CONSECUTIVE_STUCK_TICKS ticks, never reaching some larger
+        // target — real, if slow, progress must never be misread as stuck.
+        let ticks: Vec<(&str, Option<i64>)> = (1..=(MAX_CONSECUTIVE_STUCK_TICKS as i64 * 3))
+            .map(|c| ("Growing", Some(c)))
+            .collect();
+        let outcomes = run_ticks(&ticks);
+        assert!(outcomes.iter().all(|(_, flap)| !flap), "monotonically increasing capacity must never be flagged: {outcomes:?}");
+        assert!(outcomes.iter().all(|(consecutive, _)| *consecutive == 0), "every tick resets the counter when progress is real: {outcomes:?}");
+    }
+
+    #[test]
+    fn flap_resets_the_instant_progress_resumes_mid_episode() {
+        // Stuck for a few ticks, then ONE tick makes progress, then stuck
+        // again — the counter must reset on the progress tick, not just stop
+        // climbing, and the SECOND stuck run must climb from 0 again (not
+        // append onto the count from before the reset).
+        let outcomes = run_ticks(&[
+            ("Growing", Some(2)), // baseline
+            ("Growing", Some(2)), // stuck, consecutive=1
+            ("Growing", Some(2)), // stuck, consecutive=2
+            ("Growing", Some(3)), // progress! resets to 0
+            ("Growing", Some(3)), // stuck again, consecutive=1 (NOT 3)
+        ]);
+        assert_eq!(outcomes[1].0, 1);
+        assert_eq!(outcomes[2].0, 2);
+        assert_eq!(outcomes[3].0, 0, "a progress tick resets the counter to 0");
+        assert_eq!(outcomes[4].0, 1, "the next stuck run starts counting from 0, not from the pre-reset value");
+    }
+
+    #[test]
+    fn flap_status_ignores_non_growing_phases_entirely() {
+        // Held/Shrinking/EnvelopeExhausted/Error are never flap-detected —
+        // the signal is specifically "decided Growing but nothing landed".
+        for phase in ["Held", "Shrinking", "EnvelopeExhausted", "Error"] {
+            let (consecutive, flap, reason) = flap_status(Some(phase), Some(5), Some(phase), Some(5), 99);
+            assert_eq!(consecutive, 0, "non-Growing phase {phase} always resets to 0");
+            assert!(!flap, "non-Growing phase {phase} is never flagged");
+            assert_eq!(reason, None);
+        }
+    }
+
+    #[test]
+    fn flap_status_gives_a_fresh_entry_into_growing_one_free_baseline_tick() {
+        // Coming FROM a non-Growing phase into Growing (or from no prior
+        // status at all — a brand-new pool) must not immediately compare
+        // capacity against an unrelated prior phase's value.
+        let (consecutive, flap, _) = flap_status(Some("Growing"), Some(1), Some("Held"), Some(999), 3);
+        assert_eq!(consecutive, 0, "a fresh entry into Growing always starts the counter at 0");
+        assert!(!flap);
+
+        let (consecutive, flap, _) = flap_status(Some("Growing"), Some(1), None, None, 0);
+        assert_eq!(consecutive, 0, "a brand-new pool's first tick is never flagged");
+        assert!(!flap);
+    }
+
+    #[test]
+    fn flap_status_treats_a_missing_capacity_sample_as_no_progress_not_as_proof_of_progress() {
+        // An unrepresentable/missing sample must never be silently read as
+        // "capacity increased" — that would let a broken observer mask a
+        // genuinely wedged pool forever.
+        let (consecutive, _, _) = flap_status(Some("Growing"), None, Some("Growing"), Some(5), 2);
+        assert_eq!(consecutive, 3, "missing current capacity counts as no-progress (prior_consecutive + 1)");
+
+        let (consecutive, _, _) = flap_status(Some("Growing"), Some(5), Some("Growing"), None, 2);
+        assert_eq!(consecutive, 3, "missing prior capacity counts as no-progress (prior_consecutive + 1)");
+    }
+
+    #[test]
+    fn flap_reason_is_set_iff_flap_detected() {
+        let (_, flap_no, reason_no) = flap_status(Some("Growing"), Some(1), Some("Growing"), Some(1), MAX_CONSECUTIVE_STUCK_TICKS - 2);
+        assert!(!flap_no);
+        assert_eq!(reason_no, None);
+
+        let (_, flap_yes, reason_yes) = flap_status(Some("Growing"), Some(1), Some("Growing"), Some(1), MAX_CONSECUTIVE_STUCK_TICKS);
+        assert!(flap_yes);
+        let reason = reason_yes.expect("flapDetected=true must carry a reason");
+        assert!(reason.contains("Growing"));
+        assert!(reason.contains("observedCapacity"));
     }
 }

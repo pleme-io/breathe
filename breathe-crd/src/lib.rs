@@ -2047,7 +2047,8 @@ impl NodeProvisioningBackend {
     printcolumn = r#"{"name":"DryRun","type":"boolean","jsonPath":".spec.dryRun"}"#,
     printcolumn = r#"{"name":"Lane","type":"string","jsonPath":".spec.lane"}"#,
     printcolumn = r#"{"name":"Tainted","type":"string","jsonPath":".status.taintedNode"}"#,
-    printcolumn = r#"{"name":"Backend","type":"string","jsonPath":".spec.nodeProvisioningBackend"}"#
+    printcolumn = r#"{"name":"Backend","type":"string","jsonPath":".spec.nodeProvisioningBackend"}"#,
+    printcolumn = r#"{"name":"Flapping","type":"boolean","jsonPath":".status.flapDetected"}"#
 )]
 #[serde(rename_all = "camelCase")]
 pub struct BreatheCloudPoolSpec {
@@ -2244,6 +2245,35 @@ pub struct CloudPoolStatus {
     /// actually grew.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_provision_error: Option<String>,
+    /// FLAP/STUCK DETECTION (task #51). The number of consecutive ticks the
+    /// pool has spent in `phase: Growing` WITHOUT `observedCapacity` actually
+    /// increasing tick-over-tick — i.e. the band keeps deciding "grow" but
+    /// nothing is landing. Reset to `0` the instant the phase leaves
+    /// `Growing` OR capacity moves forward again, so a pool that is
+    /// genuinely (if slowly) gaining capacity every tick never accumulates
+    /// this counter, however many ticks it takes to reach its target.
+    /// Mirrors `pangea-operator`'s `FailureEscalation.maxConsecutiveFailures`
+    /// shape (N-consecutive-bad-states → escalate) applied to no-progress
+    /// growth instead of failed reconciles. See [`node_forma::flap_status`]
+    /// in `breathe-controller` for the pure computation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub consecutive_stuck_ticks: Option<u32>,
+    /// `true` once [`Self::consecutive_stuck_ticks`] crosses the flap
+    /// threshold — the pool has been silently failing to grow for long
+    /// enough that it needs operator attention rather than another quiet
+    /// retry. Distinct from `phase` (which stays `Growing`, still an
+    /// accurate description of what the band WANTS to do) — this is the
+    /// "and it isn't working" signal layered on top. Never set back to
+    /// `false` mid-episode by a single good tick; it clears the same tick
+    /// `consecutiveStuckTicks` resets to `0` (capacity moved, or the phase
+    /// left `Growing`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub flap_detected: Option<bool>,
+    /// Human-readable reason, set only alongside `flapDetected: true`
+    /// (`None` once the episode clears — never a stale message pointing at
+    /// a stuck run that already resolved).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub flap_reason: Option<String>,
 }
 
 // ─────────────────── IsolationBand — membership-CLOSING node reservation ────────
