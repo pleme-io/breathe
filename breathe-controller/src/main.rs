@@ -942,6 +942,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         },
         None => cloud_pools_ctrl,
     };
+    // A SECOND, additive trigger on the SAME controller (`reconcile_all_on` is
+    // additive-by-construction — kube-runtime 0.96.0 `Controller::reconcile_all_on`
+    // just pushes another stream into the same `SelectAll`, per that fn's own
+    // source, cited above) — fires an immediate reconcile the moment
+    // escuta-breathe-bridge publishes a core `Event(reason=FailedScheduling)`
+    // (2026-07-22), instead of waiting for the next periodic tick. This closes
+    // a real, live gap: a 42m51s arm64 runner Pending incident this session sat
+    // unwatched between ticks with nothing reacting sooner. `reconcile_forma`'s
+    // own `sample.used` (breathe-controller/src/eks_nodegroup_provedor.rs
+    // `observe_pod_demand_milli`) already sums BOTH Running and Pending pod
+    // demand — the DECISION logic was already correct; what was missing was
+    // REACTION SPEED, not a new predictor. This subject re-triggers the exact
+    // same, already-correct reconcile loop sooner, nothing more.
+    let cloud_pools_ctrl = match &nats_client {
+        Some(nc) => match nats_trigger::resolve_trigger(nats_url.clone(), nats_enabled, nc, "escuta.*.event.>").await {
+            Some(trigger) => cloud_pools_ctrl.reconcile_all_on(trigger),
+            None => cloud_pools_ctrl,
+        },
+        None => cloud_pools_ctrl,
+    };
     let cloud_pools = cloud_pools_ctrl
         .run(node_forma::reconcile_cloud_pool, node_forma::error_policy_cloud_pool, ctx.clone())
         .for_each(|_| async {});
