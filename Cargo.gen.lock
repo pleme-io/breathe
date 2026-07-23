@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "cargo_lock_sha256": "af9db676822cafe3305d1f5be37875bff57ba6269e28598dc9f81e891f3a6aa0",
+  "cargo_lock_sha256": "2d75445c1eb142568d8706c6f95212544b1ca7cdda09749dbc97fbb75bcb4dc4",
   "target_resolves": {
     "base": {
       "Inflector-0.11.4": {
@@ -1911,6 +1911,204 @@
         ],
         "build_dependencies": [],
         "features": []
+      },
+      "aws-sdk-autoscaling-1.121.0": {
+        "runtime_dependencies": [
+          {
+            "name": "arc_swap",
+            "package_key": "arc-swap-1.9.1",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "aws_credential_types",
+            "package_key": "aws-credential-types-1.2.14",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "aws_runtime",
+            "package_key": "aws-runtime-1.7.5",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "aws_smithy_async",
+            "package_key": "aws-smithy-async-1.2.14",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "aws_smithy_http",
+            "package_key": "aws-smithy-http-0.63.6",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "aws_smithy_json",
+            "package_key": "aws-smithy-json-0.62.7",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "aws_smithy_observability",
+            "package_key": "aws-smithy-observability-0.2.6",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "aws_smithy_query",
+            "package_key": "aws-smithy-query-0.60.15",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "aws_smithy_runtime",
+            "package_key": "aws-smithy-runtime-1.11.3",
+            "kind": "normal",
+            "features": [
+              "client"
+            ],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "aws_smithy_runtime_api",
+            "package_key": "aws-smithy-runtime-api-1.12.3",
+            "kind": "normal",
+            "features": [
+              "client",
+              "http-1x"
+            ],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "aws_smithy_types",
+            "package_key": "aws-smithy-types-1.5.0",
+            "kind": "normal",
+            "features": [
+              "http-body-1-x"
+            ],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "aws_smithy_xml",
+            "package_key": "aws-smithy-xml-0.60.15",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "aws_types",
+            "package_key": "aws-types-1.3.16",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "fastrand",
+            "package_key": "fastrand-2.4.1",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "http",
+            "package_key": "http-0.2.12",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "http_1x",
+            "package_key": "http-1.4.1",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "regex_lite",
+            "package_key": "regex-lite-0.1.9",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "tracing",
+            "package_key": "tracing-0.1.44",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          }
+        ],
+        "build_dependencies": [],
+        "features": [
+          "default",
+          "default-https-client",
+          "rt-tokio",
+          "rustls"
+        ]
       },
       "aws-sdk-eks-1.137.0": {
         "runtime_dependencies": [
@@ -5683,6 +5881,16 @@
             "tree": "target"
           },
           {
+            "name": "aws_sdk_autoscaling",
+            "package_key": "aws-sdk-autoscaling-1.121.0",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
             "name": "aws_sdk_eks",
             "package_key": "aws-sdk-eks-1.137.0",
             "kind": "normal",
@@ -6822,6 +7030,76 @@
           {
             "name": "breathe_provider",
             "package_key": "breathe-provider-0.1.0",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          }
+        ],
+        "build_dependencies": [],
+        "features": []
+      },
+      "breathe-retirada-ci-0.1.0": {
+        "runtime_dependencies": [
+          {
+            "name": "anyhow",
+            "package_key": "anyhow-1.0.102",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "async_trait",
+            "package_key": "async-trait-0.1.89",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "host"
+          },
+          {
+            "name": "chrono",
+            "package_key": "chrono-0.4.44",
+            "kind": "normal",
+            "features": [
+              "clock"
+            ],
+            "uses_default_features": false,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "serde",
+            "package_key": "serde-1.0.228",
+            "kind": "normal",
+            "features": [
+              "derive"
+            ],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "serde_json",
+            "package_key": "serde_json-1.0.150",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "tracing",
+            "package_key": "tracing-0.1.44",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -31433,6 +31711,9 @@
     "aws-runtime-1.7.5": {
       "edition": "2021"
     },
+    "aws-sdk-autoscaling-1.121.0": {
+      "edition": "2021"
+    },
     "aws-sdk-eks-1.137.0": {
       "edition": "2021"
     },
@@ -31717,6 +31998,19 @@
         "name": "breathe_provision",
         "path": "src/lib.rs"
       }
+    },
+    "breathe-retirada-ci-0.1.0": {
+      "edition": "2024",
+      "lib_target": {
+        "name": "breathe_retirada_ci",
+        "path": "src/lib.rs"
+      },
+      "binaries": [
+        {
+          "name": "retirada-ci-watch",
+          "path": "src/bin/watch.rs"
+        }
+      ]
     },
     "breathe-runtime-0.1.0": {
       "edition": "2024",
