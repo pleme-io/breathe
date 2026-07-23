@@ -397,6 +397,32 @@ dependencies = [
 ]
 
 [[package]]
+name = "aws-sdk-autoscaling"
+version = "1.121.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fc9a13df2f14171df9d8bc83f8a85a47ea89931bec0b7596fc22a969553fe0da"
+dependencies = [
+ "arc-swap",
+ "aws-credential-types",
+ "aws-runtime",
+ "aws-smithy-async",
+ "aws-smithy-http",
+ "aws-smithy-json",
+ "aws-smithy-observability",
+ "aws-smithy-query",
+ "aws-smithy-runtime",
+ "aws-smithy-runtime-api",
+ "aws-smithy-types",
+ "aws-smithy-xml",
+ "aws-types",
+ "fastrand",
+ "http 0.2.12",
+ "http 1.4.1",
+ "regex-lite",
+ "tracing",
+]
+
+[[package]]
 name = "aws-sdk-eks"
 version = "1.137.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1075,6 +1101,7 @@ dependencies = [
  "async-nats",
  "async-trait",
  "aws-config",
+ "aws-sdk-autoscaling",
  "aws-sdk-eks",
  "aws-smithy-types",
  "breathe-actuator",
@@ -1246,6 +1273,17 @@ dependencies = [
  "breathe-auction",
  "breathe-control",
  "breathe-provider",
+]
+
+[[package]]
+name = "breathe-retirada-ci"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "serde",
+ "serde_json",
+ "tokio",
 ]
 
 [[package]]
