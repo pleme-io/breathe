@@ -1,0 +1,73 @@
+# Job-shaped retirada — the automatic queue-starvation watcher
+# (breathe-retirada-ci, theory/BREATHABILITY.md "Retirada's job-shaped
+# sibling"). Confirmed 2026-07-23 against two real incidents
+# (this repo's own run 29930406877, hardened-images' 30007679929) that
+# the actual failure mode on camelot-builder-pleme is a job sitting
+# queued with ZERO runner ever assigned until GitHub's own 24h
+# queue-timeout gives up -- not a mid-job spot reclaim. This workflow
+# polls every 5 minutes; any job confirmed starved past the threshold
+# gets automatically redispatched onto the existing on-demand escape
+# hatch (image.yml's own `runnerOverride` input), bounded by a
+# stateless retry ceiling (never more than one auto-retry per commit --
+# see breathe-retirada-ci's `already_redispatched`/
+# `count_prior_auto_retries`).
+#
+# Needs ONLY this repo's own default GITHUB_TOKEN (actions:write,
+# declared below) -- no k8s RBAC, no cluster credentials, no new
+# secret. That is the whole reason this failure mode is safe to
+# automate: detection never touches a pod, only the GitHub Jobs API.
+#
+# Interim, named honestly: the CLI builds via cargo + a build cache
+# here, not yet through this repo's own multi-flake Nix composition
+# (breathe-retirada-ci isn't wired into flake.nix's binFor/apps
+# machinery yet) -- a real gap against the org's Nix-only convention,
+# scoped this way to ship the watcher live rather than block on a
+# larger flake-integration pass. Track as a follow-up, not silently
+# accepted as the destination.
+name: retirada-ci-watch
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+    inputs:
+      dryRun:
+        description: "Report findings without dispatching anything"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  actions: write
+
+concurrency:
+  group: retirada-ci-watch
+  cancel-in-progress: false
+
+jobs:
+  watch:
+    if: github.repository == 'pleme-io/breathe'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "breathe-retirada-ci -> target"
+          shared-key: retirada-ci-watch
+
+      - run: cargo build --release -p breathe-retirada-ci --features watch-cli --bin retirada-ci-watch
+        working-directory: .
+
+      - name: Watch image.yml for starved jobs
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RUST_LOG: info
+        run: |
+          ARGS="--repo pleme-io/breathe --workflow image.yml"
+          if [ "${{ inputs.dryRun }}" = "true" ]; then
+            ARGS="$ARGS --dry-run"
+          fi
+          ./target/release/retirada-ci-watch $ARGS

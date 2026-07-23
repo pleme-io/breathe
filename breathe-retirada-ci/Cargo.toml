@@ -13,6 +13,25 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 anyhow = "1"
 async-trait = "0.1"
+# The real GithubJobQueueObserver/GithubWorkflowDispatcher impls + the
+# `retirada-ci-watch` CLI binary -- typed GH REST API client, no shell.
+octocrab = { version = "0.44", optional = true }
+tokio = { version = "1", features = ["rt-multi-thread", "macros"], optional = true }
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+clap = { version = "4", features = ["derive"], optional = true }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"], optional = true }
+
+[features]
+# The real, network-touching CLI. Off by default so the typed decision
+# core (the library) stays a zero-network, zero-octocrab dependency for
+# anything that just wants classify()/classify_queue_starvation().
+watch-cli = ["dep:octocrab", "dep:tokio", "dep:clap", "dep:tracing-subscriber"]
+
+[[bin]]
+name = "retirada-ci-watch"
+path = "src/bin/watch.rs"
+required-features = ["watch-cli"]
 
 [dev-dependencies]
 tokio = { version = "1", features = ["rt", "macros"] }
