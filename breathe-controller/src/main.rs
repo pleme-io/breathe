@@ -26,8 +26,8 @@ mod replica_band;
 use breathe_core::{reconcile_one, PredictiveInput, ReconcileInput};
 use breathe_crd::{
     AppBand, ArcBand, Band, BandSummary, BreatheCloudPool, BreatheConfig, BreatheConfigSpec, BreatheOverview,
-    CgroupBand, CgroupCpuBand, CpuBand, Densa, IsolationBand, KubeParamBand, MemoryBand, OverviewStatus, QuinhaoPool,
-    ReplicaBand, StorageBand,
+    BreathePosture, CgroupBand, CgroupCpuBand, CpuBand, Densa, IsolationBand, KubeParamBand, MemoryBand,
+    OverviewStatus, QuinhaoPool, ReplicaBand, StorageBand,
 };
 use breathe_dimensions::{CpuDescriptor, MemoryDescriptor, StorageDescriptor};
 use breathe_kube::KubeCluster;
@@ -124,6 +124,18 @@ struct Ctx {
     /// `UpdateNodegroupConfig` calls). Same construction/cloning discipline
     /// as `eks_client`.
     autoscaling_client: aws_sdk_autoscaling::Client,
+    /// A live, continuously-refreshed read of every named `BreathePosture` —
+    /// fed by its own watch stream (mirrors `gen_controller!`'s reader/writer
+    /// pair, `main.rs:63-70`), matching the codebase's own established idiom
+    /// for a cluster-scoped reference CRD rather than a per-tick `Api::get()`.
+    /// Every reconcile resolves a band's `postureRef` against the store's
+    /// CURRENT state — never a value cached/baked once at admission time
+    /// (`theory/INVARIANT-BY-CONSISTENCY-AND-CONTROLLER.md`). `Store::get` is
+    /// itself a cache read (may lag the apiserver by up to a watch
+    /// round-trip, typically sub-second) — the honest middle ground between
+    /// "always exactly current" and "baked in once and never revisited"; see
+    /// `resolve_posture`'s own doc for the full tier statement.
+    posture_store: reflector::Store<BreathePosture>,
 }
 
 impl Ctx {
@@ -217,6 +229,40 @@ async fn emit_health_event<B: Band>(
     if let Err(e) = recorder.publish(ev).await {
         warn!(error = %e, "health event publish failed (non-fatal)");
     }
+}
+
+/// Resolve `obj`'s referenced `BreathePosture`, if any — a live read from
+/// `ctx.posture_store`, fresh on every call (never cached/baked onto the
+/// object itself; the store's own background watch keeps IT fresh, per
+/// `Ctx::posture_store`'s doc). Returns `None` when the band carries no
+/// `postureRef` at all — the common case (2-tier fold only).
+///
+/// A DANGLING reference (a `postureRef` set but not found in the store) is
+/// NOT an error: it is logged + surfaced as a `PostureNotFound` k8s Event
+/// (non-fatal — a failed publish never blocks the reconcile) and treated
+/// exactly like an unset `postureRef`, falling through to the compiled
+/// default. This mirrors the fleet's existing safe-fallback discipline (a
+/// misconfigured optional reference degrades gracefully, never blocks the
+/// tick that would otherwise keep the workload healthy).
+async fn resolve_posture<B: Band>(ctx: &Ctx, obj: &B) -> Option<Arc<BreathePosture>> {
+    let name = obj.posture_ref()?;
+    if let Some(p) = ctx.posture_store.get(&reflector::ObjectRef::new(name)) {
+        return Some(p);
+    }
+    let band_name = obj.name_any();
+    warn!(posture_ref = name, band = %band_name, "BreathePosture reference not found — falling back to compiled defaults");
+    let recorder = Recorder::new(ctx.client.clone(), ctx.reporter.clone(), obj.object_ref(&()));
+    let ev = Event {
+        type_: EventType::Warning,
+        reason: "PostureNotFound".to_string(),
+        note: Some(format!("postureRef {name:?} does not exist — using compiled defaults")),
+        action: "Reconcile".to_string(),
+        secondary: None,
+    };
+    if let Err(e) = recorder.publish(ev).await {
+        warn!(error = %e, "PostureNotFound event publish failed (non-fatal)");
+    }
+    None
 }
 
 /// True when the apiserver is k8s ≥1.33 (the `pods/resize` subresource is GA).
@@ -381,7 +427,15 @@ async fn reconcile<B: Band, D: DimensionDescriptor + Default>(
         pod_selector: tr.pod_selector.clone(),
     };
 
-    let cfg = match obj.band_config() {
+    // BreathePosture: a live, per-tick resolution (never cached/baked once —
+    // see `resolve_posture`'s own doc) of the band's referenced default
+    // policy, if any. `posture_spec` feeds every `*_with_posture` accessor
+    // below; a `None` band (no `postureRef`, or a dangling one) behaves
+    // byte-identically to before this change.
+    let posture = resolve_posture(&ctx, obj.as_ref()).await;
+    let posture_spec = posture.as_deref().map(|p| &p.spec);
+
+    let cfg = match obj.band_config_with_posture(posture_spec) {
         Ok(c) => c,
         Err(e) => {
             patch_status::<B>(&ctx.client, &ns, &name, &error_status(e.to_string())).await?;
@@ -391,7 +445,7 @@ async fn reconcile<B: Band, D: DimensionDescriptor + Default>(
 
     let in_cooldown = obj
         .last_change_epoch()
-        .is_some_and(|last| now_secs().saturating_sub(last) < obj.cooldown_seconds() as i64);
+        .is_some_and(|last| now_secs().saturating_sub(last) < obj.cooldown_seconds_with_posture(posture_spec) as i64);
 
     // Bind the descriptor to THIS CR's own identity (namespace/name of the Band
     // CR itself, NOT `target` — the k8s object it carves) so its SSA field
@@ -440,7 +494,7 @@ async fn reconcile<B: Band, D: DimensionDescriptor + Default>(
     let input = ReconcileInput {
         target: &target,
         cfg: &cfg,
-        max_staleness_secs: obj.max_staleness_seconds(),
+        max_staleness_secs: obj.max_staleness_seconds_with_posture(posture_spec),
         in_cooldown,
         // The PROMOTION LIFECYCLE gates the carve — not the raw `dryRun` field.
         // ShadowConfirmEffect (the default) stays shadow until its confirm window
@@ -448,7 +502,9 @@ async fn reconcile<B: Band, D: DimensionDescriptor + Default>(
         dry_run: obj.effective_dry_run(now_secs()),
         // per-band golden/ceiling gate (default RestartFreeOnly) — the band
         // declares its own policy; the fleet env is only a fallback default.
-        policy: obj.disruption_policy(),
+        // Posture-aware: falls through to the referenced BreathePosture's
+        // policy before the compiled default, same 3-tier fold as `cfg`.
+        policy: obj.disruption_policy_with_posture(posture_spec),
         force,
         predictive,
         peak_used,
@@ -476,7 +532,7 @@ async fn reconcile<B: Band, D: DimensionDescriptor + Default>(
             .record(&band_ref, Sample { used: obs.used, at_epoch: now_secs() })
             .await;
     }
-    let mut status = status_for(&outcome, obj.status(), obj.cooldown_seconds(), obj.generation(), counters);
+    let mut status = status_for(&outcome, obj.status(), obj.cooldown_seconds_with_posture(posture_spec), obj.generation(), counters);
     // carry the warmup-start epoch forward (reset on a detected restart) so the next
     // tick measures observed-since-restart correctly — the warmup gate's persistence.
     status.warmup_start_epoch = Some(warmup_start_epoch);
@@ -543,7 +599,13 @@ async fn reconcile_memory(obj: Arc<MemoryBand>, ctx: Arc<Ctx>) -> Result<Action,
         Ok(Some(b)) => b,
         _ => return Ok(action), // can't re-read ⇒ skip the soft dispatch this tick
     };
-    let (Ok(cfg), Some(st)) = (band.band_config(), band.status()) else {
+    // Same posture-aware resolution as the HARD-plane tick above (the soft
+    // target's setpoint/shrinkFactor must agree with whatever tuple actually
+    // drove this band's decision — a stale posture-blind read here would
+    // silently diverge the soft plane from the hard plane's own numbers).
+    let posture = resolve_posture(&ctx, &band).await;
+    let posture_spec = posture.as_deref().map(|p| &p.spec);
+    let (Ok(cfg), Some(st)) = (band.band_config_with_posture(posture_spec), band.status()) else {
         return Ok(action);
     };
     let (Some(used), Some(cap)) = (st.observed_used, st.observed_capacity) else {
@@ -845,6 +907,29 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     metrics::gauge!("breathe_build_info", "binary" => "breathe-controller", "version" => env!("CARGO_PKG_VERSION")).set(1.0);
 
     let reporter = Reporter { controller: "breathe-controller".into(), instance: std::env::var("POD_NAME").ok() };
+
+    // ── BreathePosture reflector — a live, continuously-refreshed cache of
+    // every named posture (a cluster-scoped reference CRD, mirroring
+    // `BreatheNodePool`'s own precedent). Fed by its own watch stream — the
+    // SAME reader/writer pair shape `gen_controller!` stamps at :63-70 for
+    // every primary controller watch — so `resolve_posture` never issues a
+    // per-tick `Api::get()`; it reads the already-warm `Store`.
+    let (posture_store, posture_writer) = reflector::store::<BreathePosture>();
+    {
+        let posture_api: Api<BreathePosture> = Api::all(client.clone());
+        let mut posture_stream = watcher(posture_api, watcher::Config::default())
+            .reflect(posture_writer)
+            .applied_objects()
+            .boxed();
+        tokio::spawn(async move {
+            while let Some(res) = posture_stream.next().await {
+                if let Err(e) = res {
+                    warn!(error = %e, "BreathePosture watch stream error (retrying)");
+                }
+            }
+        });
+    }
+
     let ctx = Arc::new(Ctx {
         client: client.clone(),
         prometheus_url,
@@ -861,6 +946,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         samples,
         eks_client,
         autoscaling_client,
+        posture_store,
     });
 
     info!(

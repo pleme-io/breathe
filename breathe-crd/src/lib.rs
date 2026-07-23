@@ -26,6 +26,9 @@ use kube::CustomResource;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+mod posture;
+pub use posture::{BreathePosture, BreathePostureSpec, BreathePostureStatus};
+
 /// The workload owner whose limit a band controls. For CNPG the kind is
 /// `Cluster` (the patched field lives on the `Cluster` CR); for storage the kind
 /// is `PersistentVolumeClaim`.
@@ -275,6 +278,64 @@ pub trait Band:
     /// The band's CURRENT status (read before reconcile) — the `prior` that
     /// `status_for` carries cumulative counters + the cooldown epoch forward from.
     fn status(&self) -> Option<&BandStatus>;
+
+    // ── BreathePosture (default methods; one 3-tier fold for every band kind) ──
+    //
+    // A `BreathePosture` names a default policy for the 8 behavioral fields
+    // (setpoint/growAbove/growFactor/shrinkBelow/shrinkFactor/cooldownSeconds/
+    // maxStalenessSeconds/disruptionPolicy) so N bands can share one tuple by
+    // reference instead of copy-pasting it. The fold is always THREE tiers,
+    // resolved fresh on every call (never cached/baked once — see
+    // `theory/INVARIANT-BY-CONSISTENCY-AND-CONTROLLER.md`): an EXPLICIT value
+    // on this band's own spec always wins; else the referenced posture's
+    // value; else the crate's existing compiled default. `floor`/`ceiling`/
+    // `requestFloor`/`targetRef`/`dryRun`/`mode` are NEVER posture-derived —
+    // see `posture.rs`'s module doc for why that's a structural, not just
+    // disciplined, invariant.
+    //
+    // The default implementations below simply ignore `posture` and echo back
+    // each kind's own already-resolved 2-tier (override > compiled-default)
+    // accessor — correct, zero-behavior-change, for every `Band` impl that
+    // carries no `postureRef` field (`HostParamBand`/`KubeParamBand`/
+    // `AppBand`/`ReplicaBand` today). `band_kind!`'s six macro-stamped kinds
+    // (MemoryBand/CpuBand/StorageBand/ArcBand/CgroupBand/CgroupCpuBand)
+    // override every one of these with the real fold over their raw
+    // `Option<T>` spec fields.
+
+    /// The named `BreathePosture` this band's unset behavioral fields fall
+    /// back to, before the compiled default. `None` ⇒ no posture tier (2-tier
+    /// fold only: override then compiled default) — either because the field
+    /// is genuinely unset, or because this `Band` kind doesn't carry a
+    /// `postureRef` at all.
+    fn posture_ref(&self) -> Option<&str> {
+        None
+    }
+    /// The posture-aware [`BandConfig`] for this tick — identical to
+    /// [`Band::band_config`] except the 5 tunable numeric fields
+    /// (setpoint/growAbove/shrinkBelow/growFactor/shrinkFactor) additionally
+    /// fall through `posture` (when this band references one) before the
+    /// compiled default. `floor`/`ceiling`/`requestFloor`/`warmupSeconds` are
+    /// read straight from this band's own spec regardless of `posture` — see
+    /// the module-level safety invariant.
+    fn band_config_with_posture(&self, posture: Option<&BreathePostureSpec>) -> anyhow::Result<BandConfig> {
+        let _ = posture;
+        self.band_config()
+    }
+    /// Posture-aware [`Band::cooldown_seconds`].
+    fn cooldown_seconds_with_posture(&self, posture: Option<&BreathePostureSpec>) -> u64 {
+        let _ = posture;
+        self.cooldown_seconds()
+    }
+    /// Posture-aware [`Band::max_staleness_seconds`].
+    fn max_staleness_seconds_with_posture(&self, posture: Option<&BreathePostureSpec>) -> u64 {
+        let _ = posture;
+        self.max_staleness_seconds()
+    }
+    /// Posture-aware [`Band::disruption_policy`].
+    fn disruption_policy_with_posture(&self, posture: Option<&BreathePostureSpec>) -> DisruptionPolicy {
+        let _ = posture;
+        self.disruption_policy()
+    }
 
     // ── Promotion lifecycle (default methods; one law for every band kind) ─────
 
@@ -556,24 +617,35 @@ macro_rules! band_kind {
         #[serde(rename_all = "camelCase")]
         pub struct $spec {
             pub target_ref: TargetRef,
-            #[serde(default = "d_setpoint")]
-            pub setpoint: f64,
-            #[serde(default = "d_grow_above")]
-            pub grow_above: f64,
-            #[serde(default = "d_shrink_below")]
-            pub shrink_below: f64,
-            #[serde(default = "d_grow_factor")]
-            pub grow_factor: f64,
-            #[serde(default = "d_shrink_factor")]
-            pub shrink_factor: f64,
+            /// The named [`BreathePosture`] this band's UNSET behavioral fields (the
+            /// 8 below) fall back to before the compiled default. `None` ⇒ compiled
+            /// defaults only. Structurally cannot carry `floor`/`ceiling`/
+            /// `targetRef`/`dryRun`/`mode` (those live only on this band's own
+            /// spec) — a posture patch can never widen a capacity bound or flip a
+            /// promotion state fleet-wide. See `posture.rs`'s module doc.
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            pub posture_ref: Option<String>,
+            /// EXPLICIT override. `None` ⇒ resolve via the 3-tier fold (the
+            /// referenced posture, then the compiled default) — see
+            /// `Band::band_config_with_posture`.
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            pub setpoint: Option<f64>,
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            pub grow_above: Option<f64>,
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            pub shrink_below: Option<f64>,
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            pub grow_factor: Option<f64>,
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            pub shrink_factor: Option<f64>,
             #[serde(default = $dfloor)]
             pub floor: String,
             #[serde(default = $dceiling)]
             pub ceiling: String,
-            #[serde(default = "d_cooldown")]
-            pub cooldown_seconds: u64,
-            #[serde(default = "d_max_staleness")]
-            pub max_staleness_seconds: u64,
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            pub cooldown_seconds: Option<u64>,
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            pub max_staleness_seconds: Option<u64>,
             #[serde(default)]
             pub dry_run: bool,
             /// The PROMOTION LIFECYCLE. Unset ⇒ resolved by `promotion_mode()`
@@ -586,10 +658,17 @@ macro_rules! band_kind {
             /// Ready-and-healthy before it auto-promotes to carving (default 1800).
             #[serde(default = "d_confirm_after")]
             pub confirm_after_seconds: u64,
-            /// The golden/ceiling gate (default `restartFreeOnly`). Omitted on
-            /// serialize when default so the strict typed-gRPC surface stays safe.
-            #[serde(default, skip_serializing_if = "breathe_provider::DisruptionPolicy::is_restart_free_only")]
-            pub disruption_policy: DisruptionPolicy,
+            /// The golden/ceiling gate (default `restartFreeOnly`). `None` ⇒ resolve
+            /// via the 3-tier fold, same as the other 7 behavioral fields.
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            pub disruption_policy: Option<DisruptionPolicy>,
+            /// Free-text justification for an EXPLICIT per-CR `disruptionPolicy`
+            /// override — carries the "why" WITH the CR when it deliberately
+            /// diverges from its posture/compiled default (e.g. "genuinely stateful;
+            /// no in-place resize available"). Purely documentary; never read by the
+            /// fold.
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            pub disruption_policy_rationale: Option<String>,
             /// FREEZE this band — `true` ⇒ the controller skips observe/plan/act
             /// entirely (phase `Suspended`), the limit is left exactly as-is. Distinct
             /// from `dryRun` (which still observes + reports what it WOULD do): suspend
@@ -657,7 +736,11 @@ macro_rules! band_kind {
             fn band_config(&self) -> anyhow::Result<BandConfig> {
                 let s = &self.spec;
                 crate::band_config_of(
-                    s.setpoint, s.grow_above, s.shrink_below, s.grow_factor, s.shrink_factor,
+                    s.setpoint.unwrap_or_else(d_setpoint),
+                    s.grow_above.unwrap_or_else(d_grow_above),
+                    s.shrink_below.unwrap_or_else(d_shrink_below),
+                    s.grow_factor.unwrap_or_else(d_grow_factor),
+                    s.shrink_factor.unwrap_or_else(d_shrink_factor),
                     &s.floor, &s.ceiling, &s.request_floor, s.warmup_seconds, $unit,
                 )
             }
@@ -668,10 +751,10 @@ macro_rules! band_kind {
                 self.spec.warmup_seconds
             }
             fn max_staleness_seconds(&self) -> u64 {
-                self.spec.max_staleness_seconds
+                self.spec.max_staleness_seconds.unwrap_or_else(d_max_staleness)
             }
             fn cooldown_seconds(&self) -> u64 {
-                self.spec.cooldown_seconds
+                self.spec.cooldown_seconds.unwrap_or_else(d_cooldown)
             }
             fn dry_run(&self) -> bool {
                 self.spec.dry_run
@@ -686,7 +769,7 @@ macro_rules! band_kind {
                 self.status.as_ref().and_then(|s| s.last_change_epoch)
             }
             fn disruption_policy(&self) -> DisruptionPolicy {
-                self.spec.disruption_policy
+                self.spec.disruption_policy.unwrap_or_default()
             }
             fn suspended(&self) -> bool {
                 self.spec.suspend
@@ -704,6 +787,44 @@ macro_rules! band_kind {
             }
             fn status(&self) -> Option<&BandStatus> {
                 self.status.as_ref()
+            }
+
+            // ── BreathePosture 3-tier fold — the real implementation. Every
+            // other `Band` impl (HostParamBand/KubeParamBand/AppBand/ReplicaBand)
+            // keeps the trait's default (posture-blind) methods; these six
+            // macro-stamped kinds are the ones that actually carry a
+            // `postureRef` + `Option<T>` behavioral fields to fold over.
+            fn posture_ref(&self) -> Option<&str> {
+                self.spec.posture_ref.as_deref()
+            }
+            fn band_config_with_posture(&self, posture: Option<&BreathePostureSpec>) -> anyhow::Result<BandConfig> {
+                let s = &self.spec;
+                crate::band_config_of(
+                    s.setpoint.or_else(|| posture.map(|p| p.setpoint)).unwrap_or_else(d_setpoint),
+                    s.grow_above.or_else(|| posture.map(|p| p.grow_above)).unwrap_or_else(d_grow_above),
+                    s.shrink_below.or_else(|| posture.map(|p| p.shrink_below)).unwrap_or_else(d_shrink_below),
+                    s.grow_factor.or_else(|| posture.map(|p| p.grow_factor)).unwrap_or_else(d_grow_factor),
+                    s.shrink_factor.or_else(|| posture.map(|p| p.shrink_factor)).unwrap_or_else(d_shrink_factor),
+                    &s.floor, &s.ceiling, &s.request_floor, s.warmup_seconds, $unit,
+                )
+            }
+            fn cooldown_seconds_with_posture(&self, posture: Option<&BreathePostureSpec>) -> u64 {
+                self.spec
+                    .cooldown_seconds
+                    .or_else(|| posture.map(|p| u64::from(p.cooldown_seconds)))
+                    .unwrap_or_else(d_cooldown)
+            }
+            fn max_staleness_seconds_with_posture(&self, posture: Option<&BreathePostureSpec>) -> u64 {
+                self.spec
+                    .max_staleness_seconds
+                    .or_else(|| posture.map(|p| u64::from(p.max_staleness_seconds)))
+                    .unwrap_or_else(d_max_staleness)
+            }
+            fn disruption_policy_with_posture(&self, posture: Option<&BreathePostureSpec>) -> DisruptionPolicy {
+                self.spec
+                    .disruption_policy
+                    .or_else(|| posture.map(|p| p.disruption_policy))
+                    .unwrap_or_default()
             }
         }
     };
@@ -3188,9 +3309,9 @@ mod tests {
         // each kind constructs a valid BandConfig from its spec
         let tr = TargetRef { kind: "Cluster".into(), name: "x".into(), api_version: None, container: None, pod_selector: None };
         let mem = MemoryBand::new("m", MemoryBandSpec {
-            target_ref: tr.clone(), setpoint: 0.80, grow_above: 0.85, shrink_below: 0.70,
-            grow_factor: 1.25, shrink_factor: 0.90, floor: "512Mi".into(), ceiling: "4Gi".into(),
-            cooldown_seconds: 600, max_staleness_seconds: 120, dry_run: true, disruption_policy: Default::default(), suspend: false, force_limit: None, force_limit_expiry: None, predictive: false, predictive_lookahead_seconds: 60, request_floor: String::new(), peak_decay: 0.98, mode: None, confirm_after_seconds: 1800, warmup_seconds: 600,
+            target_ref: tr.clone(), posture_ref: None, setpoint: Some(0.80), grow_above: Some(0.85), shrink_below: Some(0.70),
+            grow_factor: Some(1.25), shrink_factor: Some(0.90), floor: "512Mi".into(), ceiling: "4Gi".into(),
+            cooldown_seconds: Some(600), max_staleness_seconds: Some(120), dry_run: true, disruption_policy: Default::default(), disruption_policy_rationale: None, suspend: false, force_limit: None, force_limit_expiry: None, predictive: false, predictive_lookahead_seconds: 60, request_floor: String::new(), peak_decay: 0.98, mode: None, confirm_after_seconds: 1800, warmup_seconds: 600,
         });
         let cfg = Band::band_config(&mem).unwrap();
         assert_eq!(cfg.floor_bytes, 512 * (1 << 20));
@@ -3201,9 +3322,9 @@ mod tests {
     fn cpu_band_parses_floor_ceiling_as_millicores() {
         let tr = TargetRef { kind: "Cluster".into(), name: "db".into(), api_version: None, container: None, pod_selector: None };
         let cpu = CpuBand::new("c", CpuBandSpec {
-            target_ref: tr, setpoint: 0.80, grow_above: 0.85, shrink_below: 0.70,
-            grow_factor: 1.25, shrink_factor: 0.90, floor: "250m".into(), ceiling: "2".into(),
-            cooldown_seconds: 600, max_staleness_seconds: 120, dry_run: false, disruption_policy: Default::default(), suspend: false, force_limit: None, force_limit_expiry: None, predictive: false, predictive_lookahead_seconds: 60, request_floor: String::new(), peak_decay: 0.98, mode: None, confirm_after_seconds: 1800, warmup_seconds: 600,
+            target_ref: tr, posture_ref: None, setpoint: Some(0.80), grow_above: Some(0.85), shrink_below: Some(0.70),
+            grow_factor: Some(1.25), shrink_factor: Some(0.90), floor: "250m".into(), ceiling: "2".into(),
+            cooldown_seconds: Some(600), max_staleness_seconds: Some(120), dry_run: false, disruption_policy: Default::default(), disruption_policy_rationale: None, suspend: false, force_limit: None, force_limit_expiry: None, predictive: false, predictive_lookahead_seconds: 60, request_floor: String::new(), peak_decay: 0.98, mode: None, confirm_after_seconds: 1800, warmup_seconds: 600,
         });
         let cfg = Band::band_config(&cpu).unwrap();
         // millicores, NOT bytes: "250m" → 250, "2" cores → 2000m.
@@ -3253,9 +3374,9 @@ mod tests {
         // ArcBand: the target is the node; floor/ceiling are byte quantities.
         let tr = TargetRef { kind: "Node".into(), name: "rio".into(), api_version: None, container: None, pod_selector: None };
         let arc = ArcBand::new("rio-arc", ArcBandSpec {
-            target_ref: tr, setpoint: 0.80, grow_above: 0.85, shrink_below: 0.70,
-            grow_factor: 1.25, shrink_factor: 0.90, floor: "1Gi".into(), ceiling: "6Gi".into(),
-            cooldown_seconds: 600, max_staleness_seconds: 120, dry_run: true, disruption_policy: Default::default(), suspend: false, force_limit: None, force_limit_expiry: None, predictive: false, predictive_lookahead_seconds: 60, request_floor: String::new(), peak_decay: 0.98, mode: None, confirm_after_seconds: 1800, warmup_seconds: 600,
+            target_ref: tr, posture_ref: None, setpoint: Some(0.80), grow_above: Some(0.85), shrink_below: Some(0.70),
+            grow_factor: Some(1.25), shrink_factor: Some(0.90), floor: "1Gi".into(), ceiling: "6Gi".into(),
+            cooldown_seconds: Some(600), max_staleness_seconds: Some(120), dry_run: true, disruption_policy: Default::default(), disruption_policy_rationale: None, suspend: false, force_limit: None, force_limit_expiry: None, predictive: false, predictive_lookahead_seconds: 60, request_floor: String::new(), peak_decay: 0.98, mode: None, confirm_after_seconds: 1800, warmup_seconds: 600,
         });
         let cfg = Band::band_config(&arc).unwrap();
         assert_eq!(cfg.floor_bytes, 1 << 30);
@@ -3265,8 +3386,8 @@ mod tests {
         // CgroupBand: the target NAME is the systemd unit the agent addresses.
         let g = CgroupBand::new("nix-daemon", CgroupBandSpec {
             target_ref: TargetRef { kind: "HostUnit".into(), name: "nix-daemon.service".into(), api_version: None, container: None, pod_selector: None },
-            setpoint: 0.80, grow_above: 0.85, shrink_below: 0.70, grow_factor: 1.25, shrink_factor: 0.90,
-            floor: "1Gi".into(), ceiling: "12Gi".into(), cooldown_seconds: 600, max_staleness_seconds: 120, dry_run: true, disruption_policy: Default::default(), suspend: false, force_limit: None, force_limit_expiry: None, predictive: false, predictive_lookahead_seconds: 60, request_floor: String::new(), peak_decay: 0.98, mode: None, confirm_after_seconds: 1800, warmup_seconds: 600,
+            posture_ref: None, setpoint: Some(0.80), grow_above: Some(0.85), shrink_below: Some(0.70), grow_factor: Some(1.25), shrink_factor: Some(0.90),
+            floor: "1Gi".into(), ceiling: "12Gi".into(), cooldown_seconds: Some(600), max_staleness_seconds: Some(120), dry_run: true, disruption_policy: Default::default(), disruption_policy_rationale: None, suspend: false, force_limit: None, force_limit_expiry: None, predictive: false, predictive_lookahead_seconds: 60, request_floor: String::new(), peak_decay: 0.98, mode: None, confirm_after_seconds: 1800, warmup_seconds: 600,
         });
         assert_eq!(g.target_ref().name, "nix-daemon.service");
     }
@@ -4079,5 +4200,301 @@ mod tests {
             }
         })).expect("deserializes");
         assert_eq!(web.spec.validate_for_target(), Ok(()));
+    }
+
+    // ═══════════════ BreathePosture — the 3-tier fold (override > posture > compiled-default) ═══════════════
+
+    /// Every value here is DELIBERATELY far from the compiled default (`d_setpoint() =
+    /// 0.80`, `d_grow_above() = 0.85`, etc.) so a test can never accidentally pass by
+    /// reading the wrong tier.
+    fn posture_fixture() -> BreathePostureSpec {
+        BreathePostureSpec {
+            description: Some("test fixture — every field deliberately diverges from the compiled default".into()),
+            setpoint: 0.5,
+            grow_above: 0.99,
+            grow_factor: 2.0,
+            shrink_below: 0.4,
+            shrink_factor: 0.5,
+            cooldown_seconds: 999,
+            max_staleness_seconds: 555,
+            disruption_policy: DisruptionPolicy::AllowConditional,
+        }
+    }
+
+    #[test]
+    fn real_live_cr_fixture_deserializes_with_all_eight_fields_explicit() {
+        // A real, live CR pulled verbatim from `akeyless-k8s`'s
+        // `clusters/camelot-eks/infrastructure/karpenter/breathe-bands.yaml` (the
+        // karpenter-cpu CpuBand). Every hand-authored CR on the fleet sets these 7
+        // numeric fields + disruptionPolicy explicitly — this proves the Option<T>
+        // conversion is wire-compatible: an EXISTING CR deserializes to Some(value)
+        // unchanged, never silently regresses to None.
+        let cpu: CpuBand = serde_yaml::from_str(
+            r#"
+apiVersion: breathe.pleme.io/v1
+kind: CpuBand
+metadata:
+  name: karpenter-cpu
+  namespace: karpenter
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: karpenter
+    container: controller
+  setpoint: 0.8
+  floor: "100m"
+  ceiling: "500m"
+  requestFloor: "100m"
+  growAbove: 0.85
+  growFactor: 1.25
+  shrinkBelow: 0.7
+  shrinkFactor: 0.9
+  cooldownSeconds: 600
+  disruptionPolicy: restartFreeOnly
+  dryRun: true
+  maxStalenessSeconds: 120
+"#,
+        )
+        .expect("a real live CR must deserialize");
+        assert_eq!(cpu.spec.setpoint, Some(0.8));
+        assert_eq!(cpu.spec.grow_above, Some(0.85));
+        assert_eq!(cpu.spec.grow_factor, Some(1.25));
+        assert_eq!(cpu.spec.shrink_below, Some(0.7));
+        assert_eq!(cpu.spec.shrink_factor, Some(0.9));
+        assert_eq!(cpu.spec.cooldown_seconds, Some(600));
+        assert_eq!(cpu.spec.max_staleness_seconds, Some(120));
+        assert_eq!(cpu.spec.disruption_policy, Some(DisruptionPolicy::RestartFreeOnly));
+        assert_eq!(cpu.spec.posture_ref, None, "no postureRef authored ⇒ None, not an error");
+        // And the resolved values are BYTE-IDENTICAL to before this change.
+        let cfg = Band::band_config(&cpu).unwrap();
+        assert_eq!(cfg.setpoint, 0.8);
+        assert_eq!(cfg.floor_bytes, 100);
+        assert_eq!(cfg.ceiling_bytes, 500);
+        assert_eq!(cpu.cooldown_seconds(), 600);
+        assert_eq!(cpu.max_staleness_seconds(), 120);
+        assert_eq!(cpu.disruption_policy(), DisruptionPolicy::RestartFreeOnly);
+    }
+
+    #[test]
+    fn explicit_override_always_wins_over_posture() {
+        let spec: MemoryBandSpec = serde_json::from_value(serde_json::json!({
+            "targetRef": { "kind": "Deployment", "name": "x" },
+            "postureRef": "platform-default",
+            "setpoint": 0.95,
+            "cooldownSeconds": 42,
+            "disruptionPolicy": "allowRestart",
+        }))
+        .unwrap();
+        let band = MemoryBand::new("x", spec);
+        let p = posture_fixture();
+        let cfg = band.band_config_with_posture(Some(&p)).unwrap();
+        assert_eq!(cfg.setpoint, 0.95, "the CR's own explicit setpoint wins over the posture's 0.5");
+        assert_eq!(
+            band.cooldown_seconds_with_posture(Some(&p)),
+            42,
+            "the CR's own explicit cooldown wins over the posture's 999"
+        );
+        assert_eq!(
+            band.disruption_policy_with_posture(Some(&p)),
+            DisruptionPolicy::AllowRestart,
+            "the CR's own explicit disruptionPolicy wins over the posture's allowConditional"
+        );
+        // A field NOT overridden on this CR still falls through to the posture —
+        // proving the fold is genuinely PER-FIELD, not all-or-nothing.
+        assert_eq!(cfg.grow_above, 0.99, "unset on the CR ⇒ the posture's value, not the compiled default's 0.85");
+    }
+
+    #[test]
+    fn posture_fills_every_unset_field_when_override_is_absent() {
+        let spec: MemoryBandSpec = serde_json::from_value(serde_json::json!({
+            "targetRef": { "kind": "Deployment", "name": "x" },
+            "postureRef": "platform-default",
+        }))
+        .unwrap();
+        let band = MemoryBand::new("x", spec);
+        let p = posture_fixture();
+        let cfg = band.band_config_with_posture(Some(&p)).unwrap();
+        assert_eq!(cfg.setpoint, 0.5);
+        assert_eq!(cfg.grow_above, 0.99);
+        assert_eq!(cfg.shrink_below, 0.4);
+        assert_eq!(cfg.grow_factor, 2.0);
+        assert_eq!(cfg.shrink_factor, 0.5);
+        assert_eq!(band.cooldown_seconds_with_posture(Some(&p)), 999);
+        assert_eq!(band.max_staleness_seconds_with_posture(Some(&p)), 555);
+        assert_eq!(band.disruption_policy_with_posture(Some(&p)), DisruptionPolicy::AllowConditional);
+    }
+
+    #[test]
+    fn compiled_default_is_the_final_floor_when_no_override_and_no_posture() {
+        let spec: MemoryBandSpec = serde_json::from_value(serde_json::json!({
+            "targetRef": { "kind": "Deployment", "name": "x" },
+        }))
+        .unwrap();
+        let band = MemoryBand::new("x", spec);
+        let cfg = band.band_config_with_posture(None).unwrap();
+        assert_eq!(cfg.setpoint, 0.80);
+        assert_eq!(cfg.grow_above, 0.85);
+        assert_eq!(cfg.shrink_below, 0.70);
+        assert_eq!(cfg.grow_factor, 1.25);
+        assert_eq!(cfg.shrink_factor, 0.90);
+        assert_eq!(band.cooldown_seconds_with_posture(None), 600);
+        assert_eq!(band.max_staleness_seconds_with_posture(None), 120);
+        assert_eq!(band.disruption_policy_with_posture(None), DisruptionPolicy::RestartFreeOnly);
+        // Byte-identical to the plain (posture-blind) accessors — the existing
+        // 2-tier fold (override > compiled-default) is completely unaffected.
+        assert_eq!(Band::band_config(&band).unwrap().setpoint, 0.80);
+        assert_eq!(band.cooldown_seconds(), 600);
+        assert_eq!(band.max_staleness_seconds(), 120);
+        assert_eq!(band.disruption_policy(), DisruptionPolicy::RestartFreeOnly);
+    }
+
+    #[test]
+    fn dangling_posture_ref_never_panics_and_falls_through_to_compiled_default() {
+        // The CR NAMES a posture (`postureRef` is Some) but the caller (the
+        // reconcile loop's `resolve_posture`) could not resolve it — it doesn't
+        // exist, or the reflector cache hasn't seen it yet. A dangling reference is
+        // represented identically to "no posture referenced at all" at this API:
+        // the caller passes `None`. This proves that path never panics/errors.
+        let spec: MemoryBandSpec = serde_json::from_value(serde_json::json!({
+            "targetRef": { "kind": "Deployment", "name": "x" },
+            "postureRef": "does-not-exist",
+        }))
+        .unwrap();
+        let band = MemoryBand::new("x", spec);
+        assert_eq!(band.posture_ref(), Some("does-not-exist"));
+        let cfg = band.band_config_with_posture(None).unwrap();
+        assert_eq!(cfg.setpoint, 0.80, "dangling ref ⇒ compiled default, never a panic/error");
+        assert_eq!(band.cooldown_seconds_with_posture(None), 600);
+        assert_eq!(band.disruption_policy_with_posture(None), DisruptionPolicy::RestartFreeOnly);
+    }
+
+    #[test]
+    fn posture_ref_and_rationale_serialize_camel_case_and_round_trip() {
+        let spec: MemoryBandSpec = serde_json::from_value(serde_json::json!({
+            "targetRef": { "kind": "Deployment", "name": "x" },
+            "postureRef": "stateful-workload",
+            "disruptionPolicy": "allowConditional",
+            "disruptionPolicyRationale": "genuinely stateful; no in-place resize available",
+        }))
+        .unwrap();
+        assert_eq!(spec.posture_ref.as_deref(), Some("stateful-workload"));
+        assert_eq!(spec.disruption_policy, Some(DisruptionPolicy::AllowConditional));
+        assert_eq!(spec.disruption_policy_rationale.as_deref(), Some("genuinely stateful; no in-place resize available"));
+        let v = serde_json::to_value(&spec).unwrap();
+        assert_eq!(v["postureRef"], "stateful-workload");
+        assert_eq!(v["disruptionPolicyRationale"], "genuinely stateful; no in-place resize available");
+
+        // An UNSET postureRef/rationale/8-tuple field is omitted entirely
+        // (skip_serializing_if), keeping an un-migrated CR's serialized shape
+        // byte-identical to before this change — no `"setpoint": null` noise.
+        let bare: MemoryBandSpec = serde_json::from_value(serde_json::json!({
+            "targetRef": { "kind": "Deployment", "name": "y" },
+        }))
+        .unwrap();
+        let bare_v = serde_json::to_value(&bare).unwrap();
+        assert!(bare_v.get("postureRef").is_none());
+        assert!(bare_v.get("disruptionPolicyRationale").is_none());
+        assert!(bare_v.get("setpoint").is_none(), "an unset Option field must not appear in the serialized form");
+        assert!(bare_v.get("disruptionPolicy").is_none());
+    }
+
+    #[test]
+    fn breatheposture_crd_generates_cluster_scoped() {
+        let crd = <BreathePosture as kube::CustomResourceExt>::crd();
+        assert_eq!(crd.spec.names.kind, "BreathePosture");
+        assert_eq!(crd.spec.scope, "Cluster");
+    }
+
+    const POSTURE_PLATFORM_DEFAULT_YAML: &str = r#"
+apiVersion: breathe.pleme.io/v1
+kind: BreathePosture
+metadata: { name: platform-default }
+spec:
+  description: "Fleet-wide default for stateless/restart-tolerant workloads."
+  setpoint: 0.8
+  growAbove: 0.85
+  growFactor: 1.25
+  shrinkBelow: 0.7
+  shrinkFactor: 0.9
+  cooldownSeconds: 600
+  maxStalenessSeconds: 120
+  disruptionPolicy: restartFreeOnly
+"#;
+
+    const POSTURE_STATEFUL_WORKLOAD_YAML: &str = r#"
+apiVersion: breathe.pleme.io/v1
+kind: BreathePosture
+metadata: { name: stateful-workload }
+spec:
+  description: >
+    Genuinely stateful workloads (neo4j/rustfs-class, pangea-operator) where a
+    restart-free in-place resize is not always available.
+  setpoint: 0.8
+  growAbove: 0.85
+  growFactor: 1.25
+  shrinkBelow: 0.7
+  shrinkFactor: 0.9
+  cooldownSeconds: 600
+  maxStalenessSeconds: 120
+  disruptionPolicy: allowConditional
+"#;
+
+    const POSTURE_STORAGE_VOLUME_YAML: &str = r#"
+apiVersion: breathe.pleme.io/v1
+kind: BreathePosture
+metadata: { name: storage-volume }
+spec:
+  description: "PVC-capacity StorageBand growth — slower reaction, longer staleness tolerance."
+  setpoint: 0.8
+  growAbove: 0.8
+  growFactor: 1.5
+  shrinkBelow: 0.7
+  shrinkFactor: 0.9
+  cooldownSeconds: 3600
+  maxStalenessSeconds: 300
+  disruptionPolicy: restartFreeOnly
+"#;
+
+    #[test]
+    fn the_three_example_postures_deserialize_and_drive_a_real_band_end_to_end() {
+        let platform: BreathePosture =
+            serde_yaml::from_str(POSTURE_PLATFORM_DEFAULT_YAML).expect("platform-default deserializes");
+        assert_eq!(platform.spec.setpoint, 0.8);
+        assert_eq!(platform.spec.disruption_policy, DisruptionPolicy::RestartFreeOnly);
+
+        let stateful: BreathePosture =
+            serde_yaml::from_str(POSTURE_STATEFUL_WORKLOAD_YAML).expect("stateful-workload deserializes");
+        assert_eq!(stateful.spec.disruption_policy, DisruptionPolicy::AllowConditional);
+
+        let storage: BreathePosture =
+            serde_yaml::from_str(POSTURE_STORAGE_VOLUME_YAML).expect("storage-volume deserializes");
+        assert_eq!(storage.spec.cooldown_seconds, 3600);
+        assert_eq!(storage.spec.max_staleness_seconds, 300);
+
+        // End-to-end: a bare band CR (no explicit tunables) referencing
+        // `stateful-workload` resolves to THAT posture's tuple — proving the
+        // fixture -> BreathePostureSpec -> Band::band_config_with_posture wiring,
+        // not just each half in isolation.
+        let bare: CpuBand = serde_yaml::from_str(
+            r#"
+apiVersion: breathe.pleme.io/v1
+kind: CpuBand
+metadata: { name: some-cpu-band, namespace: camelot }
+spec:
+  targetRef: { kind: Deployment, name: some-workload }
+  postureRef: stateful-workload
+  floor: "250m"
+  ceiling: "2"
+"#,
+        )
+        .expect("deserializes");
+        let cfg = bare.band_config_with_posture(Some(&stateful.spec)).unwrap();
+        assert_eq!(cfg.setpoint, 0.8);
+        assert_eq!(cfg.grow_factor, 1.25);
+        assert_eq!(
+            bare.disruption_policy_with_posture(Some(&stateful.spec)),
+            DisruptionPolicy::AllowConditional
+        );
     }
 }

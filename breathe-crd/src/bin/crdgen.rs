@@ -2,9 +2,9 @@
 //! hand-authoring. `cargo run -p breathe-crd --bin crdgen > crds/bands.yaml`.
 
 use breathe_crd::{
-    AppBand, ArcBand, BreatheCloudPool, BreatheConfig, BreatheNodePool, BreatheOverview, CgroupBand, CgroupCpuBand,
-    CpuBand, Densa, HostParamBand, IsolationBand, KubeParamBand, MemoryBand, PodMemoryHigh, QuinhaoPool, ReplicaBand,
-    StorageBand,
+    AppBand, ArcBand, BreatheCloudPool, BreatheConfig, BreatheNodePool, BreatheOverview, BreathePosture, CgroupBand,
+    CgroupCpuBand, CpuBand, Densa, HostParamBand, IsolationBand, KubeParamBand, MemoryBand, PodMemoryHigh,
+    QuinhaoPool, ReplicaBand, StorageBand,
 };
 use kube::CustomResourceExt;
 
@@ -26,6 +26,10 @@ fn main() {
         // Step-9/13 — the generic app-plane actuator band (ConfigFile/ApiCall via ActuatorCluster)
         AppBand::crd(),
         BreatheNodePool::crd(),
+        // The cluster-scoped named default policy the 6 band_kind! kinds (above +
+        // ArcBand/CgroupBand/CgroupCpuBand) can opt into via `spec.postureRef`,
+        // instead of each hand-duplicating the same 7-value tuple.
+        BreathePosture::crd(),
         // Part 1 — the SOFT-k8s-carve controller→host-agent dispatch (pod memory.high)
         PodMemoryHigh::crd(),
         // BU2 — the node-count Forma enrollment (Forma ⇄ Densa envelope)

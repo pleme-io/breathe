@@ -8,7 +8,7 @@
 //! surface shares: MCP, REST, gRPC, GraphQL all drive this one core — solved once.
 
 use async_trait::async_trait;
-use breathe_crd::{ArcBand, BreatheNodePool, CgroupBand, CpuBand, MemoryBand, StorageBand};
+use breathe_crd::{ArcBand, BreatheNodePool, BreathePosture, CgroupBand, CpuBand, MemoryBand, StorageBand};
 use kube::{
     api::{Api, ListParams, Patch, PatchParams},
     core::NamespaceResourceScope,
@@ -77,6 +77,16 @@ pub trait BreatheStore: Send + Sync {
     async fn list_pools(&self) -> Result<Value, StoreError>;
     async fn get_pool(&self, name: String) -> Result<Value, StoreError>;
     async fn patch_pool_spec(&self, name: String, spec: Value) -> Result<Value, StoreError>;
+    /// List every `BreathePosture` (cluster-scoped — mirrors `list_pools`).
+    async fn list_postures(&self) -> Result<Value, StoreError>;
+    /// Get one `BreathePosture` by name.
+    async fn get_posture(&self, name: String) -> Result<Value, StoreError>;
+    /// Merge-patch a `BreathePosture`'s spec (mirrors `patch_pool_spec`). A
+    /// posture patch fans out to every band referencing it on their NEXT
+    /// reconcile tick — it never itself widens a capacity bound or a
+    /// promotion state (see `breathe-crd`'s `posture.rs` module doc: the
+    /// spec structurally carries no such field).
+    async fn patch_posture_spec(&self, name: String, spec: Value) -> Result<Value, StoreError>;
     /// The self-describing dimension catalog (zero-I/O, from `breathe-catalog`).
     fn catalog(&self) -> Value;
 }
@@ -205,6 +215,22 @@ impl BreatheStore for KubeStore {
     }
     async fn patch_pool_spec(&self, name: String, spec: Value) -> Result<Value, StoreError> {
         let api: Api<BreatheNodePool> = Api::all(self.client.clone());
+        let body = json!({ "spec": spec });
+        let o = api.patch(&name, &PatchParams::default(), &Patch::Merge(&body)).await.map_err(ke)?;
+        serde_json::to_value(o).map_err(se)
+    }
+    async fn list_postures(&self) -> Result<Value, StoreError> {
+        let api: Api<BreathePosture> = Api::all(self.client.clone());
+        let l = api.list(&ListParams::default()).await.map_err(ke)?;
+        serde_json::to_value(l.items).map_err(se)
+    }
+    async fn get_posture(&self, name: String) -> Result<Value, StoreError> {
+        let api: Api<BreathePosture> = Api::all(self.client.clone());
+        let o = api.get(&name).await.map_err(ke)?;
+        serde_json::to_value(o).map_err(se)
+    }
+    async fn patch_posture_spec(&self, name: String, spec: Value) -> Result<Value, StoreError> {
+        let api: Api<BreathePosture> = Api::all(self.client.clone());
         let body = json!({ "spec": spec });
         let o = api.patch(&name, &PatchParams::default(), &Patch::Merge(&body)).await.map_err(ke)?;
         serde_json::to_value(o).map_err(se)
