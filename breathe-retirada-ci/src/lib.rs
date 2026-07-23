@@ -24,15 +24,38 @@
 //! `ubuntu-24.04` — never a fresh spot pool for the retry, which would
 //! just re-enter the same reclaim dynamics that caused this).
 //!
-//! **Tier-honest (2026-07-23): this is the typed decision core only.**
-//! `classify` and `observe_classify_and_remediate` are real and tested
-//! against mocks. Nothing here is deployed as a live watcher against a
-//! real cluster — [`ClusterObserver`]/[`WorkflowDispatcher`] have no
-//! production implementation yet (a real one needs RBAC to watch pods
-//! in the ARC runner namespace plus a GH PAT with `actions:write`,
-//! both live-cluster-mutating decisions that need an explicit
-//! operator go-ahead before deploying, per the org's own
-//! confirm-before-shared-system-mutation discipline).
+//! **Corrected 2026-07-23, against real evidence, not assumption.** The
+//! first version of this crate modeled ONLY [`PodExitCause`] — a runner
+//! pod that started, then got evicted mid-job. Two real, independently
+//! diagnosed incidents the same day (`pleme-io/breathe` run
+//! `29930406877`, `pleme-io/hardened-images` run `30007679929`'s
+//! `verify-aarch64-build` job) turned out to be a DIFFERENT failure
+//! mode entirely: the GitHub Jobs API showed `runner_id: 0` /
+//! `runner_name: ""` for the job's ENTIRE lifetime — no runner was ever
+//! assigned, not once, until GitHub's own 24h queue-timeout
+//! auto-cancelled it. Neither incident was a mid-job spot reclaim; both
+//! were pure capacity starvation (the amd64 pool couldn't keep up for
+//! 24h straight; the org's only arm64 runner was offline). See
+//! [`QueuedJobObservation`]/[`classify_queue_starvation`] — the
+//! confirmed-real failure mode this crate has actually observed in
+//! production, needing only the GH Jobs API (no k8s RBAC at all,
+//! unlike the pod-eviction path below). [`PodExitCause`] remains
+//! modeled (a real mid-job spot reclaim is still a real possibility)
+//! but is UNCONFIRMED against any actual incident so far — don't round
+//! it up to "the" failure mode; it's "a" failure mode.
+//!
+//! **Tier-honest (2026-07-23): the typed decision cores are real and
+//! tested against mocks for both failure modes.** The pod-eviction path
+//! ([`ClusterObserver`]) has no production implementation — a real one
+//! needs RBAC to watch pods in the ARC runner namespace, a live-cluster
+//! decision needing explicit operator go-ahead. The queue-starvation
+//! path ([`JobQueueObserver`]) needs only the GitHub Jobs API + a GH
+//! token with `actions:write` — the SAME credential already used
+//! throughout this repo's own CI — so it is realistically deployable as
+//! a plain scheduled GitHub Actions workflow, no cluster access
+//! whatsoever. Still not deployed as of this commit — [`WorkflowDispatcher`]
+//! has no production implementation either — but the deployment blocker
+//! for THIS path is materially smaller than the pod-eviction path's.
 
 use serde::{Deserialize, Serialize};
 
@@ -111,6 +134,16 @@ pub enum NoActionReason {
     /// ceiling — the fail-safe bound; escalate to a human instead of
     /// looping.
     RetryCeilingReached,
+    /// A runner HAS been assigned to this job — the queue-starvation
+    /// classifier only ever fires before assignment; once a runner
+    /// claims the job, its outcome is a different question entirely
+    /// (the pod-eviction classifier's job, not this one's).
+    RunnerAlreadyAssigned,
+    /// The job hasn't been queued long enough yet to call it
+    /// starvation rather than a normal cold-start Wake — never fire
+    /// early; `theory/BREATHABILITY.md`'s lifecycle-breath names
+    /// cold-start latency as expected, not an anomaly.
+    StillWithinNormalWake,
 }
 
 /// The configured escalation target + retry ceiling — typed config,
@@ -206,6 +239,131 @@ pub async fn observe_classify_and_remediate(
 ) -> anyhow::Result<RemediationDecision> {
     let outcome = observer.observe_runner_pod(namespace, pod_name).await?;
     let decision = classify(&outcome, policy);
+    if let RemediationDecision::RedispatchOnDemand {
+        repo,
+        workflow_file,
+        head_sha,
+        runner_override,
+    } = &decision
+    {
+        dispatcher
+            .redispatch(repo, workflow_file, head_sha, runner_override)
+            .await?;
+    }
+    Ok(decision)
+}
+
+// ---------------------------------------------------------------------
+// Queue starvation — the CONFIRMED-REAL failure mode (see module docs).
+// ---------------------------------------------------------------------
+
+/// The typed facts about one queued job — everything
+/// [`classify_queue_starvation`] needs, sourced entirely from the
+/// GitHub Jobs API (`GET /repos/{owner}/{repo}/actions/jobs/{job_id}`):
+/// `runner_id == 0` / `runner_name == ""` for a job's whole lifetime is
+/// the exact, load-bearing signal that no runner was ever assigned.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct QueuedJobObservation {
+    pub job_id: u64,
+    pub job_name: String,
+    pub repo: String,
+    pub workflow_file: String,
+    pub head_sha: String,
+    /// `true` iff the GH Jobs API has ever reported a non-zero
+    /// `runner_id` for this job — the fact this whole classifier turns
+    /// on.
+    pub runner_ever_assigned: bool,
+    /// How long the job has been sitting since its `created_at`.
+    pub queued_for: std::time::Duration,
+    pub prior_auto_retries: u32,
+}
+
+/// How long is "too long" before a queued-with-no-runner job is real
+/// starvation rather than a normal cold-start Wake. Separate from
+/// [`RetiradaCiPolicy`]'s retry ceiling (shared) — this threshold has
+/// nothing to do with pod eviction.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct QueueStarvationPolicy {
+    pub starvation_threshold: std::time::Duration,
+}
+
+impl Default for QueueStarvationPolicy {
+    fn default() -> Self {
+        Self {
+            // 10 minutes: comfortably above a spot-node Wake cold-start
+            // (single-digit minutes, observed 2026-07-23), and far
+            // below GitHub's own 24h auto-cancel — catches the real
+            // starvation class early instead of waiting a full day for
+            // GitHub itself to give up.
+            starvation_threshold: std::time::Duration::from_secs(600),
+        }
+    }
+}
+
+/// The pure decision for the queue-starvation path — the sibling of
+/// [`classify`] for the pod-eviction path. No I/O.
+#[must_use]
+pub fn classify_queue_starvation(
+    obs: &QueuedJobObservation,
+    starvation_policy: &QueueStarvationPolicy,
+    retry_policy: &RetiradaCiPolicy,
+) -> RemediationDecision {
+    if obs.runner_ever_assigned {
+        return RemediationDecision::NoAction {
+            reason: NoActionReason::RunnerAlreadyAssigned,
+        };
+    }
+    if obs.queued_for < starvation_policy.starvation_threshold {
+        return RemediationDecision::NoAction {
+            reason: NoActionReason::StillWithinNormalWake,
+        };
+    }
+    if obs.prior_auto_retries >= retry_policy.max_auto_retries {
+        return RemediationDecision::NoAction {
+            reason: NoActionReason::RetryCeilingReached,
+        };
+    }
+    RemediationDecision::RedispatchOnDemand {
+        repo: obs.repo.clone(),
+        workflow_file: obs.workflow_file.clone(),
+        head_sha: obs.head_sha.clone(),
+        runner_override: retry_policy.on_demand_runner_label.clone(),
+    }
+}
+
+/// Injectable seam over the GitHub side — reads a queued job's current
+/// state. Needs ONLY a GH token with read access to Actions runs; no
+/// k8s access whatsoever, unlike [`ClusterObserver`]. A real impl wraps
+/// `GET /repos/{owner}/{repo}/actions/jobs/{job_id}`; tests use a mock.
+#[async_trait::async_trait]
+pub trait JobQueueObserver {
+    async fn observe_queued_job(
+        &self,
+        repo: &str,
+        run_id: u64,
+        job_id: u64,
+    ) -> anyhow::Result<QueuedJobObservation>;
+}
+
+/// The whole queue-starvation loop: observe, classify, act — only for
+/// `RedispatchOnDemand`. Sibling of [`observe_classify_and_remediate`]
+/// for the pod-eviction path.
+///
+/// # Errors
+///
+/// Propagates [`JobQueueObserver::observe_queued_job`] or
+/// [`WorkflowDispatcher::redispatch`]'s error untouched.
+pub async fn observe_queue_and_remediate(
+    observer: &dyn JobQueueObserver,
+    dispatcher: &dyn WorkflowDispatcher,
+    starvation_policy: &QueueStarvationPolicy,
+    retry_policy: &RetiradaCiPolicy,
+    repo: &str,
+    run_id: u64,
+    job_id: u64,
+) -> anyhow::Result<RemediationDecision> {
+    let obs = observer.observe_queued_job(repo, run_id, job_id).await?;
+    let decision = classify_queue_starvation(&obs, starvation_policy, retry_policy);
     if let RemediationDecision::RedispatchOnDemand {
         repo,
         workflow_file,
@@ -423,6 +581,179 @@ mod tests {
             decision,
             RemediationDecision::NoAction {
                 reason: NoActionReason::RetryCeilingReached
+            }
+        );
+        assert!(dispatcher.calls.lock().unwrap().is_empty());
+    }
+
+    // ---- Queue starvation — grounded against the two real incidents ----
+
+    use std::time::Duration;
+
+    fn queue_obs(runner_ever_assigned: bool, queued_for: Duration) -> QueuedJobObservation {
+        QueuedJobObservation {
+            job_id: 88958322865,
+            job_name: "breathe-api-server image -> ghcr.io / Build & push image".into(),
+            repo: "pleme-io/breathe".into(),
+            workflow_file: "image.yml".into(),
+            head_sha: "8355d03fa452970a9f1341fe37fd7242cb986311".into(),
+            runner_ever_assigned,
+            queued_for,
+            prior_auto_retries: 0,
+        }
+    }
+
+    #[test]
+    fn matches_the_real_breathe_incident_29930406877() {
+        // The real, observed shape: runner_id == 0 for the job's ENTIRE
+        // 24h lifetime (this test uses 25h, past GitHub's own 24h
+        // auto-cancel, matching the actual observed completed_at -
+        // started_at delta). Must classify as a real starvation
+        // redispatch, not a normal Wake.
+        let obs = queue_obs(false, Duration::from_secs(25 * 3600));
+        let decision =
+            classify_queue_starvation(&obs, &QueueStarvationPolicy::default(), &RetiradaCiPolicy::default());
+        assert_eq!(
+            decision,
+            RemediationDecision::RedispatchOnDemand {
+                repo: "pleme-io/breathe".into(),
+                workflow_file: "image.yml".into(),
+                head_sha: "8355d03fa452970a9f1341fe37fd7242cb986311".into(),
+                runner_override: "ubuntu-24.04".into(),
+            },
+            "this classifier would have caught the real breathe incident directly, \
+             instead of it silently riding out a full 24h to GitHub's own timeout"
+        );
+    }
+
+    #[test]
+    fn matches_the_real_hardened_images_arm64_incident_30007679929() {
+        // verify-aarch64-build: created_at == started_at, cancelled
+        // ~3h12m later, zero runner ever assigned (the org's only
+        // arm64 runner was offline). Same classification shape,
+        // different repo/workflow.
+        let obs = QueuedJobObservation {
+            job_id: 89_207_579_000, // approximate -- the real id wasn't captured for this exact job
+            job_name: "verify-aarch64-build".into(),
+            repo: "pleme-io/hardened-images".into(),
+            workflow_file: "image-release.yml".into(),
+            head_sha: "unknown-in-this-fixture".into(),
+            runner_ever_assigned: false,
+            queued_for: Duration::from_secs(3 * 3600 + 12 * 60),
+            prior_auto_retries: 0,
+        };
+        let decision =
+            classify_queue_starvation(&obs, &QueueStarvationPolicy::default(), &RetiradaCiPolicy::default());
+        assert!(matches!(decision, RemediationDecision::RedispatchOnDemand { .. }));
+    }
+
+    #[test]
+    fn a_freshly_queued_job_is_not_starvation_yet() {
+        // Cold-start Wake latency (observed this session: single-digit
+        // minutes) must NEVER trigger a redispatch -- only real,
+        // sustained starvation past the threshold does.
+        let obs = queue_obs(false, Duration::from_secs(90));
+        let decision =
+            classify_queue_starvation(&obs, &QueueStarvationPolicy::default(), &RetiradaCiPolicy::default());
+        assert_eq!(
+            decision,
+            RemediationDecision::NoAction {
+                reason: NoActionReason::StillWithinNormalWake
+            }
+        );
+    }
+
+    #[test]
+    fn a_job_that_got_a_runner_is_never_starvation_regardless_of_queue_time() {
+        // Once a runner claims the job, whatever happens next is the
+        // pod-eviction classifier's question, never this one's -- even
+        // if it somehow queued a long time before being claimed.
+        let obs = queue_obs(true, Duration::from_secs(2 * 3600));
+        let decision =
+            classify_queue_starvation(&obs, &QueueStarvationPolicy::default(), &RetiradaCiPolicy::default());
+        assert_eq!(
+            decision,
+            RemediationDecision::NoAction {
+                reason: NoActionReason::RunnerAlreadyAssigned
+            }
+        );
+    }
+
+    #[test]
+    fn queue_starvation_respects_the_same_retry_ceiling() {
+        let mut obs = queue_obs(false, Duration::from_secs(25 * 3600));
+        obs.prior_auto_retries = 1;
+        let policy = RetiradaCiPolicy {
+            max_auto_retries: 1,
+            ..RetiradaCiPolicy::default()
+        };
+        let decision = classify_queue_starvation(&obs, &QueueStarvationPolicy::default(), &policy);
+        assert_eq!(
+            decision,
+            RemediationDecision::NoAction {
+                reason: NoActionReason::RetryCeilingReached
+            }
+        );
+    }
+
+    struct MockQueueObserver(QueuedJobObservation);
+    #[async_trait::async_trait]
+    impl JobQueueObserver for MockQueueObserver {
+        async fn observe_queued_job(
+            &self,
+            _repo: &str,
+            _run_id: u64,
+            _job_id: u64,
+        ) -> anyhow::Result<QueuedJobObservation> {
+            Ok(self.0.clone())
+        }
+    }
+
+    #[tokio::test]
+    async fn queue_orchestration_dispatches_only_past_the_starvation_threshold() {
+        let observer = MockQueueObserver(queue_obs(false, Duration::from_secs(25 * 3600)));
+        let dispatcher = MockDispatcher::default();
+
+        let decision = observe_queue_and_remediate(
+            &observer,
+            &dispatcher,
+            &QueueStarvationPolicy::default(),
+            &RetiradaCiPolicy::default(),
+            "pleme-io/breathe",
+            29_930_406_877,
+            88_958_322_865,
+        )
+        .await
+        .unwrap();
+
+        assert!(matches!(
+            decision,
+            RemediationDecision::RedispatchOnDemand { .. }
+        ));
+        assert_eq!(dispatcher.calls.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn queue_orchestration_never_dispatches_during_normal_wake() {
+        let observer = MockQueueObserver(queue_obs(false, Duration::from_secs(90)));
+        let dispatcher = MockDispatcher::default();
+
+        let decision = observe_queue_and_remediate(
+            &observer,
+            &dispatcher,
+            &QueueStarvationPolicy::default(),
+            &RetiradaCiPolicy::default(),
+            "pleme-io/breathe",
+            29_930_406_877,
+            88_958_322_865,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            decision,
+            RemediationDecision::NoAction {
+                reason: NoActionReason::StillWithinNormalWake
             }
         );
         assert!(dispatcher.calls.lock().unwrap().is_empty());
