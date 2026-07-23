@@ -378,6 +378,53 @@ pub async fn observe_queue_and_remediate(
     Ok(decision)
 }
 
+// ---------------------------------------------------------------------
+// Stateless retry-ceiling — no external storage needed.
+// ---------------------------------------------------------------------
+
+/// The minimal typed facts about one past workflow run this crate needs
+/// to answer "has this exact commit already been auto-retried" WITHOUT
+/// any persistent state of its own (no database, no committed file, no
+/// repo variable) — it just asks GitHub's own run history.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RunSummary {
+    pub head_sha: String,
+    /// GitHub's own `event` field — `"push"`, `"workflow_dispatch"`,
+    /// `"schedule"`, etc.
+    pub event: String,
+}
+
+/// `true` iff `recent_runs` already contains a `workflow_dispatch`-
+/// triggered run for `head_sha` — i.e. this exact commit has already
+/// been auto-retried once. A poller calls this immediately before
+/// acting on a [`RemediationDecision::RedispatchOnDemand`] as its
+/// STATELESS retry-ceiling check: no counter to persist, no state to
+/// go stale — GitHub's own run history IS the ledger. Composes with
+/// (does not replace) [`RetiradaCiPolicy::max_auto_retries`], which a
+/// caller applies via `prior_auto_retries` when it already knows the
+/// count some other way (e.g. the k8s-watcher path, which may track it
+/// in-memory across a long-lived process).
+#[must_use]
+pub fn already_redispatched(head_sha: &str, recent_runs: &[RunSummary]) -> bool {
+    count_prior_auto_retries(head_sha, recent_runs) > 0
+}
+
+/// The general form of [`already_redispatched`]: how many
+/// `workflow_dispatch`-triggered runs already exist for `head_sha` —
+/// feeds directly into [`QueuedJobObservation::prior_auto_retries`] so
+/// [`RetiradaCiPolicy::max_auto_retries`] ceilings above 1 are
+/// meaningful, still with zero external state.
+#[must_use]
+pub fn count_prior_auto_retries(head_sha: &str, recent_runs: &[RunSummary]) -> u32 {
+    u32::try_from(
+        recent_runs
+            .iter()
+            .filter(|r| r.head_sha == head_sha && r.event == "workflow_dispatch")
+            .count(),
+    )
+    .unwrap_or(u32::MAX)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -757,5 +804,70 @@ mod tests {
             }
         );
         assert!(dispatcher.calls.lock().unwrap().is_empty());
+    }
+
+    // ---- Stateless retry-ceiling ----
+
+    #[test]
+    fn already_redispatched_true_when_a_workflow_dispatch_run_shares_the_sha() {
+        let runs = vec![
+            RunSummary {
+                head_sha: "deadbeef".into(),
+                event: "push".into(),
+            },
+            RunSummary {
+                head_sha: "deadbeef".into(),
+                event: "workflow_dispatch".into(),
+            },
+        ];
+        assert!(already_redispatched("deadbeef", &runs));
+    }
+
+    #[test]
+    fn already_redispatched_false_for_a_different_sha() {
+        let runs = vec![RunSummary {
+            head_sha: "otherSha".into(),
+            event: "workflow_dispatch".into(),
+        }];
+        assert!(!already_redispatched("deadbeef", &runs));
+    }
+
+    #[test]
+    fn already_redispatched_false_when_only_a_push_run_shares_the_sha() {
+        // A push-triggered rebuild of the same sha (e.g. a force-push)
+        // does NOT count as an auto-retry -- only workflow_dispatch does.
+        let runs = vec![RunSummary {
+            head_sha: "deadbeef".into(),
+            event: "push".into(),
+        }];
+        assert!(!already_redispatched("deadbeef", &runs));
+    }
+
+    #[test]
+    fn already_redispatched_false_for_empty_history() {
+        assert!(!already_redispatched("deadbeef", &[]));
+    }
+
+    #[test]
+    fn count_prior_auto_retries_counts_only_matching_workflow_dispatch_runs() {
+        let runs = vec![
+            RunSummary {
+                head_sha: "deadbeef".into(),
+                event: "push".into(),
+            },
+            RunSummary {
+                head_sha: "deadbeef".into(),
+                event: "workflow_dispatch".into(),
+            },
+            RunSummary {
+                head_sha: "deadbeef".into(),
+                event: "workflow_dispatch".into(),
+            },
+            RunSummary {
+                head_sha: "otherSha".into(),
+                event: "workflow_dispatch".into(),
+            },
+        ];
+        assert_eq!(count_prior_auto_retries("deadbeef", &runs), 2);
     }
 }
