@@ -54,16 +54,21 @@ spec:
                 minimum: 0.0
                 type: integer
               cooldownSeconds:
-                default: 600
                 format: uint64
                 minimum: 0.0
+                nullable: true
                 type: integer
               disruptionPolicy:
-                description: The golden/ceiling gate (default `restartFreeOnly`). Omitted on serialize when default so the strict typed-gRPC surface stays safe.
+                description: The golden/ceiling gate (default `restartFreeOnly`). `None` ⇒ resolve via the 3-tier fold, same as the other 7 behavioral fields.
                 enum:
                 - restartFreeOnly
                 - allowConditional
                 - allowRestart
+                nullable: true
+                type: string
+              disruptionPolicyRationale:
+                description: Free-text justification for an EXPLICIT per-CR `disruptionPolicy` override — carries the "why" WITH the CR when it deliberately diverges from its posture/compiled default (e.g. "genuinely stateful; no in-place resize available"). Purely documentary; never read by the fold.
+                nullable: true
                 type: string
               dryRun:
                 default: false
@@ -80,17 +85,17 @@ spec:
                 nullable: true
                 type: string
               growAbove:
-                default: 0.85
                 format: double
+                nullable: true
                 type: number
               growFactor:
-                default: 1.25
                 format: double
+                nullable: true
                 type: number
               maxStalenessSeconds:
-                default: 120
                 format: uint64
                 minimum: 0.0
+                nullable: true
                 type: integer
               mode:
                 description: 'The PROMOTION LIFECYCLE. Unset ⇒ resolved by `promotion_mode()` (legacy `dryRun:true` → Shadow, else the fleet default `ShadowConfirmEffect`). Set explicitly to pin the state: `shadow` | `effect` | `shadowConfirmEffect` | `suspended`.'
@@ -106,6 +111,10 @@ spec:
                 description: The trailing-window PEAK decay per tick `∈ [0,1)` — the never-OOM shrink floor is keyed on the demonstrated PEAK working set (max RSS), which decays geometrically by this factor each tick so a real spike raises the floor and HOLDS it for a meaningful window rather than evaporating on the next low-water sample (the authentik-Celery OOM fix). Default 0.98 (a spike holds for ~tens of ticks); `0.0` = pure single-tick max (no window memory).
                 format: double
                 type: number
+              postureRef:
+                description: The named [`BreathePosture`] this band's UNSET behavioral fields (the 8 below) fall back to before the compiled default. `None` ⇒ compiled defaults only. Structurally cannot carry `floor`/`ceiling`/ `targetRef`/`dryRun`/`mode` (those live only on this band's own spec) — a posture patch can never widen a capacity bound or flip a promotion state fleet-wide. See `posture.rs`'s module doc.
+                nullable: true
+                type: string
               predictive:
                 description: 'M0 PREDICTIVE (opt-in, default off → behaviour byte-unchanged): when `true`, breathe measures the working-set velocity and pre-grows the limit for the projected burst via the proven `PredictiveGrow<BandLaw>` — asymmetric (only ever raises a grow), still `safety_clamp`-contained (the never-OOM oracle covers it). Shadow-first: observe the predictive grows under `dryRun` before promoting to live.'
                 type: boolean
@@ -119,16 +128,17 @@ spec:
                 description: The operator's declared `requests.<resource>` floor (a quantity string in the band's unit, e.g. `512Mi` / `250m`). A shrink can NEVER carve the limit below this — requests is the scheduler's guaranteed working set, and a limit under the request is both invalid in k8s and unsafe. Empty (the default) ⇒ no request floor. Typically mirrors the workload's actual `resources.requests.<resource>`.
                 type: string
               setpoint:
-                default: 0.8
+                description: EXPLICIT override. `None` ⇒ resolve via the 3-tier fold (the referenced posture, then the compiled default) — see `Band::band_config_with_posture`.
                 format: double
+                nullable: true
                 type: number
               shrinkBelow:
-                default: 0.7
                 format: double
+                nullable: true
                 type: number
               shrinkFactor:
-                default: 0.9
                 format: double
+                nullable: true
                 type: number
               suspend:
                 description: 'FREEZE this band — `true` ⇒ the controller skips observe/plan/act entirely (phase `Suspended`), the limit is left exactly as-is. Distinct from `dryRun` (which still observes + reports what it WOULD do): suspend is "stop deciding". Resume with `suspend:false`. The k8s-native pause.'
@@ -401,16 +411,21 @@ spec:
                 minimum: 0.0
                 type: integer
               cooldownSeconds:
-                default: 600
                 format: uint64
                 minimum: 0.0
+                nullable: true
                 type: integer
               disruptionPolicy:
-                description: The golden/ceiling gate (default `restartFreeOnly`). Omitted on serialize when default so the strict typed-gRPC surface stays safe.
+                description: The golden/ceiling gate (default `restartFreeOnly`). `None` ⇒ resolve via the 3-tier fold, same as the other 7 behavioral fields.
                 enum:
                 - restartFreeOnly
                 - allowConditional
                 - allowRestart
+                nullable: true
+                type: string
+              disruptionPolicyRationale:
+                description: Free-text justification for an EXPLICIT per-CR `disruptionPolicy` override — carries the "why" WITH the CR when it deliberately diverges from its posture/compiled default (e.g. "genuinely stateful; no in-place resize available"). Purely documentary; never read by the fold.
+                nullable: true
                 type: string
               dryRun:
                 default: false
@@ -427,17 +442,17 @@ spec:
                 nullable: true
                 type: string
               growAbove:
-                default: 0.85
                 format: double
+                nullable: true
                 type: number
               growFactor:
-                default: 1.25
                 format: double
+                nullable: true
                 type: number
               maxStalenessSeconds:
-                default: 120
                 format: uint64
                 minimum: 0.0
+                nullable: true
                 type: integer
               mode:
                 description: 'The PROMOTION LIFECYCLE. Unset ⇒ resolved by `promotion_mode()` (legacy `dryRun:true` → Shadow, else the fleet default `ShadowConfirmEffect`). Set explicitly to pin the state: `shadow` | `effect` | `shadowConfirmEffect` | `suspended`.'
@@ -453,6 +468,10 @@ spec:
                 description: The trailing-window PEAK decay per tick `∈ [0,1)` — the never-OOM shrink floor is keyed on the demonstrated PEAK working set (max RSS), which decays geometrically by this factor each tick so a real spike raises the floor and HOLDS it for a meaningful window rather than evaporating on the next low-water sample (the authentik-Celery OOM fix). Default 0.98 (a spike holds for ~tens of ticks); `0.0` = pure single-tick max (no window memory).
                 format: double
                 type: number
+              postureRef:
+                description: The named [`BreathePosture`] this band's UNSET behavioral fields (the 8 below) fall back to before the compiled default. `None` ⇒ compiled defaults only. Structurally cannot carry `floor`/`ceiling`/ `targetRef`/`dryRun`/`mode` (those live only on this band's own spec) — a posture patch can never widen a capacity bound or flip a promotion state fleet-wide. See `posture.rs`'s module doc.
+                nullable: true
+                type: string
               predictive:
                 description: 'M0 PREDICTIVE (opt-in, default off → behaviour byte-unchanged): when `true`, breathe measures the working-set velocity and pre-grows the limit for the projected burst via the proven `PredictiveGrow<BandLaw>` — asymmetric (only ever raises a grow), still `safety_clamp`-contained (the never-OOM oracle covers it). Shadow-first: observe the predictive grows under `dryRun` before promoting to live.'
                 type: boolean
@@ -466,16 +485,17 @@ spec:
                 description: The operator's declared `requests.<resource>` floor (a quantity string in the band's unit, e.g. `512Mi` / `250m`). A shrink can NEVER carve the limit below this — requests is the scheduler's guaranteed working set, and a limit under the request is both invalid in k8s and unsafe. Empty (the default) ⇒ no request floor. Typically mirrors the workload's actual `resources.requests.<resource>`.
                 type: string
               setpoint:
-                default: 0.8
+                description: EXPLICIT override. `None` ⇒ resolve via the 3-tier fold (the referenced posture, then the compiled default) — see `Band::band_config_with_posture`.
                 format: double
+                nullable: true
                 type: number
               shrinkBelow:
-                default: 0.7
                 format: double
+                nullable: true
                 type: number
               shrinkFactor:
-                default: 0.9
                 format: double
+                nullable: true
                 type: number
               suspend:
                 description: 'FREEZE this band — `true` ⇒ the controller skips observe/plan/act entirely (phase `Suspended`), the limit is left exactly as-is. Distinct from `dryRun` (which still observes + reports what it WOULD do): suspend is "stop deciding". Resume with `suspend:false`. The k8s-native pause.'
@@ -748,16 +768,21 @@ spec:
                 minimum: 0.0
                 type: integer
               cooldownSeconds:
-                default: 600
                 format: uint64
                 minimum: 0.0
+                nullable: true
                 type: integer
               disruptionPolicy:
-                description: The golden/ceiling gate (default `restartFreeOnly`). Omitted on serialize when default so the strict typed-gRPC surface stays safe.
+                description: The golden/ceiling gate (default `restartFreeOnly`). `None` ⇒ resolve via the 3-tier fold, same as the other 7 behavioral fields.
                 enum:
                 - restartFreeOnly
                 - allowConditional
                 - allowRestart
+                nullable: true
+                type: string
+              disruptionPolicyRationale:
+                description: Free-text justification for an EXPLICIT per-CR `disruptionPolicy` override — carries the "why" WITH the CR when it deliberately diverges from its posture/compiled default (e.g. "genuinely stateful; no in-place resize available"). Purely documentary; never read by the fold.
+                nullable: true
                 type: string
               dryRun:
                 default: false
@@ -774,17 +799,17 @@ spec:
                 nullable: true
                 type: string
               growAbove:
-                default: 0.85
                 format: double
+                nullable: true
                 type: number
               growFactor:
-                default: 1.25
                 format: double
+                nullable: true
                 type: number
               maxStalenessSeconds:
-                default: 120
                 format: uint64
                 minimum: 0.0
+                nullable: true
                 type: integer
               mode:
                 description: 'The PROMOTION LIFECYCLE. Unset ⇒ resolved by `promotion_mode()` (legacy `dryRun:true` → Shadow, else the fleet default `ShadowConfirmEffect`). Set explicitly to pin the state: `shadow` | `effect` | `shadowConfirmEffect` | `suspended`.'
@@ -800,6 +825,10 @@ spec:
                 description: The trailing-window PEAK decay per tick `∈ [0,1)` — the never-OOM shrink floor is keyed on the demonstrated PEAK working set (max RSS), which decays geometrically by this factor each tick so a real spike raises the floor and HOLDS it for a meaningful window rather than evaporating on the next low-water sample (the authentik-Celery OOM fix). Default 0.98 (a spike holds for ~tens of ticks); `0.0` = pure single-tick max (no window memory).
                 format: double
                 type: number
+              postureRef:
+                description: The named [`BreathePosture`] this band's UNSET behavioral fields (the 8 below) fall back to before the compiled default. `None` ⇒ compiled defaults only. Structurally cannot carry `floor`/`ceiling`/ `targetRef`/`dryRun`/`mode` (those live only on this band's own spec) — a posture patch can never widen a capacity bound or flip a promotion state fleet-wide. See `posture.rs`'s module doc.
+                nullable: true
+                type: string
               predictive:
                 description: 'M0 PREDICTIVE (opt-in, default off → behaviour byte-unchanged): when `true`, breathe measures the working-set velocity and pre-grows the limit for the projected burst via the proven `PredictiveGrow<BandLaw>` — asymmetric (only ever raises a grow), still `safety_clamp`-contained (the never-OOM oracle covers it). Shadow-first: observe the predictive grows under `dryRun` before promoting to live.'
                 type: boolean
@@ -813,16 +842,17 @@ spec:
                 description: The operator's declared `requests.<resource>` floor (a quantity string in the band's unit, e.g. `512Mi` / `250m`). A shrink can NEVER carve the limit below this — requests is the scheduler's guaranteed working set, and a limit under the request is both invalid in k8s and unsafe. Empty (the default) ⇒ no request floor. Typically mirrors the workload's actual `resources.requests.<resource>`.
                 type: string
               setpoint:
-                default: 0.8
+                description: EXPLICIT override. `None` ⇒ resolve via the 3-tier fold (the referenced posture, then the compiled default) — see `Band::band_config_with_posture`.
                 format: double
+                nullable: true
                 type: number
               shrinkBelow:
-                default: 0.7
                 format: double
+                nullable: true
                 type: number
               shrinkFactor:
-                default: 0.9
                 format: double
+                nullable: true
                 type: number
               suspend:
                 description: 'FREEZE this band — `true` ⇒ the controller skips observe/plan/act entirely (phase `Suspended`), the limit is left exactly as-is. Distinct from `dryRun` (which still observes + reports what it WOULD do): suspend is "stop deciding". Resume with `suspend:false`. The k8s-native pause.'
@@ -1495,16 +1525,21 @@ spec:
                 minimum: 0.0
                 type: integer
               cooldownSeconds:
-                default: 600
                 format: uint64
                 minimum: 0.0
+                nullable: true
                 type: integer
               disruptionPolicy:
-                description: The golden/ceiling gate (default `restartFreeOnly`). Omitted on serialize when default so the strict typed-gRPC surface stays safe.
+                description: The golden/ceiling gate (default `restartFreeOnly`). `None` ⇒ resolve via the 3-tier fold, same as the other 7 behavioral fields.
                 enum:
                 - restartFreeOnly
                 - allowConditional
                 - allowRestart
+                nullable: true
+                type: string
+              disruptionPolicyRationale:
+                description: Free-text justification for an EXPLICIT per-CR `disruptionPolicy` override — carries the "why" WITH the CR when it deliberately diverges from its posture/compiled default (e.g. "genuinely stateful; no in-place resize available"). Purely documentary; never read by the fold.
+                nullable: true
                 type: string
               dryRun:
                 default: false
@@ -1521,17 +1556,17 @@ spec:
                 nullable: true
                 type: string
               growAbove:
-                default: 0.85
                 format: double
+                nullable: true
                 type: number
               growFactor:
-                default: 1.25
                 format: double
+                nullable: true
                 type: number
               maxStalenessSeconds:
-                default: 120
                 format: uint64
                 minimum: 0.0
+                nullable: true
                 type: integer
               mode:
                 description: 'The PROMOTION LIFECYCLE. Unset ⇒ resolved by `promotion_mode()` (legacy `dryRun:true` → Shadow, else the fleet default `ShadowConfirmEffect`). Set explicitly to pin the state: `shadow` | `effect` | `shadowConfirmEffect` | `suspended`.'
@@ -1547,6 +1582,10 @@ spec:
                 description: The trailing-window PEAK decay per tick `∈ [0,1)` — the never-OOM shrink floor is keyed on the demonstrated PEAK working set (max RSS), which decays geometrically by this factor each tick so a real spike raises the floor and HOLDS it for a meaningful window rather than evaporating on the next low-water sample (the authentik-Celery OOM fix). Default 0.98 (a spike holds for ~tens of ticks); `0.0` = pure single-tick max (no window memory).
                 format: double
                 type: number
+              postureRef:
+                description: The named [`BreathePosture`] this band's UNSET behavioral fields (the 8 below) fall back to before the compiled default. `None` ⇒ compiled defaults only. Structurally cannot carry `floor`/`ceiling`/ `targetRef`/`dryRun`/`mode` (those live only on this band's own spec) — a posture patch can never widen a capacity bound or flip a promotion state fleet-wide. See `posture.rs`'s module doc.
+                nullable: true
+                type: string
               predictive:
                 description: 'M0 PREDICTIVE (opt-in, default off → behaviour byte-unchanged): when `true`, breathe measures the working-set velocity and pre-grows the limit for the projected burst via the proven `PredictiveGrow<BandLaw>` — asymmetric (only ever raises a grow), still `safety_clamp`-contained (the never-OOM oracle covers it). Shadow-first: observe the predictive grows under `dryRun` before promoting to live.'
                 type: boolean
@@ -1560,16 +1599,17 @@ spec:
                 description: The operator's declared `requests.<resource>` floor (a quantity string in the band's unit, e.g. `512Mi` / `250m`). A shrink can NEVER carve the limit below this — requests is the scheduler's guaranteed working set, and a limit under the request is both invalid in k8s and unsafe. Empty (the default) ⇒ no request floor. Typically mirrors the workload's actual `resources.requests.<resource>`.
                 type: string
               setpoint:
-                default: 0.8
+                description: EXPLICIT override. `None` ⇒ resolve via the 3-tier fold (the referenced posture, then the compiled default) — see `Band::band_config_with_posture`.
                 format: double
+                nullable: true
                 type: number
               shrinkBelow:
-                default: 0.7
                 format: double
+                nullable: true
                 type: number
               shrinkFactor:
-                default: 0.9
                 format: double
+                nullable: true
                 type: number
               suspend:
                 description: 'FREEZE this band — `true` ⇒ the controller skips observe/plan/act entirely (phase `Suspended`), the limit is left exactly as-is. Distinct from `dryRun` (which still observes + reports what it WOULD do): suspend is "stop deciding". Resume with `suspend:false`. The k8s-native pause.'
@@ -1842,16 +1882,21 @@ spec:
                 minimum: 0.0
                 type: integer
               cooldownSeconds:
-                default: 600
                 format: uint64
                 minimum: 0.0
+                nullable: true
                 type: integer
               disruptionPolicy:
-                description: The golden/ceiling gate (default `restartFreeOnly`). Omitted on serialize when default so the strict typed-gRPC surface stays safe.
+                description: The golden/ceiling gate (default `restartFreeOnly`). `None` ⇒ resolve via the 3-tier fold, same as the other 7 behavioral fields.
                 enum:
                 - restartFreeOnly
                 - allowConditional
                 - allowRestart
+                nullable: true
+                type: string
+              disruptionPolicyRationale:
+                description: Free-text justification for an EXPLICIT per-CR `disruptionPolicy` override — carries the "why" WITH the CR when it deliberately diverges from its posture/compiled default (e.g. "genuinely stateful; no in-place resize available"). Purely documentary; never read by the fold.
+                nullable: true
                 type: string
               dryRun:
                 default: false
@@ -1868,17 +1913,17 @@ spec:
                 nullable: true
                 type: string
               growAbove:
-                default: 0.85
                 format: double
+                nullable: true
                 type: number
               growFactor:
-                default: 1.25
                 format: double
+                nullable: true
                 type: number
               maxStalenessSeconds:
-                default: 120
                 format: uint64
                 minimum: 0.0
+                nullable: true
                 type: integer
               mode:
                 description: 'The PROMOTION LIFECYCLE. Unset ⇒ resolved by `promotion_mode()` (legacy `dryRun:true` → Shadow, else the fleet default `ShadowConfirmEffect`). Set explicitly to pin the state: `shadow` | `effect` | `shadowConfirmEffect` | `suspended`.'
@@ -1894,6 +1939,10 @@ spec:
                 description: The trailing-window PEAK decay per tick `∈ [0,1)` — the never-OOM shrink floor is keyed on the demonstrated PEAK working set (max RSS), which decays geometrically by this factor each tick so a real spike raises the floor and HOLDS it for a meaningful window rather than evaporating on the next low-water sample (the authentik-Celery OOM fix). Default 0.98 (a spike holds for ~tens of ticks); `0.0` = pure single-tick max (no window memory).
                 format: double
                 type: number
+              postureRef:
+                description: The named [`BreathePosture`] this band's UNSET behavioral fields (the 8 below) fall back to before the compiled default. `None` ⇒ compiled defaults only. Structurally cannot carry `floor`/`ceiling`/ `targetRef`/`dryRun`/`mode` (those live only on this band's own spec) — a posture patch can never widen a capacity bound or flip a promotion state fleet-wide. See `posture.rs`'s module doc.
+                nullable: true
+                type: string
               predictive:
                 description: 'M0 PREDICTIVE (opt-in, default off → behaviour byte-unchanged): when `true`, breathe measures the working-set velocity and pre-grows the limit for the projected burst via the proven `PredictiveGrow<BandLaw>` — asymmetric (only ever raises a grow), still `safety_clamp`-contained (the never-OOM oracle covers it). Shadow-first: observe the predictive grows under `dryRun` before promoting to live.'
                 type: boolean
@@ -1907,16 +1956,17 @@ spec:
                 description: The operator's declared `requests.<resource>` floor (a quantity string in the band's unit, e.g. `512Mi` / `250m`). A shrink can NEVER carve the limit below this — requests is the scheduler's guaranteed working set, and a limit under the request is both invalid in k8s and unsafe. Empty (the default) ⇒ no request floor. Typically mirrors the workload's actual `resources.requests.<resource>`.
                 type: string
               setpoint:
-                default: 0.8
+                description: EXPLICIT override. `None` ⇒ resolve via the 3-tier fold (the referenced posture, then the compiled default) — see `Band::band_config_with_posture`.
                 format: double
+                nullable: true
                 type: number
               shrinkBelow:
-                default: 0.7
                 format: double
+                nullable: true
                 type: number
               shrinkFactor:
-                default: 0.9
                 format: double
+                nullable: true
                 type: number
               suspend:
                 description: 'FREEZE this band — `true` ⇒ the controller skips observe/plan/act entirely (phase `Suspended`), the limit is left exactly as-is. Distinct from `dryRun` (which still observes + reports what it WOULD do): suspend is "stop deciding". Resume with `suspend:false`. The k8s-native pause.'
@@ -2189,16 +2239,21 @@ spec:
                 minimum: 0.0
                 type: integer
               cooldownSeconds:
-                default: 600
                 format: uint64
                 minimum: 0.0
+                nullable: true
                 type: integer
               disruptionPolicy:
-                description: The golden/ceiling gate (default `restartFreeOnly`). Omitted on serialize when default so the strict typed-gRPC surface stays safe.
+                description: The golden/ceiling gate (default `restartFreeOnly`). `None` ⇒ resolve via the 3-tier fold, same as the other 7 behavioral fields.
                 enum:
                 - restartFreeOnly
                 - allowConditional
                 - allowRestart
+                nullable: true
+                type: string
+              disruptionPolicyRationale:
+                description: Free-text justification for an EXPLICIT per-CR `disruptionPolicy` override — carries the "why" WITH the CR when it deliberately diverges from its posture/compiled default (e.g. "genuinely stateful; no in-place resize available"). Purely documentary; never read by the fold.
+                nullable: true
                 type: string
               dryRun:
                 default: false
@@ -2215,17 +2270,17 @@ spec:
                 nullable: true
                 type: string
               growAbove:
-                default: 0.85
                 format: double
+                nullable: true
                 type: number
               growFactor:
-                default: 1.25
                 format: double
+                nullable: true
                 type: number
               maxStalenessSeconds:
-                default: 120
                 format: uint64
                 minimum: 0.0
+                nullable: true
                 type: integer
               mode:
                 description: 'The PROMOTION LIFECYCLE. Unset ⇒ resolved by `promotion_mode()` (legacy `dryRun:true` → Shadow, else the fleet default `ShadowConfirmEffect`). Set explicitly to pin the state: `shadow` | `effect` | `shadowConfirmEffect` | `suspended`.'
@@ -2241,6 +2296,10 @@ spec:
                 description: The trailing-window PEAK decay per tick `∈ [0,1)` — the never-OOM shrink floor is keyed on the demonstrated PEAK working set (max RSS), which decays geometrically by this factor each tick so a real spike raises the floor and HOLDS it for a meaningful window rather than evaporating on the next low-water sample (the authentik-Celery OOM fix). Default 0.98 (a spike holds for ~tens of ticks); `0.0` = pure single-tick max (no window memory).
                 format: double
                 type: number
+              postureRef:
+                description: The named [`BreathePosture`] this band's UNSET behavioral fields (the 8 below) fall back to before the compiled default. `None` ⇒ compiled defaults only. Structurally cannot carry `floor`/`ceiling`/ `targetRef`/`dryRun`/`mode` (those live only on this band's own spec) — a posture patch can never widen a capacity bound or flip a promotion state fleet-wide. See `posture.rs`'s module doc.
+                nullable: true
+                type: string
               predictive:
                 description: 'M0 PREDICTIVE (opt-in, default off → behaviour byte-unchanged): when `true`, breathe measures the working-set velocity and pre-grows the limit for the projected burst via the proven `PredictiveGrow<BandLaw>` — asymmetric (only ever raises a grow), still `safety_clamp`-contained (the never-OOM oracle covers it). Shadow-first: observe the predictive grows under `dryRun` before promoting to live.'
                 type: boolean
@@ -2254,16 +2313,17 @@ spec:
                 description: The operator's declared `requests.<resource>` floor (a quantity string in the band's unit, e.g. `512Mi` / `250m`). A shrink can NEVER carve the limit below this — requests is the scheduler's guaranteed working set, and a limit under the request is both invalid in k8s and unsafe. Empty (the default) ⇒ no request floor. Typically mirrors the workload's actual `resources.requests.<resource>`.
                 type: string
               setpoint:
-                default: 0.8
+                description: EXPLICIT override. `None` ⇒ resolve via the 3-tier fold (the referenced posture, then the compiled default) — see `Band::band_config_with_posture`.
                 format: double
+                nullable: true
                 type: number
               shrinkBelow:
-                default: 0.7
                 format: double
+                nullable: true
                 type: number
               shrinkFactor:
-                default: 0.9
                 format: double
+                nullable: true
                 type: number
               suspend:
                 description: 'FREEZE this band — `true` ⇒ the controller skips observe/plan/act entirely (phase `Suspended`), the limit is left exactly as-is. Distinct from `dryRun` (which still observes + reports what it WOULD do): suspend is "stop deciding". Resume with `suspend:false`. The k8s-native pause.'
@@ -3798,6 +3858,98 @@ spec:
         required:
         - spec
         title: BreatheNodePool
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: breathepostures.breathe.pleme.io
+spec:
+  group: breathe.pleme.io
+  names:
+    categories:
+    - breathe
+    kind: BreathePosture
+    plural: breathepostures
+    shortNames:
+    - bpost
+    singular: breatheposture
+  scope: Cluster
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.setpoint
+      name: Setpoint
+      type: number
+    - jsonPath: .spec.disruptionPolicy
+      name: DisruptionPolicy
+      type: string
+    name: v1
+    schema:
+      openAPIV3Schema:
+        description: Auto-generated derived type for BreathePostureSpec via `CustomResource`
+        properties:
+          spec:
+            description: 'A named, complete default policy for the 8 behavioral band fields. A `BreathePosture` is a COMPLETE tuple by construction — every field is required (non-`Option`): a posture is either fully specified or it doesn''t exist. This is deliberate: it collapses what would otherwise be a 3-tier-per-field fallback (override > posture-if-set > compiled-default) into a clean 2-real-tier fold below the override (posture, then compiled default) — a posture can never itself be "partially unset".'
+            properties:
+              cooldownSeconds:
+                format: uint32
+                minimum: 0.0
+                type: integer
+              description:
+                description: Human-readable rationale for this class — carries the "why" WITH the tuple instead of it living only in a copy-pasted CR's comment (or, as found live, only in a since-retired sibling file's history).
+                nullable: true
+                type: string
+              disruptionPolicy:
+                description: The FLAG that makes "without restart" controllable + explicit. Set per band / per node; the actuator refuses any action whose [`DisruptionClass`] the policy does not permit (returning a typed deferral, never a silent roll). The default is the cautious one — never restart a workload unless explicitly allowed.
+                enum:
+                - restartFreeOnly
+                - allowConditional
+                - allowRestart
+                type: string
+              growAbove:
+                format: double
+                type: number
+              growFactor:
+                format: double
+                type: number
+              maxStalenessSeconds:
+                format: uint32
+                minimum: 0.0
+                type: integer
+              setpoint:
+                format: double
+                type: number
+              shrinkBelow:
+                format: double
+                type: number
+              shrinkFactor:
+                format: double
+                type: number
+            required:
+            - cooldownSeconds
+            - disruptionPolicy
+            - growAbove
+            - growFactor
+            - maxStalenessSeconds
+            - setpoint
+            - shrinkBelow
+            - shrinkFactor
+            type: object
+          status:
+            description: '`BreathePosture` status — deliberately NOT a maintained aggregate (no dedicated actuator writes it). "Which bands reference posture X" is answered live by filtering `breathe_band_list()`''s output client-side (the `breathe-mcp` `breathe_posture_get` tool), never a status field that would need its own writer to stay fresh.'
+            nullable: true
+            properties:
+              lastObserved:
+                nullable: true
+                type: string
+            type: object
+        required:
+        - spec
+        title: BreathePosture
         type: object
     served: true
     storage: true
