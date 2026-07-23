@@ -102,8 +102,12 @@ struct Args {
     #[arg(long, default_value_t = 60)]
     poll_interval_secs: u64,
 
-    /// Report what would happen without dispatching anything.
-    #[arg(long, default_value_t = false)]
+    /// Report what would happen without dispatching anything. Takes an
+    /// explicit `true`/`false` value (not a bare presence flag) so a
+    /// caller — a GitHub Actions `run:` line — can always pass
+    /// `--dry-run=${{ inputs.dryRun || 'false' }}` unconditionally,
+    /// with zero shell conditional needed on the caller's side.
+    #[arg(long, action = clap::ArgAction::Set, default_value_t = false)]
     dry_run: bool,
 }
 

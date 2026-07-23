@@ -83,9 +83,14 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RUST_LOG: info
-        run: |
-          ARGS="--repo pleme-io/breathe --workflow image.yml --loop-for-secs 270 --poll-interval-secs 60"
-          if [ "${{ inputs.dryRun }}" = "true" ]; then
-            ARGS="$ARGS --dry-run"
-          fi
-          ./target/release/retirada-ci-watch $ARGS
+        # No shell conditional -- --dry-run takes an explicit true/false
+        # value (clap `ArgAction::Set`, not a bare presence flag), so the
+        # `inputs.dryRun || 'false'` fallback is expressed natively in
+        # GitHub's own expression syntax: `schedule`-triggered runs have
+        # no `inputs` context at all (evaluates to null, `||` supplies
+        # 'false'); `workflow_dispatch` runs pass the real value through.
+        run: >-
+          ./target/release/retirada-ci-watch
+          --repo pleme-io/breathe --workflow image.yml
+          --loop-for-secs 270 --poll-interval-secs 60
+          --dry-run=${{ inputs.dryRun || 'false' }}
