@@ -357,6 +357,21 @@ mod tests {
             self.patches.lock().unwrap().push((name, spec.clone()));
             Ok(json!({ "spec": spec }))
         }
+        async fn list_postures(&self) -> Result<Value, StoreError> {
+            Ok(json!([{ "metadata": { "name": "platform-default" }, "spec": { "setpoint": 0.8 } }]))
+        }
+        async fn get_posture(&self, name: String) -> Result<Value, StoreError> {
+            Ok(json!({
+                "apiVersion": "breathe.pleme.io/v1",
+                "kind": "BreathePosture",
+                "metadata": { "name": name },
+                "spec": { "setpoint": 0.8, "growAbove": 0.85, "growFactor": 1.25, "shrinkBelow": 0.7, "shrinkFactor": 0.9, "cooldownSeconds": 600, "maxStalenessSeconds": 120, "disruptionPolicy": "restartFreeOnly" }
+            }))
+        }
+        async fn patch_posture_spec(&self, name: String, spec: Value) -> Result<Value, StoreError> {
+            self.patches.lock().unwrap().push((name, spec.clone()));
+            Ok(json!({ "spec": spec }))
+        }
         fn catalog(&self) -> Value {
             breathe_facade::catalog_json()
         }
