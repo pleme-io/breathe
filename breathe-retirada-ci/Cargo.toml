@@ -28,6 +28,15 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"], optional = tr
 # anything that just wants classify()/classify_queue_starvation().
 watch-cli = ["dep:octocrab", "dep:tokio", "dep:clap", "dep:tracing-subscriber"]
 
+[package.metadata.pleme]
+# Opt this crate's optional watch-cli deps into gen's Cargo.build-spec.json
+# (gen@115f0b2 — cargo_metadata never passed --features by default, so
+# octocrab/tokio/clap/tracing-subscriber never entered the generated spec
+# even though this crate's own [[bin]] required them; gen now reads this
+# key via a cheap `cargo metadata --no-deps` pre-pass and activates exactly
+# these features when building the spec, never a blanket all-features).
+features = ["watch-cli"]
+
 [[bin]]
 name = "retirada-ci-watch"
 path = "src/bin/watch.rs"
