@@ -294,10 +294,47 @@ impl Default for QueueStarvationPolicy {
             // (single-digit minutes, observed 2026-07-23), and far
             // below GitHub's own 24h auto-cancel — catches the real
             // starvation class early instead of waiting a full day for
-            // GitHub itself to give up.
+            // GitHub itself to give up. The floor
+            // [`compute_adaptive_starvation_threshold`] falls back to
+            // when there isn't enough recent history to learn from yet.
             starvation_threshold: std::time::Duration::from_secs(600),
         }
     }
+}
+
+/// The algorithmically-adjusting knob — sets [`QueueStarvationPolicy::starvation_threshold`]
+/// from OBSERVED recent Wake latency instead of a fixed constant.
+/// Deliberately statistics, never ML (the org's own autorevivy doctrine:
+/// "algorithmic dominance, NOT ML — rules / control-theory / graph-DAG to
+/// their maximum, then escalate"): `wake_latencies` are real observed
+/// `started_at - created_at` deltas from recent jobs that DID get a
+/// runner — the natural, self-refreshing baseline for "what does a normal
+/// cold-start Wake actually cost right now." The threshold is the p95 of
+/// that baseline, scaled up by `multiplier` (comfortable headroom so a
+/// normal Wake never trips it) and floored at `floor` (so a single
+/// unusually-fast sample, or an empty/thin history, can never collapse
+/// the threshold toward zero and start firing on ordinary jitter).
+///
+/// This is `lapidar`'s accept-if-improved-else-revert spirit applied to
+/// one knob: as the pool's real cold-start behavior drifts (a bigger
+/// image, a slower node type, a busier pool), the threshold drifts with
+/// it automatically — never hand-retuned, never stale.
+#[must_use]
+pub fn compute_adaptive_starvation_threshold(
+    wake_latencies: &[std::time::Duration],
+    multiplier: f64,
+    floor: std::time::Duration,
+) -> std::time::Duration {
+    if wake_latencies.is_empty() {
+        return floor;
+    }
+    let mut sorted: Vec<std::time::Duration> = wake_latencies.to_vec();
+    sorted.sort();
+    let p95_idx = (((sorted.len() as f64) * 0.95).ceil() as usize)
+        .clamp(1, sorted.len())
+        - 1;
+    let p95 = sorted[p95_idx];
+    p95.mul_f64(multiplier).max(floor)
 }
 
 /// The pure decision for the queue-starvation path — the sibling of
@@ -869,5 +906,47 @@ mod tests {
             },
         ];
         assert_eq!(count_prior_auto_retries("deadbeef", &runs), 2);
+    }
+
+    // ---- Adaptive threshold — the algorithmically-adjusting knob ----
+
+    #[test]
+    fn adaptive_threshold_falls_back_to_floor_on_empty_history() {
+        let t = compute_adaptive_starvation_threshold(&[], 3.0, Duration::from_secs(600));
+        assert_eq!(t, Duration::from_secs(600));
+    }
+
+    #[test]
+    fn adaptive_threshold_scales_up_from_observed_p95() {
+        // 20 samples, mostly ~2min Wake, one slow outlier at 4min — p95
+        // should land near the top of the bulk (2min), not be dragged by
+        // the single outlier, then get scaled by the multiplier.
+        let mut latencies: Vec<Duration> = (0..19).map(|_| Duration::from_secs(120)).collect();
+        latencies.push(Duration::from_secs(240));
+        let t = compute_adaptive_starvation_threshold(&latencies, 3.0, Duration::from_secs(60));
+        // p95 of this distribution is 120s (19/20 = 95th percentile
+        // lands inside the bulk, not the single outlier) -> 3x = 360s.
+        assert_eq!(t, Duration::from_secs(360));
+    }
+
+    #[test]
+    fn adaptive_threshold_never_drops_below_the_floor() {
+        // A pool with a genuinely fast, consistent Wake (10s) must still
+        // never push the threshold below the floor -- protects against a
+        // thin/lucky sample collapsing it toward zero and firing on
+        // ordinary jitter.
+        let latencies = vec![Duration::from_secs(10); 10];
+        let t = compute_adaptive_starvation_threshold(&latencies, 3.0, Duration::from_secs(300));
+        assert_eq!(t, Duration::from_secs(300));
+    }
+
+    #[test]
+    fn adaptive_threshold_single_sample_is_well_defined() {
+        let t = compute_adaptive_starvation_threshold(
+            &[Duration::from_secs(90)],
+            2.0,
+            Duration::from_secs(60),
+        );
+        assert_eq!(t, Duration::from_secs(180));
     }
 }

@@ -4,13 +4,31 @@
 # (this repo's own run 29930406877, hardened-images' 30007679929) that
 # the actual failure mode on camelot-builder-pleme is a job sitting
 # queued with ZERO runner ever assigned until GitHub's own 24h
-# queue-timeout gives up -- not a mid-job spot reclaim. This workflow
-# polls every 5 minutes; any job confirmed starved past the threshold
-# gets automatically redispatched onto the existing on-demand escape
-# hatch (image.yml's own `runnerOverride` input), bounded by a
-# stateless retry ceiling (never more than one auto-retry per commit --
-# see breathe-retirada-ci's `already_redispatched`/
-# `count_prior_auto_retries`).
+# queue-timeout gives up -- not a mid-job spot reclaim. Any job
+# confirmed starved past the threshold gets automatically redispatched
+# onto the existing on-demand escape hatch (image.yml's own
+# `runnerOverride` input), bounded by a stateless retry ceiling (never
+# more than one auto-retry per commit -- see breathe-retirada-ci's
+# `already_redispatched`/`count_prior_auto_retries`).
+#
+# Effective cadence: GitHub's own `schedule:` trigger has a real,
+# documented 5-minute floor (sub-minute cron is accepted but not
+# reliably honored). Rather than fight that floor, each 5-minute
+# invocation loops INTERNALLY (--loop-for-secs 270, --poll-interval-secs
+# 60) -- so detection actually happens roughly every 60s, bounded by the
+# poll interval, not GitHub's scheduler; the 5-minute trigger is just
+# the keep-alive that starts the next loop window shortly after the
+# previous one closes.
+#
+# The threshold ITSELF is algorithmically adjusting, not a fixed
+# constant: by default it's the p95 of REAL recently observed Wake
+# latency (started_at - created_at for jobs that did get a runner),
+# scaled up 3x for headroom, floored at --starvation-threshold-secs --
+# so it drifts automatically as the pool's real cold-start behavior
+# drifts, never hand-retuned, never stale (statistics, never ML, per
+# the org's own autorevivy doctrine). Live-verified 2026-07-23: a real
+# run against this exact workflow computed a threshold from 83 real
+# observed Wake samples before this was ever wired into the schedule.
 #
 # Needs ONLY this repo's own default GITHUB_TOKEN (actions:write,
 # declared below) -- no k8s RBAC, no cluster credentials, no new
@@ -61,12 +79,12 @@ jobs:
       - run: cargo build --release -p breathe-retirada-ci --features watch-cli --bin retirada-ci-watch
         working-directory: .
 
-      - name: Watch image.yml for starved jobs
+      - name: Watch image.yml for starved jobs (internal loop, ~60s effective cadence)
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RUST_LOG: info
         run: |
-          ARGS="--repo pleme-io/breathe --workflow image.yml"
+          ARGS="--repo pleme-io/breathe --workflow image.yml --loop-for-secs 270 --poll-interval-secs 60"
           if [ "${{ inputs.dryRun }}" = "true" ]; then
             ARGS="$ARGS --dry-run"
           fi
