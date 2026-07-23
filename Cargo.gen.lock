@@ -100,6 +100,108 @@
           "alloc"
         ]
       },
+      "anstream-1.0.0": {
+        "runtime_dependencies": [
+          {
+            "name": "anstyle",
+            "package_key": "anstyle-1.0.14",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "anstyle_parse",
+            "package_key": "anstyle-parse-1.0.0",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "anstyle_query",
+            "package_key": "anstyle-query-1.1.5",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": true,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "colorchoice",
+            "package_key": "colorchoice-1.0.5",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "is_terminal_polyfill",
+            "package_key": "is_terminal_polyfill-1.70.2",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "utf8parse",
+            "package_key": "utf8parse-0.2.2",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          }
+        ],
+        "build_dependencies": [],
+        "features": [
+          "auto",
+          "default",
+          "wincon"
+        ]
+      },
+      "anstyle-1.0.14": {
+        "runtime_dependencies": [],
+        "build_dependencies": [],
+        "features": [
+          "default",
+          "std"
+        ]
+      },
+      "anstyle-parse-1.0.0": {
+        "runtime_dependencies": [
+          {
+            "name": "utf8parse",
+            "package_key": "utf8parse-0.2.2",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": true,
+            "target": null,
+            "tree": "target"
+          }
+        ],
+        "build_dependencies": [],
+        "features": [
+          "default",
+          "utf8"
+        ]
+      },
+      "anstyle-query-1.1.5": {
+        "runtime_dependencies": [],
+        "build_dependencies": [],
+        "features": []
+      },
       "anyhow-1.0.102": {
         "runtime_dependencies": [],
         "build_dependencies": [],
@@ -7076,6 +7178,28 @@
             "tree": "target"
           },
           {
+            "name": "clap",
+            "package_key": "clap-4.6.4",
+            "kind": "normal",
+            "features": [
+              "derive"
+            ],
+            "uses_default_features": true,
+            "optional": true,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "octocrab",
+            "package_key": "octocrab-0.44.1",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": true,
+            "target": null,
+            "tree": "target"
+          },
+          {
             "name": "serde",
             "package_key": "serde-1.0.228",
             "kind": "normal",
@@ -7098,6 +7222,19 @@
             "tree": "target"
           },
           {
+            "name": "tokio",
+            "package_key": "tokio-1.52.3",
+            "kind": "normal",
+            "features": [
+              "macros",
+              "rt-multi-thread"
+            ],
+            "uses_default_features": true,
+            "optional": true,
+            "target": null,
+            "tree": "target"
+          },
+          {
             "name": "tracing",
             "package_key": "tracing-0.1.44",
             "kind": "normal",
@@ -7106,10 +7243,24 @@
             "optional": false,
             "target": null,
             "tree": "target"
+          },
+          {
+            "name": "tracing_subscriber",
+            "package_key": "tracing-subscriber-0.3.23",
+            "kind": "normal",
+            "features": [
+              "env-filter"
+            ],
+            "uses_default_features": true,
+            "optional": true,
+            "target": null,
+            "tree": "target"
           }
         ],
         "build_dependencies": [],
-        "features": []
+        "features": [
+          "watch-cli"
+        ]
       },
       "breathe-runtime-0.1.0": {
         "runtime_dependencies": [
@@ -7475,6 +7626,149 @@
           "windows-link"
         ]
       },
+      "clap-4.6.4": {
+        "runtime_dependencies": [
+          {
+            "name": "clap_builder",
+            "package_key": "clap_builder-4.6.2",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": false,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "clap_derive",
+            "package_key": "clap_derive-4.6.4",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": true,
+            "target": null,
+            "tree": "host"
+          }
+        ],
+        "build_dependencies": [],
+        "features": [
+          "color",
+          "default",
+          "derive",
+          "error-context",
+          "help",
+          "std",
+          "suggestions",
+          "usage"
+        ]
+      },
+      "clap_builder-4.6.2": {
+        "runtime_dependencies": [
+          {
+            "name": "anstream",
+            "package_key": "anstream-1.0.0",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": true,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "anstyle",
+            "package_key": "anstyle-1.0.14",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "clap_lex",
+            "package_key": "clap_lex-1.1.0",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "strsim",
+            "package_key": "strsim-0.11.1",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": true,
+            "target": null,
+            "tree": "target"
+          }
+        ],
+        "build_dependencies": [],
+        "features": [
+          "color",
+          "error-context",
+          "help",
+          "std",
+          "suggestions",
+          "usage"
+        ]
+      },
+      "clap_derive-4.6.4": {
+        "runtime_dependencies": [
+          {
+            "name": "heck",
+            "package_key": "heck-0.5.0",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "proc_macro2",
+            "package_key": "proc-macro2-1.0.106",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "quote",
+            "package_key": "quote-1.0.45",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "syn",
+            "package_key": "syn-3.0.3",
+            "kind": "normal",
+            "features": [
+              "full"
+            ],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          }
+        ],
+        "build_dependencies": [],
+        "features": [
+          "default"
+        ]
+      },
+      "clap_lex-1.1.0": {
+        "runtime_dependencies": [],
+        "build_dependencies": [],
+        "features": []
+      },
       "cmake-0.1.58": {
         "runtime_dependencies": [
           {
@@ -7492,6 +7786,11 @@
         "features": []
       },
       "cmov-0.5.4": {
+        "runtime_dependencies": [],
+        "build_dependencies": [],
+        "features": []
+      },
+      "colorchoice-1.0.5": {
         "runtime_dependencies": [],
         "build_dependencies": [],
         "features": []
@@ -9287,6 +9586,7 @@
           "async-await",
           "async-await-macro",
           "channel",
+          "default",
           "futures-channel",
           "futures-io",
           "futures-macro",
@@ -12215,6 +12515,13 @@
           "std"
         ]
       },
+      "is_terminal_polyfill-1.70.2": {
+        "runtime_dependencies": [],
+        "build_dependencies": [],
+        "features": [
+          "default"
+        ]
+      },
       "itertools-0.13.0": {
         "runtime_dependencies": [
           {
@@ -12434,6 +12741,94 @@
         "features": [
           "default",
           "std"
+        ]
+      },
+      "jsonwebtoken-9.3.1": {
+        "runtime_dependencies": [
+          {
+            "name": "base64",
+            "package_key": "base64-0.22.1",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "pem",
+            "package_key": "pem-3.0.6",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": true,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "ring",
+            "package_key": "ring-0.17.14",
+            "kind": "normal",
+            "features": [
+              "std"
+            ],
+            "uses_default_features": true,
+            "optional": false,
+            "target": "cfg(not(target_arch = \"wasm32\"))",
+            "tree": "target"
+          },
+          {
+            "name": "ring",
+            "package_key": "ring-0.17.14",
+            "kind": "normal",
+            "features": [
+              "std",
+              "wasm32_unknown_unknown_js"
+            ],
+            "uses_default_features": true,
+            "optional": false,
+            "target": "cfg(target_arch = \"wasm32\")",
+            "tree": "target"
+          },
+          {
+            "name": "serde",
+            "package_key": "serde-1.0.228",
+            "kind": "normal",
+            "features": [
+              "derive"
+            ],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "serde_json",
+            "package_key": "serde_json-1.0.150",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "simple_asn1",
+            "package_key": "simple_asn1-0.6.4",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": true,
+            "target": null,
+            "tree": "target"
+          }
+        ],
+        "build_dependencies": [],
+        "features": [
+          "default",
+          "pem",
+          "simple_asn1",
+          "use_pem"
         ]
       },
       "k8s-openapi-0.23.0": {
@@ -14282,6 +14677,372 @@
           "i128",
           "libm",
           "std"
+        ]
+      },
+      "octocrab-0.44.1": {
+        "runtime_dependencies": [
+          {
+            "name": "arc_swap",
+            "package_key": "arc-swap-1.9.1",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "async_trait",
+            "package_key": "async-trait-0.1.89",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "host"
+          },
+          {
+            "name": "base64",
+            "package_key": "base64-0.22.1",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "bytes",
+            "package_key": "bytes-1.11.1",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "cfg_if",
+            "package_key": "cfg-if-1.0.4",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "chrono",
+            "package_key": "chrono-0.4.44",
+            "kind": "normal",
+            "features": [
+              "clock",
+              "serde",
+              "wasmbind"
+            ],
+            "uses_default_features": false,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "either",
+            "package_key": "either-1.16.0",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "futures",
+            "package_key": "futures-0.3.32",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "futures_util",
+            "package_key": "futures-util-0.3.32",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": true,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "http",
+            "package_key": "http-1.4.1",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "http_body",
+            "package_key": "http-body-1.0.1",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "http_body_util",
+            "package_key": "http-body-util-0.1.3",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "hyper",
+            "package_key": "hyper-1.10.1",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "hyper_rustls",
+            "package_key": "hyper-rustls-0.27.9",
+            "kind": "normal",
+            "features": [
+              "http1",
+              "logging",
+              "native-tokio",
+              "tls12"
+            ],
+            "uses_default_features": false,
+            "optional": true,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "hyper_timeout",
+            "package_key": "hyper-timeout-0.5.2",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": true,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "hyper_util",
+            "package_key": "hyper-util-0.1.20",
+            "kind": "normal",
+            "features": [
+              "http1"
+            ],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "jsonwebtoken",
+            "package_key": "jsonwebtoken-9.3.1",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "once_cell",
+            "package_key": "once_cell-1.21.4",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "percent_encoding",
+            "package_key": "percent-encoding-2.3.2",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "pin_project",
+            "package_key": "pin-project-1.1.13",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "secrecy",
+            "package_key": "secrecy-0.10.3",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "serde",
+            "package_key": "serde-1.0.228",
+            "kind": "normal",
+            "features": [
+              "derive"
+            ],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "serde_json",
+            "package_key": "serde_json-1.0.150",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "serde_path_to_error",
+            "package_key": "serde_path_to_error-0.1.20",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "serde_urlencoded",
+            "package_key": "serde_urlencoded-0.7.1",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "snafu",
+            "package_key": "snafu-0.8.9",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "tokio",
+            "package_key": "tokio-1.52.3",
+            "kind": "normal",
+            "features": [
+              "time"
+            ],
+            "uses_default_features": false,
+            "optional": true,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "tower",
+            "package_key": "tower-0.5.3",
+            "kind": "normal",
+            "features": [
+              "buffer",
+              "util"
+            ],
+            "uses_default_features": false,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "tower_http",
+            "package_key": "tower-http-0.6.11",
+            "kind": "normal",
+            "features": [
+              "map-response-body",
+              "trace"
+            ],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "tracing",
+            "package_key": "tracing-0.1.44",
+            "kind": "normal",
+            "features": [
+              "log"
+            ],
+            "uses_default_features": true,
+            "optional": true,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "url",
+            "package_key": "url-2.5.8",
+            "kind": "normal",
+            "features": [
+              "serde"
+            ],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "web_time",
+            "package_key": "web-time-1.1.0",
+            "kind": "normal",
+            "features": [
+              "serde"
+            ],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          }
+        ],
+        "build_dependencies": [],
+        "features": [
+          "default",
+          "default-client",
+          "follow-redirect",
+          "futures-util",
+          "hyper-rustls",
+          "hyper-timeout",
+          "retry",
+          "rustls",
+          "rustls-ring",
+          "timeout",
+          "tokio",
+          "tracing"
         ]
       },
       "once_cell-1.21.4": {
@@ -19044,6 +19805,56 @@
           "std"
         ]
       },
+      "simple_asn1-0.6.4": {
+        "runtime_dependencies": [
+          {
+            "name": "num_bigint",
+            "package_key": "num-bigint-0.4.6",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": false,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "num_traits",
+            "package_key": "num-traits-0.2.19",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": false,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "thiserror",
+            "package_key": "thiserror-2.0.18",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": false,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "time",
+            "package_key": "time-0.3.53",
+            "kind": "normal",
+            "features": [
+              "formatting",
+              "macros",
+              "parsing"
+            ],
+            "uses_default_features": false,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          }
+        ],
+        "build_dependencies": [],
+        "features": []
+      },
       "sketches-ddsketch-0.3.1": {
         "runtime_dependencies": [],
         "build_dependencies": [],
@@ -19075,6 +19886,78 @@
           "const_generics",
           "const_new",
           "serde"
+        ]
+      },
+      "snafu-0.8.9": {
+        "runtime_dependencies": [
+          {
+            "name": "snafu_derive",
+            "package_key": "snafu-derive-0.8.9",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "host"
+          }
+        ],
+        "build_dependencies": [],
+        "features": [
+          "alloc",
+          "default",
+          "rust_1_61",
+          "rust_1_65",
+          "std"
+        ]
+      },
+      "snafu-derive-0.8.9": {
+        "runtime_dependencies": [
+          {
+            "name": "heck",
+            "package_key": "heck-0.5.0",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": false,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "proc_macro2",
+            "package_key": "proc-macro2-1.0.106",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "quote",
+            "package_key": "quote-1.0.45",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "syn",
+            "package_key": "syn-2.0.117",
+            "kind": "normal",
+            "features": [
+              "full"
+            ],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          }
+        ],
+        "build_dependencies": [],
+        "features": [
+          "rust_1_61"
         ]
       },
       "socket2-0.5.10": {
@@ -20900,6 +21783,50 @@
           "visit-mut"
         ]
       },
+      "syn-3.0.3": {
+        "runtime_dependencies": [
+          {
+            "name": "proc_macro2",
+            "package_key": "proc-macro2-1.0.106",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": false,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "quote",
+            "package_key": "quote-1.0.45",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": false,
+            "optional": true,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "unicode_ident",
+            "package_key": "unicode-ident-1.0.24",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          }
+        ],
+        "build_dependencies": [],
+        "features": [
+          "clone-impls",
+          "default",
+          "derive",
+          "full",
+          "parsing",
+          "printing",
+          "proc-macro"
+        ]
+      },
       "sync_wrapper-1.0.2": {
         "runtime_dependencies": [
           {
@@ -21192,6 +22119,16 @@
             "optional": false,
             "target": null,
             "tree": "target"
+          },
+          {
+            "name": "time_macros",
+            "package_key": "time-macros-0.2.31",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": true,
+            "target": null,
+            "tree": "host"
           }
         ],
         "build_dependencies": [],
@@ -21199,6 +22136,7 @@
           "alloc",
           "default",
           "formatting",
+          "macros",
           "parsing",
           "serde",
           "serde-well-known",
@@ -23396,11 +24334,32 @@
             "optional": false,
             "target": null,
             "tree": "target"
+          },
+          {
+            "name": "serde",
+            "package_key": "serde-1.0.228",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": false,
+            "optional": true,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "serde_derive",
+            "package_key": "serde_derive-1.0.228",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": false,
+            "optional": true,
+            "target": null,
+            "tree": "host"
           }
         ],
         "build_dependencies": [],
         "features": [
           "default",
+          "serde",
           "std"
         ]
       },
@@ -23413,6 +24372,13 @@
         "runtime_dependencies": [],
         "build_dependencies": [],
         "features": []
+      },
+      "utf8parse-0.2.2": {
+        "runtime_dependencies": [],
+        "build_dependencies": [],
+        "features": [
+          "default"
+        ]
       },
       "uuid-1.24.0": {
         "runtime_dependencies": [],
@@ -23488,6 +24454,13 @@
         ],
         "build_dependencies": [],
         "features": []
+      },
+      "web-time-1.1.0": {
+        "runtime_dependencies": [],
+        "build_dependencies": [],
+        "features": [
+          "serde"
+        ]
       },
       "webpki-roots-0.26.11": {
         "runtime_dependencies": [
@@ -25773,6 +26746,7 @@
               "alloc",
               "default",
               "dev_urandom_fallback",
+              "std",
               "wasm32_unknown_unknown_js"
             ]
           },
@@ -26670,6 +27644,7 @@
               "alloc",
               "default",
               "dev_urandom_fallback",
+              "std",
               "wasm32_unknown_unknown_js"
             ]
           },
@@ -27474,6 +28449,7 @@
               "alloc",
               "default",
               "dev_urandom_fallback",
+              "std",
               "wasm32_unknown_unknown_js"
             ]
           },
@@ -29625,6 +30601,7 @@
               "alloc",
               "default",
               "dev_urandom_fallback",
+              "std",
               "wasm32_unknown_unknown_js"
             ]
           },
@@ -30524,6 +31501,7 @@
               "alloc",
               "default",
               "dev_urandom_fallback",
+              "std",
               "wasm32_unknown_unknown_js"
             ]
           },
@@ -31330,6 +32308,7 @@
               "alloc",
               "default",
               "dev_urandom_fallback",
+              "std",
               "wasm32_unknown_unknown_js"
             ]
           },
@@ -31626,6 +32605,18 @@
     },
     "allocator-api2-0.2.21": {
       "edition": "2018"
+    },
+    "anstream-1.0.0": {
+      "edition": "2021"
+    },
+    "anstyle-1.0.14": {
+      "edition": "2021"
+    },
+    "anstyle-parse-1.0.0": {
+      "edition": "2021"
+    },
+    "anstyle-query-1.1.5": {
+      "edition": "2021"
     },
     "anyhow-1.0.102": {
       "edition": "2021",
@@ -32054,11 +33045,33 @@
     "chrono-0.4.44": {
       "edition": "2021"
     },
+    "clap-4.6.4": {
+      "edition": "2024",
+      "binaries": [
+        {
+          "name": "stdio-fixture",
+          "path": "src/bin/stdio-fixture.rs"
+        }
+      ]
+    },
+    "clap_builder-4.6.2": {
+      "edition": "2024"
+    },
+    "clap_derive-4.6.4": {
+      "edition": "2024",
+      "proc_macro": true
+    },
+    "clap_lex-1.1.0": {
+      "edition": "2024"
+    },
     "cmake-0.1.58": {
       "edition": "2021"
     },
     "cmov-0.5.4": {
       "edition": "2024"
+    },
+    "colorchoice-1.0.5": {
+      "edition": "2021"
     },
     "combine-4.6.7": {
       "edition": "2018"
@@ -32489,6 +33502,9 @@
     "ipnet-2.12.0": {
       "edition": "2018"
     },
+    "is_terminal_polyfill-1.70.2": {
+      "edition": "2021"
+    },
     "itertools-0.13.0": {
       "edition": "2018"
     },
@@ -32508,6 +33524,9 @@
       "edition": "2018"
     },
     "jsonptr-0.4.7": {
+      "edition": "2021"
+    },
+    "jsonwebtoken-9.3.1": {
       "edition": "2021"
     },
     "k8s-openapi-0.23.0": {
@@ -32701,6 +33720,9 @@
     },
     "objc2-quartz-core-0.3.2": {
       "edition": "2021"
+    },
+    "octocrab-0.44.1": {
+      "edition": "2018"
     },
     "once_cell-1.21.4": {
       "edition": "2021"
@@ -33182,6 +34204,9 @@
     "signature-2.2.0": {
       "edition": "2021"
     },
+    "simple_asn1-0.6.4": {
+      "edition": "2018"
+    },
     "sketches-ddsketch-0.3.1": {
       "edition": "2018"
     },
@@ -33190,6 +34215,13 @@
     },
     "smallvec-1.15.1": {
       "edition": "2018"
+    },
+    "snafu-0.8.9": {
+      "edition": "2018"
+    },
+    "snafu-derive-0.8.9": {
+      "edition": "2018",
+      "proc_macro": true
     },
     "socket2-0.5.10": {
       "edition": "2021"
@@ -33248,6 +34280,9 @@
       "edition": "2018"
     },
     "syn-2.0.117": {
+      "edition": "2021"
+    },
+    "syn-3.0.3": {
       "edition": "2021"
     },
     "sync_wrapper-1.0.2": {
@@ -33445,6 +34480,9 @@
     "utf8_iter-1.0.4": {
       "edition": "2021"
     },
+    "utf8parse-0.2.2": {
+      "edition": "2018"
+    },
     "uuid-1.24.0": {
       "edition": "2021"
     },
@@ -33479,6 +34517,9 @@
     },
     "want-0.3.1": {
       "edition": "2018"
+    },
+    "web-time-1.1.0": {
+      "edition": "2021"
     },
     "webpki-roots-0.26.11": {
       "edition": "2021"
@@ -33551,5 +34592,18 @@
     "outorga-0.1.1-88b91e58292450e7a2884683f711c3009595d425": "sha256-OEp6qJpTdqNJPacZNfqwqUboouCbT4CD028oQW3d9QQ=",
     "shikumi-0.1.73-272f5f2e8748d5463563a16c3576d785d10df0c0": "sha256-tRFRW6ZNK3v3o3nq9fJbpQAcYCLLBmvC7oJhHFssDzw="
   },
-  "flake_metadata": {}
+  "flake_metadata": {
+    "breathe-retirada-ci": {
+      "module_trio": {
+        "name": "retirada-ci-watch",
+        "description": "retirada's spot-reclaim signal applied to job-shaped (CI) workloads: classify a GH Actions runner-pod loss as a legitimate auction-ether reclaim vs a real failure, and (only for the former) redispatch that one job onto the existing on-demand runner override -- never a blanket retry, never a fresh spot pool for the retry.",
+        "packageAttr": "retirada-ci-watch",
+        "binaryName": "retirada-ci-watch",
+        "hmNamespace": "programs",
+        "withMcp": false,
+        "withHttp": false,
+        "withSystemDaemon": false
+      }
+    }
+  }
 }
