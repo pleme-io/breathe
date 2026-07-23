@@ -40,6 +40,26 @@
 use std::time::Duration;
 
 use anyhow::Context;
+
+/// **The real bug this closes (found live 2026-07-23, hours after this
+/// tool's own "confirmed real, zero false positives" report).** GitHub's
+/// Jobs API returns `runner_id: 0` (a literal, PRESENT zero) for a job
+/// that has NEVER been assigned a runner -- confirmed via a direct
+/// `gh api repos/.../actions/jobs/<id>` call against a job stuck queued
+/// for hours: `{"runner_id":0,"runner_name":"","status":"queued"}`.
+/// `octocrab::models::workflows::Job::runner_id` is `Option<u32>`, and
+/// serde only maps JSON `null`/absent to `None` -- a present `0` value
+/// deserializes to `Some(0)`, which `.is_some()` reports as `true`. Every
+/// call site that wrote `job.runner_id.is_some()` (there were two) was
+/// therefore classifying "never assigned" as "already assigned" for
+/// EVERY job, unconditionally -- the automated poller has been silently
+/// inert this entire session; its only real, working redispatch this
+/// session was a MANUAL `gh workflow run ... -f runnerOverride=...`, never
+/// the poller's own decision. `id != 0` is the actual "was a runner ever
+/// assigned" predicate; `0` is not a valid GitHub Actions runner id.
+fn runner_actually_assigned(runner_id: Option<u32>) -> bool {
+    runner_id.is_some_and(|id| id != 0)
+}
 use breathe_retirada_ci::{
     NoActionReason, QueueStarvationPolicy, QueuedJobObservation, RemediationDecision,
     RetiradaCiPolicy, RunSummary, classify_queue_starvation, compute_adaptive_starvation_threshold,
@@ -236,7 +256,7 @@ async fn run_pass(
                     repo: args.repo.clone(),
                     workflow_file: args.workflow.clone(),
                     head_sha: run.head_sha.clone(),
-                    runner_ever_assigned: job.runner_id.is_some(),
+                    runner_ever_assigned: runner_actually_assigned(job.runner_id),
                     queued_for,
                     prior_auto_retries,
                 };
@@ -366,7 +386,7 @@ async fn fetch_recent_wake_latencies(
             .await
             .context("list_jobs (wake-latency history)")?;
         for job in jobs.items {
-            if job.runner_id.is_none() {
+            if !runner_actually_assigned(job.runner_id) {
                 continue;
             }
             let latency = job
@@ -405,4 +425,28 @@ async fn dispatch(
         .context("dispatch workflow_dispatch")?;
     tracing::warn!("dispatched {workflow_file} @ {head_sha} with {input_name}={input_value}");
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::runner_actually_assigned;
+
+    /// The exact real-world fixture that exposed the bug: GitHub's Jobs
+    /// API for a genuinely never-assigned job, `gh api
+    /// repos/pleme-io/breathe/actions/jobs/<id>` against run 30044720270
+    /// on 2026-07-23: `{"runner_id":0,"runner_name":"","status":"queued"}`.
+    #[test]
+    fn a_present_zero_runner_id_is_not_assigned() {
+        assert!(!runner_actually_assigned(Some(0)));
+    }
+
+    #[test]
+    fn a_real_nonzero_runner_id_is_assigned() {
+        assert!(runner_actually_assigned(Some(42)));
+    }
+
+    #[test]
+    fn a_missing_runner_id_is_not_assigned() {
+        assert!(!runner_actually_assigned(None));
+    }
 }
