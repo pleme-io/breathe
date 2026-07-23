@@ -926,7 +926,7 @@ pub async fn reconcile_cloud_pool(cr: Arc<BreatheCloudPool>, ctx: Arc<Ctx>) -> R
                     return Ok(Action::requeue(ctx.requeue));
                 };
                 PoolProvedor::EksNodegroup(EksNodegroupProvedor::new(
-                    KubeEksNodegroupEnvironment::new(ctx.client.clone(), ctx.eks_client.clone()),
+                    KubeEksNodegroupEnvironment::new(ctx.client.clone(), ctx.eks_client.clone(), ctx.autoscaling_client.clone()),
                     name.clone(),
                     ng_ref.cluster_name,
                     ng_ref.nodegroup_name,
@@ -973,6 +973,22 @@ pub async fn reconcile_cloud_pool(cr: Arc<BreatheCloudPool>, ctx: Arc<Ctx>) -> R
     } else {
         PoolPrevisor::Reactive(ReactivePrevisor)
     };
+    // Instance scale-in protection (task #205 follow-up, the Camelot
+    // runner-instability incident) — mark every currently-busy owned instance
+    // protected, release any that's gone idle, BEFORE this tick's own
+    // provision/deprovision decision runs, so a shrink `reconcile_forma`
+    // decides on below can never select a currently-busy instance for
+    // termination. EksNodegroup-only: the other backends either don't scale a
+    // real ASG (KubeObserve/Kwok) or already delegate instance selection to
+    // Karpenter's own PDB-aware NodeClaim drain (Karpenter). Non-fatal: a
+    // failed sync degrades to "next tick's protection state is stale," never
+    // blocks the reconcile.
+    if let PoolProvedor::EksNodegroup(p) = &provedor {
+        if let Err(e) = p.sync_instance_protection().await {
+            warn!(pool = %name, error = %e, "BreatheCloudPool: sync_instance_protection failed (non-fatal; retried next tick)");
+        }
+    }
+
     let tick = reconcile_forma(
         forma,
         &provedor,

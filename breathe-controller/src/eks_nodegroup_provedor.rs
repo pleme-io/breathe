@@ -38,9 +38,12 @@
 //! bypass either gets silently reverted or fights the control plane on every
 //! tick. `UpdateNodegroupConfig`'s `scalingConfig.desiredSize` is therefore
 //! not merely the preferred path — it is the only one that is actually
-//! effective and supported for a managed nodegroup. `aws-sdk-autoscaling` is
-//! deliberately NOT a dependency here for this reason (see the Cargo.toml
-//! comment).
+//! effective and supported for a managed nodegroup: `desiredSize`/`minSize`/
+//! `maxSize` are written ONLY through `UpdateNodegroupConfig`, never through
+//! `autoscaling:SetDesiredCapacity`/`UpdateAutoScalingGroup`. `aws-sdk-autoscaling`
+//! IS a dependency (see "Instance scale-in protection" below) but is used for
+//! exactly one orthogonal purpose — `SetInstanceProtection` — never for
+//! capacity math (see the Cargo.toml comment).
 //!
 //! # `minSize`/`maxSize` are ALGORITHMIC, not a static GitOps precondition —
 //! corrected 2026-07-19
@@ -69,18 +72,59 @@
 //!
 //! # What is still deliberately NOT built here
 //!
-//! No per-instance node selection on scale-down: `UpdateNodegroupConfig`
-//! only accepts a new `desiredSize` — WHICH instance the underlying ASG
-//! terminates is entirely EKS/ASG's own choice (typically oldest-launch, not
-//! PDB-aware), unlike [`crate::karpenter_provedor::KarpenterProvedor`]'s
-//! per-`NodeClaim` delete or `KwokProvedor`'s per-`Node` delete. This is a
-//! real, honestly-named ceiling of the managed-nodegroup API itself — no
-//! amount of client-side cleverness closes it (EKS does not expose a "drain
-//! this specific node" scale-down primitive). No launch-template/AMI/
-//! `instanceTypes` management (right-sizing NODE SHAPE, as opposed to node
-//! COUNT, is a named, separate follow-up — see the module-level tracking
-//! note), no `labels`/`taints` mutation (`UpdateNodegroupConfig` supports
-//! those too; this backend only ever sets `scalingConfig`).
+//! No launch-template/AMI/`instanceTypes` management (right-sizing NODE
+//! SHAPE, as opposed to node COUNT, is a named, separate follow-up — see the
+//! module-level tracking note), no `labels`/`taints` mutation
+//! (`UpdateNodegroupConfig` supports those too; this backend only ever sets
+//! `scalingConfig`).
+//!
+//! # Instance scale-in protection — closing the "which instance" gap
+//! (added 2026-07-23, the Camelot runner-instability incident)
+//!
+//! `UpdateNodegroupConfig` only accepts a new `desiredSize` — WHICH instance
+//! the underlying ASG terminates on a shrink is entirely EKS/ASG's own
+//! choice (typically oldest-launch, not Kubernetes-PDB-aware — a Pod
+//! Disruption Budget cannot help here at all, since the actual eviction
+//! mechanism is a raw EC2 instance termination the ASG selects, never a
+//! Kubernetes-level voluntary eviction that would consult a PDB). An earlier
+//! version of this module's doc named this "a real, honestly-named ceiling
+//! of the managed-nodegroup API itself — no amount of client-side
+//! cleverness closes it." That was an overclaim: `SetInstanceProtection`
+//! (`aws-sdk-autoscaling`, a DIFFERENT API than `UpdateNodegroupConfig`) is
+//! a per-instance ASG attribute that the ASG's own termination-selection
+//! algorithm skips over unconditionally during a scale-in, REGARDLESS of
+//! what triggered the scale-in — including a `desiredSize` reduction EKS
+//! itself is reconciling on our behalf. It does not touch `desiredSize`/
+//! `minSize`/`maxSize` at all, so it cannot race EKS's own control loop the
+//! way a direct `autoscaling:SetDesiredCapacity` call would (see the
+//! `UpdateNodegroupConfig, never SetDesiredCapacity` section above — that
+//! reasoning is unaffected and still correct; this is a genuinely
+//! orthogonal API).
+//!
+//! Root-caused live on Camelot, 2026-07-23 (real CloudTrail evidence, not
+//! inferred): `arn:...assumed-role/camelot-eks-breathe-controller-role/...`
+//! called `eks:UpdateNodegroupConfig` with a shrunk `desiredSize` roughly
+//! every 60-90 seconds; the underlying ASG's own (Kubernetes-blind)
+//! instance-selection repeatedly picked an instance that was, at that exact
+//! moment, running a ~20-minute CI compile job — 4 confirmed kills in one
+//! session, each within single-digit seconds of the corresponding
+//! `UpdateNodegroupConfig` call. [`EksNodegroupProvedor::sync_instance_protection`]
+//! closes this: every tick, BEFORE any grow/shrink decision, mark every
+//! currently-busy owned instance protected, and unmark any previously-busy
+//! instance that's gone idle — so a shrink this tick's `deprovision` may
+//! still trigger can never select a busy instance, without changing how
+//! aggressively or how often breathe shrinks capacity at all.
+//!
+//! "Busy" is scoped to ARC (actions-runner-controller) ephemeral runner
+//! pods specifically — the only known ephemeral, can't-be-interrupted-
+//! without-losing-work workload class on this backend's nodegroups today —
+//! keyed on `actions.github.com/scale-set-name`, a real label ARC itself
+//! stamps on every runner Pod (not a breathe-authored convention, same
+//! discipline [`EKS_NODEGROUP_LABEL`] above already follows). Generalizing
+//! this to an operator-declared pod selector (mirroring
+//! `MemoryBandSpec.targetRef.podSelector`) is a named, deliberately deferred
+//! follow-up — CRD schema changes carry their own migration discipline this
+//! incident's fix doesn't need to also take on.
 
 use async_trait::async_trait;
 use aws_sdk_eks::types::NodegroupScalingConfig;
@@ -91,7 +135,15 @@ use kube::{
     api::{Api, ListParams},
     Client, ResourceExt,
 };
-use tracing::warn;
+use std::collections::HashSet;
+use tracing::{info, warn};
+
+/// The label ARC (actions-runner-controller) itself stamps on every
+/// ephemeral-runner Pod it creates — the real, ARC-documented signal
+/// [`is_busy_runner_pod`] keys on, mirroring [`EKS_NODEGROUP_LABEL`]'s own
+/// "a real label the owning controller stamps, never a breathe-authored
+/// convention" discipline.
+const ARC_SCALE_SET_LABEL: &str = "actions.github.com/scale-set-name";
 
 use crate::karpenter_provedor::ObservedNode;
 use crate::node_forma::{node_ready, parse_cpu_milli};
@@ -132,6 +184,46 @@ pub struct NodegroupState {
     pub min_size: u32,
     pub max_size: u32,
     pub status: String,
+    /// The nodegroup's own underlying ASG name — carried on the SAME
+    /// `DescribeNodegroup` response every other field here already comes
+    /// from (`resources.autoScalingGroups[0].name`), so
+    /// [`EksNodegroupProvedor::sync_instance_protection`] needs no second
+    /// API call to learn it. Empty when the response carried no ASG (should
+    /// not happen for a real managed nodegroup, but never panics on it —
+    /// protection-sync becomes a no-op rather than a crash).
+    pub asg_name: String,
+}
+
+/// One owned node currently running at least one busy ARC ephemeral-runner
+/// Pod — just enough for [`EksNodegroupProvedor::sync_instance_protection`]
+/// to request/release scale-in protection, without forcing every
+/// environment (including the mock) to resolve a full [`Node`]/[`Pod`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BusyNode {
+    pub node_name: String,
+    pub instance_id: String,
+}
+
+/// PURE (tested): the EC2 instance id embedded in a Kubernetes `providerID`
+/// of the shape `aws:///<az>/<instance-id>` (confirmed live against a real
+/// Camelot node, 2026-07-23 — three slashes, an empty host component, not
+/// two). Returns `None` for a non-AWS providerID (a different cloud, or the
+/// empty string a not-yet-registered node can carry) rather than guessing.
+fn extract_instance_id(provider_id: &str) -> Option<&str> {
+    let rest = provider_id.strip_prefix("aws://")?;
+    rest.rsplit('/').next().filter(|s| !s.is_empty())
+}
+
+/// PURE (tested): does `pod` represent a currently-busy ARC ephemeral
+/// runner — a Pod in `Running` phase carrying ARC's own
+/// [`ARC_SCALE_SET_LABEL`]? ARC's ephemeral-runner model means such a Pod
+/// always corresponds to exactly one in-flight job for its entire
+/// lifetime — there is no "Running but idle" state for this workload class
+/// the way a long-lived, job-picking runner would have.
+fn is_busy_runner_pod(pod: &Pod) -> bool {
+    let running = pod.status.as_ref().and_then(|s| s.phase.as_deref()) == Some("Running");
+    let is_runner = pod.metadata.labels.as_ref().is_some_and(|l| l.contains_key(ARC_SCALE_SET_LABEL));
+    running && is_runner
 }
 
 /// PURE (tested): is `status` a state `UpdateNodegroupConfig` will actually
@@ -246,6 +338,29 @@ pub trait EksNodegroupEnvironment: Send + Sync {
         new_max_size: Option<u32>,
         new_min_size: Option<u32>,
     ) -> Result<(), ProviderError>;
+
+    /// Owned nodes currently running at least one busy ARC ephemeral-runner
+    /// Pod (see [`is_busy_runner_pod`]) — the set
+    /// [`EksNodegroupProvedor::sync_instance_protection`] must mark
+    /// scale-in-protected. One `Node` list + one cluster-wide `Pod` list
+    /// (mirroring [`observe_pod_demand_milli`]'s own unscoped-Pod-list
+    /// shape, for the same reason: scoping to this nodegroup's own taints
+    /// is a named follow-up once multiple `EksManagedNodegroup` pools with
+    /// distinct workloads coexist).
+    async fn observe_busy_nodes(&self, nodegroup_name: &str) -> Result<Vec<BusyNode>, ProviderError>;
+    /// Every instance ID in `asg_name` currently marked scale-in-protected —
+    /// so [`EksNodegroupProvedor::sync_instance_protection`] can compute a
+    /// diff (protect newly-busy, release newly-idle) instead of
+    /// unconditionally re-asserting protection state every tick.
+    async fn list_protected_instance_ids(&self, asg_name: &str) -> Result<HashSet<String>, ProviderError>;
+    /// Set (`protected = true`) or clear (`protected = false`) ASG scale-in
+    /// protection on `instance_ids` in `asg_name` — one real
+    /// `autoscaling:SetInstanceProtection` call. Never touches
+    /// `desiredSize`/`minSize`/`maxSize` (see the module doc's "Instance
+    /// scale-in protection" section for why this can't race EKS's own
+    /// `UpdateNodegroupConfig` reconciliation the way a direct
+    /// `SetDesiredCapacity` call would).
+    async fn set_instance_protection(&self, asg_name: &str, instance_ids: &[String], protected: bool) -> Result<(), ProviderError>;
 }
 
 /// A LIVE actuator against a REAL EKS-managed nodegroup, generic over its
@@ -312,6 +427,54 @@ impl<E: EksNodegroupEnvironment> EksNodegroupProvedor<E> {
             }
             _ => 1,
         }
+    }
+
+    /// Mark every currently-busy owned instance ASG-scale-in-protected, and
+    /// release protection on any instance that's gone idle since the last
+    /// tick — see the module doc's "Instance scale-in protection" section
+    /// for why this closes the busy-instance-selected-for-termination gap
+    /// without touching `desiredSize`/`minSize`/`maxSize` at all. Intended
+    /// call site: once per reconcile, BEFORE `provision`/`deprovision` are
+    /// asked to act this tick (see `node_forma.rs`'s call site) — so any
+    /// shrink this SAME tick decides on already sees the fresh protection
+    /// state when EKS's downstream ASG reconciliation picks an instance.
+    ///
+    /// SHADOW-safe like `observe`: in `dry_run`, computes and logs the same
+    /// protect/release sets a live tick would apply, but calls
+    /// `set_instance_protection` zero times — an operator can see what this
+    /// tick WOULD have protected without granting it any write path yet.
+    pub async fn sync_instance_protection(&self) -> Result<(), ProviderError> {
+        let state = self.env.describe_nodegroup(&self.cluster_name, &self.nodegroup_name).await?;
+        if state.asg_name.is_empty() {
+            warn!(pool = %self.pool, nodegroup = %self.nodegroup_name, "sync_instance_protection: nodegroup carries no ASG name — skipping this tick");
+            return Ok(());
+        }
+        let busy = self.env.observe_busy_nodes(&self.nodegroup_name).await?;
+        let busy_ids: HashSet<String> = busy.iter().map(|b| b.instance_id.clone()).collect();
+        let protected_ids = self.env.list_protected_instance_ids(&state.asg_name).await?;
+
+        let to_protect: Vec<String> = busy_ids.difference(&protected_ids).cloned().collect();
+        let to_release: Vec<String> = protected_ids.difference(&busy_ids).cloned().collect();
+
+        if to_protect.is_empty() && to_release.is_empty() {
+            return Ok(());
+        }
+        if self.dry_run {
+            info!(
+                pool = %self.pool, asg = %state.asg_name, would_protect = ?to_protect, would_release = ?to_release,
+                "sync_instance_protection: shadow — would protect/release, mutating nothing"
+            );
+            return Ok(());
+        }
+        if !to_protect.is_empty() {
+            self.env.set_instance_protection(&state.asg_name, &to_protect, true).await?;
+            info!(pool = %self.pool, asg = %state.asg_name, protected = ?to_protect, "sync_instance_protection: protected newly-busy instance(s)");
+        }
+        if !to_release.is_empty() {
+            self.env.set_instance_protection(&state.asg_name, &to_release, false).await?;
+            info!(pool = %self.pool, asg = %state.asg_name, released = ?to_release, "sync_instance_protection: released newly-idle instance(s)");
+        }
+        Ok(())
     }
 }
 
@@ -403,11 +566,16 @@ impl<E: EksNodegroupEnvironment> Provedor for EksNodegroupProvedor<E> {
 pub struct KubeEksNodegroupEnvironment {
     kube_client: Client,
     eks_client: aws_sdk_eks::Client,
+    /// The scale-in-protection boundary's real AWS client — see the module
+    /// doc's "Instance scale-in protection" section. Orthogonal to
+    /// `eks_client` above: this one only ever calls `DescribeAutoScalingGroups`
+    /// (read) / `SetInstanceProtection` (write), never a capacity-mutating API.
+    autoscaling_client: aws_sdk_autoscaling::Client,
 }
 
 impl KubeEksNodegroupEnvironment {
-    pub fn new(kube_client: Client, eks_client: aws_sdk_eks::Client) -> Self {
-        Self { kube_client, eks_client }
+    pub fn new(kube_client: Client, eks_client: aws_sdk_eks::Client, autoscaling_client: aws_sdk_autoscaling::Client) -> Self {
+        Self { kube_client, eks_client, autoscaling_client }
     }
 }
 
@@ -471,11 +639,18 @@ impl EksNodegroupEnvironment for KubeEksNodegroupEnvironment {
         let scaling = ng
             .scaling_config()
             .ok_or_else(|| ProviderError::ApiPermanent(format!("nodegroup {nodegroup_name} has no scalingConfig")))?;
+        let asg_name = ng
+            .resources()
+            .map(|r| r.auto_scaling_groups())
+            .and_then(|asgs| asgs.first())
+            .and_then(|a| a.name())
+            .map_or_else(String::new, ToString::to_string);
         Ok(NodegroupState {
             desired_size: u32::try_from(scaling.desired_size().unwrap_or(0)).unwrap_or(0),
             min_size: u32::try_from(scaling.min_size().unwrap_or(0)).unwrap_or(0),
             max_size: u32::try_from(scaling.max_size().unwrap_or(0)).unwrap_or(0),
             status: ng.status().map_or_else(String::new, |s| s.as_str().to_string()),
+            asg_name,
         })
     }
 
@@ -512,19 +687,100 @@ impl EksNodegroupEnvironment for KubeEksNodegroupEnvironment {
                 ProviderError::ApiTransient(detail)
             })
     }
+
+    async fn observe_busy_nodes(&self, nodegroup_name: &str) -> Result<Vec<BusyNode>, ProviderError> {
+        let nodes = Api::<Node>::all(self.kube_client.clone())
+            .list(&ListParams::default())
+            .await
+            .map_err(|e| ProviderError::ApiTransient(e.to_string()))?;
+        // Owned nodes, keyed by k8s node name -> their EC2 instance id (from
+        // `providerID`) -- the join key between the k8s-side Pod scheduling
+        // decision and the AWS-side ASG instance list.
+        let owned: std::collections::HashMap<String, String> = nodes
+            .items
+            .iter()
+            .filter(|n| owned_by_nodegroup(n, nodegroup_name))
+            .filter_map(|n| {
+                let provider_id = n.spec.as_ref()?.provider_id.as_deref()?;
+                let instance_id = extract_instance_id(provider_id)?;
+                Some((n.name_any(), instance_id.to_string()))
+            })
+            .collect();
+        if owned.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let pods = Api::<Pod>::all(self.kube_client.clone())
+            .list(&ListParams::default())
+            .await
+            .map_err(|e| ProviderError::ApiTransient(e.to_string()))?;
+
+        let mut busy_node_names: HashSet<String> = HashSet::new();
+        for p in &pods.items {
+            if !is_busy_runner_pod(p) {
+                continue;
+            }
+            if let Some(node_name) = p.spec.as_ref().and_then(|s| s.node_name.as_deref()) {
+                if owned.contains_key(node_name) {
+                    busy_node_names.insert(node_name.to_string());
+                }
+            }
+        }
+
+        Ok(busy_node_names
+            .into_iter()
+            .filter_map(|node_name| owned.get(&node_name).map(|instance_id| BusyNode { node_name: node_name.clone(), instance_id: instance_id.clone() }))
+            .collect())
+    }
+
+    async fn list_protected_instance_ids(&self, asg_name: &str) -> Result<HashSet<String>, ProviderError> {
+        let resp = self
+            .autoscaling_client
+            .describe_auto_scaling_groups()
+            .auto_scaling_group_names(asg_name)
+            .send()
+            .await
+            .map_err(|e| ProviderError::ApiTransient(DisplayErrorContext(e).to_string()))?;
+        let instances = resp.auto_scaling_groups().first().map(|g| g.instances()).unwrap_or_default();
+        Ok(instances
+            .iter()
+            .filter(|i| i.protected_from_scale_in().unwrap_or(false))
+            .filter_map(|i| i.instance_id().map(ToString::to_string))
+            .collect())
+    }
+
+    async fn set_instance_protection(&self, asg_name: &str, instance_ids: &[String], protected: bool) -> Result<(), ProviderError> {
+        if instance_ids.is_empty() {
+            return Ok(());
+        }
+        self.autoscaling_client
+            .set_instance_protection()
+            .auto_scaling_group_name(asg_name)
+            .set_instance_ids(Some(instance_ids.to_vec()))
+            .protected_from_scale_in(protected)
+            .send()
+            .await
+            .map(|_| ())
+            .map_err(|e| {
+                let detail = DisplayErrorContext(e).to_string();
+                warn!(asg_name, protected, ?instance_ids, error = %detail, "SetInstanceProtection failed (non-fatal; retried next tick)");
+                ProviderError::ApiTransient(detail)
+            })
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        clamp_grow, clamp_shrink, grown_max_size, nodegroup_is_active, owned_by_nodegroup, shrunk_max_size, EksNodegroupEnvironment,
-        EksNodegroupProvedor, NodegroupState,
+        clamp_grow, clamp_shrink, extract_instance_id, grown_max_size, is_busy_runner_pod, nodegroup_is_active, owned_by_nodegroup,
+        shrunk_max_size, BusyNode, EksNodegroupEnvironment, EksNodegroupProvedor, NodegroupState, ARC_SCALE_SET_LABEL,
     };
     use crate::karpenter_provedor::ObservedNode;
     use async_trait::async_trait;
     use breathe_provider::{FormaSample, Provedor, ProviderError, ProvisionReceipt};
-    use k8s_openapi::api::core::v1::Node;
+    use k8s_openapi::api::core::v1::{Node, Pod, PodSpec, PodStatus};
     use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
+    use std::collections::HashSet;
     use std::sync::Mutex;
 
     fn node_with_nodegroup_label(label: Option<&str>) -> Node {
@@ -551,6 +807,56 @@ mod tests {
         assert!(nodegroup_is_active("ACTIVE"));
         for status in ["CREATING", "UPDATING", "DELETING", "DEGRADED", "CREATE_FAILED", "DELETE_FAILED", "", "active"] {
             assert!(!nodegroup_is_active(status), "status {status:?} must not be treated as ACTIVE");
+        }
+    }
+
+    #[test]
+    fn extract_instance_id_parses_the_real_aws_provider_id_shape() {
+        // Confirmed live against a real Camelot node, 2026-07-23: three
+        // slashes, an empty host component -- not the two-slash shape a
+        // naive guess would assume.
+        assert_eq!(extract_instance_id("aws:///us-east-2a/i-0abc123def456"), Some("i-0abc123def456"));
+    }
+
+    #[test]
+    fn extract_instance_id_returns_none_for_a_non_aws_provider_id() {
+        assert_eq!(extract_instance_id("gce://project/zone/instance-1"), None);
+    }
+
+    #[test]
+    fn extract_instance_id_returns_none_for_an_empty_or_trailing_slash_provider_id() {
+        assert_eq!(extract_instance_id(""), None);
+        assert_eq!(extract_instance_id("aws:///us-east-2a/"), None, "a trailing slash with nothing after it must not yield an empty id");
+    }
+
+    fn pod_with(phase: Option<&str>, labeled: bool, node_name: Option<&str>) -> Pod {
+        let labels = labeled.then(|| {
+            let mut m = std::collections::BTreeMap::new();
+            m.insert(ARC_SCALE_SET_LABEL.to_string(), "runners".to_string());
+            m
+        });
+        Pod {
+            metadata: ObjectMeta { labels, ..Default::default() },
+            spec: Some(PodSpec { node_name: node_name.map(ToString::to_string), ..Default::default() }),
+            status: Some(PodStatus { phase: phase.map(ToString::to_string), ..Default::default() }),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn is_busy_runner_pod_true_only_for_a_running_labeled_arc_pod() {
+        assert!(is_busy_runner_pod(&pod_with(Some("Running"), true, Some("n1"))));
+    }
+
+    #[test]
+    fn is_busy_runner_pod_false_for_a_running_but_unlabeled_pod() {
+        assert!(!is_busy_runner_pod(&pod_with(Some("Running"), false, Some("n1"))), "not ARC's label -- not a runner this backend tracks");
+    }
+
+    #[test]
+    fn is_busy_runner_pod_false_for_a_labeled_but_non_running_pod() {
+        for phase in ["Pending", "Succeeded", "Failed", "Unknown"] {
+            assert!(!is_busy_runner_pod(&pod_with(Some(phase), true, Some("n1"))), "phase {phase:?} is not Running -- not currently busy");
         }
     }
 
@@ -708,6 +1014,14 @@ mod tests {
         /// ceiling/floor itself was carved this tick.
         update_calls: Mutex<Vec<(u32, Option<u32>, Option<u32>)>>,
         fail_update: bool,
+        /// [`sync_instance_protection`] fixtures: the busy set
+        /// `observe_busy_nodes` returns and the already-protected set
+        /// `list_protected_instance_ids` returns — independent knobs so a
+        /// test can set up "busy but not yet protected," "protected but no
+        /// longer busy," both, or neither.
+        busy_nodes: Vec<BusyNode>,
+        protected_instance_ids: HashSet<String>,
+        protect_calls: Mutex<Vec<(bool, Vec<String>)>>,
     }
 
     impl MockEnv {
@@ -715,9 +1029,12 @@ mod tests {
             Self {
                 nodes: vec![],
                 pod_demand_milli: 0,
-                state: Ok(NodegroupState { desired_size: 3, min_size: 1, max_size: 10, status: "ACTIVE".into() }),
+                state: Ok(NodegroupState { desired_size: 3, min_size: 1, max_size: 10, status: "ACTIVE".into(), asg_name: "asg-test".into() }),
                 update_calls: Mutex::new(vec![]),
                 fail_update: false,
+                busy_nodes: vec![],
+                protected_instance_ids: HashSet::new(),
+                protect_calls: Mutex::new(vec![]),
             }
         }
     }
@@ -745,6 +1062,16 @@ mod tests {
                 return Err(ProviderError::ApiTransient("mock UpdateNodegroupConfig failure".into()));
             }
             self.update_calls.lock().unwrap().push((desired_size, new_max_size, new_min_size));
+            Ok(())
+        }
+        async fn observe_busy_nodes(&self, _nodegroup_name: &str) -> Result<Vec<BusyNode>, ProviderError> {
+            Ok(self.busy_nodes.clone())
+        }
+        async fn list_protected_instance_ids(&self, _asg_name: &str) -> Result<HashSet<String>, ProviderError> {
+            Ok(self.protected_instance_ids.clone())
+        }
+        async fn set_instance_protection(&self, _asg_name: &str, instance_ids: &[String], protected: bool) -> Result<(), ProviderError> {
+            self.protect_calls.lock().unwrap().push((protected, instance_ids.to_vec()));
             Ok(())
         }
     }
@@ -814,7 +1141,7 @@ mod tests {
         // desired=3, max=10, requesting 20 -> clamps to would=7 (3 -> 10), NOT
         // a raw unclamped echo of 20. This is the exact behavior task #205
         // asks for: shadow reads real EKS state and reports the REAL would.
-        let env = MockEnv { state: Ok(NodegroupState { desired_size: 3, min_size: 1, max_size: 10, status: "ACTIVE".into() }), ..MockEnv::empty() };
+        let env = MockEnv { state: Ok(NodegroupState { desired_size: 3, min_size: 1, max_size: 10, status: "ACTIVE".into(), asg_name: "asg-test".into() }), ..MockEnv::empty() };
         let p = EksNodegroupProvedor::new(env, "pool".into(), "cluster".into(), "nodegroup".into(), true, 10, 10, 1.25, 0.9);
         let receipt = p.provision(20).await.unwrap();
         assert_eq!(receipt, ProvisionReceipt::DryRun { would: 7 });
@@ -822,7 +1149,7 @@ mod tests {
 
     #[tokio::test]
     async fn provision_dry_run_at_ceiling_reports_noop_not_a_zero_dry_run() {
-        let env = MockEnv { state: Ok(NodegroupState { desired_size: 10, min_size: 1, max_size: 10, status: "ACTIVE".into() }), ..MockEnv::empty() };
+        let env = MockEnv { state: Ok(NodegroupState { desired_size: 10, min_size: 1, max_size: 10, status: "ACTIVE".into(), asg_name: "asg-test".into() }), ..MockEnv::empty() };
         let p = EksNodegroupProvedor::new(env, "pool".into(), "cluster".into(), "nodegroup".into(), true, 10, 10, 1.25, 0.9);
         assert_eq!(p.provision(5).await.unwrap(), ProvisionReceipt::NoOp);
     }
@@ -833,7 +1160,7 @@ mod tests {
         // the nodegroup is mid-UPDATING — only the LIVE mutation is refused
         // on a non-ACTIVE status (see the status gate placement in
         // EksNodegroupProvedor::provision's doc comment).
-        let env = MockEnv { state: Ok(NodegroupState { desired_size: 3, min_size: 1, max_size: 10, status: "UPDATING".into() }), ..MockEnv::empty() };
+        let env = MockEnv { state: Ok(NodegroupState { desired_size: 3, min_size: 1, max_size: 10, status: "UPDATING".into(), asg_name: "asg-test".into() }), ..MockEnv::empty() };
         let p = EksNodegroupProvedor::new(env, "pool".into(), "cluster".into(), "nodegroup".into(), true, 10, 10, 1.25, 0.9);
         let receipt = p.provision(4).await.unwrap();
         assert_eq!(receipt, ProvisionReceipt::DryRun { would: 4 });
@@ -841,7 +1168,7 @@ mod tests {
 
     #[tokio::test]
     async fn provision_live_writes_the_clamped_desired_size_via_update_desired_size() {
-        let env = MockEnv { state: Ok(NodegroupState { desired_size: 3, min_size: 1, max_size: 10, status: "ACTIVE".into() }), ..MockEnv::empty() };
+        let env = MockEnv { state: Ok(NodegroupState { desired_size: 3, min_size: 1, max_size: 10, status: "ACTIVE".into(), asg_name: "asg-test".into() }), ..MockEnv::empty() };
         let p = EksNodegroupProvedor::new(env, "camelot-system".into(), "camelot-eks".into(), "system".into(), false, 10, 10, 1.25, 0.9);
         let receipt = p.provision(4).await.unwrap();
         assert_eq!(receipt, ProvisionReceipt::Applied { delta: 4, plan_id: "eks-nodegroup:provision:camelot-system".into() });
@@ -850,7 +1177,7 @@ mod tests {
 
     #[tokio::test]
     async fn provision_live_clamps_before_writing_so_the_api_never_sees_an_out_of_bounds_desired_size() {
-        let env = MockEnv { state: Ok(NodegroupState { desired_size: 8, min_size: 1, max_size: 10, status: "ACTIVE".into() }), ..MockEnv::empty() };
+        let env = MockEnv { state: Ok(NodegroupState { desired_size: 8, min_size: 1, max_size: 10, status: "ACTIVE".into(), asg_name: "asg-test".into() }), ..MockEnv::empty() };
         let p = EksNodegroupProvedor::new(env, "pool".into(), "cluster".into(), "nodegroup".into(), false, 10, 10, 1.25, 0.9);
         let receipt = p.provision(50).await.unwrap();
         assert_eq!(receipt, ProvisionReceipt::Applied { delta: 2, plan_id: "eks-nodegroup:provision:pool".into() });
@@ -863,7 +1190,7 @@ mod tests {
 
     #[tokio::test]
     async fn provision_live_non_active_nodegroup_refuses_to_mutate_and_surfaces_the_error() {
-        let env = MockEnv { state: Ok(NodegroupState { desired_size: 3, min_size: 1, max_size: 10, status: "UPDATING".into() }), ..MockEnv::empty() };
+        let env = MockEnv { state: Ok(NodegroupState { desired_size: 3, min_size: 1, max_size: 10, status: "UPDATING".into(), asg_name: "asg-test".into() }), ..MockEnv::empty() };
         let p = EksNodegroupProvedor::new(env, "pool".into(), "cluster".into(), "nodegroup".into(), false, 10, 10, 1.25, 0.9);
         let err = p.provision(2).await.expect_err("a non-ACTIVE nodegroup must surface, never be silently skipped");
         assert!(matches!(err, ProviderError::ApiTransient(_)));
@@ -897,7 +1224,7 @@ mod tests {
 
     #[tokio::test]
     async fn deprovision_dry_run_reports_the_clamped_would_mutating_nothing() {
-        let env = MockEnv { state: Ok(NodegroupState { desired_size: 5, min_size: 2, max_size: 10, status: "ACTIVE".into() }), ..MockEnv::empty() };
+        let env = MockEnv { state: Ok(NodegroupState { desired_size: 5, min_size: 2, max_size: 10, status: "ACTIVE".into(), asg_name: "asg-test".into() }), ..MockEnv::empty() };
         let p = EksNodegroupProvedor::new(env, "pool".into(), "cluster".into(), "nodegroup".into(), true, 10, 10, 1.25, 0.9);
         let receipt = p.deprovision(2).await.unwrap();
         assert_eq!(receipt, ProvisionReceipt::DryRun { would: -2 });
@@ -906,7 +1233,7 @@ mod tests {
 
     #[tokio::test]
     async fn deprovision_dry_run_clamps_the_would_value_to_the_real_floor() {
-        let env = MockEnv { state: Ok(NodegroupState { desired_size: 3, min_size: 2, max_size: 10, status: "ACTIVE".into() }), ..MockEnv::empty() };
+        let env = MockEnv { state: Ok(NodegroupState { desired_size: 3, min_size: 2, max_size: 10, status: "ACTIVE".into(), asg_name: "asg-test".into() }), ..MockEnv::empty() };
         let p = EksNodegroupProvedor::new(env, "pool".into(), "cluster".into(), "nodegroup".into(), true, 10, 10, 1.25, 0.9);
         let receipt = p.deprovision(10).await.unwrap();
         assert_eq!(receipt, ProvisionReceipt::DryRun { would: -1 }, "3 -> -7 requested, clamped to 3 -> 2 => would -1");
@@ -914,7 +1241,7 @@ mod tests {
 
     #[tokio::test]
     async fn deprovision_live_writes_the_clamped_desired_size() {
-        let env = MockEnv { state: Ok(NodegroupState { desired_size: 5, min_size: 2, max_size: 10, status: "ACTIVE".into() }), ..MockEnv::empty() };
+        let env = MockEnv { state: Ok(NodegroupState { desired_size: 5, min_size: 2, max_size: 10, status: "ACTIVE".into(), asg_name: "asg-test".into() }), ..MockEnv::empty() };
         let p = EksNodegroupProvedor::new(env, "camelot-controllers".into(), "camelot-eks".into(), "controllers".into(), false, 10, 10, 1.25, 0.9);
         let receipt = p.deprovision(2).await.unwrap();
         assert_eq!(receipt, ProvisionReceipt::Applied { delta: -2, plan_id: "eks-nodegroup:deprovision:camelot-controllers".into() });
@@ -923,7 +1250,7 @@ mod tests {
 
     #[tokio::test]
     async fn deprovision_live_at_floor_reports_noop_and_writes_nothing() {
-        let env = MockEnv { state: Ok(NodegroupState { desired_size: 2, min_size: 2, max_size: 10, status: "ACTIVE".into() }), ..MockEnv::empty() };
+        let env = MockEnv { state: Ok(NodegroupState { desired_size: 2, min_size: 2, max_size: 10, status: "ACTIVE".into(), asg_name: "asg-test".into() }), ..MockEnv::empty() };
         let p = EksNodegroupProvedor::new(env, "pool".into(), "cluster".into(), "nodegroup".into(), false, 10, 10, 1.25, 0.9);
         assert_eq!(p.deprovision(3).await.unwrap(), ProvisionReceipt::NoOp);
         assert!(p.env.update_calls.lock().unwrap().is_empty());
@@ -931,7 +1258,7 @@ mod tests {
 
     #[tokio::test]
     async fn deprovision_live_non_active_nodegroup_refuses_to_mutate_and_surfaces_the_error() {
-        let env = MockEnv { state: Ok(NodegroupState { desired_size: 5, min_size: 2, max_size: 10, status: "DEGRADED".into() }), ..MockEnv::empty() };
+        let env = MockEnv { state: Ok(NodegroupState { desired_size: 5, min_size: 2, max_size: 10, status: "DEGRADED".into(), asg_name: "asg-test".into() }), ..MockEnv::empty() };
         let p = EksNodegroupProvedor::new(env, "pool".into(), "cluster".into(), "nodegroup".into(), false, 10, 10, 1.25, 0.9);
         let err = p.deprovision(2).await.expect_err("a non-ACTIVE nodegroup must surface, never be silently skipped");
         assert!(matches!(err, ProviderError::ApiTransient(_)));
@@ -952,7 +1279,7 @@ mod tests {
         // past the current max must now carve maxSize itself toward the
         // pool's own declared ceiling, live, no human Terraform-plan-approval
         // needed.
-        let env = MockEnv { state: Ok(NodegroupState { desired_size: 2, min_size: 1, max_size: 2, status: "ACTIVE".into() }), ..MockEnv::empty() };
+        let env = MockEnv { state: Ok(NodegroupState { desired_size: 2, min_size: 1, max_size: 2, status: "ACTIVE".into(), asg_name: "asg-test".into() }), ..MockEnv::empty() };
         let p = EksNodegroupProvedor::new(env, "camelot-eks-pool".into(), "camelot-eks".into(), "camelot-eks-controllers".into(), false, 5, 2, 1.25, 0.9);
         let receipt = p.provision(1).await.unwrap();
         assert_eq!(receipt, ProvisionReceipt::Applied { delta: 1, plan_id: "eks-nodegroup:provision:camelot-eks-pool".into() });
@@ -973,7 +1300,7 @@ mod tests {
         let mut desired = 2u32;
         let ceiling = 5u32;
         for _ in 0..3 {
-            let env = MockEnv { state: Ok(NodegroupState { desired_size: desired, min_size: 1, max_size: max, status: "ACTIVE".into() }), ..MockEnv::empty() };
+            let env = MockEnv { state: Ok(NodegroupState { desired_size: desired, min_size: 1, max_size: max, status: "ACTIVE".into(), asg_name: "asg-test".into() }), ..MockEnv::empty() };
             let p = EksNodegroupProvedor::new(env, "pool".into(), "cluster".into(), "nodegroup".into(), false, ceiling, 2, 1.25, 0.9);
             let receipt = p.provision(1).await.unwrap();
             let calls = p.env.update_calls.lock().unwrap();
@@ -994,7 +1321,7 @@ mod tests {
         // wall (a human declared 5 as the absolute limit) — must behave
         // exactly like the pre-existing "at ceiling" test, never attempt a
         // ceiling bump past what was explicitly declared.
-        let env = MockEnv { state: Ok(NodegroupState { desired_size: 5, min_size: 2, max_size: 5, status: "ACTIVE".into() }), ..MockEnv::empty() };
+        let env = MockEnv { state: Ok(NodegroupState { desired_size: 5, min_size: 2, max_size: 5, status: "ACTIVE".into(), asg_name: "asg-test".into() }), ..MockEnv::empty() };
         let p = EksNodegroupProvedor::new(env, "pool".into(), "cluster".into(), "nodegroup".into(), false, 5, 2, 1.25, 0.9);
         assert_eq!(p.provision(3).await.unwrap(), ProvisionReceipt::NoOp);
         assert!(p.env.update_calls.lock().unwrap().is_empty(), "genuinely at pool_ceiling -- no write, not even a no-op ceiling bump");
@@ -1006,7 +1333,7 @@ mod tests {
         // deprovision must ratchet maxSize back down toward pool_floor too,
         // not just desiredSize -- the "slowly comes back down" half of the
         // breathing behavior, symmetric with the grow side.
-        let env = MockEnv { state: Ok(NodegroupState { desired_size: 3, min_size: 2, max_size: 9, status: "ACTIVE".into() }), ..MockEnv::empty() };
+        let env = MockEnv { state: Ok(NodegroupState { desired_size: 3, min_size: 2, max_size: 9, status: "ACTIVE".into(), asg_name: "asg-test".into() }), ..MockEnv::empty() };
         let p = EksNodegroupProvedor::new(env, "pool".into(), "cluster".into(), "nodegroup".into(), false, 9, 2, 1.25, 0.9);
         let receipt = p.deprovision(1).await.unwrap();
         assert_eq!(receipt, ProvisionReceipt::Applied { delta: -1, plan_id: "eks-nodegroup:deprovision:pool".into() });
@@ -1019,10 +1346,85 @@ mod tests {
 
     #[tokio::test]
     async fn deprovision_live_dry_run_never_writes_even_when_max_size_would_also_shrink() {
-        let env = MockEnv { state: Ok(NodegroupState { desired_size: 3, min_size: 2, max_size: 9, status: "ACTIVE".into() }), ..MockEnv::empty() };
+        let env = MockEnv { state: Ok(NodegroupState { desired_size: 3, min_size: 2, max_size: 9, status: "ACTIVE".into(), asg_name: "asg-test".into() }), ..MockEnv::empty() };
         let p = EksNodegroupProvedor::new(env, "pool".into(), "cluster".into(), "nodegroup".into(), true, 9, 2, 1.25, 0.9);
         let receipt = p.deprovision(1).await.unwrap();
         assert_eq!(receipt, ProvisionReceipt::DryRun { would: -1 });
         assert!(p.env.update_calls.lock().unwrap().is_empty(), "shadow must never write, even the maxSize half");
+    }
+
+    #[tokio::test]
+    async fn sync_instance_protection_is_a_noop_when_busy_set_matches_protected_set() {
+        let env = MockEnv {
+            busy_nodes: vec![BusyNode { node_name: "n1".into(), instance_id: "i-1".into() }],
+            protected_instance_ids: HashSet::from(["i-1".to_string()]),
+            ..MockEnv::empty()
+        };
+        let p = EksNodegroupProvedor::new(env, "pool".into(), "cluster".into(), "nodegroup".into(), false, 5, 1, 1.25, 0.9);
+        p.sync_instance_protection().await.unwrap();
+        assert!(p.env.protect_calls.lock().unwrap().is_empty(), "already-protected busy instance needs no call at all");
+    }
+
+    #[tokio::test]
+    async fn sync_instance_protection_protects_a_newly_busy_instance() {
+        let env = MockEnv {
+            busy_nodes: vec![BusyNode { node_name: "n1".into(), instance_id: "i-1".into() }],
+            protected_instance_ids: HashSet::new(),
+            ..MockEnv::empty()
+        };
+        let p = EksNodegroupProvedor::new(env, "pool".into(), "cluster".into(), "nodegroup".into(), false, 5, 1, 1.25, 0.9);
+        p.sync_instance_protection().await.unwrap();
+        assert_eq!(*p.env.protect_calls.lock().unwrap(), vec![(true, vec!["i-1".to_string()])]);
+    }
+
+    #[tokio::test]
+    async fn sync_instance_protection_releases_a_newly_idle_instance() {
+        let env = MockEnv {
+            busy_nodes: vec![],
+            protected_instance_ids: HashSet::from(["i-1".to_string()]),
+            ..MockEnv::empty()
+        };
+        let p = EksNodegroupProvedor::new(env, "pool".into(), "cluster".into(), "nodegroup".into(), false, 5, 1, 1.25, 0.9);
+        p.sync_instance_protection().await.unwrap();
+        assert_eq!(*p.env.protect_calls.lock().unwrap(), vec![(false, vec!["i-1".to_string()])]);
+    }
+
+    #[tokio::test]
+    async fn sync_instance_protection_protects_and_releases_in_the_same_tick() {
+        let env = MockEnv {
+            busy_nodes: vec![BusyNode { node_name: "n2".into(), instance_id: "i-2".into() }],
+            protected_instance_ids: HashSet::from(["i-1".to_string()]),
+            ..MockEnv::empty()
+        };
+        let p = EksNodegroupProvedor::new(env, "pool".into(), "cluster".into(), "nodegroup".into(), false, 5, 1, 1.25, 0.9);
+        p.sync_instance_protection().await.unwrap();
+        let calls = p.env.protect_calls.lock().unwrap();
+        assert_eq!(calls.len(), 2, "both a protect call and a release call must fire this tick");
+        assert!(calls.contains(&(true, vec!["i-2".to_string()])), "newly-busy i-2 must be protected");
+        assert!(calls.contains(&(false, vec!["i-1".to_string()])), "no-longer-busy i-1 must be released");
+    }
+
+    #[tokio::test]
+    async fn sync_instance_protection_dry_run_computes_but_never_calls_set_instance_protection() {
+        let env = MockEnv {
+            busy_nodes: vec![BusyNode { node_name: "n1".into(), instance_id: "i-1".into() }],
+            protected_instance_ids: HashSet::new(),
+            ..MockEnv::empty()
+        };
+        let p = EksNodegroupProvedor::new(env, "pool".into(), "cluster".into(), "nodegroup".into(), true, 5, 1, 1.25, 0.9);
+        p.sync_instance_protection().await.unwrap();
+        assert!(p.env.protect_calls.lock().unwrap().is_empty(), "shadow must never call set_instance_protection");
+    }
+
+    #[tokio::test]
+    async fn sync_instance_protection_skips_the_tick_when_the_nodegroup_carries_no_asg_name() {
+        let env = MockEnv {
+            state: Ok(NodegroupState { desired_size: 3, min_size: 1, max_size: 10, status: "ACTIVE".into(), asg_name: String::new() }),
+            busy_nodes: vec![BusyNode { node_name: "n1".into(), instance_id: "i-1".into() }],
+            ..MockEnv::empty()
+        };
+        let p = EksNodegroupProvedor::new(env, "pool".into(), "cluster".into(), "nodegroup".into(), false, 5, 1, 1.25, 0.9);
+        p.sync_instance_protection().await.unwrap();
+        assert!(p.env.protect_calls.lock().unwrap().is_empty(), "no ASG name -- nothing to sync against, must not panic or call the API");
     }
 }

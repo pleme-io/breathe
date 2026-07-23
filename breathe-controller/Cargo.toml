@@ -37,12 +37,28 @@ async-trait = "0.1"
 # eks_nodegroup_provedor (task #205) — the EksManagedNodegroup backend's real
 # AWS calls (DescribeNodegroup + UpdateNodegroupConfig). Same major-version
 # pin discipline as crates/breathe-lifecycle's aws-sdk-ec2 dev-dependency —
-# one AWS SDK release train fleet-wide. No aws-sdk-autoscaling: EKS owns +
-# continuously reconciles a managed nodegroup's underlying ASG, so a direct
-# `autoscaling:SetDesiredCapacity` races EKS's own control loop and is not a
-# supported alternative (see eks_nodegroup_provedor.rs's module doc).
+# one AWS SDK release train fleet-wide. Still no direct
+# `autoscaling:SetDesiredCapacity`/`UpdateAutoScalingGroup` call anywhere in
+# this backend -- EKS owns + continuously reconciles a managed nodegroup's
+# underlying ASG's scalingConfig, so writing desiredSize/minSize/maxSize
+# through the ASG API directly would race EKS's own control loop (see
+# eks_nodegroup_provedor.rs's module doc). aws-sdk-autoscaling below is used
+# for EXACTLY ONE, orthogonal purpose instead: SetInstanceProtection, a
+# per-instance attribute EKS's own reconciliation never touches or contests
+# (it is not part of scalingConfig) -- confirmed live 2026-07-23: breathe's
+# own desiredSize shrinks were selecting a currently-busy CI-runner instance
+# for termination roughly every 60-90s (real CloudTrail evidence, the
+# runner-instability investigation), because "which instance" is the ASG's
+# own choice with zero Kubernetes awareness (this backend's own module doc
+# already named this gap: "no amount of client-side cleverness closes it").
+# Scale-in protection closes it from underneath, without touching
+# desiredSize/capacity math at all -- see sync_instance_protection.
 aws-config = { version = "=1.8.18", features = ["behavior-version-latest"] }
 aws-sdk-eks = "=1.137.0"
+# Verified same-cohort release: 1.121.0 shipped 2026-06-30, the exact date
+# aws-sdk-eks 1.137.0 above shipped (per crates.io's own version history) --
+# one AWS SDK release train fleet-wide, not an independently-chosen version.
+aws-sdk-autoscaling = "=1.121.0"
 # DisplayErrorContext -- SdkError's own Display truncates ServiceError to the
 # literal string "service error" (aws-smithy-runtime-api's Display impl);
 # DisplayErrorContext walks the full std::error::Error source() chain to

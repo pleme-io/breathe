@@ -115,6 +115,15 @@ struct Ctx {
     /// checked), so building it costs nothing on clusters that never
     /// declare an `eksManagedNodegroup` pool.
     eks_client: aws_sdk_eks::Client,
+    /// The `EksManagedNodegroup` backend's SECOND AWS boundary (added
+    /// 2026-07-23, the Camelot runner-instability incident) —
+    /// `SetInstanceProtection`/`DescribeAutoScalingInstances` against the
+    /// nodegroup's underlying ASG, orthogonal to `eks_client` above (see
+    /// eks_nodegroup_provedor.rs's module doc's "Instance scale-in
+    /// protection" section for why this doesn't race `eks_client`'s own
+    /// `UpdateNodegroupConfig` calls). Same construction/cloning discipline
+    /// as `eks_client`.
+    autoscaling_client: aws_sdk_autoscaling::Client,
 }
 
 impl Ctx {
@@ -767,6 +776,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // this dev machine) with no AWS credentials present at all.
     let aws_config = aws_config::defaults(aws_config::BehaviorVersion::latest()).load().await;
     let eks_client = aws_sdk_eks::Client::new(&aws_config);
+    let autoscaling_client = aws_sdk_autoscaling::Client::new(&aws_config);
 
     // ── Environment-discovered band-default posture (best fit for THIS cluster).
     // Detected once, read-only; the resolved defaults are the recommendation a
@@ -850,6 +860,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         decisions,
         samples,
         eks_client,
+        autoscaling_client,
     });
 
     info!(
