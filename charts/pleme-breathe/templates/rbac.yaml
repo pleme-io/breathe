@@ -64,6 +64,20 @@ rules:
   - apiGroups: ["breathe.pleme.io"]
     resources: ["arcbands", "cgroupbands", "cgroupcpubands"]
     verbs: ["get", "list", "watch"]
+  # BreathePosture: READ-ONLY, same shape as the host-dim bands above — pure
+  # reference data the controller resolves via a reflector::Store every
+  # reconcile tick (breathe-controller/src/main.rs), never writes. Missing
+  # from chart 0.1.28's initial ship (a597770/b0406ae) — found live 2026-07-24
+  # via a real 403 on the first postureRef-migrated CRs on camelot-eks
+  # ("breathepostures.breathe.pleme.io is forbidden ... cannot list resource
+  # breathepostures ... at the cluster scope"): every postureRef silently fell
+  # through to the compiled default instead of resolving the referenced
+  # posture. No live blast radius at the time (every affected CR was
+  # dryRun: true), but this is load-bearing before ANY postureRef-referencing
+  # band can be trusted, shadow or live.
+  - apiGroups: ["breathe.pleme.io"]
+    resources: ["breathepostures"]
+    verbs: ["get", "list", "watch"]
   # Part 1 (SOFT k8s carve): the controller CREATES/updates a PodMemoryHigh dispatch
   # per managed pod when a MemoryBand efficiency carve routes to memory.high. The
   # host-agent reconciles + owns the status; the controller writes spec only (SSA).
