@@ -138,6 +138,29 @@ pub(crate) fn node_ready(n: &Node) -> bool {
         .unwrap_or(false)
 }
 
+/// The label ARC (actions-runner-controller) itself stamps on every
+/// ephemeral-runner Pod it creates — the real, ARC-documented signal
+/// [`is_busy_runner_pod`] keys on. Promoted here (2026-07-25, task #75)
+/// from `eks_nodegroup_provedor.rs`, its original sole consumer, so
+/// `karpenter_provedor.rs` can share the exact same, already-tested
+/// predicate instead of re-deriving a second copy — both backends need
+/// the identical "is this node currently running a busy CI job" signal,
+/// they just act on it differently (ASG scale-in protection vs. simply
+/// never selecting the claim for deletion).
+pub(crate) const ARC_SCALE_SET_LABEL: &str = "actions.github.com/scale-set-name";
+
+/// PURE (tested): does `pod` represent a currently-busy ARC ephemeral
+/// runner — a Pod in `Running` phase carrying ARC's own
+/// [`ARC_SCALE_SET_LABEL`]? ARC's ephemeral-runner model means such a Pod
+/// always corresponds to exactly one in-flight job for its entire
+/// lifetime — there is no "Running but idle" state for this workload class
+/// the way a long-lived, job-picking runner would have.
+pub(crate) fn is_busy_runner_pod(pod: &Pod) -> bool {
+    let running = pod.status.as_ref().and_then(|s| s.phase.as_deref()) == Some("Running");
+    let is_runner = pod.metadata.labels.as_ref().is_some_and(|l| l.contains_key(ARC_SCALE_SET_LABEL));
+    running && is_runner
+}
+
 /// A kwok FAKE node (carries the kwok adoption annotation). The real-node
 /// observer ([`KubeNodeProvedor`]) skips these so a `KwokProvedor` bed's fakes
 /// never inflate the REAL node-count capacity signal — the two pools observe

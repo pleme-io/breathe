@@ -32,7 +32,7 @@
 //! already-registered capacity — not `NodeClaim.status`, the same shape
 //! [`crate::node_forma::KubeNodeProvedor`] already uses).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 
 use async_trait::async_trait;
 use breathe_provider::{FormaSample, Provedor, ProviderError, ProvisionReceipt};
@@ -44,7 +44,7 @@ use kube::{
 };
 use tracing::warn;
 
-use crate::node_forma::{node_ready, parse_cpu_milli, CLAIM_POOL_LABEL};
+use crate::node_forma::{is_busy_runner_pod, node_ready, parse_cpu_milli, CLAIM_POOL_LABEL};
 
 const KARPENTER_GROUP: &str = "karpenter.sh";
 const KARPENTER_VERSION: &str = "v1";
@@ -83,6 +83,13 @@ pub struct NodeClaimRef {
     pub name: String,
     /// The [`CLAIM_POOL_LABEL`] value this claim carries, if any.
     pub pool_label: Option<String>,
+    /// The Kubernetes Node name this claim's `.status.nodeName` reports it
+    /// has registered as, if any (2026-07-25, task #75 — the busy-node
+    /// protection join key). `None` for a claim whose node hasn't
+    /// registered yet (freshly minted, still launching) — such a claim
+    /// carries no running pods by definition, so it is never treated as
+    /// busy regardless of this field's absence.
+    pub node_name: Option<String>,
 }
 
 /// The referenced NodePool's `.spec.template`, split into the opaque
@@ -131,6 +138,16 @@ pub trait KarpenterEnvironment: Send + Sync {
     async fn create_nodeclaim(&self, obj: DynamicObject) -> Result<(), ProviderError>;
     /// Delete one NodeClaim by name.
     async fn delete_nodeclaim(&self, name: &str) -> Result<(), ProviderError>;
+    /// Node names currently running >=1 busy ARC ephemeral-runner Pod,
+    /// cluster-wide (2026-07-25, task #75). Mirrors
+    /// [`crate::eks_nodegroup_provedor::EksNodegroupEnvironment::observe_busy_nodes`]'s
+    /// signal — same predicate ([`is_busy_runner_pod`]), same "cluster-wide,
+    /// then intersect against MY claims' node names" shape — but this
+    /// backend has no ASG-level `SetInstanceProtection` equivalent to lean
+    /// on, so [`KarpenterProvedor::deprovision`] uses this directly to
+    /// refuse to SELECT a busy claim in the first place, rather than
+    /// protecting an instance out-of-band after selection.
+    async fn observe_busy_node_names(&self) -> Result<std::collections::HashSet<String>, ProviderError>;
 }
 
 /// PURE: is `node` owned by the referenced NodePool (carries
@@ -150,6 +167,18 @@ fn owned_by_nodepool(node: &Node, node_pool_ref: &str) -> bool {
 /// never trusted from the (already label-scoped) list call alone.
 fn is_karpenter_managed_ref(claim: &NodeClaimRef, pool: &str) -> bool {
     claim.pool_label.as_deref() == Some(pool)
+}
+
+/// SAFETY PREDICATE (load-bearing, pure, tested; 2026-07-25, task #75): is
+/// `claim` currently backing a node with >=1 busy ARC runner pod on it? A
+/// claim with `node_name: None` (not yet registered as a real Node) is
+/// never busy -- it carries no pods by definition. [`KarpenterProvedor::deprovision`]
+/// filters this OUT before selecting which `n` claims to delete, the only
+/// correct place to enforce it since a direct NodeClaim delete has no
+/// downstream do-not-disrupt/PDB check the way a Karpenter-initiated
+/// voluntary disruption would.
+fn claim_is_busy(claim: &NodeClaimRef, busy_node_names: &HashSet<String>) -> bool {
+    claim.node_name.as_deref().is_some_and(|n| busy_node_names.contains(n))
 }
 
 /// PURE (tested): build ONE NodeClaim [`DynamicObject`] for `pool`, copying
@@ -292,8 +321,28 @@ impl<E: KarpenterEnvironment> Provedor for KarpenterProvedor<E> {
         }
         let mut claims = self.env.list_managed_nodeclaims(&self.pool).await?;
         claims.sort_by(|a, b| a.name.cmp(&b.name));
+        // Busy-node protection (2026-07-25, task #75): a direct NodeClaim
+        // delete bypasses Karpenter's own Disruption Controller (the
+        // component that would otherwise consult `do-not-disrupt`/PDBs)
+        // entirely, going straight to the Termination Controller -- so
+        // nothing upstream of this call protects a node mid-CI-job unless
+        // THIS selection loop refuses to pick it. Mirrors
+        // `EksNodegroupProvedor::sync_instance_protection`'s already-proven
+        // signal (same `is_busy_runner_pod` predicate, promoted to
+        // `node_forma` so both backends share one implementation) -- that
+        // backend protects the instance out-of-band via
+        // `SetInstanceProtection`; Karpenter has no equivalent API, so the
+        // only correct mechanism here is "never select a busy claim in the
+        // first place." Best-effort: a transient list failure degrades to
+        // an empty busy set (fail toward "protect nothing," matching
+        // `create_nodeclaim`'s own "log + continue" tolerance elsewhere in
+        // this file) rather than blocking every shrink tick on it.
+        let busy_nodes = self.env.observe_busy_node_names().await.unwrap_or_else(|e| {
+            warn!(pool = %self.pool, error = %e, "observe_busy_node_names failed; treating as no busy nodes this tick (non-fatal)");
+            HashSet::new()
+        });
         let mut released = 0i64;
-        for claim in claims.iter().take(n as usize) {
+        for claim in claims.iter().filter(|c| !claim_is_busy(c, &busy_nodes)).take(n as usize) {
             // Defense-in-depth: re-verify the safety predicate before EVERY
             // delete. A claim that isn't this pool's is unreachable as a target.
             if !is_karpenter_managed_ref(claim, &self.pool) {
@@ -384,6 +433,13 @@ impl KarpenterEnvironment for KubeKarpenterEnvironment {
             .map(|o| NodeClaimRef {
                 name: o.name_any(),
                 pool_label: o.metadata.labels.as_ref().and_then(|l| l.get(CLAIM_POOL_LABEL)).cloned(),
+                // Real Karpenter's own NodeClaim controller writes
+                // `.status.nodeName` once the launched instance has
+                // registered as a real k8s Node. `o.data` is the raw
+                // `serde_json::Value` this DynamicObject carries (this
+                // backend deliberately never vendors Karpenter's CRD
+                // schema — see this module's own top-level doc comment).
+                node_name: o.data.pointer("/status/nodeName").and_then(|v| v.as_str()).map(str::to_string),
             })
             .collect())
     }
@@ -397,12 +453,22 @@ impl KarpenterEnvironment for KubeKarpenterEnvironment {
         let api: Api<DynamicObject> = Api::all_with(self.client.clone(), &nodeclaim_resource());
         api.delete(name, &DeleteParams::default()).await.map(|_| ()).map_err(|e| ProviderError::ApiTransient(e.to_string()))
     }
+
+    async fn observe_busy_node_names(&self) -> Result<HashSet<String>, ProviderError> {
+        let pods = Api::<Pod>::all(self.client.clone()).list(&ListParams::default()).await.map_err(|e| ProviderError::ApiTransient(e.to_string()))?;
+        Ok(pods
+            .items
+            .iter()
+            .filter(|p| is_busy_runner_pod(p))
+            .filter_map(|p| p.spec.as_ref()?.node_name.clone())
+            .collect())
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        build_nodeclaim, is_karpenter_managed_ref, nodeclaim_resource, nodepool_resource, owned_by_nodepool,
+        build_nodeclaim, claim_is_busy, is_karpenter_managed_ref, nodeclaim_resource, nodepool_resource, owned_by_nodepool,
         parse_nodepool_template, KarpenterEnvironment, KarpenterProvedor, NodeClaimRef, NodePoolTemplate, ObservedNode,
         CLAIM_POOL_LABEL, KARPENTER_NODE_POOL_REF_LABEL, KARPENTER_NODEPOOL_LABEL,
     };
@@ -411,6 +477,7 @@ mod tests {
     use k8s_openapi::api::core::v1::Node;
     use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
     use kube::core::DynamicObject;
+    use std::collections::HashSet;
     use std::sync::Mutex;
 
     fn node_with_nodepool_label(label: Option<&str>) -> Node {
@@ -454,9 +521,9 @@ mod tests {
     fn is_karpenter_managed_ref_matches_only_this_pool() {
         // The load-bearing safety boundary the deprovision defense-in-depth
         // re-check relies on — breathe deletes ONLY its own claims.
-        let none = NodeClaimRef { name: "a".into(), pool_label: None };
-        let other = NodeClaimRef { name: "b".into(), pool_label: Some("other-pool".into()) };
-        let mine = NodeClaimRef { name: "c".into(), pool_label: Some("camelot-agents".into()) };
+        let none = NodeClaimRef { name: "a".into(), pool_label: None, node_name: None };
+        let other = NodeClaimRef { name: "b".into(), pool_label: Some("other-pool".into()), node_name: None };
+        let mine = NodeClaimRef { name: "c".into(), pool_label: Some("camelot-agents".into()), node_name: None };
         assert!(!is_karpenter_managed_ref(&none, "camelot-agents"));
         assert!(!is_karpenter_managed_ref(&other, "camelot-agents"));
         assert!(is_karpenter_managed_ref(&mine, "camelot-agents"));
@@ -607,6 +674,10 @@ mod tests {
         /// Names that fail to delete (the rest succeed).
         fail_deletes: std::collections::BTreeSet<String>,
         deleted: Mutex<Vec<String>>,
+        /// Node names `observe_busy_node_names` reports as busy (2026-07-25,
+        /// task #75). Empty by default (`empty()`) -- tests that care set it
+        /// explicitly, matching every other MockEnv field's convention.
+        busy_nodes: HashSet<String>,
     }
 
     impl MockEnv {
@@ -621,6 +692,7 @@ mod tests {
                 created: Mutex::new(vec![]),
                 fail_deletes: std::collections::BTreeSet::new(),
                 deleted: Mutex::new(vec![]),
+                busy_nodes: HashSet::new(),
             }
         }
     }
@@ -654,6 +726,9 @@ mod tests {
             }
             self.deleted.lock().unwrap().push(name.to_string());
             Ok(())
+        }
+        async fn observe_busy_node_names(&self) -> Result<HashSet<String>, ProviderError> {
+            Ok(self.busy_nodes.clone())
         }
     }
 
@@ -782,7 +857,7 @@ mod tests {
     #[tokio::test]
     async fn deprovision_dry_run_reports_would_and_deletes_nothing() {
         let env = MockEnv {
-            managed_claims: vec![NodeClaimRef { name: "c1".into(), pool_label: Some("pool".into()) }],
+            managed_claims: vec![NodeClaimRef { name: "c1".into(), pool_label: Some("pool".into()), node_name: None }],
             ..MockEnv::empty()
         };
         let p = KarpenterProvedor::new(env, "pool".into(), "nodepool".into(), true);
@@ -795,9 +870,9 @@ mod tests {
     async fn deprovision_live_deletes_n_claims_in_deterministic_sorted_order() {
         let env = MockEnv {
             managed_claims: vec![
-                NodeClaimRef { name: "zzz".into(), pool_label: Some("pool".into()) },
-                NodeClaimRef { name: "aaa".into(), pool_label: Some("pool".into()) },
-                NodeClaimRef { name: "mmm".into(), pool_label: Some("pool".into()) },
+                NodeClaimRef { name: "zzz".into(), pool_label: Some("pool".into()), node_name: None },
+                NodeClaimRef { name: "aaa".into(), pool_label: Some("pool".into()), node_name: None },
+                NodeClaimRef { name: "mmm".into(), pool_label: Some("pool".into()), node_name: None },
             ],
             ..MockEnv::empty()
         };
@@ -814,8 +889,8 @@ mod tests {
         // must refuse to delete it regardless.
         let env = MockEnv {
             managed_claims: vec![
-                NodeClaimRef { name: "mine".into(), pool_label: Some("pool".into()) },
-                NodeClaimRef { name: "foreign".into(), pool_label: Some("other-pool".into()) },
+                NodeClaimRef { name: "mine".into(), pool_label: Some("pool".into()), node_name: None },
+                NodeClaimRef { name: "foreign".into(), pool_label: Some("other-pool".into()), node_name: None },
             ],
             ..MockEnv::empty()
         };
@@ -829,10 +904,119 @@ mod tests {
     #[tokio::test]
     async fn deprovision_all_matching_only_foreign_claims_reports_noop() {
         let env = MockEnv {
-            managed_claims: vec![NodeClaimRef { name: "foreign".into(), pool_label: Some("other-pool".into()) }],
+            managed_claims: vec![NodeClaimRef { name: "foreign".into(), pool_label: Some("other-pool".into()), node_name: None }],
             ..MockEnv::empty()
         };
         let p = KarpenterProvedor::new(env, "pool".into(), "nodepool".into(), false);
         assert_eq!(p.deprovision(1).await.unwrap(), ProvisionReceipt::NoOp);
+    }
+
+    // ── task #75: busy-node protection ──────────────────────────────────
+
+    #[test]
+    fn claim_is_busy_true_only_when_node_name_is_in_the_busy_set() {
+        let busy: HashSet<String> = ["node-a".to_string()].into_iter().collect();
+        let on_busy_node = NodeClaimRef { name: "c".into(), pool_label: Some("pool".into()), node_name: Some("node-a".into()) };
+        let on_idle_node = NodeClaimRef { name: "c".into(), pool_label: Some("pool".into()), node_name: Some("node-b".into()) };
+        let unregistered = NodeClaimRef { name: "c".into(), pool_label: Some("pool".into()), node_name: None };
+        assert!(claim_is_busy(&on_busy_node, &busy));
+        assert!(!claim_is_busy(&on_idle_node, &busy));
+        // A freshly-minted claim with no registered node yet carries no
+        // running pods by definition — never treated as busy regardless of
+        // the busy set's contents (see NodeClaimRef::node_name's own doc).
+        assert!(!claim_is_busy(&unregistered, &busy));
+    }
+
+    #[tokio::test]
+    async fn deprovision_skips_a_busy_claim_even_when_it_sorts_first() {
+        // "aaa" is alphabetically first (the plain sort-order tiebreak the
+        // no-busy-protection tests above rely on) but sits on a node
+        // reported busy — it must never be selected, even though it would
+        // win a bare alphabetical pick.
+        let env = MockEnv {
+            managed_claims: vec![
+                NodeClaimRef { name: "aaa".into(), pool_label: Some("pool".into()), node_name: Some("node-busy".into()) },
+                NodeClaimRef { name: "mmm".into(), pool_label: Some("pool".into()), node_name: Some("node-idle".into()) },
+            ],
+            busy_nodes: ["node-busy".to_string()].into_iter().collect(),
+            ..MockEnv::empty()
+        };
+        let p = KarpenterProvedor::new(env, "pool".into(), "nodepool".into(), false);
+        let receipt = p.deprovision(1).await.unwrap();
+        assert_eq!(receipt, ProvisionReceipt::Applied { delta: -1, plan_id: "karpenter:deprovision:pool".into() });
+        assert_eq!(*p.env.deleted.lock().unwrap(), vec!["mmm".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn deprovision_falls_short_of_n_when_not_enough_idle_claims_exist() {
+        // Both managed claims sit on busy nodes — asking for 2 must delete
+        // 0, not fall back to deleting a busy one to hit the requested count.
+        let env = MockEnv {
+            managed_claims: vec![
+                NodeClaimRef { name: "aaa".into(), pool_label: Some("pool".into()), node_name: Some("node-busy-1".into()) },
+                NodeClaimRef { name: "bbb".into(), pool_label: Some("pool".into()), node_name: Some("node-busy-2".into()) },
+            ],
+            busy_nodes: ["node-busy-1".to_string(), "node-busy-2".to_string()].into_iter().collect(),
+            ..MockEnv::empty()
+        };
+        let p = KarpenterProvedor::new(env, "pool".into(), "nodepool".into(), false);
+        assert_eq!(p.deprovision(2).await.unwrap(), ProvisionReceipt::NoOp);
+        assert!(p.env.deleted.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn deprovision_treats_a_claim_with_no_registered_node_as_idle() {
+        // A freshly-minted claim (node not yet registered) must remain a
+        // valid deprovision target — it cannot be busy before it has a node.
+        let env = MockEnv {
+            managed_claims: vec![NodeClaimRef { name: "fresh".into(), pool_label: Some("pool".into()), node_name: None }],
+            busy_nodes: ["some-other-node".to_string()].into_iter().collect(),
+            ..MockEnv::empty()
+        };
+        let p = KarpenterProvedor::new(env, "pool".into(), "nodepool".into(), false);
+        let receipt = p.deprovision(1).await.unwrap();
+        assert_eq!(receipt, ProvisionReceipt::Applied { delta: -1, plan_id: "karpenter:deprovision:pool".into() });
+        assert_eq!(*p.env.deleted.lock().unwrap(), vec!["fresh".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn deprovision_degrades_to_treating_all_claims_idle_when_observe_busy_fails() {
+        // observe_busy_node_names is best-effort (see deprovision's own doc
+        // comment) — a transient failure must not block the shrink tick, it
+        // degrades to "protect nothing this tick" rather than erroring out.
+        struct FailingBusyEnv(MockEnv);
+        #[async_trait]
+        impl KarpenterEnvironment for FailingBusyEnv {
+            async fn observe_owned_nodes(&self, r: &str) -> Result<Vec<ObservedNode>, ProviderError> {
+                self.0.observe_owned_nodes(r).await
+            }
+            async fn observe_pod_demand_milli(&self) -> Result<u64, ProviderError> {
+                self.0.observe_pod_demand_milli().await
+            }
+            async fn get_nodepool_template(&self, r: &str) -> Result<NodePoolTemplate, ProviderError> {
+                self.0.get_nodepool_template(r).await
+            }
+            async fn list_managed_nodeclaims(&self, p: &str) -> Result<Vec<NodeClaimRef>, ProviderError> {
+                self.0.list_managed_nodeclaims(p).await
+            }
+            async fn create_nodeclaim(&self, obj: DynamicObject) -> Result<(), ProviderError> {
+                self.0.create_nodeclaim(obj).await
+            }
+            async fn delete_nodeclaim(&self, name: &str) -> Result<(), ProviderError> {
+                self.0.delete_nodeclaim(name).await
+            }
+            async fn observe_busy_node_names(&self) -> Result<HashSet<String>, ProviderError> {
+                Err(ProviderError::ApiTransient("mock observe_busy_node_names failure".into()))
+            }
+        }
+        let inner = MockEnv {
+            managed_claims: vec![NodeClaimRef { name: "c1".into(), pool_label: Some("pool".into()), node_name: Some("node-a".into()) }],
+            ..MockEnv::empty()
+        };
+        let env = FailingBusyEnv(inner);
+        let p = KarpenterProvedor::new(env, "pool".into(), "nodepool".into(), false);
+        let receipt = p.deprovision(1).await.unwrap();
+        assert_eq!(receipt, ProvisionReceipt::Applied { delta: -1, plan_id: "karpenter:deprovision:pool".into() });
+        assert_eq!(*p.env.0.deleted.lock().unwrap(), vec!["c1".to_string()]);
     }
 }
