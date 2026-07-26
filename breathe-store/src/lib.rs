@@ -122,7 +122,10 @@ pub enum CounterClass {
 /// fields are the seed of the M2 append-only `decision_log` row.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DecisionEntry {
-    /// A short, stable receipt-kind tag (`"Applied"`, `"Conflict"`, `"DryRunWouldApply"`, …).
+    /// A short, stable receipt-kind tag (`"Applied"`, `"Conflict"`,
+    /// `"ShadowWouldApply"`, …) — produced by `breathe_runtime`'s
+    /// `receipt_kind_str` / `ReplicaReceipt::kind_str`. (This doc read
+    /// `"DryRunWouldApply"` until 2026-07-26; no such tag has ever been emitted.)
     pub receipt_kind: String,
     /// Which cumulative counter (if any) this decision advances.
     pub class: CounterClass,

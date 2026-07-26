@@ -219,18 +219,43 @@ fn upsert_condition(
 pub fn conditions_for(outcome: &TickOutcome, prior: &[Condition], generation: Option<i64>) -> Vec<Condition> {
     let now = chrono::Utc::now().to_rfc3339();
     let r = &outcome.receipt;
+    // READY = "enrolled, config parses, metric observable". `NoLimit` is
+    // DELIBERATELY NOT in this exclusion set (it was, until 2026-07-26): the
+    // bound-introduction guard only fires AFTER a clean observe — breathe read the
+    // target, read its usage, and found no declared bound. That is an OBSERVATION,
+    // not an observability failure, and calling it `Ready=False` started a
+    // 1800s timer that ended in `HealthVerdict::Stuck` FOREVER for every target
+    // that legitimately declares no limit (`coredns` / `ebs-csi-controller` on
+    // camelot-eks: no cpu limit in their manifests, which is exactly the case the
+    // guard exists to respect). `NoLimit` is carried by `Supported=False` below —
+    // the condition purpose-built for "correct, permanent, needs operator action".
     let observable = !matches!(
         r,
-        TickReceipt::Error { .. }
-            | TickReceipt::MetricUnrepresentable { .. }
-            | TickReceipt::CapabilityMissing { .. }
-            | TickReceipt::Observed { decision: Decision::NoLimit }
+        TickReceipt::Error { .. } | TickReceipt::MetricUnrepresentable { .. } | TickReceipt::CapabilityMissing { .. }
     );
     // SUPPORTED (the design's point-3(b) "will never converge without operator
-    // action" signal, distinct from "waiting"): `false` ONLY for
-    // `CapabilityMissing` — every other receipt (including `Conflict`/
-    // `MetricUnrepresentable`, which MAY be transient) stays `true`.
-    let supported = !matches!(r, TickReceipt::CapabilityMissing { .. });
+    // action" signal, distinct from "waiting"): `false` for the two receipts that
+    // are permanent-by-construction until a human acts —
+    //   * `CapabilityMissing` — the StorageClass cannot expand (task #167), and
+    //   * `NoLimit` — the target declares no bound and `boundIntroduction:
+    //     forbidden` says breathe may not invent one.
+    // Every other receipt (including `Conflict`/`MetricUnrepresentable`, which MAY
+    // be transient) stays `true`.
+    //
+    // Why `Supported` and not a shadow-only special case: the state is
+    // GATE-INDEPENDENT. A LIVE band pointed at a limitless target is just as
+    // permanently non-convergent as a shadowed one, so keying the fix on the
+    // authored gate would leave the identical bug one `writeIntent` away. And
+    // `health_verdict` already checks `Supported` FIRST and documents
+    // `Unsupported` as taking priority over `Stuck` — "an unsupported band isn't
+    // waiting, it structurally can't" is precisely this band's situation.
+    let supported = !matches!(
+        r,
+        TickReceipt::CapabilityMissing { .. } | TickReceipt::Observed { decision: Decision::NoLimit }
+    );
+    // Which of the two unsupported causes this is, for an honest reason+message
+    // (the message is what `HealthVerdict::Unsupported` carries to the operator).
+    let no_limit = matches!(r, TickReceipt::Observed { decision: Decision::NoLimit });
     let converged = matches!(
         r,
         TickReceipt::Observed {
@@ -269,8 +294,12 @@ pub fn conditions_for(outcome: &TickOutcome, prior: &[Condition], generation: Op
     upsert_condition(&mut out, prior, &now, "Conflict", conflict,
         if conflict { "FieldOwnedElsewhere" } else { "SoleWriter" }, "single-writer guard", generation);
     upsert_condition(&mut out, prior, &now, "Supported", supported,
-        if supported { "CapabilityOk" } else { "StorageClassUnsupported" },
-        "StorageClass allowVolumeExpansion + per-volume metrics — False means this band can NEVER converge without operator action", generation);
+        if supported { "CapabilityOk" } else if no_limit { "NoBoundDeclared" } else { "StorageClassUnsupported" },
+        if no_limit {
+            "the target declares NO bound for this dimension and spec.boundIntroduction is `forbidden` — this band can NEVER converge until a limit is declared upstream or boundIntroduction is set to `allowed`"
+        } else {
+            "StorageClass allowVolumeExpansion + per-volume metrics — False means this band can NEVER converge without operator action"
+        }, generation);
     upsert_condition(&mut out, prior, &now, "TargetFound", target_found,
         if target_found { "Resolved" } else { "TargetMissing" },
         if target_found { "targetRef resolves to a live object" } else { "targetRef does not exist — self-heals automatically once the object is created" },
@@ -294,9 +323,11 @@ pub const STUCK_AFTER_SECS: i64 = 1800;
 pub enum HealthVerdict {
     /// Resting (`Converged`/`Throttled`) or freshly adjusting — nothing to do.
     Healthy,
-    /// `Supported=False` — will NEVER converge without operator action (today:
-    /// only StorageBand's `CapabilityMissing` sets this). Takes priority over
-    /// `Stuck` — an unsupported band isn't "waiting", it structurally can't.
+    /// `Supported=False` — will NEVER converge without operator action. Two
+    /// producers today: StorageBand's `CapabilityMissing` (the StorageClass
+    /// cannot expand) and any band's `Decision::NoLimit` (the target declares no
+    /// bound and `boundIntroduction: forbidden`). Takes priority over `Stuck` —
+    /// an unsupported band isn't "waiting", it structurally can't.
     Unsupported { reason: String },
     /// `TargetFound=False` — the band's targetRef points at an object that does
     /// not (yet) exist (task #217). Distinct from `Stuck`: this is re-derived
@@ -1435,6 +1466,69 @@ mod tests {
             .find(|c| c.type_ == "Converged")
             .expect("Converged condition");
         assert_eq!(converged.status, "True", "a withheld reclaim is a RESTING state");
+    }
+
+    /// **The 2026-07-26 deploy hazard, pinned.** `coredns-cpu` and
+    /// `ebs-csi-controller-cpu` on camelot-eks target workloads that declare NO
+    /// cpu limit — precisely the case the bound-introduction guard exists to
+    /// respect. `Decision::NoLimit` used to drive `Ready=False`, whose
+    /// [`STUCK_AFTER_SECS`] timer then classified both bands
+    /// [`HealthVerdict::Stuck`] **permanently**, with a `BandStuck` Warning, for
+    /// doing exactly the right thing.
+    ///
+    /// The honest classification is `Supported=False` ⇒
+    /// [`HealthVerdict::Unsupported`] — the condition already documented as
+    /// "will NEVER converge without operator action" and already checked ahead of
+    /// (and in priority over) `Stuck`.
+    ///
+    /// Note the two assertions this test deliberately makes TOGETHER: the verdict
+    /// must be `Unsupported` **regardless of the gate**. A shadow-only fix would
+    /// leave a live band on a limitless target Stuck forever — the same bug one
+    /// `writeIntent` away.
+    #[test]
+    fn no_limit_is_unsupported_not_stuck_in_either_gate() {
+        let o = out(TickReceipt::Observed { decision: Decision::NoLimit });
+        let conds = conditions_for(&o, &[], None);
+        let find = |t: &str| conds.iter().find(|c| c.type_ == t).expect("condition").clone();
+
+        // READY stays TRUE: the guard fires only after a clean observe.
+        assert_eq!(find("Ready").status, "True", "a NoLimit tick observed the target fine");
+        // SUPPORTED carries the verdict, with a reason naming the actual lever.
+        let supported = find("Supported");
+        assert_eq!(supported.status, "False");
+        assert_eq!(supported.reason, "NoBoundDeclared");
+        assert!(supported.message.contains("boundIntroduction"), "the message names the lever: {:?}", supported.message);
+        // …and does NOT claim a StorageClass problem, which this is not.
+        assert!(!supported.message.contains("StorageClass"), "wrong cause: {:?}", supported.message);
+
+        // The verdict, far past the stuck threshold, in BOTH gate modes.
+        let far_future = "2999-01-01T00:00:00Z";
+        for dry_run in [true, false] {
+            match health_verdict(&conds, far_future, STUCK_AFTER_SECS, dry_run) {
+                HealthVerdict::Unsupported { reason } => {
+                    assert!(reason.contains("boundIntroduction"), "reason: {reason:?}");
+                }
+                other => panic!("dry_run={dry_run}: expected Unsupported, got {other:?}"),
+            }
+        }
+    }
+
+    /// The sibling arm must not regress: a StorageClass that cannot expand is
+    /// STILL `Unsupported`, and still says so in StorageClass terms.
+    #[test]
+    fn capability_missing_keeps_its_own_unsupported_reason() {
+        let o = out(TickReceipt::CapabilityMissing {
+            volume_expansion: false,
+            per_volume_metrics: true,
+            provisioner: "rancher.io/local-path".into(),
+        });
+        let conds = conditions_for(&o, &[], None);
+        let supported = conds.iter().find(|c| c.type_ == "Supported").expect("Supported");
+        assert_eq!(supported.status, "False");
+        assert_eq!(supported.reason, "StorageClassUnsupported");
+        assert!(supported.message.contains("StorageClass"));
+        // …and this arm keeps Ready=False (there is genuinely nothing to reason on).
+        assert_eq!(conds.iter().find(|c| c.type_ == "Ready").expect("Ready").status, "False");
     }
 
     #[test]
