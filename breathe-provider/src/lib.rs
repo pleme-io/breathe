@@ -27,6 +27,19 @@ pub mod gate;
 // I/O door, and both `breathe-crd` (the CRD shape) and `breathe-core` (the
 // carve) already depend on this crate. Solve once, no new workspace member.
 pub mod request;
+
+// DOOR 2 — the durable, git-visible half of the REQUEST dimension. Lives beside
+// `request` for the same reason `request` lives beside `gate`: it is the
+// legality algebra of an I/O door, consumed by both `breathe-crd` (the
+// `manifestRef` shape) and the controller (the writer). Solve once, no new
+// workspace member.
+pub mod manifest;
+pub use manifest::{
+    apply_all, set_scalar_at_marker, AddressedProposal, ApplyOutcome, CommitOutcome, CoordinateGap, EditError,
+    EditOutcome, GitManifestWriter, ManifestCoordinate, ManifestRepo, ProposalOrigin, RepoError, ScalarAssignment,
+    ScalarEdit,
+};
+
 pub use request::{
     AboveLimit, AdmittedRequest, AllocatableHeadroom, CarveDirection, ClassPreserved, ClassTransitionBlocked,
     ClassTransitionProposal, ClassWouldChange, CommitReceipt, ContainerResources, ContentAddr, Durability,

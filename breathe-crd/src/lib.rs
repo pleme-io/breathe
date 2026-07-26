@@ -170,6 +170,35 @@ pub struct BandStatus {
     /// `CeilingCrossing`) — the K4 continuity evidence, surfaced.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub edge_tier: Option<String>,
+
+    // ── The REQUEST dimension's projection. `None` on every other band kind. ──
+    //
+    // Added to the SHARED `BandStatus` rather than forking a `RequestBandStatus`
+    // deliberately: three optional fields cost every other kind exactly nothing
+    // (they serialize away), whereas a second status type would ripple through
+    // `breathe-runtime`'s status mapping, the facade, and the gate matrix to buy
+    // only tidiness. If a fourth request-only field ever appears, revisit.
+    /// The quality-of-service class breathe **observed**, derived from the live
+    /// pod. breathe never declares this — k8s computes it from (requests, limits) across
+    /// every resource of every container, and a second source of truth for a
+    /// derived value is exactly the drift this dimension exists to end.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub qos_observed: Option<String>,
+    /// The typed gap between `qosObserved` and the resolved `qosTarget` —
+    /// `held` | `promotionProposed` | `blocked(<why>)`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub qos_gap: Option<serde_json::Value>,
+    /// A converged value that has **not yet reached git**: the content address
+    /// of the durable write this band would make, plus where it would land.
+    ///
+    /// This field is the honest face of the M0 boundary. While no
+    /// `ManifestWriter` transport is injected, a `durability: committed` band
+    /// publishes a real, content-addressed, byte-identical-to-what-would-commit
+    /// proposal here and commits nothing — so the gap between "breathe knows
+    /// the right value" and "git carries it" is *visible in status*, not buried
+    /// in a controller log.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending_proposal: Option<serde_json::Value>,
     /// The DisruptionPolicy in effect for this band (`restartFreeOnly` / …).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub effective_policy: Option<String>,
@@ -2563,6 +2592,24 @@ pub struct RequestBandSpec {
     /// Where a converged value must land. Defaults to `committed`.
     #[serde(default)]
     pub durability: DurabilitySpec,
+    /// **Where in git the converged value comes to rest.**
+    ///
+    /// `{ path, marker }` — a repo-relative manifest path plus the marker id
+    /// that must appear in a `# {"$breathe": "<marker>"}` comment on the value
+    /// line. Both are operator-authored; neither is inferred.
+    ///
+    /// Unset is the honest default and NOT a silent downgrade to ephemeral: a
+    /// `durability: committed` band with no `manifestRef` reports
+    /// `Blocked(noManifestCoordinate)`, because a band that declares its value
+    /// must survive a rollout and cannot say where it lives is misauthored, not
+    /// merely unconfigured.
+    ///
+    /// The marker is also the blast-radius floor. breathe never walks a
+    /// document looking for a likely field — the only anchor it has is one a
+    /// human put in the file, so **a manifest nobody marked cannot be written
+    /// to at all**.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub manifest_ref: Option<breathe_provider::ManifestCoordinate>,
     /// Advisory lower bound in the band's unit (`256Mi` / `250m`).
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub floor: String,
@@ -2680,6 +2727,36 @@ impl RequestBandSpec {
     #[must_use]
     pub fn provider_layout(&self) -> LimitLayout {
         LimitLayout::PodRequestResize { container: self.target_ref.container.clone() }
+    }
+
+    /// **Where this band's value must land in git — or why it cannot.**
+    ///
+    /// The ONE place the `durability × manifestRef` decision is made, so a
+    /// reconciler, the status writer and any future consumer cannot disagree
+    /// about whether a band has a durable home. The three cases:
+    ///
+    /// * `Ephemeral` ⇒ `Err(EphemeralCannotTransition)` — this band declared it
+    ///   does not need to survive a rollout, so there is nothing to commit and
+    ///   asking for a coordinate would be the wrong question.
+    /// * `Committed` + no `manifestRef` ⇒ `Err(NoManifestCoordinate)` — the
+    ///   misauthored case, reported rather than silently downgraded to
+    ///   ephemeral. A band that says its value must survive a rollout and
+    ///   cannot say where it lives is a bug in the CR, and the operator has to
+    ///   see that.
+    /// * `Committed` + a `manifestRef` ⇒ `Ok(coordinate)`.
+    ///
+    /// # Errors
+    ///
+    /// The typed reason no durable write is possible, ready to publish straight
+    /// into `status.qosGap` as `Blocked(..)`.
+    pub fn durable_coordinate(
+        &self,
+    ) -> Result<&breathe_provider::ManifestCoordinate, breathe_provider::ClassTransitionBlocked> {
+        use breathe_provider::ClassTransitionBlocked as B;
+        match self.durability {
+            DurabilitySpec::Ephemeral => Err(B::EphemeralCannotTransition),
+            DurabilitySpec::Committed => self.manifest_ref.as_ref().ok_or(B::NoManifestCoordinate),
+        }
     }
 }
 
@@ -6092,6 +6169,189 @@ spec:
         assert!(round.get("workloadClass").is_none(), "an absent axis must not be serialized back");
         assert!(round.get("qosTarget").is_none());
         assert!(round.get("demand").is_none());
+    }
+
+    // ── the durable coordinate (B3) ──────────────────────────────────────────
+
+    fn request_band(spec_extra: &str) -> RequestBand {
+        let mut y = String::from(
+            r"
+apiVersion: breathe.pleme.io/v1
+kind: RequestBand
+metadata: { name: sui-request, namespace: camelot-build }
+spec:
+  targetRef: { kind: Deployment, name: sui, container: sui }
+  resource: memory
+",
+        );
+        y.push_str(spec_extra);
+        serde_yaml::from_str(&y).expect("the RequestBand fixture parses")
+    }
+
+    /// A band that must survive a rollout and cannot say where it lives is
+    /// **misauthored** — reported, never silently downgraded to ephemeral.
+    ///
+    /// The silent downgrade is the tempting shape and the dangerous one: it
+    /// would leave an operator believing a quality-of-service posture is durable
+    /// while it evaporates on the next rollout — illegal state I5 arriving
+    /// through the CRD instead of through the actuator.
+    #[test]
+    fn committed_with_no_manifest_ref_is_blocked_not_downgraded() {
+        let b = request_band("  durability: committed\n");
+        assert_eq!(
+            b.spec.durable_coordinate().unwrap_err(),
+            breathe_provider::ClassTransitionBlocked::NoManifestCoordinate
+        );
+    }
+
+    /// `committed` is the DEFAULT, so an author who says nothing about
+    /// durability lands in the reported-gap case rather than the silent-loss
+    /// one. Pinned because flipping this default would make every existing band
+    /// quietly ephemeral.
+    #[test]
+    fn durability_defaults_to_committed() {
+        let b = request_band("");
+        assert_eq!(b.spec.durability, DurabilitySpec::Committed);
+        assert!(b.spec.durable_coordinate().is_err(), "and therefore reports its missing coordinate");
+    }
+
+    /// An `ephemeral` band reports a DIFFERENT reason than a misauthored
+    /// `committed` one. Distinct arms because they send an operator to
+    /// different fixes: one is "this band opted out", the other is "this band
+    /// is incomplete".
+    #[test]
+    fn ephemeral_and_missing_ref_are_distinguishable_reasons() {
+        use breathe_provider::ClassTransitionBlocked as B;
+        assert_eq!(request_band("  durability: ephemeral\n").spec.durable_coordinate().unwrap_err(), B::EphemeralCannotTransition);
+        assert_eq!(request_band("  durability: committed\n").spec.durable_coordinate().unwrap_err(), B::NoManifestCoordinate);
+    }
+
+    /// The coordinate round-trips into the provider type the writer consumes —
+    /// one declaration, no CRD-side mirror to drift.
+    #[test]
+    fn a_manifest_ref_reaches_the_writer_as_a_real_coordinate() {
+        let b = request_band(
+            "  durability: committed\n  manifestRef:\n    path: clusters/camelot/apps/sui/release.yaml\n    marker: camelot-build/sui-request\n",
+        );
+        let c = b.spec.durable_coordinate().expect("a committed band with a ref has a home");
+        assert_eq!(c.path, "clusters/camelot/apps/sui/release.yaml");
+        assert_eq!(c.marker, "camelot-build/sui-request");
+
+        // …and it composes straight into an addressed proposal, which is the
+        // only currency the durable door accepts.
+        let p = breathe_provider::AddressedProposal::carve(c, "3Gi", "memory", "sui");
+        assert_eq!(p.path(), "clusters/camelot/apps/sui/release.yaml");
+        assert_eq!(p.assignments().len(), 1);
+    }
+
+    /// Backward compatibility: a `RequestBand` authored before `manifestRef`
+    /// existed still parses, and does not gain the field on round-trip.
+    #[test]
+    fn a_band_without_a_manifest_ref_still_parses_and_stays_absent() {
+        let b = request_band("");
+        assert!(b.spec.manifest_ref.is_none());
+        let round = serde_json::to_value(&b.spec).unwrap();
+        assert!(round.get("manifestRef").is_none(), "an absent coordinate must not be serialized back");
+    }
+
+    /// **The cross-repo drift gate.** This is the *verbatim* spec that
+    /// `helmworks`' `pleme-lib.breatheBand` helper renders for a fully-populated
+    /// `RequestBand` — captured from a real `helm template` run, not hand-written
+    /// to match.
+    ///
+    /// Two repos, one contract: the chart is where an operator authors a band,
+    /// and this crate is what has to parse it. Nothing else connects them, so
+    /// without this test a renamed field or a changed casing on either side is
+    /// caught only by a band that silently never reconciles in a live cluster.
+    /// Re-capture it whenever the helper's `RequestBand` arm changes.
+    #[test]
+    fn the_helmworks_rendered_request_band_parses_into_this_type() {
+        let b: RequestBand = serde_yaml::from_str(
+            r#"
+apiVersion: breathe.pleme.io/v1
+kind: RequestBand
+metadata:
+  name: sui-request-memory
+  namespace: camelot-build
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: sui
+    container: sui
+  resource: memory
+  workloadClass: critical
+  qosTarget: guaranteed
+  demand:
+    headroom: 0.15
+    quantile: 0.95
+    windowSeconds: 604800
+  durability: committed
+  manifestRef:
+    path: "clusters/camelot/apps/sui/release.yaml"
+    marker: "camelot-build/sui-request"
+  floor: "512Mi"
+  cooldownSeconds: 600
+  disruptionPolicy: restartFreeOnly
+  maxStalenessSeconds: 120
+  mode: shadow
+"#,
+        )
+        .expect("the chart's rendered RequestBand must parse into RequestBand");
+
+        assert_eq!(b.spec.resource, RequestResourceSpec::Memory);
+        assert_eq!(b.spec.workload_class, Some(WorkloadClassSpec::Critical));
+        assert_eq!(b.spec.qos_target, Some(QosClassSpec::Guaranteed));
+        assert_eq!(b.spec.durability, DurabilitySpec::Committed);
+        assert_eq!(b.spec.mode, Some(PromotionMode::Shadow));
+        // The whole point of the chart arm: a committed band arrives with a home.
+        let c = b.spec.durable_coordinate().expect("the rendered band carries its coordinate");
+        assert_eq!(c.marker, "camelot-build/sui-request");
+    }
+
+    /// The chart's MINIMAL `RequestBand` — `{enabled: true, resource: cpu}` and
+    /// nothing else — is born shadowed and durable-but-unaddressed.
+    ///
+    /// Pinned because this is the shape an operator gets by flipping one
+    /// boolean, and it must be the SAFE one: shadow (so it writes nothing) and
+    /// a reported coordinate gap (so the missing durable home is visible rather
+    /// than silently ephemeral).
+    #[test]
+    fn the_chart_minimal_request_band_is_born_shadowed_and_reports_its_gap() {
+        let b: RequestBand = serde_yaml::from_str(
+            r"
+apiVersion: breathe.pleme.io/v1
+kind: RequestBand
+metadata: { name: sui-request-cpu, namespace: cb }
+spec:
+  targetRef: { apiVersion: apps/v1, kind: Deployment, name: sui }
+  resource: cpu
+  durability: committed
+  cooldownSeconds: 600
+  disruptionPolicy: restartFreeOnly
+  maxStalenessSeconds: 120
+  mode: shadow
+",
+        )
+        .expect("the chart's minimal RequestBand must parse");
+        assert_eq!(b.spec.mode, Some(PromotionMode::Shadow), "one boolean must not produce a live band");
+        assert_eq!(
+            b.spec.durable_coordinate().unwrap_err(),
+            breathe_provider::ClassTransitionBlocked::NoManifestCoordinate
+        );
+    }
+
+    /// The request-only status projection is OPTIONAL on the shared
+    /// `BandStatus`, so every other band kind serializes exactly as before.
+    /// Pinned because adding a required field here would change the on-wire
+    /// status of all ten existing dimensions at once.
+    #[test]
+    fn the_request_status_projection_is_absent_on_every_other_kind() {
+        let s = BandStatus { phase: Some("Holding".into()), ..Default::default() };
+        let v = serde_json::to_value(&s).unwrap();
+        for f in ["qosObserved", "qosGap", "pendingProposal"] {
+            assert!(v.get(f).is_none(), "{f} must serialize away when unset");
+        }
     }
 
     /// The RESERVATION dimension is a k8s-plane kind, not a host one — pinned
