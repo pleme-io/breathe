@@ -81,12 +81,53 @@ pub enum MetricMissingPolicy {
     Trust,
 }
 
+/// **The never-shrink sentinel for [`BandConfig::shrink_below`].**
+///
+/// [`BandLaw::propose`] triggers a shrink on `util < shrink_below` — a STRICT
+/// comparison against a utilization that is `working_set / current_limit`, i.e.
+/// never negative. So `shrink_below == 0.0` makes the shrink arm unreachable for
+/// every possible observation, including a genuine `working_set == 0`
+/// (`0.0 < 0.0` is false). The band still grows normally; it simply never gives
+/// capacity back. That is exactly what a critical-tier workload wants, and it is
+/// how the ~35 live camelot-eks critical bands are authored.
+///
+/// **Named as a constant on 2026-07-26 because it was out of contract.**
+/// [`BandConfig::validate`] required every threshold in `(0, 1]`, so `0.0` was a
+/// [`BandConfigError::BadBand`]; the live bands only survived because
+/// `validate()` is *never called on the vertical band path* (it has test callers
+/// plus one `debug_assert` in [`BandConfig::with_override`]). That left two live
+/// traps: wiring `validate()` into the reconcile path — an obviously-desirable
+/// hardening step — would have rejected every critical band, and any
+/// `lapidar` `ShrinkBelow` trial would have `debug_assert`-panicked. Both are
+/// closed here, in favour of the value the fleet actually authors.
+///
+/// **Tier:** the widened bound is *parse-time-rejected* for everything else
+/// (`validate` still rejects `< 0.0`, `> 1.0`, and an ill-ordered deadband) and
+/// *only-mitigated* for never-shrink itself — nothing in the type system stops a
+/// future `propose` implementation from switching to `<=` and un-freezing 35
+/// bands at once. `never_shrink_is_unreachable_for_every_utilization` is the
+/// forcing-function that would catch it (CI-caught, not a compile error).
+///
+/// **The better long-term encoding is already in the substrate and NOT used
+/// here:** [`Reclaim::ObserveOnly`] expresses "compute the shrink, name the
+/// slack, never take it" as a typed policy arm, and reports
+/// [`Decision::ReclaimWithheld`] (which names `reclaimable`) instead of an
+/// indistinguishable `Hold`. Migrating the critical tier to it is strictly
+/// better and strictly out of scope for a repo-side change: the `0.0` values are
+/// authored in live CRs in another repo, so re-encoding them is an
+/// operator-authorized migration, not a library edit. Naming the destination
+/// rather than silently leaving the value out of contract.
+pub const NEVER_SHRINK: f64 = 0.0;
+
 /// ~15-point deadband (70–85%).
 #[derive(Debug, Clone)]
 pub struct BandConfig {
     /// Utilization strictly above this triggers a grow. Default `0.85`.
     pub grow_above: f64,
     /// Utilization strictly below this triggers a shrink. Default `0.70`.
+    ///
+    /// **[`NEVER_SHRINK`] (`0.0`) is IN CONTRACT** — the one value outside
+    /// `(0, 1]` this field admits. See that constant for why.
     pub shrink_below: f64,
     /// Target utilization the shrink-safety clamp lands on. Default `0.80`.
     pub setpoint: f64,
@@ -145,7 +186,8 @@ impl Default for BandConfig {
 /// parse-time gate that keeps a *malformed* band out of the loop.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BandConfigError {
-    /// A threshold is outside `(0, 1]` or the deadband is not well-ordered
+    /// A threshold is outside `(0, 1]` (except [`NEVER_SHRINK`], which
+    /// `shrink_below` alone admits) or the deadband is not well-ordered
     /// (`shrink_below ≤ setpoint ≤ grow_above`).
     BadBand,
     /// `grow_factor ≤ 1` (a grow must raise) or `shrink_factor ∉ (0, 1)`.
@@ -181,7 +223,12 @@ impl BandConfig {
     /// A typed [`BandConfigError`] naming the first violated invariant.
     pub fn validate(&self) -> Result<(), BandConfigError> {
         let in_unit = |x: f64| x > 0.0 && x <= 1.0;
-        if !(in_unit(self.shrink_below) && in_unit(self.setpoint) && in_unit(self.grow_above)
+        // `shrink_below` alone admits ONE extra value: `NEVER_SHRINK` (0.0), the
+        // sentinel that makes the shrink arm unreachable. A zero `setpoint` or
+        // `grow_above` stays rejected — neither has any meaning. See
+        // [`NEVER_SHRINK`] for the full rationale + the named better encoding.
+        let shrink_below_ok = self.shrink_below == NEVER_SHRINK || in_unit(self.shrink_below);
+        if !(shrink_below_ok && in_unit(self.setpoint) && in_unit(self.grow_above)
             && self.shrink_below <= self.setpoint && self.setpoint <= self.grow_above)
         {
             return Err(BandConfigError::BadBand);
@@ -222,7 +269,17 @@ impl BandConfig {
                 self.grow_above = value.clamp(self.setpoint, 1.0);
             }
             lapidar::TunedParam::ShrinkBelow => {
-                self.shrink_below = value.clamp(MIN_FRAC, self.setpoint);
+                // A NEVER-SHRINK band is not tunable on this axis. Clamping into
+                // `[MIN_FRAC, setpoint]` would have raised `0.0` to `0.01` and
+                // silently turned a deliberately-frozen critical band into a
+                // shrinking one — a self-tuner MUST NOT be able to enlarge the set
+                // of writes breathe performs. Refuse the override instead (inert,
+                // exactly like the `NaN` guard above). Narrowing an already-
+                // shrinking band toward `MIN_FRAC` stays permitted: that only ever
+                // REDUCES shrinks.
+                if self.shrink_below != NEVER_SHRINK {
+                    self.shrink_below = value.clamp(MIN_FRAC, self.setpoint);
+                }
             }
             lapidar::TunedParam::WarmupSeconds => {
                 // NaN already returned; negative → 0; huge → saturating cast.
@@ -231,6 +288,83 @@ impl BandConfig {
         }
         debug_assert!(self.validate().is_ok(), "with_override must preserve a valid band");
         self
+    }
+}
+
+/// **`NEVER_SHRINK` is in contract, and stays unreachable.** The three live
+/// traps this pins, all of which were open until 2026-07-26:
+///
+/// 1. `validate()` rejected the value 35 live bands run on, so wiring it into
+///    the reconcile path would have errored every critical band;
+/// 2. `with_override`'s `debug_assert` would have panicked on one;
+/// 3. `with_override`'s `MIN_FRAC` clamp would have raised `0.0 → 0.01`,
+///    silently un-freezing a critical band — a self-tuner ENLARGING the set of
+///    writes breathe performs.
+#[cfg(test)]
+mod never_shrink_tests {
+    use super::lapidar::TunedParam;
+    use super::{BandConfig, BandConfigError, BandLaw, ControlLaw, Proposal, NEVER_SHRINK};
+
+    fn never_shrink_cfg() -> BandConfig {
+        BandConfig { shrink_below: NEVER_SHRINK, ..BandConfig::default() }
+    }
+
+    /// Trap 1: the value the fleet authors must PARSE.
+    #[test]
+    fn never_shrink_validates() {
+        assert!(never_shrink_cfg().validate().is_ok(), "shrinkBelow: 0.0 is the never-shrink sentinel, not a malformed band");
+    }
+
+    /// …without widening the contract for anything else.
+    #[test]
+    fn only_shrink_below_admits_zero_and_out_of_range_is_still_rejected() {
+        // A zero setpoint / growAbove has no meaning and stays rejected.
+        assert_eq!(BandConfig { setpoint: 0.0, shrink_below: 0.0, ..BandConfig::default() }.validate(), Err(BandConfigError::BadBand));
+        assert_eq!(BandConfig { grow_above: 0.0, setpoint: 0.0, shrink_below: 0.0, ..BandConfig::default() }.validate(), Err(BandConfigError::BadBand));
+        // Negative and >1 are still out of contract on every axis.
+        assert_eq!(BandConfig { shrink_below: -0.1, ..BandConfig::default() }.validate(), Err(BandConfigError::BadBand));
+        assert_eq!(BandConfig { shrink_below: 1.5, setpoint: 1.5, ..BandConfig::default() }.validate(), Err(BandConfigError::BadBand));
+        // The deadband ordering still binds: shrink_below ≤ setpoint ≤ grow_above.
+        assert_eq!(BandConfig { shrink_below: 0.9, ..BandConfig::default() }.validate(), Err(BandConfigError::BadBand));
+    }
+
+    /// **The load-bearing invariant.** `BandLaw::propose` uses a STRICT `<`, and
+    /// utilization is a ratio of unsigned counts, so no observation — including a
+    /// true zero working set — can reach the shrink arm at `shrink_below == 0.0`.
+    /// If someone ever changes that `<` to `<=`, 35 live critical bands start
+    /// giving capacity back; this test is the CI forcing-function that catches it.
+    #[test]
+    fn never_shrink_is_unreachable_for_every_utilization() {
+        let cfg = never_shrink_cfg();
+        let limit = 1_000_u64;
+        // util 0.000 … 1.200 inclusive, plus the exact zero-working-set case.
+        for w in (0..=1200_u64).map(|i| i * limit / 1000) {
+            match BandLaw.propose(w, limit, &cfg) {
+                Proposal::Target(to) => assert!(to > limit, "never-shrink band proposed a SHRINK {limit} -> {to} at working_set={w}"),
+                Proposal::Hold => {}
+            }
+        }
+        // …and the growth arm still works, so this is a freeze, not a mute.
+        assert!(matches!(BandLaw.propose(950, limit, &cfg), Proposal::Target(to) if to > limit));
+    }
+
+    /// Trap 3: `lapidar` must not be able to un-freeze a never-shrink band.
+    /// (Trap 2 — the `debug_assert` — is covered by this test running in a debug
+    /// profile: a panic here IS the failure.)
+    #[test]
+    fn lapidar_cannot_unfreeze_a_never_shrink_band() {
+        for trial in [0.5_f64, 0.01, 0.0, -1.0, f64::NAN] {
+            let cfg = never_shrink_cfg().with_override(TunedParam::ShrinkBelow, trial);
+            assert_eq!(cfg.shrink_below, NEVER_SHRINK, "a ShrinkBelow trial of {trial} must leave a frozen band frozen");
+            assert!(cfg.validate().is_ok());
+        }
+        // A NON-frozen band is still tunable on this axis (behaviour unchanged).
+        let tuned = BandConfig::default().with_override(TunedParam::ShrinkBelow, 0.5);
+        assert!((tuned.shrink_below - 0.5).abs() < 1e-9);
+        // Other axes remain tunable on a frozen band.
+        let sp = never_shrink_cfg().with_override(TunedParam::Setpoint, 0.75);
+        assert!((sp.setpoint - 0.75).abs() < 1e-9);
+        assert_eq!(sp.shrink_below, NEVER_SHRINK);
     }
 }
 
