@@ -40,6 +40,13 @@ blake3 = "1"
 serde_json = "1"
 
 [dev-dependencies]
+# A self dev-dependency with `mock` on, so the crate's OWN integration tests can
+# drive `MockRequestActuator`. Without it the end-to-end request-actuation test
+# would compile only under `cargo test --workspace` (where a downstream crate
+# happens to turn the feature on) and would SILENTLY VANISH under
+# `cargo test -p breathe-provider` — a test that disappears depending on how it
+# is invoked is worse than no test.
+breathe-provider = { path = ".", features = ["mock"] }
 # The gate module's parse-boundary tests (an unattributed `intent: write` must
 # FAIL to deserialize) assert on real serde behavior, not on a mock.
 serde_json = "1"
