@@ -201,7 +201,9 @@ spec:
                 description: |-
                   **The authorization intent — what this band is permitted to do and who says so.** The first and highest link in the resolution chain `writeIntent` > `mode` > the compiled `shadowConfirmEffect`.
 
-                  * `{intent: observe}` — decide, report, attest; never write. * `{intent: calibrateThenWrite, confirmAfterSeconds: 1800}` — shadow until a clean-observation window proves the band safe, then write. * `{intent: write, authorizedBy: "…"}` — write now. `authorizedBy` is REQUIRED: a CR that says "go live" and does not say who is rejected at parse time. * `{intent: frozen}` — never write, but keep observing.
+                  * `{intent: observe}` — decide, report, attest; never write. * `{intent: calibrateThenWrite, confirmAfterSeconds: 1800}` — shadow until a clean-observation window proves the band safe, then write. * `{intent: write, authorizedBy: "…"}` — write now. * `{intent: frozen}` — never write, but keep observing.
+
+                  `authorizedBy` is REQUIRED on `write`: an `{intent: write}` naming no `authorizedBy` never goes live: it is held in shadow as `intentMalformed`. NOTE the tier — that is a runtime mitigation, not an apiserver rejection: a k8s structural schema cannot express "this property is required only when another property has this value", so the API accepts the object and the controller refuses to act on it. (This description said "rejected at parse time" until 2026-07-26; it was not.)
 
                   Unset ⇒ the retired `mode`/default chain decides, and `status.effectiveGate.witness` reports `legacyDefault` so an unauthored live band is visible as such.
                 nullable: true
@@ -684,7 +686,9 @@ spec:
                 description: |-
                   **The authorization intent — what this band is permitted to do and who says so.** The first and highest link in the resolution chain `writeIntent` > `mode` > the compiled `shadowConfirmEffect`.
 
-                  * `{intent: observe}` — decide, report, attest; never write. * `{intent: calibrateThenWrite, confirmAfterSeconds: 1800}` — shadow until a clean-observation window proves the band safe, then write. * `{intent: write, authorizedBy: "…"}` — write now. `authorizedBy` is REQUIRED: a CR that says "go live" and does not say who is rejected at parse time. * `{intent: frozen}` — never write, but keep observing.
+                  * `{intent: observe}` — decide, report, attest; never write. * `{intent: calibrateThenWrite, confirmAfterSeconds: 1800}` — shadow until a clean-observation window proves the band safe, then write. * `{intent: write, authorizedBy: "…"}` — write now. * `{intent: frozen}` — never write, but keep observing.
+
+                  `authorizedBy` is REQUIRED on `write`: an `{intent: write}` naming no `authorizedBy` never goes live: it is held in shadow as `intentMalformed`. NOTE the tier — that is a runtime mitigation, not an apiserver rejection: a k8s structural schema cannot express "this property is required only when another property has this value", so the API accepts the object and the controller refuses to act on it. (This description said "rejected at parse time" until 2026-07-26; it was not.)
 
                   Unset ⇒ the retired `mode`/default chain decides, and `status.effectiveGate.witness` reports `legacyDefault` so an unauthored live band is visible as such.
                 nullable: true
@@ -1167,7 +1171,9 @@ spec:
                 description: |-
                   **The authorization intent — what this band is permitted to do and who says so.** The first and highest link in the resolution chain `writeIntent` > `mode` > the compiled `shadowConfirmEffect`.
 
-                  * `{intent: observe}` — decide, report, attest; never write. * `{intent: calibrateThenWrite, confirmAfterSeconds: 1800}` — shadow until a clean-observation window proves the band safe, then write. * `{intent: write, authorizedBy: "…"}` — write now. `authorizedBy` is REQUIRED: a CR that says "go live" and does not say who is rejected at parse time. * `{intent: frozen}` — never write, but keep observing.
+                  * `{intent: observe}` — decide, report, attest; never write. * `{intent: calibrateThenWrite, confirmAfterSeconds: 1800}` — shadow until a clean-observation window proves the band safe, then write. * `{intent: write, authorizedBy: "…"}` — write now. * `{intent: frozen}` — never write, but keep observing.
+
+                  `authorizedBy` is REQUIRED on `write`: an `{intent: write}` naming no `authorizedBy` never goes live: it is held in shadow as `intentMalformed`. NOTE the tier — that is a runtime mitigation, not an apiserver rejection: a k8s structural schema cannot express "this property is required only when another property has this value", so the API accepts the object and the controller refuses to act on it. (This description said "rejected at parse time" until 2026-07-26; it was not.)
 
                   Unset ⇒ the retired `mode`/default chain decides, and `status.effectiveGate.witness` reports `legacyDefault` so an unauthored live band is visible as such.
                 nullable: true
@@ -1663,7 +1669,7 @@ spec:
                     type: integer
                 type: object
               writeIntent:
-                description: '**The authorization intent** — the first and highest link in the resolution chain, above `mode`. See `MemoryBandSpec::write_intent` for the four arms; `{intent: write}` requires naming an `authorizedBy`.'
+                description: '**The authorization intent** — the first and highest link in the resolution chain `writeIntent` > `mode` > the compiled `shadowConfirmEffect`. See `MemoryBandSpec::write_intent` for the four arms. `authorizedBy` is REQUIRED on `write`: an `{intent: write}` naming no `authorizedBy` never goes live: it is held in shadow as `intentMalformed` (a runtime mitigation — a k8s structural schema cannot express a conditional `required`).'
                 nullable: true
                 properties:
                   authorizedBy:
@@ -2145,7 +2151,9 @@ spec:
                 description: |-
                   **The authorization intent — what this band is permitted to do and who says so.** The first and highest link in the resolution chain `writeIntent` > `mode` > the compiled `shadowConfirmEffect`.
 
-                  * `{intent: observe}` — decide, report, attest; never write. * `{intent: calibrateThenWrite, confirmAfterSeconds: 1800}` — shadow until a clean-observation window proves the band safe, then write. * `{intent: write, authorizedBy: "…"}` — write now. `authorizedBy` is REQUIRED: a CR that says "go live" and does not say who is rejected at parse time. * `{intent: frozen}` — never write, but keep observing.
+                  * `{intent: observe}` — decide, report, attest; never write. * `{intent: calibrateThenWrite, confirmAfterSeconds: 1800}` — shadow until a clean-observation window proves the band safe, then write. * `{intent: write, authorizedBy: "…"}` — write now. * `{intent: frozen}` — never write, but keep observing.
+
+                  `authorizedBy` is REQUIRED on `write`: an `{intent: write}` naming no `authorizedBy` never goes live: it is held in shadow as `intentMalformed`. NOTE the tier — that is a runtime mitigation, not an apiserver rejection: a k8s structural schema cannot express "this property is required only when another property has this value", so the API accepts the object and the controller refuses to act on it. (This description said "rejected at parse time" until 2026-07-26; it was not.)
 
                   Unset ⇒ the retired `mode`/default chain decides, and `status.effectiveGate.witness` reports `legacyDefault` so an unauthored live band is visible as such.
                 nullable: true
@@ -2628,7 +2636,9 @@ spec:
                 description: |-
                   **The authorization intent — what this band is permitted to do and who says so.** The first and highest link in the resolution chain `writeIntent` > `mode` > the compiled `shadowConfirmEffect`.
 
-                  * `{intent: observe}` — decide, report, attest; never write. * `{intent: calibrateThenWrite, confirmAfterSeconds: 1800}` — shadow until a clean-observation window proves the band safe, then write. * `{intent: write, authorizedBy: "…"}` — write now. `authorizedBy` is REQUIRED: a CR that says "go live" and does not say who is rejected at parse time. * `{intent: frozen}` — never write, but keep observing.
+                  * `{intent: observe}` — decide, report, attest; never write. * `{intent: calibrateThenWrite, confirmAfterSeconds: 1800}` — shadow until a clean-observation window proves the band safe, then write. * `{intent: write, authorizedBy: "…"}` — write now. * `{intent: frozen}` — never write, but keep observing.
+
+                  `authorizedBy` is REQUIRED on `write`: an `{intent: write}` naming no `authorizedBy` never goes live: it is held in shadow as `intentMalformed`. NOTE the tier — that is a runtime mitigation, not an apiserver rejection: a k8s structural schema cannot express "this property is required only when another property has this value", so the API accepts the object and the controller refuses to act on it. (This description said "rejected at parse time" until 2026-07-26; it was not.)
 
                   Unset ⇒ the retired `mode`/default chain decides, and `status.effectiveGate.witness` reports `legacyDefault` so an unauthored live band is visible as such.
                 nullable: true
@@ -3111,7 +3121,9 @@ spec:
                 description: |-
                   **The authorization intent — what this band is permitted to do and who says so.** The first and highest link in the resolution chain `writeIntent` > `mode` > the compiled `shadowConfirmEffect`.
 
-                  * `{intent: observe}` — decide, report, attest; never write. * `{intent: calibrateThenWrite, confirmAfterSeconds: 1800}` — shadow until a clean-observation window proves the band safe, then write. * `{intent: write, authorizedBy: "…"}` — write now. `authorizedBy` is REQUIRED: a CR that says "go live" and does not say who is rejected at parse time. * `{intent: frozen}` — never write, but keep observing.
+                  * `{intent: observe}` — decide, report, attest; never write. * `{intent: calibrateThenWrite, confirmAfterSeconds: 1800}` — shadow until a clean-observation window proves the band safe, then write. * `{intent: write, authorizedBy: "…"}` — write now. * `{intent: frozen}` — never write, but keep observing.
+
+                  `authorizedBy` is REQUIRED on `write`: an `{intent: write}` naming no `authorizedBy` never goes live: it is held in shadow as `intentMalformed`. NOTE the tier — that is a runtime mitigation, not an apiserver rejection: a k8s structural schema cannot express "this property is required only when another property has this value", so the API accepts the object and the controller refuses to act on it. (This description said "rejected at parse time" until 2026-07-26; it was not.)
 
                   Unset ⇒ the retired `mode`/default chain decides, and `status.effectiveGate.witness` reports `legacyDefault` so an unauthored live band is visible as such.
                 nullable: true
@@ -3638,7 +3650,7 @@ spec:
                 - name
                 type: object
               writeIntent:
-                description: '**The authorization intent** — supersedes `dryRun` on this kind. See `MemoryBandSpec::write_intent` for the four arms; `{intent: write}` requires naming an `authorizedBy`.'
+                description: '**The authorization intent** — supersedes `dryRun` on this kind. See `MemoryBandSpec::write_intent` for the four arms. `authorizedBy` is REQUIRED on `write`: an `{intent: write}` naming no `authorizedBy` never goes live: it is held in shadow as `intentMalformed` (a runtime mitigation — a k8s structural schema cannot express a conditional `required`).'
                 nullable: true
                 properties:
                   authorizedBy:
@@ -4136,7 +4148,7 @@ spec:
                 - name
                 type: object
               writeIntent:
-                description: '**The authorization intent** — supersedes `dryRun` on this kind. See `MemoryBandSpec::write_intent` for the four arms; `{intent: write}` requires naming an `authorizedBy`.'
+                description: '**The authorization intent** — supersedes `dryRun` on this kind. See `MemoryBandSpec::write_intent` for the four arms. `authorizedBy` is REQUIRED on `write`: an `{intent: write}` naming no `authorizedBy` never goes live: it is held in shadow as `intentMalformed` (a runtime mitigation — a k8s structural schema cannot express a conditional `required`).'
                 nullable: true
                 properties:
                   authorizedBy:
@@ -4623,7 +4635,7 @@ spec:
                 - name
                 type: object
               writeIntent:
-                description: '**The authorization intent** — on this kind, the ONLY way to hold the band in shadow. See `MemoryBandSpec::write_intent` for the four arms; `{intent: write}` requires naming an `authorizedBy`.'
+                description: '**The authorization intent** — on this kind, the ONLY way to hold the band in shadow. See `MemoryBandSpec::write_intent` for the four arms. `authorizedBy` is REQUIRED on `write`: an `{intent: write}` naming no `authorizedBy` never goes live: it is held in shadow as `intentMalformed` (a runtime mitigation — a k8s structural schema cannot express a conditional `required`).'
                 nullable: true
                 properties:
                   authorizedBy:

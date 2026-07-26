@@ -68,6 +68,50 @@ use serde::{Deserialize, Serialize};
 /// satisfies a calibrating band's confirm gate immediately.
 pub const CONFIRMED_ANNOTATION: &str = "breathe.pleme.io/confirmed";
 
+// ───────────────────────── the canonical claims (doc-truth) ─────────────────────────
+//
+// Each const below is the ONE authoritative wording of a claim the CRD makes to
+// operators about this axis. `breathe-crd/tests/gate_matrix.rs`'s
+// `crd_descriptions_carry_the_canonical_claims` generates the real CRD schema and
+// asserts each kind's descriptions carry the right claim for its class.
+//
+// TIER — read this before citing these as a guarantee. The test pins
+// **text ≡ const**. It does NOT prove **const ≡ truth**: no compiler checks that
+// English prose describes Rust. What makes the chain real for the ONE claim that
+// matters most (does `dryRun` gate this kind?) is that the same class split drives
+// three independent things — the const chosen per kind here, the
+// `DimensionId::dry_run_is_honored()` flag, and the literal expectations in
+// `GATE_MATRIX` — so a behavioural change that leaves the prose stale fails the
+// matrix, and a prose change that leaves behaviour alone fails this test. For
+// every OTHER sentence in these descriptions there is no such chain, and the
+// honest statement is: a doc string is not type-checkable.
+
+/// The retirement stamp every kind that ignores `spec.dryRun` must carry.
+pub const RETIREMENT_NOTICE_DRY_RUN: &str = "RETIRED 2026-06-19 (breathe@76924b0)";
+
+/// The claim an INERT-`dryRun` kind's description must make (8 of 10 kinds).
+pub const CLAIM_DRY_RUN_INERT: &str = "this field has NO effect on this band kind";
+
+/// The claim a LIVE-`dryRun` kind's description must make — and which an inert
+/// kind's must NOT (`HostParamBand` / `KubeParamBand` only).
+pub const CLAIM_DRY_RUN_LIVE: &str = "actually read `dryRun`";
+
+/// The resolution order, stated once. Every kind whose spec carries a `mode`
+/// field must say this somewhere in its schema.
+pub const CLAIM_RESOLUTION_ORDER: &str = "`writeIntent` > `mode` > the compiled `shadowConfirmEffect`";
+
+/// The claim every kind must make about an unattributed go-live.
+///
+/// This const exists because the previous wording on the six `band_kind!` kinds
+/// was **false**: it said such a CR "is rejected at parse time". It is not — the
+/// cross-field rule is not expressible in a k8s structural schema, so the
+/// apiserver accepts it and [`resolve_gate`] holds it as
+/// [`ShadowReason::IntentMalformed`]. Fail-safe and visible, but *mitigated at
+/// runtime*, not *parse-time-rejected*. Rounding that up is how the whole
+/// `dryRun` class was born; the honest sentence is pinned here instead.
+pub const CLAIM_UNATTRIBUTED_WRITE: &str =
+    "an `{intent: write}` naming no `authorizedBy` never goes live: it is held in shadow as `intentMalformed`";
+
 fn d_confirm_after_seconds() -> u64 {
     1800
 }

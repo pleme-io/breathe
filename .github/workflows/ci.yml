@@ -1,0 +1,86 @@
+# The gate that did not exist.
+#
+# This repo had three workflows — image / helm-release / retirada-ci-watch —
+# and NONE of them ran the test suite. 882 tests were enforced by nothing on
+# push. That is the root cause behind the `spec.dryRun` inversion
+# (breathe@76924b0, 2026-06-19): the commit's own "Tests 28/28" was a local run
+# that nothing re-ran, and the suite would not have caught it anyway (no test
+# pinned the authored-shape → PromotionMode mapping; see
+# breathe-crd/tests/gate_matrix.rs).
+#
+# Landing S4's forcing functions into an unenforced suite would be decorative,
+# so the enforcement lands with them.
+#
+# ─── SCOPE, stated honestly ───────────────────────────────────────────────────
+#
+# BLOCKING here: `cargo test --workspace` and `cargo build --workspace`. These
+# are exactly the two commands verified locally before this file was written.
+#
+# NOT blocking here: clippy. `[workspace.lints.clippy] pedantic = "warn"` spans
+# 26 crates and the authoring toolchain is Nix-provided WITHOUT the clippy
+# component (`cargo clippy` → "no such command"), so the size of the pedantic
+# backlog is UNKNOWN to whoever wrote this file. Shipping `-D warnings` blind
+# would either (a) redden main immediately, or (b) — worse — be quietly removed
+# by the next person it inconveniences. It runs advisory-only until someone
+# with clippy available burns the backlog down and flips `continue-on-error`.
+# The org directive (`cargo clippy -- -D warnings`) is the destination; this is
+# a named interim, not a silent downgrade.
+#
+# Also NOT here: `cargo fmt --check` (no rustfmt.toml is committed, so there is
+# no agreed format to check against).
+#
+# ─── runner ───────────────────────────────────────────────────────────────────
+#
+# ubuntu-latest, NOT the camelot ARC pool image.yml uses. Deliberate: a test gate
+# whose runner can be broken (image.yml's own header records CAMELOT_IMAGE_RUNNER
+# outages) is a gate that silently stops gating — the exact failure mode this
+# file exists to end. A plain cargo test needs no Nix substituter, no registry
+# credentials and no cluster.
+name: ci
+
+on:
+  push:
+    branches: [main, "camelot/**"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  test:
+    name: cargo test --workspace
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: build
+        run: cargo build --workspace --all-targets --locked
+      - name: test
+        run: cargo test --workspace --locked
+
+  # Advisory until the pedantic backlog is measured — see the header. Flipping
+  # `continue-on-error: false` is the one-line change that makes it a real gate.
+  clippy:
+    name: cargo clippy (advisory — see ci.yml header)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: clippy
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
