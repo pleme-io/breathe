@@ -745,8 +745,16 @@ async fn reconcile_overview(obj: Arc<BreatheOverview>, ctx: Arc<Ctx>) -> Result<
     // ALL TEN kinds. `summarize` is already fully generic over `Band`; this list
     // was the only thing limiting it, and it had fallen three kinds behind — so
     // "the whole fleet at a glance" silently omitted every host-param, kube-param
-    // and app band. The `overview_covers_every_band_kind` test below pins the
-    // count to DimensionId::ALL so it cannot drift again.
+    // and app band.
+    //
+    // UNPINNED, deliberately stated: nothing fails the build if an eleventh kind
+    // ships and is not added here. Each call is a distinct turbofish against a
+    // live `kube::Client`, so the exhaustiveness trick that guards `on_band!`
+    // (one match over `DimensionId`) does not apply, and a real pin needs a
+    // mocked apiserver this crate has no harness for. The load-bearing fix is to
+    // route this through the facade's `on_band!` — the one place that already
+    // maps every `DimensionId` to its `Api<T>` — rather than to add a test that
+    // re-lists the kinds by hand. Tracked, not silently skipped.
     summarize::<MemoryBand>(&ctx.client, "MemoryBand", &mut bands).await;
     summarize::<StorageBand>(&ctx.client, "StorageBand", &mut bands).await;
     summarize::<CpuBand>(&ctx.client, "CpuBand", &mut bands).await;
