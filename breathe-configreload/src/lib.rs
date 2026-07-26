@@ -38,6 +38,7 @@
 //! current value straight from the file; `apply` writes it + reloads.
 
 use async_trait::async_trait;
+use breathe_provider::LiveWitness;
 use breathe_provider::{
     AppliedReceipt, Cluster, ConfigReload, FieldOwner, LimitLayout, MetricSource, ProviderError,
     Sample, SsaPatch, Target,
@@ -392,7 +393,11 @@ impl<E: ConfigReloadEnv> Cluster for ConfigReloadCluster<E> {
         Ok(Vec::new())
     }
 
-    async fn apply(&self, patch: &SsaPatch) -> Result<AppliedReceipt, ProviderError> {
+    // `_witness`: the authorization is enforced at the CALL BOUNDARY (see
+    // `Cluster::apply`'s doc) — a caller with a shadow verdict has no witness to
+    // pass, so this function is unreachable from one. A witness cannot change what
+    // bytes go out, so a leaf actuator has nothing to do with the value itself.
+    async fn apply(&self, _witness: &LiveWitness, patch: &SsaPatch) -> Result<AppliedReceipt, ProviderError> {
         let LimitLayout::ConfigFile { path, key, reload } = &patch.layout else {
             return Err(ProviderError::ApiPermanent(format!(
                 "non-ConfigFile layout on ConfigReloadCluster apply: {:?}",
@@ -427,6 +432,18 @@ impl<E: ConfigReloadEnv> Cluster for ConfigReloadCluster<E> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A [`LiveWitness`] for the `apply` calls below — obtained the ONLY way any
+    /// crate can: through the real resolver, on a real authored write. There is
+    /// no test-only constructor, and adding one would defeat the type.
+    fn w() -> breathe_provider::LiveWitness {
+        match breathe_provider::authored_write_gate("breathe-test") {
+            breathe_provider::EffectiveGate::Live { witness } => witness,
+            breathe_provider::EffectiveGate::Shadow { reason } => {
+                unreachable!("an authored write resolves live, got {reason:?}")
+            }
+        }
+    }
     use std::collections::BTreeMap;
     use std::sync::Mutex;
 
@@ -565,7 +582,7 @@ mod tests {
             resource: "connections".into(),
             value: 40,
         };
-        cluster.apply(&patch).await.unwrap();
+        cluster.apply(&w(), &patch).await.unwrap();
         // the value was carved …
         assert_eq!(cluster.env().writes(), vec![(PGB.to_string(), "default_pool_size".to_string(), 40)]);
         // … and the reload was triggered with the pgbouncer mechanism.
@@ -587,7 +604,7 @@ mod tests {
             resource: "memory".into(),
             value: 8192,
         };
-        cluster.apply(&patch).await.unwrap();
+        cluster.apply(&w(), &patch).await.unwrap();
         assert_eq!(cluster.env().writes(), vec![(PG.to_string(), "work_mem".to_string(), 8192)]);
         assert_eq!(cluster.env().reloads(), vec![(PG.to_string(), "sighup".to_string())]);
     }
@@ -605,7 +622,7 @@ mod tests {
             resource: "memory".into(),
             value: 262_144,
         };
-        cluster.apply(&patch).await.unwrap();
+        cluster.apply(&w(), &patch).await.unwrap();
         assert_eq!(cluster.env().writes(), vec![(PG.to_string(), "shared_buffers".to_string(), 262_144)], "value still carved");
         assert!(cluster.env().reloads().is_empty(), "restart reload is deferred — no signal issued");
     }
@@ -623,7 +640,7 @@ mod tests {
             resource: "connections".into(),
             value: 40,
         };
-        cluster.apply(&patch).await.unwrap();
+        cluster.apply(&w(), &patch).await.unwrap();
         assert!(cluster.env().writes().is_empty(), "shadow mode must not write the config");
         assert!(cluster.env().reloads().is_empty(), "shadow mode must not reload the process");
     }

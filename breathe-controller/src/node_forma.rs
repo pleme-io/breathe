@@ -376,15 +376,36 @@ fn fake_node_object(pool: &str, name: &str, cpu_milli: u64) -> Node {
 pub struct KwokProvedor {
     client: Client,
     pool: String,
-    /// Shadow gate: when true, `provision`/`deprovision` report what they WOULD
-    /// do (`DryRun`) and mutate NOTHING — `observe` still reads (read-only is
-    /// safe in shadow). So a shadow kwok pool never creates a Node.
-    dry_run: bool,
+    /// **The authorization verdict this provedor actuates under** — the typed
+    /// value `legacy_two_state_gate` resolved once for the pool, not a hand-set
+    /// bool. `Shadow` ⇒ `provision`/`deprovision` compute and report the
+    /// `would` and mutate NOTHING; `Live` ⇒ they act.
+    ///
+    /// **Why a verdict and not a `bool` (changed 2026-07-26).** The bool was
+    /// forgeable: any caller could hand-type `false` and authorize real cloud
+    /// node provisioning, which is `76924b0`'s defect class on the
+    /// highest-blast-radius path in the codebase. `EffectiveGate::Live` carries
+    /// a `LiveWitness`, whose only producer is `gate::resolve_gate`, so a live
+    /// verdict can no longer be spelled by hand.
+    ///
+    /// **Tier, not rounded up: only-mitigated.** This raises the bar on
+    /// *obtaining* an authorization to actuate (truly-unrepresentable to forge
+    /// one) but NOT on *honouring* it: the branches below are still runtime
+    /// `if`s, and an implementation that ignored this field would still write.
+    /// It is deliberately weaker than `Cluster::apply`, which takes the witness
+    /// itself and so cannot be reached at all from a shadow verdict — and it is
+    /// weaker for a real structural reason: `provision` must ALSO run in shadow
+    /// (it reads live cloud state to compute the clamped `would`), so it cannot
+    /// simply demand a witness the way a write-only door can. The destination
+    /// that closes the gap is a split — a read-only `plan_provision(n) -> would`
+    /// plus a `provision(&LiveWitness, n)` that only ever writes — which is a
+    /// real refactor of five impls and is NOT done here.
+    gate: breathe_provider::EffectiveGate,
 }
 
 impl KwokProvedor {
-    pub fn new(client: Client, pool: String, dry_run: bool) -> Self {
-        Self { client, pool, dry_run }
+    pub fn new(client: Client, pool: String, gate: breathe_provider::EffectiveGate) -> Self {
+        Self { client, pool, gate }
     }
 
     /// This pool's fake fleet (nodes carrying `KWOK_MANAGED_LABEL=<pool>`).
@@ -441,7 +462,7 @@ impl Provedor for KwokProvedor {
         if n == 0 {
             return Ok(ProvisionReceipt::NoOp);
         }
-        if self.dry_run {
+        if self.gate.is_shadow() {
             return Ok(ProvisionReceipt::DryRun { would: n as i64 });
         }
         let api = Api::<Node>::all(self.client.clone());
@@ -468,7 +489,7 @@ impl Provedor for KwokProvedor {
         if n == 0 {
             return Ok(ProvisionReceipt::NoOp);
         }
-        if self.dry_run {
+        if self.gate.is_shadow() {
             return Ok(ProvisionReceipt::DryRun { would: -(n as i64) });
         }
         let api = Api::<Node>::all(self.client.clone());
@@ -731,12 +752,16 @@ pub fn cloud_pool_status(
     tick: &FormaTick,
     used: Option<u64>,
     capacity: Option<u64>,
-    dry_run: bool,
+    gate: &breathe_provider::EffectiveGate,
 ) -> CloudPoolStatus {
     let mut s = CloudPoolStatus {
         observed_used: used.map(|u| u as i64),
         observed_capacity: capacity.map(|c| c as i64),
-        effective_dry_run: Some(dry_run),
+        // BOTH surfaces, from ONE value — the legacy bool is DERIVED
+        // (`gate.is_shadow()`), never stored beside the report, so they cannot
+        // drift. Until 2026-07-26 this kind wrote the bool alone.
+        effective_gate: Some(gate.report()),
+        effective_dry_run: Some(gate.is_shadow()),
         last_seen_epoch: Some(now_secs()),
         ..Default::default()
     };
@@ -899,9 +924,9 @@ pub async fn reconcile_cloud_pool(cr: Arc<BreatheCloudPool>, ctx: Arc<Ctx>) -> R
     // to the provider so an actuating provider (Kwok) mutates NOTHING unless the
     // pool is live on both gates. The observe-only KubeObserve provider ignores
     // it (it is DryRun by construction — it can never mutate).
-    let promotion = breathe_crd::legacy_effective_dry_run(cr.spec.dry_run, !cr.spec.write_enabled);
-    let dry_run = promotion.is_shadow();
-    if let Some(reason) = promotion.shadow_reason() {
+    let gate = breathe_provider::legacy_two_state_gate(cr.spec.dry_run, !cr.spec.write_enabled);
+    let dry_run = gate.is_shadow();
+    if let Some(reason) = gate.shadow_reason() {
         debug!(pool = %name, reason = ?reason, "BreatheCloudPool: held in shadow");
     }
 
@@ -933,7 +958,7 @@ pub async fn reconcile_cloud_pool(cr: Arc<BreatheCloudPool>, ctx: Arc<Ctx>) -> R
                     KubeKarpenterEnvironment::new(ctx.client.clone()),
                     name.clone(),
                     node_pool_ref,
-                    dry_run,
+                    gate.clone(),
                 ))
             }
             breathe_crd::NodeProvisioningBackend::EksManagedNodegroup => {
@@ -953,7 +978,7 @@ pub async fn reconcile_cloud_pool(cr: Arc<BreatheCloudPool>, ctx: Arc<Ctx>) -> R
                     name.clone(),
                     ng_ref.cluster_name,
                     ng_ref.nodegroup_name,
-                    dry_run,
+                    gate.clone(),
                     // The pool's OWN declared ceiling/floor (BreatheCloudPoolSpec) —
                     // the one static, human-declared boundary; AWS's real
                     // scalingConfig.maxSize/minSize now breathe toward these
@@ -968,7 +993,7 @@ pub async fn reconcile_cloud_pool(cr: Arc<BreatheCloudPool>, ctx: Arc<Ctx>) -> R
             }
         },
         breathe_crd::ProviderKind::Kwok => {
-            PoolProvedor::Kwok(KwokProvedor::new(ctx.client.clone(), name.clone(), dry_run))
+            PoolProvedor::Kwok(KwokProvedor::new(ctx.client.clone(), name.clone(), gate.clone()))
         }
     };
 
@@ -1035,7 +1060,7 @@ pub async fn reconcile_cloud_pool(cr: Arc<BreatheCloudPool>, ctx: Arc<Ctx>) -> R
     if let FormaTick::Grew { provision_error: Some(e), .. } = &tick {
         error!(pool = %name, error = %e, "BreatheCloudPool: provision() failed -- capacity will NOT grow this tick");
     }
-    let mut status = cloud_pool_status(&tick, sample.as_ref().map(|s| s.used), sample.as_ref().map(|s| s.capacity), dry_run);
+    let mut status = cloud_pool_status(&tick, sample.as_ref().map(|s| s.used), sample.as_ref().map(|s| s.capacity), &gate);
     // BU(fillPolicy): surface the scheduler scoring hint the pool's fillPolicy
     // implies — breathe SETS the posture; the scheduler (profile-configured) binds.
     status.scheduler_scoring = Some(cr.spec.fill_policy.scheduler_scoring().to_string());
@@ -1307,6 +1332,8 @@ mod tests {
         }
     }
 
+    use crate::test_gate::{live_gate, shadow_gate};
+
     #[test]
     fn status_maps_grow_to_would_provision_and_records_observed() {
         let s = cloud_pool_status(
@@ -1319,7 +1346,7 @@ mod tests {
             },
             Some(5),
             Some(4),
-            true,
+            &shadow_gate(),
         );
         assert_eq!(s.phase.as_deref(), Some("Growing"));
         assert_eq!(s.would_provision, Some(2));
@@ -1331,16 +1358,16 @@ mod tests {
 
     #[test]
     fn status_maps_held_envelope_and_error() {
-        assert_eq!(cloud_pool_status(&FormaTick::Held, Some(1), Some(2), false).phase.as_deref(), Some("Held"));
+        assert_eq!(cloud_pool_status(&FormaTick::Held, Some(1), Some(2), &live_gate()).phase.as_deref(), Some("Held"));
         let env = cloud_pool_status(
             &FormaTick::EnvelopeExhausted { forma: Forma::NodeOnDemand, shortfall: 3 },
             None,
             None,
-            true,
+            &shadow_gate(),
         );
         assert_eq!(env.phase.as_deref(), Some("EnvelopeExhausted"));
         assert!(env.last_decision.as_deref().unwrap().contains("short 3"));
-        let err = cloud_pool_status(&FormaTick::ObserveError("boom".into()), None, None, true);
+        let err = cloud_pool_status(&FormaTick::ObserveError("boom".into()), None, None, &shadow_gate());
         assert_eq!(err.phase.as_deref(), Some("Error"));
         assert_eq!(outcome_of(&FormaTick::ObserveError("x".into())), "observe_error");
     }

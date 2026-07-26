@@ -24,6 +24,7 @@
 //! panic, never a silent wrong answer.
 
 use async_trait::async_trait;
+use breathe_provider::LiveWitness;
 use breathe_provider::{
     ApplySemantics, AppliedReceipt, Cluster, DimensionDescriptor, DimensionId, Directionality,
     FieldOwner, LimitLayout, MetricSource, ProviderError, Sample, SsaPatch, Target,
@@ -293,7 +294,11 @@ impl<E: ApiCallEnv> Cluster for ApiCallCluster<E> {
         Ok(Vec::new())
     }
 
-    async fn apply(&self, patch: &SsaPatch) -> Result<AppliedReceipt, ProviderError> {
+    // `_witness`: the authorization is enforced at the CALL BOUNDARY (see
+    // `Cluster::apply`'s doc) — a caller with a shadow verdict has no witness to
+    // pass, so this function is unreachable from one. A witness cannot change what
+    // bytes go out, so a leaf actuator has nothing to do with the value itself.
+    async fn apply(&self, _witness: &LiveWitness, patch: &SsaPatch) -> Result<AppliedReceipt, ProviderError> {
         let LimitLayout::ApiCall { endpoint, command } = &patch.layout else {
             return Err(ProviderError::ApiPermanent(
                 "non-ApiCall layout on ApiCallCluster apply (route k8s/host dimensions to their own Cluster)".into(),
@@ -378,6 +383,18 @@ impl DimensionDescriptor for ApiCallParamDescriptor {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A [`LiveWitness`] for the `apply` calls below — obtained the ONLY way any
+    /// crate can: through the real resolver, on a real authored write. There is
+    /// no test-only constructor, and adding one would defeat the type.
+    fn w() -> breathe_provider::LiveWitness {
+        match breathe_provider::authored_write_gate("breathe-test") {
+            breathe_provider::EffectiveGate::Live { witness } => witness,
+            breathe_provider::EffectiveGate::Shadow { reason } => {
+                unreachable!("an authored write resolves live, got {reason:?}")
+            }
+        }
+    }
     use std::collections::BTreeMap;
     use std::sync::Mutex;
 
@@ -468,7 +485,7 @@ mod tests {
             resource: "memory".into(),
             value: 3 * GI,
         };
-        let receipt = shadow.apply(&patch).await.unwrap();
+        let receipt = shadow.apply(&w(), &patch).await.unwrap();
         assert_eq!(receipt.source_hash, [0u8; 16]);
         assert!(shadow.env().writes().is_empty(), "shadow must not write");
         // the underlying value is unchanged in shadow.
@@ -476,7 +493,7 @@ mod tests {
 
         // LIVE: apply writes through, and a subsequent read sees the new value.
         let live = ApiCallCluster::new(MockApiCallEnv::with("redis://cache.svc:6379", "maxmemory", GI), true);
-        live.apply(&patch).await.unwrap();
+        live.apply(&w(), &patch).await.unwrap();
         assert_eq!(
             live.env().writes(),
             vec![("redis://cache.svc:6379".into(), "maxmemory".into(), 3 * GI)]
@@ -499,7 +516,7 @@ mod tests {
             resource: "memory".into(),
             value: GI,
         };
-        let apply_err = cluster.apply(&patch).await.unwrap_err();
+        let apply_err = cluster.apply(&w(), &patch).await.unwrap_err();
         assert!(matches!(apply_err, ProviderError::ApiPermanent(_)));
     }
 

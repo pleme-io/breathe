@@ -5187,6 +5187,72 @@ spec:
             description: PodMemoryHigh status — the host-agent's reconcile receipt for the dispatch.
             nullable: true
             properties:
+              effectiveGate:
+                description: |-
+                  **The typed authorization verdict for the last tick** — the same field `BandStatus` carries, on a Tier-B kind. Added 2026-07-26: this kind wrote ONLY the legacy `effectiveDryRun` bool, so after a refactor whose whole point was one legible verdict, two status surfaces still answered "why?" with nothing at all. `witness: legacyDefault` + `legacyPath: twoStateDryRun` is the honest reading here — this kind has no `spec.writeIntent` field yet, so every live write it makes IS migration debt, and now says so.
+
+                  Written from the SAME `EffectiveGate` value as `effectiveDryRun` below, so the two can never disagree.
+                nullable: true
+                properties:
+                  authorizedBy:
+                    description: Who authorized it, when a human named themselves.
+                    nullable: true
+                    type: string
+                  heldSecs:
+                    description: Seconds of clean observation held so far (a pending or just-passed confirm window).
+                    format: int64
+                    nullable: true
+                    type: integer
+                  legacyPath:
+                    description: The pre-2026-07 resolution path, when this write rests on no authored `writeIntent`. **Non-empty here is the migration burn-down signal.**
+                    enum:
+                    - modeEffect
+                    - twoStateDryRun
+                    - confirmGate
+                    - operatorAnnotation
+                    nullable: true
+                    type: string
+                  needSecs:
+                    description: Seconds of clean observation required.
+                    format: int64
+                    nullable: true
+                    type: integer
+                  readySinceEpoch:
+                    description: When the target most recently became Ready, for a window that passed.
+                    format: int64
+                    nullable: true
+                    type: integer
+                  reason:
+                    description: Why it is held (shadow only). An authored `modeShadow`/`suspended` and an accidental `notReady`/`stale`/`conflict` are different answers.
+                    enum:
+                    - frozen
+                    - modeShadow
+                    - suspended
+                    - notReady
+                    - stale
+                    - conflict
+                    - intentMalformed
+                    - confirmPending
+                    nullable: true
+                    type: string
+                  state:
+                    description: '`shadow` | `live` — the headline.'
+                    enum:
+                    - shadow
+                    - live
+                    type: string
+                  witness:
+                    description: What authorizes it (live only).
+                    enum:
+                    - explicitIntent
+                    - confirmGatePassed
+                    - operatorAnnotation
+                    - legacyDefault
+                    nullable: true
+                    type: string
+                required:
+                - state
+                type: object
               lastSeenEpoch:
                 format: int64
                 nullable: true
@@ -5395,6 +5461,72 @@ spec:
               effectiveDryRun:
                 nullable: true
                 type: boolean
+              effectiveGate:
+                description: |-
+                  **The typed authorization verdict for the last tick** — the same field `BandStatus` carries, on a Tier-B kind. Added 2026-07-26: this kind wrote ONLY the legacy `effectiveDryRun` bool, so after a refactor whose whole point was one legible verdict, two status surfaces still answered "why?" with nothing at all. `witness: legacyDefault` + `legacyPath: twoStateDryRun` is the honest reading here — this kind has no `spec.writeIntent` field yet, so every live write it makes IS migration debt, and now says so.
+
+                  Written from the SAME `EffectiveGate` value as `effectiveDryRun` below, so the two can never disagree.
+                nullable: true
+                properties:
+                  authorizedBy:
+                    description: Who authorized it, when a human named themselves.
+                    nullable: true
+                    type: string
+                  heldSecs:
+                    description: Seconds of clean observation held so far (a pending or just-passed confirm window).
+                    format: int64
+                    nullable: true
+                    type: integer
+                  legacyPath:
+                    description: The pre-2026-07 resolution path, when this write rests on no authored `writeIntent`. **Non-empty here is the migration burn-down signal.**
+                    enum:
+                    - modeEffect
+                    - twoStateDryRun
+                    - confirmGate
+                    - operatorAnnotation
+                    nullable: true
+                    type: string
+                  needSecs:
+                    description: Seconds of clean observation required.
+                    format: int64
+                    nullable: true
+                    type: integer
+                  readySinceEpoch:
+                    description: When the target most recently became Ready, for a window that passed.
+                    format: int64
+                    nullable: true
+                    type: integer
+                  reason:
+                    description: Why it is held (shadow only). An authored `modeShadow`/`suspended` and an accidental `notReady`/`stale`/`conflict` are different answers.
+                    enum:
+                    - frozen
+                    - modeShadow
+                    - suspended
+                    - notReady
+                    - stale
+                    - conflict
+                    - intentMalformed
+                    - confirmPending
+                    nullable: true
+                    type: string
+                  state:
+                    description: '`shadow` | `live` — the headline.'
+                    enum:
+                    - shadow
+                    - live
+                    type: string
+                  witness:
+                    description: What authorizes it (live only).
+                    enum:
+                    - explicitIntent
+                    - confirmGatePassed
+                    - operatorAnnotation
+                    - legacyDefault
+                    nullable: true
+                    type: string
+                required:
+                - state
+                type: object
               flapDetected:
                 description: '`true` once [`Self::consecutive_stuck_ticks`] crosses the flap threshold — the pool has been silently failing to grow for long enough that it needs operator attention rather than another quiet retry. Distinct from `phase` (which stays `Growing`, still an accurate description of what the band WANTS to do) — this is the "and it isn''t working" signal layered on top. Never set back to `false` mid-episode by a single good tick; it clears the same tick `consecutiveStuckTicks` resets to `0` (capacity moved, or the phase left `Growing`).'
                 nullable: true
@@ -5580,6 +5712,72 @@ spec:
               effectiveDryRun:
                 nullable: true
                 type: boolean
+              effectiveGate:
+                description: |-
+                  **The typed authorization verdict for the last tick** — the same field `BandStatus` carries, on a Tier-B kind. Added 2026-07-26: this kind wrote ONLY the legacy `effectiveDryRun` bool, so after a refactor whose whole point was one legible verdict, two status surfaces still answered "why?" with nothing at all. `witness: legacyDefault` + `legacyPath: twoStateDryRun` is the honest reading here — this kind has no `spec.writeIntent` field yet, so every live write it makes IS migration debt, and now says so.
+
+                  Written from the SAME `EffectiveGate` value as `effectiveDryRun` below, so the two can never disagree.
+                nullable: true
+                properties:
+                  authorizedBy:
+                    description: Who authorized it, when a human named themselves.
+                    nullable: true
+                    type: string
+                  heldSecs:
+                    description: Seconds of clean observation held so far (a pending or just-passed confirm window).
+                    format: int64
+                    nullable: true
+                    type: integer
+                  legacyPath:
+                    description: The pre-2026-07 resolution path, when this write rests on no authored `writeIntent`. **Non-empty here is the migration burn-down signal.**
+                    enum:
+                    - modeEffect
+                    - twoStateDryRun
+                    - confirmGate
+                    - operatorAnnotation
+                    nullable: true
+                    type: string
+                  needSecs:
+                    description: Seconds of clean observation required.
+                    format: int64
+                    nullable: true
+                    type: integer
+                  readySinceEpoch:
+                    description: When the target most recently became Ready, for a window that passed.
+                    format: int64
+                    nullable: true
+                    type: integer
+                  reason:
+                    description: Why it is held (shadow only). An authored `modeShadow`/`suspended` and an accidental `notReady`/`stale`/`conflict` are different answers.
+                    enum:
+                    - frozen
+                    - modeShadow
+                    - suspended
+                    - notReady
+                    - stale
+                    - conflict
+                    - intentMalformed
+                    - confirmPending
+                    nullable: true
+                    type: string
+                  state:
+                    description: '`shadow` | `live` — the headline.'
+                    enum:
+                    - shadow
+                    - live
+                    type: string
+                  witness:
+                    description: What authorizes it (live only).
+                    enum:
+                    - explicitIntent
+                    - confirmGatePassed
+                    - operatorAnnotation
+                    - legacyDefault
+                    nullable: true
+                    type: string
+                required:
+                - state
+                type: object
               lastSeenEpoch:
                 format: int64
                 nullable: true

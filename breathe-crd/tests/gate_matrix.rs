@@ -33,6 +33,10 @@
 //! | [`an_authored_intent_makes_every_kind_agree`] | a new/edited band kind that diverges from the fleet gate |
 //! | [`every_gate_field_is_observable_or_declared_retired`] | a field going inert **and** a retired field coming back to life |
 //! | [`crd_descriptions_carry_the_canonical_claims`] | prose drifting from the class split it describes |
+//! | [`every_write_gated_crd_is_named_in_the_census`] | a write surface added OUTSIDE `DimensionId::ALL`, where the `[Kind; 10]` guard is structurally blind (this is how `PodMemoryHigh` reached a real host write unnoticed) |
+//! | [`every_write_surface_status_carries_the_typed_gate`] | a write surface that cannot answer "am I writing, and why" |
+//! | [`legacy_two_state_gate_reproduces_the_bool_truth_table`] | the Tier-B two-key rule changing meaning while being retyped from `bool` to `EffectiveGate` |
+//! | [`authored_write_gate_names_its_authority_or_refuses`] | the convenience wrapper becoming a back door around attribution |
 //!
 //! # Tier (never rounded up)
 //!
@@ -78,10 +82,11 @@
 //! | mislabel a fixture's `dim` | fixture-identity | `cgroup` probed 2× |
 
 use breathe_crd::{
-    AppBand, ArcBand, Band, CgroupBand, CgroupCpuBand, CpuBand, HostParamBand, KubeParamBand, MemoryBand, PromotionMode,
-    ReplicaBand, StorageBand,
+    AppBand, ArcBand, Band, BreatheCloudPool, BreatheConfig, BreatheNodePool, BreatheOverview, BreathePosture,
+    CgroupBand, CgroupCpuBand, CpuBand, Densa, HostParamBand, IsolationBand, KubeParamBand, MemoryBand, PodMemoryHigh,
+    PromotionMode, QuinhaoPool, ReplicaBand, StorageBand,
 };
-use breathe_provider::gate::{EffectiveGate, ShadowReasonKind, WitnessKind};
+use breathe_provider::gate::{EffectiveGate, LegacyPath, LegacyPathKind, ShadowReasonKind, WitnessKind};
 use breathe_provider::DimensionId;
 use kube::CustomResourceExt;
 use serde_json::{json, Value};
@@ -1017,4 +1022,259 @@ fn crd_descriptions_carry_the_canonical_claims() {
     }
 
     assert!(failures.is_empty(), "{} CRD description(s) disagree with behaviour:\n  - {}", failures.len(), failures.join("\n  - "));
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// THE WRITE-SURFACE CENSUS — the guard for kinds OUTSIDE `DimensionId::ALL`.
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// What a CRD kind is, with respect to writing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SurfaceRole {
+    /// A kind whose controller mutates something (a cluster object, a cgroup
+    /// file, a cloud node). MUST carry `status.effectiveGate`.
+    WriteSurface,
+    /// A kind that HOLDS a master write key for OTHER kinds but writes nothing
+    /// itself (`BreatheNodePool.spec.writeEnabled` is read by host bands and by
+    /// the `PodMemoryHigh` dispatch; the pool has no write of its own).
+    KeyHolder,
+    /// A kind whose `dryRun` marks its PUBLISHED LEDGER advisory-vs-enforced for
+    /// a DOWNSTREAM consumer, while breathe itself mutates nothing.
+    /// `QuinhaoPool` divides a band's capacity into per-claimant grants and
+    /// publishes them in `status.grants`; the `StorageBand` holds the real limit,
+    /// and gaveta decides whether to honour a grant. Breathe never reaches
+    /// `Cluster::apply` on this path, so there is no authorization verdict to
+    /// report — the flag is a hint to someone else's write, not a gate on ours.
+    ///
+    /// Found by this census on its first run, which is the point: it carries a
+    /// `dryRun` and was in neither of the two roles above. If breathe ever carves
+    /// from a grant, this row is wrong and must become a `WriteSurface`.
+    AdvisoryLedger,
+}
+
+/// **Every CRD kind that carries a write gate, named.**
+///
+/// # The hole this closes
+///
+/// The fleet's kind vocabulary is `DimensionId::ALL`, a `[Self; 10]` whose
+/// length makes an eleventh *dimension* a compile error. But
+/// `PodMemoryHigh` — a real cgroup write on every node — **is not a
+/// `DimensionId` at all.** Neither are `BreatheCloudPool` (which provisions and
+/// deprovisions cloud nodes) or `IsolationBand`. The ten-arm guard is
+/// structurally blind to them: no arm to add, no `E0004` to fire. That is
+/// exactly how `PodMemoryHigh` reached a real host write behind a bare
+/// `do_write` bool with no witness on the path, unnoticed.
+///
+/// So the census is keyed on the thing these kinds DO have in common — a
+/// `dryRun` and/or `writeEnabled` field in their spec — read out of the
+/// **generated CRD schema**, not out of a hand-kept list. A new gated kind
+/// appears in `crdgen`'s output the moment it is written, and if it is not
+/// named here the test fails.
+///
+/// # Tier (not rounded up)
+///
+/// **CI-caught, not a compile error.** Rust cannot enumerate "things that
+/// call `Cluster::apply`", and a schema walk is a test, not a type. What IS a
+/// compile error is the layer below: `Cluster::apply` takes a `&LiveWitness`,
+/// so none of these kinds can reach a write without an authorization verdict.
+/// This census pins the *observability* half — that every write surface
+/// declares its verdict where an operator can read it.
+///
+/// It also cannot see a write surface with **no CRD at all** (a controller that
+/// mutates on a timer, say). None exists today; if one is added, this list is
+/// the wrong shape for it and the honest move is to say so rather than to
+/// quietly not cover it.
+const WRITE_SURFACE_CENSUS: &[(&str, SurfaceRole)] = &[
+    // The ten `DimensionId` kinds — also covered by `kinds()`'s `[Kind; 10]`.
+    ("MemoryBand", SurfaceRole::WriteSurface),
+    ("CpuBand", SurfaceRole::WriteSurface),
+    ("StorageBand", SurfaceRole::WriteSurface),
+    ("ReplicaBand", SurfaceRole::WriteSurface),
+    ("ArcBand", SurfaceRole::WriteSurface),
+    ("CgroupBand", SurfaceRole::WriteSurface),
+    ("CgroupCpuBand", SurfaceRole::WriteSurface),
+    ("HostParamBand", SurfaceRole::WriteSurface),
+    ("KubeParamBand", SurfaceRole::WriteSurface),
+    ("AppBand", SurfaceRole::WriteSurface),
+    // …and the three that are NOT dimensions, which is the whole point.
+    ("PodMemoryHigh", SurfaceRole::WriteSurface),
+    ("BreatheCloudPool", SurfaceRole::WriteSurface),
+    ("IsolationBand", SurfaceRole::WriteSurface),
+    // Holds the key, turns none itself.
+    ("BreatheNodePool", SurfaceRole::KeyHolder),
+    // Publishes an advisory ledger; breathe writes nothing.
+    ("QuinhaoPool", SurfaceRole::AdvisoryLedger),
+];
+
+/// Every CRD `crdgen` emits, as `(kind, schema)`.
+fn all_crds() -> Vec<(String, Value)> {
+    // `vec!`, not an array: 19 `CustomResourceDefinition`s on the stack trips
+    // clippy's `large_stack_arrays`.
+    let raw = vec![
+        MemoryBand::crd(),
+        CpuBand::crd(),
+        StorageBand::crd(),
+        ReplicaBand::crd(),
+        ArcBand::crd(),
+        CgroupBand::crd(),
+        CgroupCpuBand::crd(),
+        HostParamBand::crd(),
+        KubeParamBand::crd(),
+        AppBand::crd(),
+        BreatheNodePool::crd(),
+        BreathePosture::crd(),
+        PodMemoryHigh::crd(),
+        BreatheCloudPool::crd(),
+        IsolationBand::crd(),
+        BreatheOverview::crd(),
+        BreatheConfig::crd(),
+        Densa::crd(),
+        QuinhaoPool::crd(),
+    ];
+    raw.into_iter()
+        .map(|c| {
+            let v = serde_json::to_value(&c).expect("serialize CRD");
+            let kind = v["spec"]["names"]["kind"].as_str().expect("kind").to_owned();
+            (kind, v)
+        })
+        .collect()
+}
+
+fn schema_of<'a>(crd: &'a Value, section: &str) -> Option<&'a Value> {
+    crd.get("spec")?.get("versions")?.as_array()?.first()?.get("schema")?.get("openAPIV3Schema")?
+        .get("properties")?.get(section)?.get("properties")
+}
+
+fn has_prop(crd: &Value, section: &str, prop: &str) -> bool {
+    schema_of(crd, section).is_some_and(|p| p.get(prop).is_some())
+}
+
+/// **No write surface is invisible.** Every generated CRD whose spec carries a
+/// write gate (`dryRun` / `writeEnabled`) must be named in
+/// [`WRITE_SURFACE_CENSUS`] — so an eleventh write surface cannot be added
+/// outside `DimensionId::ALL` and go unnoticed the way `PodMemoryHigh` did.
+#[test]
+fn every_write_gated_crd_is_named_in_the_census() {
+    let mut gated: Vec<String> = Vec::new();
+    for (kind, crd) in all_crds() {
+        if has_prop(&crd, "spec", "dryRun") || has_prop(&crd, "spec", "writeEnabled") {
+            gated.push(kind);
+        }
+    }
+    gated.sort();
+
+    let mut named: Vec<String> = WRITE_SURFACE_CENSUS.iter().map(|(k, _)| (*k).to_owned()).collect();
+    named.sort();
+
+    assert_eq!(
+        gated, named,
+        "the set of write-gated CRDs and the census disagree.\n  \
+         generated + gated: {gated:?}\n  named in census:   {named:?}\n\
+         A kind that carries `dryRun`/`writeEnabled` MUTATES something. Add it to \
+         WRITE_SURFACE_CENSUS (and give it a `status.effectiveGate`), or remove its gate."
+    );
+}
+
+/// **Every write surface declares its verdict.** A kind that can write must say,
+/// in its own status, whether it is writing and why — the single legible verdict
+/// the authorization refactor exists to produce.
+///
+/// `node_forma` and `origin_guard` wrote ONLY the legacy `effectiveDryRun` bool
+/// until 2026-07-26, and `PodMemoryHigh` wrote neither; this is the test that
+/// keeps that from recurring.
+#[test]
+fn every_write_surface_status_carries_the_typed_gate() {
+    let crds: std::collections::BTreeMap<String, Value> = all_crds().into_iter().collect();
+    let mut missing = Vec::new();
+    for (kind, role) in WRITE_SURFACE_CENSUS {
+        let crd = crds.get(*kind).unwrap_or_else(|| panic!("{kind} is in the census but crdgen does not emit it"));
+        match role {
+            SurfaceRole::WriteSurface => {
+                if !has_prop(crd, "status", "effectiveGate") {
+                    missing.push(*kind);
+                }
+            }
+            // Neither of these writes, so neither has a verdict of its own to
+            // report. Asserted, not assumed: if one ever grows an effectiveGate
+            // it is really a write surface, and the census row is wrong.
+            SurfaceRole::KeyHolder | SurfaceRole::AdvisoryLedger => {
+                assert!(
+                    !has_prop(crd, "status", "effectiveGate"),
+                    "{kind} is classified {role:?} (breathe writes nothing on this path) but reports an \
+                     effectiveGate — reclassify it as a WriteSurface"
+                );
+            }
+        }
+    }
+    assert!(
+        missing.is_empty(),
+        "{} write surface(s) report no typed authorization verdict: {missing:?} \
+         — an operator cannot ask these CRs 'are you writing, and why'",
+        missing.len()
+    );
+}
+
+/// **`legacy_two_state_gate` is byte-identical to the bool it replaces.** The
+/// Tier-B kinds' two-key rule (`dryRun` selects shadow-vs-effect; `frozen` is the
+/// pool master switch and overrides everything) must survive being retyped from
+/// a `bool` to an `EffectiveGate`, or this refactor changed live behaviour on
+/// `BreatheCloudPool` / `IsolationBand` / `PodMemoryHigh` while claiming not to.
+#[test]
+fn legacy_two_state_gate_reproduces_the_bool_truth_table() {
+    for dry_run in [true, false] {
+        for frozen in [true, false] {
+            let typed = breathe_provider::legacy_two_state_gate(dry_run, frozen);
+            let old = breathe_crd::legacy_effective_dry_run(dry_run, frozen);
+            assert_eq!(
+                typed.is_shadow(),
+                old.is_shadow(),
+                "legacy_two_state_gate({dry_run}, {frozen}) disagrees with the bool it replaced"
+            );
+            // …and the SHADOW arm is still exactly `dry_run || frozen`.
+            assert_eq!(typed.is_shadow(), dry_run || frozen);
+
+            match (&typed, dry_run, frozen) {
+                // The freeze key wins, and says so — better attribution than the
+                // bool ever had.
+                (EffectiveGate::Shadow { reason }, _, true) => {
+                    assert_eq!(reason.kind(), ShadowReasonKind::Frozen);
+                }
+                (EffectiveGate::Shadow { reason }, true, false) => {
+                    assert_eq!(reason.kind(), ShadowReasonKind::ModeShadow);
+                }
+                // A live Tier-B write is HONESTLY reported as migration debt:
+                // these kinds carry no `spec.writeIntent` yet, so every write
+                // they make rests on a pre-2026-07 path.
+                (EffectiveGate::Live { witness }, false, false) => {
+                    assert_eq!(witness.kind(), WitnessKind::LegacyDefault);
+                    assert!(witness.is_legacy_default(), "a Tier-B write is burn-down debt and must report as such");
+                    assert_eq!(witness.legacy_path().map(LegacyPath::kind), Some(LegacyPathKind::TwoStateDryRun));
+                }
+                (g, d, f) => panic!("unexpected verdict for (dry_run={d}, frozen={f}): {g:?}"),
+            }
+        }
+    }
+}
+
+/// `authored_write_gate` is a thin wrapper over `resolve_gate`, and refuses an
+/// unattributed write exactly the way the parse boundary does — so the
+/// convenience cannot become a back door.
+#[test]
+fn authored_write_gate_names_its_authority_or_refuses() {
+    let live = breathe_provider::authored_write_gate("drzzln@2026-07-26");
+    match &live {
+        EffectiveGate::Live { witness } => {
+            assert_eq!(witness.kind(), WitnessKind::ExplicitIntent);
+            assert_eq!(witness.authorized_by(), Some("drzzln@2026-07-26"));
+            assert!(!witness.is_legacy_default(), "an authored write is not migration debt");
+        }
+        g @ EffectiveGate::Shadow { .. } => panic!("an authored write must resolve live, got {g:?}"),
+    }
+    // Blank / whitespace-only authority is an unattributed write: held, never granted.
+    for blank in ["", "   ", "\t"] {
+        match breathe_provider::authored_write_gate(blank) {
+            EffectiveGate::Shadow { reason } => assert_eq!(reason.kind(), ShadowReasonKind::IntentMalformed),
+            g @ EffectiveGate::Live { .. } => panic!("a blank authority must NOT authorize a write, got {g:?}"),
+        }
+    }
 }

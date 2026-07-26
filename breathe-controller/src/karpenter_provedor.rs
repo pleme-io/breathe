@@ -254,12 +254,36 @@ pub struct KarpenterProvedor<E: KarpenterEnvironment> {
     env: E,
     pool: String,
     node_pool_ref: String,
-    dry_run: bool,
+    /// **The authorization verdict this provedor actuates under** — the typed
+    /// value `legacy_two_state_gate` resolved once for the pool, not a hand-set
+    /// bool. `Shadow` ⇒ `provision`/`deprovision` compute and report the
+    /// `would` and mutate NOTHING; `Live` ⇒ they act.
+    ///
+    /// **Why a verdict and not a `bool` (changed 2026-07-26).** The bool was
+    /// forgeable: any caller could hand-type `false` and authorize real cloud
+    /// node provisioning, which is `76924b0`'s defect class on the
+    /// highest-blast-radius path in the codebase. `EffectiveGate::Live` carries
+    /// a `LiveWitness`, whose only producer is `gate::resolve_gate`, so a live
+    /// verdict can no longer be spelled by hand.
+    ///
+    /// **Tier, not rounded up: only-mitigated.** This raises the bar on
+    /// *obtaining* an authorization to actuate (truly-unrepresentable to forge
+    /// one) but NOT on *honouring* it: the branches below are still runtime
+    /// `if`s, and an implementation that ignored this field would still write.
+    /// It is deliberately weaker than `Cluster::apply`, which takes the witness
+    /// itself and so cannot be reached at all from a shadow verdict — and it is
+    /// weaker for a real structural reason: `provision` must ALSO run in shadow
+    /// (it reads live cloud state to compute the clamped `would`), so it cannot
+    /// simply demand a witness the way a write-only door can. The destination
+    /// that closes the gap is a split — a read-only `plan_provision(n) -> would`
+    /// plus a `provision(&LiveWitness, n)` that only ever writes — which is a
+    /// real refactor of five impls and is NOT done here.
+    gate: breathe_provider::EffectiveGate,
 }
 
 impl<E: KarpenterEnvironment> KarpenterProvedor<E> {
-    pub fn new(env: E, pool: String, node_pool_ref: String, dry_run: bool) -> Self {
-        Self { env, pool, node_pool_ref, dry_run }
+    pub fn new(env: E, pool: String, node_pool_ref: String, gate: breathe_provider::EffectiveGate) -> Self {
+        Self { env, pool, node_pool_ref, gate }
     }
 
     /// The per-unit allocatable (millicores) used to size a minted `NodeRef`
@@ -294,7 +318,7 @@ impl<E: KarpenterEnvironment> Provedor for KarpenterProvedor<E> {
         if n == 0 {
             return Ok(ProvisionReceipt::NoOp);
         }
-        if self.dry_run {
+        if self.gate.is_shadow() {
             return Ok(ProvisionReceipt::DryRun { would: n as i64 });
         }
         let template = self.env.get_nodepool_template(&self.node_pool_ref).await?;
@@ -316,7 +340,7 @@ impl<E: KarpenterEnvironment> Provedor for KarpenterProvedor<E> {
         if n == 0 {
             return Ok(ProvisionReceipt::NoOp);
         }
-        if self.dry_run {
+        if self.gate.is_shadow() {
             return Ok(ProvisionReceipt::DryRun { would: -(n as i64) });
         }
         let mut claims = self.env.list_managed_nodeclaims(&self.pool).await?;
@@ -467,6 +491,7 @@ impl KarpenterEnvironment for KubeKarpenterEnvironment {
 
 #[cfg(test)]
 mod tests {
+    use crate::test_gate::{live_gate, shadow_gate};
     use super::{
         build_nodeclaim, claim_is_busy, is_karpenter_managed_ref, nodeclaim_resource, nodepool_resource, owned_by_nodepool,
         parse_nodepool_template, KarpenterEnvironment, KarpenterProvedor, NodeClaimRef, NodePoolTemplate, ObservedNode,
@@ -742,7 +767,7 @@ mod tests {
             pod_demand_milli: 6000,
             ..MockEnv::empty()
         };
-        let p = KarpenterProvedor::new(env, "camelot-agents".into(), "camelot-nodepool".into(), false);
+        let p = KarpenterProvedor::new(env, "camelot-agents".into(), "camelot-nodepool".into(), live_gate());
         let sample = p.observe().await.expect("observe succeeds");
         assert_eq!(sample.capacity, 2, "capacity = count of owned Ready nodes");
         // per_node = 8000/2 = 4000; used = ceil(6000/4000) = 2
@@ -752,7 +777,7 @@ mod tests {
     #[tokio::test]
     async fn observe_with_zero_owned_nodes_reports_zero_capacity_floored_to_one_and_used_at_least_one() {
         let env = MockEnv { nodes: vec![], pod_demand_milli: 500, ..MockEnv::empty() };
-        let p = KarpenterProvedor::new(env, "pool".into(), "nodepool".into(), false);
+        let p = KarpenterProvedor::new(env, "pool".into(), "nodepool".into(), live_gate());
         let sample = p.observe().await.expect("observe succeeds");
         assert_eq!(sample.capacity, 1, "capacity floors to 1 even with zero owned nodes (never a div-by-zero)");
         assert!(sample.used >= 1);
@@ -767,17 +792,17 @@ mod tests {
             ],
             ..MockEnv::empty()
         };
-        let p = KarpenterProvedor::new(env, "pool".into(), "nodepool".into(), false);
+        let p = KarpenterProvedor::new(env, "pool".into(), "nodepool".into(), live_gate());
         assert_eq!(p.per_node_alloc_milli().await, 4000);
 
-        let p_empty = KarpenterProvedor::new(MockEnv::empty(), "pool".into(), "nodepool".into(), false);
+        let p_empty = KarpenterProvedor::new(MockEnv::empty(), "pool".into(), "nodepool".into(), live_gate());
         assert_eq!(p_empty.per_node_alloc_milli().await, 1, "an empty owned-node set floors to 1, never 0");
     }
 
     #[tokio::test]
     async fn provision_zero_is_noop_and_creates_nothing() {
         let env = MockEnv::empty();
-        let p = KarpenterProvedor::new(env, "pool".into(), "nodepool".into(), false);
+        let p = KarpenterProvedor::new(env, "pool".into(), "nodepool".into(), live_gate());
         assert_eq!(p.provision(0).await.unwrap(), ProvisionReceipt::NoOp);
     }
 
@@ -787,7 +812,7 @@ mod tests {
             template: Ok(NodePoolTemplate { spec: serde_json::json!({"x": 1}), ..NodePoolTemplate::default() }),
             ..MockEnv::empty()
         };
-        let p = KarpenterProvedor::new(env, "pool".into(), "nodepool".into(), true);
+        let p = KarpenterProvedor::new(env, "pool".into(), "nodepool".into(), shadow_gate());
         let receipt = p.provision(3).await.unwrap();
         assert_eq!(receipt, ProvisionReceipt::DryRun { would: 3 });
         assert!(p.env.created.lock().unwrap().is_empty(), "dry-run must create zero NodeClaims");
@@ -797,7 +822,7 @@ mod tests {
     async fn provision_live_creates_n_nodeclaims_copying_the_template_spec_verbatim() {
         let spec = serde_json::json!({"requirements": [{"key": "k", "operator": "In", "values": ["v"]}]});
         let env = MockEnv { template: Ok(NodePoolTemplate { spec: spec.clone(), ..NodePoolTemplate::default() }), ..MockEnv::empty() };
-        let p = KarpenterProvedor::new(env, "camelot-agents".into(), "camelot-nodepool".into(), false);
+        let p = KarpenterProvedor::new(env, "camelot-agents".into(), "camelot-nodepool".into(), live_gate());
         let receipt = p.provision(3).await.unwrap();
         assert_eq!(receipt, ProvisionReceipt::Applied { delta: 3, plan_id: "karpenter:provision:camelot-agents".into() });
 
@@ -823,7 +848,7 @@ mod tests {
             template: Err(ProviderError::ApiPermanent("NodePool camelot-nodepool has no spec.template.spec".into())),
             ..MockEnv::empty()
         };
-        let p = KarpenterProvedor::new(env, "pool".into(), "camelot-nodepool".into(), false);
+        let p = KarpenterProvedor::new(env, "pool".into(), "camelot-nodepool".into(), live_gate());
         let err = p.provision(2).await.expect_err("a missing template spec must surface, never be silently skipped");
         assert!(matches!(err, ProviderError::ApiPermanent(_)));
         assert!(p.env.created.lock().unwrap().is_empty());
@@ -834,7 +859,7 @@ mod tests {
         // The first attempt fails (transient), the remaining two succeed —
         // the same non-fatal-retry semantics KwokProvedor::provision has.
         let env = MockEnv { fail_first_n_creates: 1, ..MockEnv::empty() };
-        let p = KarpenterProvedor::new(env, "pool".into(), "nodepool".into(), false);
+        let p = KarpenterProvedor::new(env, "pool".into(), "nodepool".into(), live_gate());
         let receipt = p.provision(3).await.unwrap();
         assert_eq!(receipt, ProvisionReceipt::Applied { delta: 2, plan_id: "karpenter:provision:pool".into() });
         assert_eq!(p.env.created.lock().unwrap().len(), 2);
@@ -843,14 +868,14 @@ mod tests {
     #[tokio::test]
     async fn provision_live_all_creates_failing_reports_noop() {
         let env = MockEnv { fail_first_n_creates: 5, ..MockEnv::empty() };
-        let p = KarpenterProvedor::new(env, "pool".into(), "nodepool".into(), false);
+        let p = KarpenterProvedor::new(env, "pool".into(), "nodepool".into(), live_gate());
         assert_eq!(p.provision(2).await.unwrap(), ProvisionReceipt::NoOp);
     }
 
     #[tokio::test]
     async fn deprovision_zero_is_noop_and_deletes_nothing() {
         let env = MockEnv::empty();
-        let p = KarpenterProvedor::new(env, "pool".into(), "nodepool".into(), false);
+        let p = KarpenterProvedor::new(env, "pool".into(), "nodepool".into(), live_gate());
         assert_eq!(p.deprovision(0).await.unwrap(), ProvisionReceipt::NoOp);
     }
 
@@ -860,7 +885,7 @@ mod tests {
             managed_claims: vec![NodeClaimRef { name: "c1".into(), pool_label: Some("pool".into()), node_name: None }],
             ..MockEnv::empty()
         };
-        let p = KarpenterProvedor::new(env, "pool".into(), "nodepool".into(), true);
+        let p = KarpenterProvedor::new(env, "pool".into(), "nodepool".into(), shadow_gate());
         let receipt = p.deprovision(1).await.unwrap();
         assert_eq!(receipt, ProvisionReceipt::DryRun { would: -1 });
         assert!(p.env.deleted.lock().unwrap().is_empty());
@@ -876,7 +901,7 @@ mod tests {
             ],
             ..MockEnv::empty()
         };
-        let p = KarpenterProvedor::new(env, "pool".into(), "nodepool".into(), false);
+        let p = KarpenterProvedor::new(env, "pool".into(), "nodepool".into(), live_gate());
         let receipt = p.deprovision(2).await.unwrap();
         assert_eq!(receipt, ProvisionReceipt::Applied { delta: -2, plan_id: "karpenter:deprovision:pool".into() });
         assert_eq!(*p.env.deleted.lock().unwrap(), vec!["aaa".to_string(), "mmm".to_string()]);
@@ -894,7 +919,7 @@ mod tests {
             ],
             ..MockEnv::empty()
         };
-        let p = KarpenterProvedor::new(env, "pool".into(), "nodepool".into(), false);
+        let p = KarpenterProvedor::new(env, "pool".into(), "nodepool".into(), live_gate());
         let receipt = p.deprovision(2).await.unwrap();
         // Only "mine" is deleted — "foreign" is skipped, so delta is -1 not -2.
         assert_eq!(receipt, ProvisionReceipt::Applied { delta: -1, plan_id: "karpenter:deprovision:pool".into() });
@@ -907,7 +932,7 @@ mod tests {
             managed_claims: vec![NodeClaimRef { name: "foreign".into(), pool_label: Some("other-pool".into()), node_name: None }],
             ..MockEnv::empty()
         };
-        let p = KarpenterProvedor::new(env, "pool".into(), "nodepool".into(), false);
+        let p = KarpenterProvedor::new(env, "pool".into(), "nodepool".into(), live_gate());
         assert_eq!(p.deprovision(1).await.unwrap(), ProvisionReceipt::NoOp);
     }
 
@@ -941,7 +966,7 @@ mod tests {
             busy_nodes: ["node-busy".to_string()].into_iter().collect(),
             ..MockEnv::empty()
         };
-        let p = KarpenterProvedor::new(env, "pool".into(), "nodepool".into(), false);
+        let p = KarpenterProvedor::new(env, "pool".into(), "nodepool".into(), live_gate());
         let receipt = p.deprovision(1).await.unwrap();
         assert_eq!(receipt, ProvisionReceipt::Applied { delta: -1, plan_id: "karpenter:deprovision:pool".into() });
         assert_eq!(*p.env.deleted.lock().unwrap(), vec!["mmm".to_string()]);
@@ -959,7 +984,7 @@ mod tests {
             busy_nodes: ["node-busy-1".to_string(), "node-busy-2".to_string()].into_iter().collect(),
             ..MockEnv::empty()
         };
-        let p = KarpenterProvedor::new(env, "pool".into(), "nodepool".into(), false);
+        let p = KarpenterProvedor::new(env, "pool".into(), "nodepool".into(), live_gate());
         assert_eq!(p.deprovision(2).await.unwrap(), ProvisionReceipt::NoOp);
         assert!(p.env.deleted.lock().unwrap().is_empty());
     }
@@ -973,7 +998,7 @@ mod tests {
             busy_nodes: ["some-other-node".to_string()].into_iter().collect(),
             ..MockEnv::empty()
         };
-        let p = KarpenterProvedor::new(env, "pool".into(), "nodepool".into(), false);
+        let p = KarpenterProvedor::new(env, "pool".into(), "nodepool".into(), live_gate());
         let receipt = p.deprovision(1).await.unwrap();
         assert_eq!(receipt, ProvisionReceipt::Applied { delta: -1, plan_id: "karpenter:deprovision:pool".into() });
         assert_eq!(*p.env.deleted.lock().unwrap(), vec!["fresh".to_string()]);
@@ -1014,7 +1039,7 @@ mod tests {
             ..MockEnv::empty()
         };
         let env = FailingBusyEnv(inner);
-        let p = KarpenterProvedor::new(env, "pool".into(), "nodepool".into(), false);
+        let p = KarpenterProvedor::new(env, "pool".into(), "nodepool".into(), live_gate());
         let receipt = p.deprovision(1).await.unwrap();
         assert_eq!(receipt, ProvisionReceipt::Applied { delta: -1, plan_id: "karpenter:deprovision:pool".into() });
         assert_eq!(*p.env.0.deleted.lock().unwrap(), vec!["c1".to_string()]);

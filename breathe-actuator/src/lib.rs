@@ -23,6 +23,7 @@ use breathe_apprpc::{AppRpcCluster, HttpAdminEnv};
 use breathe_configreload::{ConfigReloadCluster, FileSignalEnv};
 use breathe_jmx::{JmxCluster, JolokiaHttpEnv};
 use breathe_kube::KubeCluster;
+use breathe_provider::LiveWitness;
 use breathe_provider::{
     AppliedReceipt, Cluster, FieldOwner, LimitLayout, MetricSource, ProviderError, Sample, SsaPatch, Target,
 };
@@ -128,12 +129,12 @@ impl Cluster for ActuatorCluster {
         }
     }
 
-    async fn apply(&self, patch: &SsaPatch) -> Result<AppliedReceipt, ProviderError> {
+    async fn apply(&self, witness: &LiveWitness, patch: &SsaPatch) -> Result<AppliedReceipt, ProviderError> {
         match &self.backend {
-            ActuatorBackend::ConfigReload(c) => c.apply(patch).await,
-            ActuatorBackend::ApiCall(c) => c.apply(patch).await,
-            ActuatorBackend::Jmx(c) => c.apply(patch).await,
-            ActuatorBackend::AppRpc(c) => c.apply(patch).await,
+            ActuatorBackend::ConfigReload(c) => c.apply(witness, patch).await,
+            ActuatorBackend::ApiCall(c) => c.apply(witness, patch).await,
+            ActuatorBackend::Jmx(c) => c.apply(witness, patch).await,
+            ActuatorBackend::AppRpc(c) => c.apply(witness, patch).await,
         }
     }
     // read_resize_restart_free: the conservative default (false) — app-plane carves

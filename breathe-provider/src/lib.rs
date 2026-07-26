@@ -22,9 +22,9 @@ pub use breathe_control::{
 // already depend on this crate. Solve once, no new workspace member.
 pub mod gate;
 pub use gate::{
-    ConfirmVerdict, EffectiveGate, EffectiveGateReport, GateInputs, GateState, IntentError, IntentKind,
-    LegacyDecision, LegacyPath, LegacyPathKind, LiveWitness, ShadowReason, ShadowReasonKind, WitnessKind,
-    WriteIntent, WriteIntentSpec, CONFIRMED_ANNOTATION,
+    authored_write_gate, legacy_two_state_gate, ConfirmVerdict, EffectiveGate, EffectiveGateReport, GateInputs,
+    GateState, IntentError, IntentKind, LegacyDecision, LegacyPath, LegacyPathKind, LiveWitness, ShadowReason,
+    ShadowReasonKind, WitnessKind, WriteIntent, WriteIntentSpec, CONFIRMED_ANNOTATION,
 };
 
 /// Typed category atom — keys the registry, equals the catalog `:name`, and is
@@ -1001,7 +1001,42 @@ pub trait Cluster: Send + Sync {
         resource: &str,
         logical_field: &str,
     ) -> Result<Vec<FieldOwner>, ProviderError>;
-    async fn apply(&self, patch: &SsaPatch) -> Result<AppliedReceipt, ProviderError>;
+    /// **THE I/O MUTATION DOOR — the one function in breathe that touches a
+    /// cluster, a host, or an app.**
+    ///
+    /// It takes a [`LiveWitness`] for the same reason [`ResourceProvider::assign`]
+    /// does, and the reason is not symmetry: `assign` is only ONE of the ways this
+    /// function is reached. Before 2026-07-26, three production call sites reached
+    /// a real write here with **no witness at all**, each gated only by a runtime
+    /// bool a future refactor could invert exactly the way `76924b0` inverted
+    /// `spec.dryRun`:
+    ///
+    /// * `breathe-host-agent`'s `PodMemoryHigh` cgroup write (a `do_write` bool
+    ///   handed to `HostCluster::new`) — which is ALSO outside `DimensionId::ALL`,
+    ///   so the ten-arm kind vocabulary's exhaustiveness guard structurally could
+    ///   not see it;
+    /// * `breathe-controller`'s `ReplicaBand` SSA (`plan.actuate`);
+    /// * every actuator-plane write (`ActuatorCluster` → `ConfigReload` / `ApiCall`
+    ///   / JMX / `AppRpc`), which inherits its gate from `assign` but had no type-level
+    ///   statement of it.
+    ///
+    /// Putting the witness HERE rather than only on `assign` is what makes the
+    /// claim "breathe cannot write without an authorization verdict" hold for the
+    /// whole I/O surface instead of one plane of it.
+    ///
+    /// **Tier: truly-unrepresentable, at the CALLER.** [`LiveWitness`] is a
+    /// newtype over a private enum; the only producer is [`gate::resolve_gate`],
+    /// and it yields one only on [`EffectiveGate::Live`]. A caller holding a
+    /// `Shadow` verdict has nothing to pass, so the call does not compile. What
+    /// this does NOT claim: that an *implementation* of this trait honours
+    /// anything. An impl that ignores the witness and writes is still writable —
+    /// that residual is why `HostCluster`'s own `write_enabled` wall and
+    /// `NodeEnvelopes`' L2 ceiling stay exactly where they are. Two independent
+    /// gates, honestly counted as two.
+    ///
+    /// The witness is deliberately not an input to the write: a witness cannot
+    /// change what bytes go out. Its job is to exist, and to be recorded.
+    async fn apply(&self, witness: &LiveWitness, patch: &SsaPatch) -> Result<AppliedReceipt, ProviderError>;
 
     /// Whether an in-place SHRINK of `resource` at `layout` on `target` is
     /// restart-free — `true` iff `layout` is a `PodResize` AND every resized pod's
@@ -1236,7 +1271,7 @@ pub trait ResourceProvider: Send + Sync + 'static {
     /// It takes a [`LiveWitness`] because a write must be *attributable*: the
     /// witness names who or what authorized it (an operator's `writeIntent`, an
     /// elapsed calibration window, the confirm annotation, or a legacy resolution
-    /// path — see [`gate::WitnessKind`]).
+    /// path — see [`crate::gate::WitnessKind`]).
     ///
     /// The parameter is not documentation. [`LiveWitness`] is a newtype over a
     /// private enum whose only constructors are `pub(crate)`, and the sole way to
@@ -1246,6 +1281,13 @@ pub trait ResourceProvider: Send + Sync + 'static {
     /// nothing to pass here, and *carving a shadowed band is a compile error* —
     /// not a runtime `if dry_run` a future refactor can silently invert, which is
     /// exactly what `76924b0` did to `spec.dryRun`.
+    ///
+    /// **Scope of that claim.** It is about THIS door (the band plane). It is not
+    /// a statement about every write breathe performs — `Cluster::apply` is the
+    /// wider I/O boundary and carries its own witness for exactly that reason, and
+    /// the cloud-node provisioning path (`Provedor`) is honestly only-mitigated.
+    /// The per-path tier table lives in [`gate`]'s module doc; read it there rather
+    /// than generalising from this sentence.
     ///
     /// The witness is deliberately unused by the write itself (a witness cannot
     /// change what bytes are written). Its job is to exist, and to be recorded.
@@ -1430,9 +1472,6 @@ impl<C: Cluster + 'static, D: DimensionDescriptor> ResourceProvider for BandProv
         target: &Target,
         to_value: u64,
     ) -> Result<AssignReceipt, ProviderError> {
-        // The witness is the AUTHORIZATION, not an input to the write — holding one
-        // is what made reaching this line possible at all (see the trait's doc).
-        let _ = witness;
         let layout = self.descriptor.layout(target);
         let from = self.cluster.read_limit(target, &layout, self.descriptor.resource()).await?;
         if to_value == from {
@@ -1445,7 +1484,10 @@ impl<C: Cluster + 'static, D: DimensionDescriptor> ResourceProvider for BandProv
             resource: self.descriptor.resource().to_string(),
             value: to_value,
         };
-        let applied = self.cluster.apply(&patch).await?;
+        // The witness travels WITH the write rather than being discarded here:
+        // `Cluster::apply` is the I/O door, and it is reached by callers other
+        // than this one (`PodMemoryHigh`, `ReplicaBand`), so it demands its own.
+        let applied = self.cluster.apply(witness, &patch).await?;
         Ok(AssignReceipt { from, to: to_value, source_hash: applied.source_hash })
     }
 
@@ -1915,6 +1957,10 @@ pub mod mock {
         /// gate end-to-end against the mock.
         pub storage_capability: Option<StorageCapability>,
         applied: Mutex<Vec<SsaPatch>>,
+        /// The witness kind that authorized each recorded write, index-aligned with
+        /// `applied`. Lets a test assert not just THAT a write happened but WHAT
+        /// authorized it — the whole point of the witness.
+        witnessed_by: Mutex<Vec<crate::gate::WitnessKind>>,
     }
 
     impl MockCluster {
@@ -1933,6 +1979,7 @@ pub mod mock {
                 throttle_source: None,
                 storage_capability: None,
                 applied: Mutex::new(Vec::new()),
+                witnessed_by: Mutex::new(Vec::new()),
             }
         }
         /// Model a CFS-throttled workload (the CPU-blindness case): a non-zero throttle
@@ -1999,6 +2046,15 @@ pub mod mock {
         pub fn applied(&self) -> Vec<SsaPatch> {
             self.applied.lock().unwrap().clone()
         }
+        /// The witness kind behind each recorded write, index-aligned with
+        /// [`Self::applied`].
+        ///
+        /// # Panics
+        /// If the recording mutex was poisoned by a panicking test.
+        #[must_use]
+        pub fn witnessed_by(&self) -> Vec<crate::gate::WitnessKind> {
+            self.witnessed_by.lock().unwrap().clone()
+        }
     }
 
     #[async_trait]
@@ -2039,8 +2095,11 @@ pub mod mock {
         ) -> Result<Vec<FieldOwner>, ProviderError> {
             Ok(self.owners.clone())
         }
-        async fn apply(&self, patch: &SsaPatch) -> Result<AppliedReceipt, ProviderError> {
+        async fn apply(&self, witness: &crate::gate::LiveWitness, patch: &SsaPatch) -> Result<AppliedReceipt, ProviderError> {
+            // Record WHAT authorized each write, so a test can assert the witness
+            // that reached the door, not merely that a patch did.
             self.applied.lock().unwrap().push(patch.clone());
+            self.witnessed_by.lock().unwrap().push(witness.kind());
             Ok(AppliedReceipt { source_hash: [0u8; 16] })
         }
         async fn read_resize_restart_free(

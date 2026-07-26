@@ -190,13 +190,19 @@ async fn unauthorized_pods_on(client: &Client, node_name: &str, allowed: &[Workl
 /// PURE (tested): map this tick's per-node outcomes onto the typed
 /// `IsolationBandStatus`. The origin-guard peer of `node_forma::cloud_pool_status`.
 #[must_use]
-pub(crate) fn isolation_band_status(nodes_tainted: i64, unauthorized: &[String], dry_run: bool) -> IsolationBandStatus {
+pub(crate) fn isolation_band_status(
+    nodes_tainted: i64,
+    unauthorized: &[String],
+    gate: &breathe_provider::EffectiveGate,
+) -> IsolationBandStatus {
     IsolationBandStatus {
         phase: Some(if unauthorized.is_empty() { "Protecting".into() } else { "Violated".into() }),
         nodes_tainted: Some(nodes_tainted),
         unauthorized_pods: unauthorized.to_vec(),
         unauthorized_count: Some(unauthorized.len() as i64),
-        effective_dry_run: Some(dry_run),
+        // BOTH surfaces, from ONE value (see `node_forma::cloud_pool_status`).
+        effective_gate: Some(gate.report()),
+        effective_dry_run: Some(gate.is_shadow()),
         last_seen_epoch: Some(breathe_runtime::now_secs()),
     }
 }
@@ -213,9 +219,9 @@ pub async fn reconcile_isolation_band(cr: Arc<IsolationBand>, ctx: Arc<Ctx>) -> 
     // `Band` uses (`breathe_crd::legacy_effective_dry_run` — see its doc for the
     // full migration note; `IsolationBand` has no `mode` field or Ready/Stale/
     // Conflict status yet, so it rides the pure two-state Shadow/Effect arm).
-    let promotion = breathe_crd::legacy_effective_dry_run(cr.spec.dry_run, !cr.spec.write_enabled);
-    let dry_run = promotion.is_shadow();
-    if let Some(reason) = promotion.shadow_reason() {
+    let gate = breathe_provider::legacy_two_state_gate(cr.spec.dry_run, !cr.spec.write_enabled);
+    let dry_run = gate.is_shadow();
+    if let Some(reason) = gate.shadow_reason() {
         debug!(band = %name, reason = ?reason, "IsolationBand: held in shadow");
     }
 
@@ -238,7 +244,7 @@ pub async fn reconcile_isolation_band(cr: Arc<IsolationBand>, ctx: Arc<Ctx>) -> 
     gauge!("breathe_isolation_nodes_tainted", "band" => name.clone()).set(nodes_tainted as f64);
     gauge!("breathe_isolation_unauthorized_pods", "band" => name.clone()).set(unauthorized.len() as f64);
 
-    let status = isolation_band_status(nodes_tainted, &unauthorized, dry_run);
+    let status = isolation_band_status(nodes_tainted, &unauthorized, &gate);
     info!(
         band = %name, nodes_tainted, unauthorized = unauthorized.len(), dry_run,
         "IsolationBand reconciled"
@@ -374,7 +380,7 @@ mod tests {
 
     #[test]
     fn status_is_protecting_when_no_unauthorized_pods() {
-        let s = isolation_band_status(1, &[], true);
+        let s = isolation_band_status(1, &[], &breathe_provider::legacy_two_state_gate(true, false));
         assert_eq!(s.phase.as_deref(), Some("Protecting"));
         assert_eq!(s.nodes_tainted, Some(1));
         assert_eq!(s.unauthorized_count, Some(0));
@@ -385,7 +391,7 @@ mod tests {
     #[test]
     fn status_is_violated_when_unauthorized_pods_are_found() {
         let found = vec!["default/stray-pod".to_string()];
-        let s = isolation_band_status(1, &found, false);
+        let s = isolation_band_status(1, &found, &breathe_provider::legacy_two_state_gate(false, false));
         assert_eq!(s.phase.as_deref(), Some("Violated"));
         assert_eq!(s.unauthorized_count, Some(1));
         assert_eq!(s.unauthorized_pods, found);

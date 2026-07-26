@@ -12,6 +12,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
 use breathe_control::{FieldOwner, Quantity, StorageCapability, Unit};
+use breathe_provider::LiveWitness;
 use breathe_provider::{
     AppliedReceipt, Cluster, LimitLayout, MetricSource, ProviderError, Sample, SsaPatch, Target,
 };
@@ -555,7 +556,11 @@ impl Cluster for KubeCluster {
         Ok(field_owners(&mf, &segments, logical_field))
     }
 
-    async fn apply(&self, patch: &SsaPatch) -> Result<AppliedReceipt, ProviderError> {
+    // `_witness`: the authorization is enforced at the CALL BOUNDARY (see
+    // `Cluster::apply`'s doc) — a caller with a shadow verdict has no witness to
+    // pass, so this function is unreachable from one. A witness cannot change what
+    // bytes go out, so the SSA patch itself has nothing to do with the value.
+    async fn apply(&self, _witness: &LiveWitness, patch: &SsaPatch) -> Result<AppliedReceipt, ProviderError> {
         let target = &patch.target;
 
         // IN-PLACE RESIZE: carve the live pods via the `pods/{name}/resize`
