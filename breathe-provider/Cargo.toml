@@ -16,6 +16,13 @@ async-trait = "0.1"
 # serde + schemars derives the CRD needs (solve once, no duplicate enum).
 serde = { version = "1", features = ["derive"] }
 schemars = "0.8"
+# DimensionId is the one type here that is ALSO an MCP tool-input value, and rmcp
+# 0.15 speaks schemars 1.x while kube 0.96's CRD derives speak 0.8. Rather than
+# re-declare a parallel ten-arm enum in breathe-mcp (exactly the duplication that
+# let the old five-arm `BandKind` fall five kinds behind), DimensionId carries the
+# 1.x derive under a renamed dep, scoped to itself via `#[schemars(crate = ...)]`.
+# DisruptionPolicy and every other CRD-facing type keep the 0.8 derive untouched.
+schemars1 = { package = "schemars", version = "1" }
 
 [dev-dependencies]
 # The gate module's parse-boundary tests (an unattributed `intent: write` must

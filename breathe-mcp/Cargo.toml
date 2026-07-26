@@ -14,6 +14,10 @@ path = "src/main.rs"
 
 [dependencies]
 breathe-facade = { path = "../breathe-facade", version = "0.1.0" }
+# IntentKind — the four writeIntent arms, as an MCP tool-input enum. Re-exported,
+# never re-declared: a parallel copy here is how the old five-arm BandKind fell
+# five kinds behind the CRDs it was supposed to address.
+breathe-provider = { path = "../breathe-provider", version = "0.1.0" }
 # Explicit process-wide CryptoProvider install (main.rs) -- see
 # breathe-controller/Cargo.toml for the full story.
 rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs"] }

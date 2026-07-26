@@ -135,6 +135,30 @@ pub enum IntentKind {
     Frozen,
 }
 
+impl IntentKind {
+    /// Every intent arm. Kept total by [`IntentKind::as_str`]'s exhaustive
+    /// match (a new arm is `E0004` there) plus `intent_kind_all_is_total`.
+    ///
+    /// Exists because `IntentKind` is BOTH a CRD field (schemars 0.8, via kube)
+    /// and an MCP tool input (schemars 1.x, via rmcp), and one type cannot carry
+    /// both derives. Rather than mirror a second four-arm enum in `breathe-mcp` —
+    /// the duplication that let the old five-arm `BandKind` fall behind — the MCP
+    /// surface builds its input schema from this list.
+    pub const ALL: [Self; 4] = [Self::Observe, Self::CalibrateThenWrite, Self::Write, Self::Frozen];
+
+    /// The wire label, identical to the serde `camelCase` rename (pinned by
+    /// `intent_kind_labels_match_serde`).
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Observe => "observe",
+            Self::CalibrateThenWrite => "calibrateThenWrite",
+            Self::Write => "write",
+            Self::Frozen => "frozen",
+        }
+    }
+}
+
 /// The **wire shape** of [`WriteIntent`] — the shape that actually goes in a
 /// CRD.
 ///
@@ -754,6 +778,23 @@ pub fn resolve_gate(i: &GateInputs) -> EffectiveGate {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `IntentKind::ALL` is every arm, and every label is exactly what serde
+    /// writes. The MCP surface generates its tool-input schema from these two
+    /// facts (it cannot derive schemars 1.x on a type kube already derives 0.8
+    /// on), so a drift here would silently offer the model a value the CRD
+    /// rejects.
+    #[test]
+    fn intent_kind_all_is_total_and_labels_match_serde() {
+        assert_eq!(IntentKind::ALL.len(), 4);
+        for k in IntentKind::ALL {
+            assert_eq!(IntentKind::ALL.iter().filter(|x| **x == k).count(), 1, "{k:?} appears twice in ALL");
+            let json = serde_json::to_value(k).unwrap();
+            assert_eq!(json.as_str(), Some(k.as_str()), "serde label != as_str for {k:?}");
+            let back: IntentKind = serde_json::from_value(json).unwrap();
+            assert_eq!(back, k);
+        }
+    }
 
     fn inputs(intent: Option<WriteIntent>) -> GateInputs {
         raw(intent.map(Ok))

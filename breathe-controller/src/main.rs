@@ -26,8 +26,8 @@ mod replica_band;
 use breathe_core::{reconcile_one, PredictiveInput, ReconcileInput};
 use breathe_crd::{
     AppBand, ArcBand, Band, BandSummary, BreatheCloudPool, BreatheConfig, BreatheConfigSpec, BreatheOverview,
-    BreathePosture, CgroupBand, CgroupCpuBand, CpuBand, Densa, IsolationBand, KubeParamBand, MemoryBand,
-    OverviewStatus, QuinhaoPool, ReplicaBand, StorageBand,
+    BreathePosture, CgroupBand, CgroupCpuBand, CpuBand, Densa, HostParamBand, IsolationBand, KubeParamBand,
+    MemoryBand, OverviewStatus, QuinhaoPool, ReplicaBand, StorageBand,
 };
 use breathe_dimensions::{CpuDescriptor, MemoryDescriptor, StorageDescriptor};
 use breathe_kube::KubeCluster;
@@ -742,13 +742,21 @@ async fn summarize<B: Band>(client: &Client, kind: &str, out: &mut Vec<BandSumma
 /// homeostasis at a glance — the dashboard as a single k8s object (no Grafana).
 async fn reconcile_overview(obj: Arc<BreatheOverview>, ctx: Arc<Ctx>) -> Result<Action, Error> {
     let mut bands = Vec::new();
+    // ALL TEN kinds. `summarize` is already fully generic over `Band`; this list
+    // was the only thing limiting it, and it had fallen three kinds behind — so
+    // "the whole fleet at a glance" silently omitted every host-param, kube-param
+    // and app band. The `overview_covers_every_band_kind` test below pins the
+    // count to DimensionId::ALL so it cannot drift again.
     summarize::<MemoryBand>(&ctx.client, "MemoryBand", &mut bands).await;
-    summarize::<CpuBand>(&ctx.client, "CpuBand", &mut bands).await;
     summarize::<StorageBand>(&ctx.client, "StorageBand", &mut bands).await;
+    summarize::<CpuBand>(&ctx.client, "CpuBand", &mut bands).await;
     summarize::<ReplicaBand>(&ctx.client, "ReplicaBand", &mut bands).await;
     summarize::<ArcBand>(&ctx.client, "ArcBand", &mut bands).await;
     summarize::<CgroupBand>(&ctx.client, "CgroupBand", &mut bands).await;
     summarize::<CgroupCpuBand>(&ctx.client, "CgroupCpuBand", &mut bands).await;
+    summarize::<HostParamBand>(&ctx.client, "HostParamBand", &mut bands).await;
+    summarize::<KubeParamBand>(&ctx.client, "KubeParamBand", &mut bands).await;
+    summarize::<AppBand>(&ctx.client, "AppBand", &mut bands).await;
     bands.sort_by(|a, b| (&a.kind, &a.namespace, &a.name).cmp(&(&b.kind, &b.namespace, &b.name)));
 
     let count = |ps: &[&str]| bands.iter().filter(|b| b.phase.as_deref().is_some_and(|x| ps.contains(&x))).count() as i64;

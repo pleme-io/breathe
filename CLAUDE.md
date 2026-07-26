@@ -161,5 +161,10 @@ A band resolves the pods it carves two ways, on one seam (`KubeCluster::owner_po
   (pulled by the flux-system GitRepository — no OCI/private-auth). `:latest` +
   `Always`, so a new build needs a `kubectl rollout restart deploy/breathe-controller`
   to pick up.
-- Escape hatch: HelmRelease `suspend: true`, or any band's `dryRun: true`
-  (observe + attest, never carve) — one line each.
+- Escape hatch: HelmRelease `suspend: true`, or a band's
+  `writeIntent: {intent: frozen}` (keep observing + attesting, never carve).
+  **NOT `dryRun: true`** — that was the instruction here until 2026-07-26 and it
+  is a no-op on eight of the ten band kinds (inert since `breathe@76924b0`,
+  2026-06-19; only `host-param` and `kube-param` still read it). Setting it would
+  have looked like an emergency stop and stopped nothing. Confirm the band is
+  actually held by reading `status.effectiveGate`, not the spec field.

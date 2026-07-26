@@ -361,6 +361,16 @@ pub trait Band:
     /// The field is kept, not dropped: it is the record of a decision an
     /// operator authored, and silently deleting authored intent is how this
     /// defect class propagates.
+    /// **Which dimension this kind carves** — the one vocabulary shared with
+    /// every operator surface (`breathe-facade` dispatches its `kube::Api<T>` on
+    /// this exact enum, so a kind that ships without an id cannot be reached by
+    /// the MCP, REST, GraphQL or gRPC).
+    ///
+    /// Deliberately a **required** method with no default: a new band kind must
+    /// state its dimension, because the alternative — a default that silently
+    /// picks one — is how five shipped kinds went invisible to every surface in
+    /// the first place.
+    fn dimension_id(&self) -> breathe_provider::DimensionId;
     fn dry_run(&self) -> bool;
     /// The band's authored [`WriteIntent`], if any — **the first and highest
     /// link** in the resolution chain (`writeIntent` > `mode` > the compiled
@@ -820,7 +830,7 @@ fn band_config_of(
 /// `serde(default = …)` fn names so an omitted floor on a `CpuBand` defaults to
 /// `250m`, not the byte default `256Mi` which would fail to parse as cpu).
 macro_rules! band_kind {
-    ($spec:ident, $kind:ident, $kindlit:literal, $short:literal, $unit:expr, $dfloor:literal, $dceiling:literal) => {
+    ($spec:ident, $kind:ident, $kindlit:literal, $short:literal, $unit:expr, $dfloor:literal, $dceiling:literal, $dim:expr) => {
         #[derive(CustomResource, Serialize, Deserialize, Clone, Debug, JsonSchema)]
         #[kube(
             group = "breathe.pleme.io",
@@ -1038,6 +1048,9 @@ macro_rules! band_kind {
             fn cooldown_seconds(&self) -> u64 {
                 self.spec.cooldown_seconds.unwrap_or_else(d_cooldown)
             }
+            fn dimension_id(&self) -> breathe_provider::DimensionId {
+                $dim
+            }
             fn dry_run(&self) -> bool {
                 self.spec.dry_run
             }
@@ -1118,17 +1131,17 @@ macro_rules! band_kind {
     };
 }
 
-band_kind!(MemoryBandSpec, MemoryBand, "MemoryBand", "mband", Unit::Bytes, "d_floor_bytes", "d_ceiling_bytes");
-band_kind!(CpuBandSpec, CpuBand, "CpuBand", "cband", Unit::Millicores, "d_floor_milli", "d_ceiling_milli");
-band_kind!(StorageBandSpec, StorageBand, "StorageBand", "sband", Unit::Bytes, "d_storage_floor_bytes", "d_storage_ceiling_bytes");
+band_kind!(MemoryBandSpec, MemoryBand, "MemoryBand", "mband", Unit::Bytes, "d_floor_bytes", "d_ceiling_bytes", breathe_provider::DimensionId::Memory);
+band_kind!(CpuBandSpec, CpuBand, "CpuBand", "cband", Unit::Millicores, "d_floor_milli", "d_ceiling_milli", breathe_provider::DimensionId::Cpu);
+band_kind!(StorageBandSpec, StorageBand, "StorageBand", "sband", Unit::Bytes, "d_storage_floor_bytes", "d_storage_ceiling_bytes", breathe_provider::DimensionId::Storage);
 // HOST bands — the descriptor (breathe-host) encodes the host addressing; the
 // CRD shape is identical to the byte-valued k8s bands, so the same macro stamps
 // them. targetRef.name carries the systemd unit (CgroupBand) or the node
 // (ArcBand); the agent applies via HostCluster within the BreatheNodePool L2 ceiling.
-band_kind!(ArcBandSpec, ArcBand, "ArcBand", "aband", Unit::Bytes, "d_floor_bytes", "d_ceiling_bytes");
-band_kind!(CgroupBandSpec, CgroupBand, "CgroupBand", "gband", Unit::Bytes, "d_floor_bytes", "d_ceiling_bytes");
+band_kind!(ArcBandSpec, ArcBand, "ArcBand", "aband", Unit::Bytes, "d_floor_bytes", "d_ceiling_bytes", breathe_provider::DimensionId::Arc);
+band_kind!(CgroupBandSpec, CgroupBand, "CgroupBand", "gband", Unit::Bytes, "d_floor_bytes", "d_ceiling_bytes", breathe_provider::DimensionId::Cgroup);
 // HOST cpu band — the unit's transient CPUQuota cap, millicores (like CpuBand).
-band_kind!(CgroupCpuBandSpec, CgroupCpuBand, "CgroupCpuBand", "gcband", Unit::Millicores, "d_floor_milli", "d_ceiling_milli");
+band_kind!(CgroupCpuBandSpec, CgroupCpuBand, "CgroupCpuBand", "gcband", Unit::Millicores, "d_floor_milli", "d_ceiling_milli", breathe_provider::DimensionId::CgroupCpu);
 
 // ───────────── HostParamBand — the GENERIC sysctl / ZFS-param band (PR-2) ─────────────
 // Hand-rolled (not band_kind!) because it carries EXTRA spec fields — the knob,
@@ -1341,6 +1354,9 @@ impl HostParamBandSpec {
 }
 
 impl crate::Band for HostParamBand {
+    fn dimension_id(&self) -> breathe_provider::DimensionId {
+        breathe_provider::DimensionId::HostParam
+    }
     fn target_ref(&self) -> &TargetRef {
         &self.spec.target_ref
     }
@@ -1562,6 +1578,9 @@ impl KubeParamBandSpec {
 }
 
 impl crate::Band for KubeParamBand {
+    fn dimension_id(&self) -> breathe_provider::DimensionId {
+        breathe_provider::DimensionId::KubeParam
+    }
     fn target_ref(&self) -> &TargetRef {
         &self.spec.target_ref
     }
@@ -1806,6 +1825,9 @@ impl AppBandSpec {
 }
 
 impl crate::Band for AppBand {
+    fn dimension_id(&self) -> breathe_provider::DimensionId {
+        breathe_provider::DimensionId::AppParam
+    }
     fn target_ref(&self) -> &TargetRef {
         &self.spec.target_ref
     }
@@ -2141,6 +2163,9 @@ impl ReplicaBandSpec {
 }
 
 impl crate::Band for ReplicaBand {
+    fn dimension_id(&self) -> breathe_provider::DimensionId {
+        breathe_provider::DimensionId::Replica
+    }
     fn target_ref(&self) -> &TargetRef {
         &self.spec.target_ref
     }
@@ -4268,6 +4293,102 @@ mod tests {
                     }
                 }
             }
+        }
+    }
+
+    /// **The claim every operator surface now makes, proved against real CRs.**
+    ///
+    /// `DimensionId::dry_run_is_honored()` tells the MCP/REST/GraphQL/gRPC
+    /// surfaces whether flipping `spec.dryRun` on a given kind does anything, so
+    /// they can refuse the no-op instead of returning success. That flag lives in
+    /// `breathe-provider` (no CRD types in scope), which makes it exactly the
+    /// kind of free-standing assertion that rots. This builds one CR of every
+    /// one of the ten kinds in the root defect's own shape — `dryRun: true`, no
+    /// `mode`, no `writeIntent`, confirm window long past — and asserts the
+    /// resolved gate agrees with the flag.
+    ///
+    /// The two `*ParamBand` kinds keep a two-state `dryRun ? Shadow : Effect`
+    /// `promotion_mode()`, so they shadow. The other eight fall through to the
+    /// compiled `ShadowConfirmEffect`, whose confirm gate has long since passed,
+    /// so they are LIVE with `dryRun: true` authored — the inversion this whole
+    /// refactor exists to make legible.
+    ///
+    /// Tier: **CI forcing-function**, not a type. A kind could change its
+    /// `promotion_mode()` and the flag would be wrong until this test ran.
+    #[test]
+    fn dry_run_is_honored_matches_every_band_kind() {
+        use breathe_provider::DimensionId;
+        // `dryRun: true`, nothing else authored — the ~70-live-band shape.
+        let dr = serde_json::json!({ "dryRun": true });
+        let st = ready_status(EPOCH_1000, serde_json::json!([]));
+        let target = serde_json::json!({ "kind": "Deployment", "name": "d", "apiVersion": "apps/v1" });
+
+        /// Build a CR of `$t` from the shared meta + the kind's own required
+        /// fields, then hand back `(dimension_id, is_shadow)`.
+        macro_rules! probe {
+            ($t:ty, $extra:expr) => {{
+                let mut spec = serde_json::json!({ "targetRef": target });
+                spec.as_object_mut().unwrap().extend($extra.as_object().unwrap().clone());
+                spec.as_object_mut().unwrap().extend(dr.as_object().unwrap().clone());
+                let b: $t = serde_json::from_value(serde_json::json!({
+                    "apiVersion": "breathe.pleme.io/v1", "kind": stringify!($t),
+                    "metadata": { "name": "x", "namespace": "n" },
+                    "spec": spec, "status": st,
+                }))
+                .unwrap_or_else(|e| panic!("{} fixture must parse: {e}", stringify!($t)));
+                (b.dimension_id(), b.resolve_gate(1000 + 100_000, false).is_shadow())
+            }};
+        }
+
+        let none = serde_json::json!({});
+        let probes = [
+            probe!(MemoryBand, none),
+            probe!(CpuBand, none),
+            probe!(StorageBand, none),
+            probe!(ArcBand, none),
+            probe!(CgroupBand, none),
+            probe!(CgroupCpuBand, none),
+            probe!(
+                HostParamBand,
+                serde_json::json!({
+                    "knob": { "sysctl": { "key": "vm.dirty_bytes" } },
+                    "metric": { "meminfoField": { "field": "Dirty" } },
+                })
+            ),
+            probe!(
+                KubeParamBand,
+                serde_json::json!({
+                    "layout": { "crField": {
+                        "apiVersion": "postgresql.cnpg.io/v1", "kind": "Cluster", "name": "db",
+                        "fieldPath": "/spec/postgresql/parameters/max_connections", "restartFree": false
+                    } },
+                    "metric": { "prometheus": "max(cnpg_backends_total)" },
+                })
+            ),
+            probe!(
+                AppBand,
+                serde_json::json!({
+                    "layout": { "apiCall": { "endpoint": "redis://redis:6379", "command": "maxmemory" } },
+                    "metric": { "prometheus": "redis_memory_used_bytes" },
+                })
+            ),
+            probe!(ReplicaBand, serde_json::json!({ "metric": { "prometheus": "rate(http_requests_total[1m])" } })),
+        ];
+
+        // Every dimension is probed exactly once — no kind quietly skipped.
+        let seen: Vec<_> = probes.iter().map(|(d, _)| *d).collect();
+        for d in DimensionId::ALL {
+            assert_eq!(seen.iter().filter(|x| **x == d).count(), 1, "{d} must be probed exactly once");
+        }
+
+        for (dim, is_shadow) in probes {
+            assert_eq!(
+                is_shadow,
+                dim.dry_run_is_honored(),
+                "{dim}: dryRun:true resolved to shadow={is_shadow}, but dry_run_is_honored()={} — \
+                 an operator surface would tell the truth about the wrong kind",
+                dim.dry_run_is_honored()
+            );
         }
     }
 

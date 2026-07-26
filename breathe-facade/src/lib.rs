@@ -1,59 +1,42 @@
 //! `breathe-facade` — the typed facade over breathe's k8s CRD state.
 //!
-//! breathe's state lives in CRDs (`BreatheNodePool` + the five `*Band` kinds);
+//! breathe's state lives in CRDs (`BreatheNodePool` + the **ten** `*Band` kinds);
 //! this is a typed projection + mutation morphism over `kube::Api<T>`, NOT a
 //! second store. A `patch` here is the same mutation a `kubectl patch` or Helm
 //! value change performs, so it never contends with the controller (which
 //! co-writes `status`). The [`BreatheStore`] trait is the testability seam every
 //! surface shares: MCP, REST, gRPC, GraphQL all drive this one core — solved once.
+//!
+//! **The kind vocabulary is [`breathe_provider::DimensionId`], not a local enum.**
+//! This crate used to own a closed five-arm `BandKind` while ten `Band` kinds
+//! shipped, so `CgroupCpuBand`/`HostParamBand`/`KubeParamBand`/`AppBand`/
+//! `ReplicaBand` were reachable by `kubectl` and by nothing else — no MCP tool,
+//! no REST route, no GraphQL field, no gRPC method could name them. Dispatching
+//! on the canonical enum makes an eleventh kind an `E0004` in [`on_band`] rather
+//! than a silent hole.
 
 use async_trait::async_trait;
-use breathe_crd::{ArcBand, BreatheNodePool, BreathePosture, CgroupBand, CpuBand, MemoryBand, StorageBand};
+use breathe_crd::{
+    AppBand, ArcBand, BreatheNodePool, BreathePosture, CgroupBand, CgroupCpuBand, CpuBand, HostParamBand,
+    KubeParamBand, MemoryBand, ReplicaBand, StorageBand,
+};
 use kube::{
     api::{Api, ListParams, Patch, PatchParams},
     core::NamespaceResourceScope,
     Client,
 };
-use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-/// Which band dimension a call addresses. The five kinds share one CRD shape
-/// (`band_kind!`); this enum picks the typed `Api<T>`. Derives `schemars` (1.x,
-/// matching rmcp) so it drops straight into MCP tool input schemas.
-#[derive(Debug, Clone, Copy, Deserialize, Serialize, schemars::JsonSchema, PartialEq, Eq)]
-#[serde(rename_all = "lowercase")]
-pub enum BandKind {
-    Memory,
-    Cpu,
-    Storage,
-    Arc,
-    Cgroup,
-}
+pub use breathe_provider::DimensionId;
 
-impl BandKind {
-    #[must_use]
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Memory => "memory",
-            Self::Cpu => "cpu",
-            Self::Storage => "storage",
-            Self::Arc => "arc",
-            Self::Cgroup => "cgroup",
-        }
-    }
-    /// Parse from a path/string token (REST `/bands/{kind}`).
-    #[must_use]
-    pub fn parse(s: &str) -> Option<Self> {
-        match s {
-            "memory" => Some(Self::Memory),
-            "cpu" => Some(Self::Cpu),
-            "storage" => Some(Self::Storage),
-            "arc" => Some(Self::Arc),
-            "cgroup" => Some(Self::Cgroup),
-            _ => None,
-        }
-    }
-}
+/// The former five-arm facade enum, now the canonical ten-arm
+/// [`DimensionId`].
+///
+/// Kept as a name because it is public API of a published crate and downstream
+/// consumers (vendaval, the MCP re-export) spell it this way; it is not a
+/// distinct type any more, so it cannot drift back out of sync.
+#[deprecated(note = "renamed to DimensionId — the canonical ten-arm dimension atom in breathe-provider")]
+pub type BandKind = DimensionId;
 
 #[derive(Debug, thiserror::Error)]
 pub enum StoreError {
@@ -66,14 +49,30 @@ pub enum StoreError {
 }
 
 /// The facade operations every surface calls. Real impl is [`KubeStore`]; tests
-/// pass a mock. Returns are JSON `Value` so callers are uniform across the five
+/// pass a mock. Returns are JSON `Value` so callers are uniform across all ten
 /// band kinds.
 #[async_trait]
 pub trait BreatheStore: Send + Sync {
-    async fn list_bands(&self, kind: BandKind, namespace: Option<String>) -> Result<Value, StoreError>;
-    async fn get_band(&self, kind: BandKind, namespace: String, name: String) -> Result<Value, StoreError>;
+    async fn list_bands(&self, kind: DimensionId, namespace: Option<String>) -> Result<Value, StoreError>;
+    async fn get_band(&self, kind: DimensionId, namespace: String, name: String) -> Result<Value, StoreError>;
     /// Merge-patch `spec` (the API/operator co-owns spec; the controller owns status).
-    async fn patch_band_spec(&self, kind: BandKind, namespace: String, name: String, spec: Value) -> Result<Value, StoreError>;
+    async fn patch_band_spec(&self, kind: DimensionId, namespace: String, name: String, spec: Value) -> Result<Value, StoreError>;
+    /// Merge-patch a band's `metadata.annotations`.
+    ///
+    /// Exists for one reason: `breathe.pleme.io/confirmed` (see
+    /// [`breathe_provider::CONFIRMED_ANNOTATION`]) is the operator fast-path that
+    /// promotes a calibrating band to writing *now* instead of waiting out its
+    /// confirm window — the strongest live-authorization primitive breathe has,
+    /// and until this method it was settable from Rust source and `kubectl` only,
+    /// invisible to all four operator surfaces. Annotations are metadata, not
+    /// spec, so [`Self::patch_band_spec`] structurally cannot reach it.
+    async fn annotate_band(
+        &self,
+        kind: DimensionId,
+        namespace: String,
+        name: String,
+        annotations: Value,
+    ) -> Result<Value, StoreError>;
     async fn list_pools(&self) -> Result<Value, StoreError>;
     async fn get_pool(&self, name: String) -> Result<Value, StoreError>;
     async fn patch_pool_spec(&self, name: String, spec: Value) -> Result<Value, StoreError>;
@@ -102,14 +101,24 @@ where
 }
 
 /// Run `$body` with `$api: Api<ConcreteBand>` bound to the kind.
+///
+/// **This match is the coherence gate.** It is exhaustive over [`DimensionId`],
+/// so a new dimension cannot ship without being given a concrete CRD type here —
+/// the compiler refuses it (`E0004`). That is the mechanism that replaced a
+/// hand-written five-arm list which had silently fallen five kinds behind.
 macro_rules! on_band {
     ($client:expr, $kind:expr, $ns:expr, |$api:ident| $body:expr) => {
         match $kind {
-            BandKind::Memory => { let $api: Api<MemoryBand> = mk_api($client, $ns); $body }
-            BandKind::Cpu => { let $api: Api<CpuBand> = mk_api($client, $ns); $body }
-            BandKind::Storage => { let $api: Api<StorageBand> = mk_api($client, $ns); $body }
-            BandKind::Arc => { let $api: Api<ArcBand> = mk_api($client, $ns); $body }
-            BandKind::Cgroup => { let $api: Api<CgroupBand> = mk_api($client, $ns); $body }
+            DimensionId::Memory => { let $api: Api<MemoryBand> = mk_api($client, $ns); $body }
+            DimensionId::Cpu => { let $api: Api<CpuBand> = mk_api($client, $ns); $body }
+            DimensionId::Storage => { let $api: Api<StorageBand> = mk_api($client, $ns); $body }
+            DimensionId::Replica => { let $api: Api<ReplicaBand> = mk_api($client, $ns); $body }
+            DimensionId::Arc => { let $api: Api<ArcBand> = mk_api($client, $ns); $body }
+            DimensionId::Cgroup => { let $api: Api<CgroupBand> = mk_api($client, $ns); $body }
+            DimensionId::CgroupCpu => { let $api: Api<CgroupCpuBand> = mk_api($client, $ns); $body }
+            DimensionId::HostParam => { let $api: Api<HostParamBand> = mk_api($client, $ns); $body }
+            DimensionId::KubeParam => { let $api: Api<KubeParamBand> = mk_api($client, $ns); $body }
+            DimensionId::AppParam => { let $api: Api<AppBand> = mk_api($client, $ns); $body }
         }
     };
 }
@@ -183,21 +192,34 @@ pub fn catalog_json() -> Value {
 
 #[async_trait]
 impl BreatheStore for KubeStore {
-    async fn list_bands(&self, kind: BandKind, namespace: Option<String>) -> Result<Value, StoreError> {
+    async fn list_bands(&self, kind: DimensionId, namespace: Option<String>) -> Result<Value, StoreError> {
         let ns = namespace.as_deref();
         on_band!(&self.client, kind, ns, |api| {
             let l = api.list(&ListParams::default()).await.map_err(ke)?;
             serde_json::to_value(l.items).map_err(se)
         })
     }
-    async fn get_band(&self, kind: BandKind, namespace: String, name: String) -> Result<Value, StoreError> {
+    async fn get_band(&self, kind: DimensionId, namespace: String, name: String) -> Result<Value, StoreError> {
         on_band!(&self.client, kind, Some(namespace.as_str()), |api| {
             let o = api.get(&name).await.map_err(ke)?;
             serde_json::to_value(o).map_err(se)
         })
     }
-    async fn patch_band_spec(&self, kind: BandKind, namespace: String, name: String, spec: Value) -> Result<Value, StoreError> {
+    async fn patch_band_spec(&self, kind: DimensionId, namespace: String, name: String, spec: Value) -> Result<Value, StoreError> {
         let body = json!({ "spec": spec });
+        on_band!(&self.client, kind, Some(namespace.as_str()), |api| {
+            let o = api.patch(&name, &PatchParams::default(), &Patch::Merge(&body)).await.map_err(ke)?;
+            serde_json::to_value(o).map_err(se)
+        })
+    }
+    async fn annotate_band(
+        &self,
+        kind: DimensionId,
+        namespace: String,
+        name: String,
+        annotations: Value,
+    ) -> Result<Value, StoreError> {
+        let body = json!({ "metadata": { "annotations": annotations } });
         on_band!(&self.client, kind, Some(namespace.as_str()), |api| {
             let o = api.patch(&name, &PatchParams::default(), &Patch::Merge(&body)).await.map_err(ke)?;
             serde_json::to_value(o).map_err(se)
@@ -246,10 +268,10 @@ mod tests {
 
     #[test]
     fn band_kind_round_trips_str() {
-        for k in [BandKind::Memory, BandKind::Cpu, BandKind::Storage, BandKind::Arc, BandKind::Cgroup] {
-            assert_eq!(BandKind::parse(k.as_str()), Some(k));
+        for k in DimensionId::ALL {
+            assert_eq!(DimensionId::parse(k.as_str()), Some(k));
         }
-        assert_eq!(BandKind::parse("nope"), None);
+        assert_eq!(DimensionId::parse("nope"), None);
     }
 
     #[test]

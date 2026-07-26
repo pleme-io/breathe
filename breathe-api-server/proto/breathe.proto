@@ -13,6 +13,10 @@ message Band {
   BandStatus status = 5;
 }
 
+// The ten shipped band dimensions. Numbers 1-5 are FROZEN at their original
+// values: this enum previously stopped at CGROUP while five kinds shipped, so 6-10
+// are purely additive and every existing client keeps working. Never reuse or
+// renumber an existing value.
 enum BandKind {
   BAND_KIND_UNSPECIFIED = 0;
   BAND_KIND_MEMORY = 1;
@@ -20,6 +24,11 @@ enum BandKind {
   BAND_KIND_STORAGE = 3;
   BAND_KIND_ARC = 4;
   BAND_KIND_CGROUP = 5;
+  BAND_KIND_REPLICA = 6;
+  BAND_KIND_CGROUP_CPU = 7;
+  BAND_KIND_HOST_PARAM = 8;
+  BAND_KIND_KUBE_PARAM = 9;
+  BAND_KIND_APP_PARAM = 10;
 }
 
 message BandSpec {

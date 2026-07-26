@@ -18,7 +18,8 @@ signed entry in a verifiable attestation chain.
 | `breathe-provider` | the `ResourceProvider` trait (atomic per-category `observe`/`assign`/`release`, **never sees `decide`**) + the `Cluster` Environment trait (the mockable testability seam) + `MockCluster` (the `mock` feature). |
 | `breathe-core` | the composed reconcile loop — binds the band law to a provider's I/O. breathe-core **owns** the loop; it is not inherited. |
 | `breathe-catalog` | the self-describing `(defdimension …)` dimensions catalog + CATALOG REFLECTION tests. Adding a dimension **fails the build** without a catalog row. |
-| `dimension-memory` | the first provider: observe working-set/limit, carve `resources.limits.memory` via **true SSA** (the owner rolls). |
+| `breathe-dimensions` | the shipped dimension providers (memory/cpu/storage): observe working-set/limit, carve `resources.limits.*` via **true SSA** (the owner rolls). |
+| `breathe-facade` | the one typed `BreatheStore` seam every operator surface drives — MCP, REST, GraphQL and gRPC all dispatch on `breathe_provider::DimensionId`, so all **ten** band kinds are reachable from all four. |
 
 ## Invariants (do not regress — see `theory/BREATHE.md` §15)
 
@@ -34,5 +35,6 @@ signed entry in a verifiable attestation chain.
 ## Test
 
 ```sh
-cargo test            # 32 tests: band law + convergence + single-writer + wiring + catalog reflection
+cargo test --workspace   # band law + convergence + single-writer + wiring + catalog reflection
+                         # + the authorization-axis and surface-coherence gates
 ```

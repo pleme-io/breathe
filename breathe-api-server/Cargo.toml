@@ -14,6 +14,9 @@ path = "src/main.rs"
 
 [dependencies]
 breathe-facade = { path = "../breathe-facade", version = "0.1.0" }
+# CONFIRMED_ANNOTATION + DimensionId::dry_run_is_honored — the surface needs the
+# canonical facts, not a local copy of them.
+breathe-provider = { path = "../breathe-provider", version = "0.1.0" }
 # Explicit process-wide CryptoProvider install (main.rs) -- see
 # breathe-controller/Cargo.toml for the full story.
 rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs"] }
@@ -42,6 +45,12 @@ which = "6"
 
 [dev-dependencies]
 async-trait = "0.1"
+# spec/breathe.openapi.yaml calls itself the SINGLE SOURCE OF TRUTH, and forge-gen
+# emits SDKs and docs from it — so a stale BandKind enum there propagates into every
+# generated artifact. `openapi_spec_band_kinds_match_the_code` parses the real file
+# and pins it to DimensionId::ALL. That claim needs a YAML reader to be mechanical
+# rather than a comment.
+serde_yaml = "0.9"
 tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"
 # The canonical dimension count — the catalog tests assert against ALL_DIMENSIONS
