@@ -17,6 +17,11 @@ async-trait = "0.1"
 serde = { version = "1", features = ["derive"] }
 schemars = "0.8"
 
+[dev-dependencies]
+# The gate module's parse-boundary tests (an unattributed `intent: write` must
+# FAIL to deserialize) assert on real serde behavior, not on a mock.
+serde_json = "1"
+
 [features]
 # The in-memory MockCluster test double — the typed-spec-triplet testability seam.
 mock = []

@@ -491,15 +491,23 @@ async fn reconcile<B: Band, D: DimensionDescriptor + Default>(
     let prior_capacity = obj.status().and_then(|s| s.observed_capacity).and_then(|c| u64::try_from(c).ok());
     let (observed_for_secs, warmup_start_epoch) =
         breathe_runtime::warmup_state(obj.status(), prior_capacity, obj.warmup_seconds(), now_secs());
+    // Resolve the tick's authorization verdict ONCE: `writeIntent` > the
+    // retired `mode` > the compiled ShadowConfirmEffect default. Carries WHY a
+    // band is held (authored `observe` vs an accidental NotReady/Stale/
+    // Conflict) and WHAT authorizes a live one — both surfaced in status below.
+    let gate = obj.resolve_gate(now_secs(), false);
     let input = ReconcileInput {
         target: &target,
         cfg: &cfg,
         max_staleness_secs: obj.max_staleness_seconds_with_posture(posture_spec),
         in_cooldown,
-        // The PROMOTION LIFECYCLE gates the carve — not the raw `dryRun` field.
-        // ShadowConfirmEffect (the default) stays shadow until its confirm window
-        // of clean observation passes, then auto-begins. (See Band::effective_dry_run.)
-        dry_run: obj.effective_dry_run(now_secs()),
+        // The AUTHORIZATION VERDICT gates the carve — not the raw `dryRun`
+        // field, which has been unread for this band kind since 76924b0.
+        // `gate` is resolved ONCE per tick, above, and drives both the carve
+        // and the status, so the two can never tell different stories.
+        // (S2 replaces this bool with the typed `gate` itself, at which point
+        // the mutation door takes the `LiveWitness` it carries.)
+        dry_run: gate.is_shadow(),
         // per-band golden/ceiling gate (default RestartFreeOnly) — the band
         // declares its own policy; the fleet env is only a fallback default.
         // Posture-aware: falls through to the referenced BreathePosture's
@@ -533,6 +541,11 @@ async fn reconcile<B: Band, D: DimensionDescriptor + Default>(
             .await;
     }
     let mut status = status_for(&outcome, obj.status(), obj.cooldown_seconds_with_posture(posture_spec), obj.generation(), counters);
+    // Dual-write: the typed verdict AND the legacy bool, from the one `gate`
+    // value that drove the carve above. `status.effectiveGate.state` is the
+    // `Gate` printcolumn — the first time `kubectl get` can answer "is this
+    // band writing to my cluster, and why".
+    breathe_runtime::set_effective_gate(&mut status, &gate);
     // carry the warmup-start epoch forward (reset on a detected restart) so the next
     // tick measures observed-since-restart correctly — the warmup gate's persistence.
     status.warmup_start_epoch = Some(warmup_start_epoch);

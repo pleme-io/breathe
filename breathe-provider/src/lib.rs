@@ -13,6 +13,18 @@ use async_trait::async_trait;
 
 pub use breathe_control::{Directionality, FieldOwner, Observation, StorageCapability};
 
+// The AUTHORIZATION axis. Lives here — not in a new crate — for the same
+// reason `DisruptionPolicy` does (see this crate's Cargo.toml header): it is a
+// behavior gate that is ALSO a CRD field, so it needs exactly the serde +
+// schemars derives already present, and both `breathe-crd` and `breathe-core`
+// already depend on this crate. Solve once, no new workspace member.
+pub mod gate;
+pub use gate::{
+    ConfirmVerdict, EffectiveGate, EffectiveGateReport, GateInputs, GateState, IntentError, IntentKind,
+    LegacyDecision, LegacyPath, LegacyPathKind, LiveWitness, ShadowReason, ShadowReasonKind, WitnessKind,
+    WriteIntent, WriteIntentSpec, CONFIRMED_ANNOTATION,
+};
+
 /// Typed category atom — keys the registry, equals the catalog `:name`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum DimensionId {

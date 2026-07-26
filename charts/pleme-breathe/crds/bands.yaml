@@ -34,6 +34,12 @@ spec:
     - jsonPath: .status.phase
       name: Phase
       type: string
+    - jsonPath: .status.effectiveGate.state
+      name: Gate
+      type: string
+    - jsonPath: .status.effectiveGate.reason
+      name: Why
+      type: string
     - jsonPath: .status.conditions[?(@.type=='Ready')].status
       name: Ready
       type: string
@@ -72,6 +78,10 @@ spec:
                 type: string
               dryRun:
                 default: false
+                description: |-
+                  RETIRED 2026-06-19 (breathe@76924b0) — **this field has NO effect on this band kind.** It is not read by the carve gate; setting it to `true` does not hold the band in shadow, and a band with `dryRun: true` and no `mode` carves for real once its confirm window elapses.
+
+                  It is kept, not deleted, because it is the record of a decision an operator authored — but it decides nothing. Authorization is `spec.writeIntent`; the live verdict (and its reason or witness) is `status.effectiveGate`.
                 type: boolean
               floor:
                 default: 256Mi
@@ -98,7 +108,10 @@ spec:
                 nullable: true
                 type: integer
               mode:
-                description: 'The PROMOTION LIFECYCLE. Unset ⇒ resolved by `promotion_mode()` (legacy `dryRun:true` → Shadow, else the fleet default `ShadowConfirmEffect`). Set explicitly to pin the state: `shadow` | `effect` | `shadowConfirmEffect` | `suspended`.'
+                description: |-
+                  The RETIRED promotion lifecycle. Still read (below `writeIntent`), so an already-authored CR keeps working; new CRs should author `writeIntent` instead. Unset ⇒ the compiled fleet default `shadowConfirmEffect`.
+
+                  NOTE: unset does **not** mean "derived from `dryRun`" — that resolution was removed on 2026-06-19 (`76924b0`) and this description said otherwise until 2026-07-26. Values: `shadow` | `effect` | `shadowConfirmEffect` | `suspended`.
                 enum:
                 - shadow
                 - effect
@@ -170,6 +183,36 @@ spec:
                 format: uint64
                 minimum: 0.0
                 type: integer
+              writeIntent:
+                description: |-
+                  **The authorization intent — what this band is permitted to do and who says so.** The first and highest link in the resolution chain `writeIntent` > `mode` > the compiled `shadowConfirmEffect`.
+
+                  * `{intent: observe}` — decide, report, attest; never write. * `{intent: calibrateThenWrite, confirmAfterSeconds: 1800}` — shadow until a clean-observation window proves the band safe, then write. * `{intent: write, authorizedBy: "…"}` — write now. `authorizedBy` is REQUIRED: a CR that says "go live" and does not say who is rejected at parse time. * `{intent: frozen}` — never write, but keep observing.
+
+                  Unset ⇒ the retired `mode`/default chain decides, and `status.effectiveGate.witness` reports `legacyDefault` so an unauthored live band is visible as such.
+                nullable: true
+                properties:
+                  authorizedBy:
+                    description: '**Required for `write`** — who authorized going live, and ideally when and why. An empty or absent value on a `write` is rejected by [`Self::parse`]; an unattributed go-live is never granted.'
+                    nullable: true
+                    type: string
+                  confirmAfterSeconds:
+                    description: Only meaningful for `calibrateThenWrite`; defaults to 1800s.
+                    format: uint64
+                    minimum: 0.0
+                    nullable: true
+                    type: integer
+                  intent:
+                    description: '`observe` | `calibrateThenWrite` | `write` | `frozen`.'
+                    enum:
+                    - observe
+                    - calibrateThenWrite
+                    - write
+                    - frozen
+                    type: string
+                required:
+                - intent
+                type: object
             required:
             - targetRef
             type: object
@@ -244,9 +287,78 @@ spec:
                 nullable: true
                 type: string
               effectiveDryRun:
-                description: 'The effective mode: `true` = SHADOW (observe + attest, never carve).'
+                description: |-
+                  The effective mode: `true` = SHADOW (observe + attest, never carve).
+
+                  **Kept for compatibility; superseded by [`BandStatus::effective_gate`],** which carries the same verdict plus the one thing a bare bool never could: *why*. Both are written every tick and can never disagree — this bool is literally `effective_gate.state == shadow`.
                 nullable: true
                 type: boolean
+              effectiveGate:
+                description: |-
+                  **The typed authorization verdict for the last tick** — shadow with a named reason, or live with a named witness.
+
+                  This is the field that answers, from the CR alone, the two questions `effectiveDryRun` could not: *why is this band held?* (an authored `observe`, or an accidental `NotReady`/`Stale`/`Conflict` — a distinction that mattered on camelot-eks, where six bands were shadowed by accident while every surface reported "dryRun") and *what authorizes this band to write?* A `witness` of `legacyDefault` means the write rests on a pre-2026-07 resolution path rather than an authored `spec.writeIntent` — i.e. migration debt, and the burn-down metric.
+                nullable: true
+                properties:
+                  authorizedBy:
+                    description: Who authorized it, when a human named themselves.
+                    nullable: true
+                    type: string
+                  heldSecs:
+                    description: Seconds of clean observation held so far (a pending or just-passed confirm window).
+                    format: int64
+                    nullable: true
+                    type: integer
+                  legacyPath:
+                    description: The pre-2026-07 resolution path, when this write rests on no authored `writeIntent`. **Non-empty here is the migration burn-down signal.**
+                    enum:
+                    - modeEffect
+                    - twoStateDryRun
+                    - confirmGate
+                    - operatorAnnotation
+                    nullable: true
+                    type: string
+                  needSecs:
+                    description: Seconds of clean observation required.
+                    format: int64
+                    nullable: true
+                    type: integer
+                  readySinceEpoch:
+                    description: When the target most recently became Ready, for a window that passed.
+                    format: int64
+                    nullable: true
+                    type: integer
+                  reason:
+                    description: Why it is held (shadow only). An authored `modeShadow`/`suspended` and an accidental `notReady`/`stale`/`conflict` are different answers.
+                    enum:
+                    - frozen
+                    - modeShadow
+                    - suspended
+                    - notReady
+                    - stale
+                    - conflict
+                    - intentMalformed
+                    - confirmPending
+                    nullable: true
+                    type: string
+                  state:
+                    description: '`shadow` | `live` — the headline.'
+                    enum:
+                    - shadow
+                    - live
+                    type: string
+                  witness:
+                    description: What authorizes it (live only).
+                    enum:
+                    - explicitIntent
+                    - confirmGatePassed
+                    - operatorAnnotation
+                    - legacyDefault
+                    nullable: true
+                    type: string
+                required:
+                - state
+                type: object
               effectivePolicy:
                 description: The DisruptionPolicy in effect for this band (`restartFreeOnly` / …).
                 nullable: true
@@ -391,6 +503,12 @@ spec:
     - jsonPath: .status.phase
       name: Phase
       type: string
+    - jsonPath: .status.effectiveGate.state
+      name: Gate
+      type: string
+    - jsonPath: .status.effectiveGate.reason
+      name: Why
+      type: string
     - jsonPath: .status.conditions[?(@.type=='Ready')].status
       name: Ready
       type: string
@@ -429,6 +547,10 @@ spec:
                 type: string
               dryRun:
                 default: false
+                description: |-
+                  RETIRED 2026-06-19 (breathe@76924b0) — **this field has NO effect on this band kind.** It is not read by the carve gate; setting it to `true` does not hold the band in shadow, and a band with `dryRun: true` and no `mode` carves for real once its confirm window elapses.
+
+                  It is kept, not deleted, because it is the record of a decision an operator authored — but it decides nothing. Authorization is `spec.writeIntent`; the live verdict (and its reason or witness) is `status.effectiveGate`.
                 type: boolean
               floor:
                 default: 250m
@@ -455,7 +577,10 @@ spec:
                 nullable: true
                 type: integer
               mode:
-                description: 'The PROMOTION LIFECYCLE. Unset ⇒ resolved by `promotion_mode()` (legacy `dryRun:true` → Shadow, else the fleet default `ShadowConfirmEffect`). Set explicitly to pin the state: `shadow` | `effect` | `shadowConfirmEffect` | `suspended`.'
+                description: |-
+                  The RETIRED promotion lifecycle. Still read (below `writeIntent`), so an already-authored CR keeps working; new CRs should author `writeIntent` instead. Unset ⇒ the compiled fleet default `shadowConfirmEffect`.
+
+                  NOTE: unset does **not** mean "derived from `dryRun`" — that resolution was removed on 2026-06-19 (`76924b0`) and this description said otherwise until 2026-07-26. Values: `shadow` | `effect` | `shadowConfirmEffect` | `suspended`.
                 enum:
                 - shadow
                 - effect
@@ -527,6 +652,36 @@ spec:
                 format: uint64
                 minimum: 0.0
                 type: integer
+              writeIntent:
+                description: |-
+                  **The authorization intent — what this band is permitted to do and who says so.** The first and highest link in the resolution chain `writeIntent` > `mode` > the compiled `shadowConfirmEffect`.
+
+                  * `{intent: observe}` — decide, report, attest; never write. * `{intent: calibrateThenWrite, confirmAfterSeconds: 1800}` — shadow until a clean-observation window proves the band safe, then write. * `{intent: write, authorizedBy: "…"}` — write now. `authorizedBy` is REQUIRED: a CR that says "go live" and does not say who is rejected at parse time. * `{intent: frozen}` — never write, but keep observing.
+
+                  Unset ⇒ the retired `mode`/default chain decides, and `status.effectiveGate.witness` reports `legacyDefault` so an unauthored live band is visible as such.
+                nullable: true
+                properties:
+                  authorizedBy:
+                    description: '**Required for `write`** — who authorized going live, and ideally when and why. An empty or absent value on a `write` is rejected by [`Self::parse`]; an unattributed go-live is never granted.'
+                    nullable: true
+                    type: string
+                  confirmAfterSeconds:
+                    description: Only meaningful for `calibrateThenWrite`; defaults to 1800s.
+                    format: uint64
+                    minimum: 0.0
+                    nullable: true
+                    type: integer
+                  intent:
+                    description: '`observe` | `calibrateThenWrite` | `write` | `frozen`.'
+                    enum:
+                    - observe
+                    - calibrateThenWrite
+                    - write
+                    - frozen
+                    type: string
+                required:
+                - intent
+                type: object
             required:
             - targetRef
             type: object
@@ -601,9 +756,78 @@ spec:
                 nullable: true
                 type: string
               effectiveDryRun:
-                description: 'The effective mode: `true` = SHADOW (observe + attest, never carve).'
+                description: |-
+                  The effective mode: `true` = SHADOW (observe + attest, never carve).
+
+                  **Kept for compatibility; superseded by [`BandStatus::effective_gate`],** which carries the same verdict plus the one thing a bare bool never could: *why*. Both are written every tick and can never disagree — this bool is literally `effective_gate.state == shadow`.
                 nullable: true
                 type: boolean
+              effectiveGate:
+                description: |-
+                  **The typed authorization verdict for the last tick** — shadow with a named reason, or live with a named witness.
+
+                  This is the field that answers, from the CR alone, the two questions `effectiveDryRun` could not: *why is this band held?* (an authored `observe`, or an accidental `NotReady`/`Stale`/`Conflict` — a distinction that mattered on camelot-eks, where six bands were shadowed by accident while every surface reported "dryRun") and *what authorizes this band to write?* A `witness` of `legacyDefault` means the write rests on a pre-2026-07 resolution path rather than an authored `spec.writeIntent` — i.e. migration debt, and the burn-down metric.
+                nullable: true
+                properties:
+                  authorizedBy:
+                    description: Who authorized it, when a human named themselves.
+                    nullable: true
+                    type: string
+                  heldSecs:
+                    description: Seconds of clean observation held so far (a pending or just-passed confirm window).
+                    format: int64
+                    nullable: true
+                    type: integer
+                  legacyPath:
+                    description: The pre-2026-07 resolution path, when this write rests on no authored `writeIntent`. **Non-empty here is the migration burn-down signal.**
+                    enum:
+                    - modeEffect
+                    - twoStateDryRun
+                    - confirmGate
+                    - operatorAnnotation
+                    nullable: true
+                    type: string
+                  needSecs:
+                    description: Seconds of clean observation required.
+                    format: int64
+                    nullable: true
+                    type: integer
+                  readySinceEpoch:
+                    description: When the target most recently became Ready, for a window that passed.
+                    format: int64
+                    nullable: true
+                    type: integer
+                  reason:
+                    description: Why it is held (shadow only). An authored `modeShadow`/`suspended` and an accidental `notReady`/`stale`/`conflict` are different answers.
+                    enum:
+                    - frozen
+                    - modeShadow
+                    - suspended
+                    - notReady
+                    - stale
+                    - conflict
+                    - intentMalformed
+                    - confirmPending
+                    nullable: true
+                    type: string
+                  state:
+                    description: '`shadow` | `live` — the headline.'
+                    enum:
+                    - shadow
+                    - live
+                    type: string
+                  witness:
+                    description: What authorizes it (live only).
+                    enum:
+                    - explicitIntent
+                    - confirmGatePassed
+                    - operatorAnnotation
+                    - legacyDefault
+                    nullable: true
+                    type: string
+                required:
+                - state
+                type: object
               effectivePolicy:
                 description: The DisruptionPolicy in effect for this band (`restartFreeOnly` / …).
                 nullable: true
@@ -748,6 +972,12 @@ spec:
     - jsonPath: .status.phase
       name: Phase
       type: string
+    - jsonPath: .status.effectiveGate.state
+      name: Gate
+      type: string
+    - jsonPath: .status.effectiveGate.reason
+      name: Why
+      type: string
     - jsonPath: .status.conditions[?(@.type=='Ready')].status
       name: Ready
       type: string
@@ -786,6 +1016,10 @@ spec:
                 type: string
               dryRun:
                 default: false
+                description: |-
+                  RETIRED 2026-06-19 (breathe@76924b0) — **this field has NO effect on this band kind.** It is not read by the carve gate; setting it to `true` does not hold the band in shadow, and a band with `dryRun: true` and no `mode` carves for real once its confirm window elapses.
+
+                  It is kept, not deleted, because it is the record of a decision an operator authored — but it decides nothing. Authorization is `spec.writeIntent`; the live verdict (and its reason or witness) is `status.effectiveGate`.
                 type: boolean
               floor:
                 default: 2Gi
@@ -812,7 +1046,10 @@ spec:
                 nullable: true
                 type: integer
               mode:
-                description: 'The PROMOTION LIFECYCLE. Unset ⇒ resolved by `promotion_mode()` (legacy `dryRun:true` → Shadow, else the fleet default `ShadowConfirmEffect`). Set explicitly to pin the state: `shadow` | `effect` | `shadowConfirmEffect` | `suspended`.'
+                description: |-
+                  The RETIRED promotion lifecycle. Still read (below `writeIntent`), so an already-authored CR keeps working; new CRs should author `writeIntent` instead. Unset ⇒ the compiled fleet default `shadowConfirmEffect`.
+
+                  NOTE: unset does **not** mean "derived from `dryRun`" — that resolution was removed on 2026-06-19 (`76924b0`) and this description said otherwise until 2026-07-26. Values: `shadow` | `effect` | `shadowConfirmEffect` | `suspended`.
                 enum:
                 - shadow
                 - effect
@@ -884,6 +1121,36 @@ spec:
                 format: uint64
                 minimum: 0.0
                 type: integer
+              writeIntent:
+                description: |-
+                  **The authorization intent — what this band is permitted to do and who says so.** The first and highest link in the resolution chain `writeIntent` > `mode` > the compiled `shadowConfirmEffect`.
+
+                  * `{intent: observe}` — decide, report, attest; never write. * `{intent: calibrateThenWrite, confirmAfterSeconds: 1800}` — shadow until a clean-observation window proves the band safe, then write. * `{intent: write, authorizedBy: "…"}` — write now. `authorizedBy` is REQUIRED: a CR that says "go live" and does not say who is rejected at parse time. * `{intent: frozen}` — never write, but keep observing.
+
+                  Unset ⇒ the retired `mode`/default chain decides, and `status.effectiveGate.witness` reports `legacyDefault` so an unauthored live band is visible as such.
+                nullable: true
+                properties:
+                  authorizedBy:
+                    description: '**Required for `write`** — who authorized going live, and ideally when and why. An empty or absent value on a `write` is rejected by [`Self::parse`]; an unattributed go-live is never granted.'
+                    nullable: true
+                    type: string
+                  confirmAfterSeconds:
+                    description: Only meaningful for `calibrateThenWrite`; defaults to 1800s.
+                    format: uint64
+                    minimum: 0.0
+                    nullable: true
+                    type: integer
+                  intent:
+                    description: '`observe` | `calibrateThenWrite` | `write` | `frozen`.'
+                    enum:
+                    - observe
+                    - calibrateThenWrite
+                    - write
+                    - frozen
+                    type: string
+                required:
+                - intent
+                type: object
             required:
             - targetRef
             type: object
@@ -958,9 +1225,78 @@ spec:
                 nullable: true
                 type: string
               effectiveDryRun:
-                description: 'The effective mode: `true` = SHADOW (observe + attest, never carve).'
+                description: |-
+                  The effective mode: `true` = SHADOW (observe + attest, never carve).
+
+                  **Kept for compatibility; superseded by [`BandStatus::effective_gate`],** which carries the same verdict plus the one thing a bare bool never could: *why*. Both are written every tick and can never disagree — this bool is literally `effective_gate.state == shadow`.
                 nullable: true
                 type: boolean
+              effectiveGate:
+                description: |-
+                  **The typed authorization verdict for the last tick** — shadow with a named reason, or live with a named witness.
+
+                  This is the field that answers, from the CR alone, the two questions `effectiveDryRun` could not: *why is this band held?* (an authored `observe`, or an accidental `NotReady`/`Stale`/`Conflict` — a distinction that mattered on camelot-eks, where six bands were shadowed by accident while every surface reported "dryRun") and *what authorizes this band to write?* A `witness` of `legacyDefault` means the write rests on a pre-2026-07 resolution path rather than an authored `spec.writeIntent` — i.e. migration debt, and the burn-down metric.
+                nullable: true
+                properties:
+                  authorizedBy:
+                    description: Who authorized it, when a human named themselves.
+                    nullable: true
+                    type: string
+                  heldSecs:
+                    description: Seconds of clean observation held so far (a pending or just-passed confirm window).
+                    format: int64
+                    nullable: true
+                    type: integer
+                  legacyPath:
+                    description: The pre-2026-07 resolution path, when this write rests on no authored `writeIntent`. **Non-empty here is the migration burn-down signal.**
+                    enum:
+                    - modeEffect
+                    - twoStateDryRun
+                    - confirmGate
+                    - operatorAnnotation
+                    nullable: true
+                    type: string
+                  needSecs:
+                    description: Seconds of clean observation required.
+                    format: int64
+                    nullable: true
+                    type: integer
+                  readySinceEpoch:
+                    description: When the target most recently became Ready, for a window that passed.
+                    format: int64
+                    nullable: true
+                    type: integer
+                  reason:
+                    description: Why it is held (shadow only). An authored `modeShadow`/`suspended` and an accidental `notReady`/`stale`/`conflict` are different answers.
+                    enum:
+                    - frozen
+                    - modeShadow
+                    - suspended
+                    - notReady
+                    - stale
+                    - conflict
+                    - intentMalformed
+                    - confirmPending
+                    nullable: true
+                    type: string
+                  state:
+                    description: '`shadow` | `live` — the headline.'
+                    enum:
+                    - shadow
+                    - live
+                    type: string
+                  witness:
+                    description: What authorizes it (live only).
+                    enum:
+                    - explicitIntent
+                    - confirmGatePassed
+                    - operatorAnnotation
+                    - legacyDefault
+                    nullable: true
+                    type: string
+                required:
+                - state
+                type: object
               effectivePolicy:
                 description: The DisruptionPolicy in effect for this band (`restartFreeOnly` / …).
                 nullable: true
@@ -1140,6 +1476,7 @@ spec:
                 type: string
               dryRun:
                 default: false
+                description: 'RETIRED 2026-06-19 (breathe@76924b0) — **this field has NO effect on this band kind.** The carve gate resolves `writeIntent` > `mode` > the compiled `shadowConfirmEffect` default; `dryRun` is not consulted, so a band authored `dryRun: true` scales replicas for real once its confirm window elapses. Kept as the record of an authored decision, never read. Authorization is `spec.writeIntent`; the verdict is `status.effectiveGate`.'
                 type: boolean
               floor:
                 default: 2
@@ -1283,6 +1620,31 @@ spec:
                     nullable: true
                     type: integer
                 type: object
+              writeIntent:
+                description: '**The authorization intent** — the first and highest link in the resolution chain, above `mode`. See `MemoryBandSpec::write_intent` for the four arms; `{intent: write}` requires naming an `authorizedBy`.'
+                nullable: true
+                properties:
+                  authorizedBy:
+                    description: '**Required for `write`** — who authorized going live, and ideally when and why. An empty or absent value on a `write` is rejected by [`Self::parse`]; an unattributed go-live is never granted.'
+                    nullable: true
+                    type: string
+                  confirmAfterSeconds:
+                    description: Only meaningful for `calibrateThenWrite`; defaults to 1800s.
+                    format: uint64
+                    minimum: 0.0
+                    nullable: true
+                    type: integer
+                  intent:
+                    description: '`observe` | `calibrateThenWrite` | `write` | `frozen`.'
+                    enum:
+                    - observe
+                    - calibrateThenWrite
+                    - write
+                    - frozen
+                    type: string
+                required:
+                - intent
+                type: object
             required:
             - metric
             - targetRef
@@ -1358,9 +1720,78 @@ spec:
                 nullable: true
                 type: string
               effectiveDryRun:
-                description: 'The effective mode: `true` = SHADOW (observe + attest, never carve).'
+                description: |-
+                  The effective mode: `true` = SHADOW (observe + attest, never carve).
+
+                  **Kept for compatibility; superseded by [`BandStatus::effective_gate`],** which carries the same verdict plus the one thing a bare bool never could: *why*. Both are written every tick and can never disagree — this bool is literally `effective_gate.state == shadow`.
                 nullable: true
                 type: boolean
+              effectiveGate:
+                description: |-
+                  **The typed authorization verdict for the last tick** — shadow with a named reason, or live with a named witness.
+
+                  This is the field that answers, from the CR alone, the two questions `effectiveDryRun` could not: *why is this band held?* (an authored `observe`, or an accidental `NotReady`/`Stale`/`Conflict` — a distinction that mattered on camelot-eks, where six bands were shadowed by accident while every surface reported "dryRun") and *what authorizes this band to write?* A `witness` of `legacyDefault` means the write rests on a pre-2026-07 resolution path rather than an authored `spec.writeIntent` — i.e. migration debt, and the burn-down metric.
+                nullable: true
+                properties:
+                  authorizedBy:
+                    description: Who authorized it, when a human named themselves.
+                    nullable: true
+                    type: string
+                  heldSecs:
+                    description: Seconds of clean observation held so far (a pending or just-passed confirm window).
+                    format: int64
+                    nullable: true
+                    type: integer
+                  legacyPath:
+                    description: The pre-2026-07 resolution path, when this write rests on no authored `writeIntent`. **Non-empty here is the migration burn-down signal.**
+                    enum:
+                    - modeEffect
+                    - twoStateDryRun
+                    - confirmGate
+                    - operatorAnnotation
+                    nullable: true
+                    type: string
+                  needSecs:
+                    description: Seconds of clean observation required.
+                    format: int64
+                    nullable: true
+                    type: integer
+                  readySinceEpoch:
+                    description: When the target most recently became Ready, for a window that passed.
+                    format: int64
+                    nullable: true
+                    type: integer
+                  reason:
+                    description: Why it is held (shadow only). An authored `modeShadow`/`suspended` and an accidental `notReady`/`stale`/`conflict` are different answers.
+                    enum:
+                    - frozen
+                    - modeShadow
+                    - suspended
+                    - notReady
+                    - stale
+                    - conflict
+                    - intentMalformed
+                    - confirmPending
+                    nullable: true
+                    type: string
+                  state:
+                    description: '`shadow` | `live` — the headline.'
+                    enum:
+                    - shadow
+                    - live
+                    type: string
+                  witness:
+                    description: What authorizes it (live only).
+                    enum:
+                    - explicitIntent
+                    - confirmGatePassed
+                    - operatorAnnotation
+                    - legacyDefault
+                    nullable: true
+                    type: string
+                required:
+                - state
+                type: object
               effectivePolicy:
                 description: The DisruptionPolicy in effect for this band (`restartFreeOnly` / …).
                 nullable: true
@@ -1505,6 +1936,12 @@ spec:
     - jsonPath: .status.phase
       name: Phase
       type: string
+    - jsonPath: .status.effectiveGate.state
+      name: Gate
+      type: string
+    - jsonPath: .status.effectiveGate.reason
+      name: Why
+      type: string
     - jsonPath: .status.conditions[?(@.type=='Ready')].status
       name: Ready
       type: string
@@ -1543,6 +1980,10 @@ spec:
                 type: string
               dryRun:
                 default: false
+                description: |-
+                  RETIRED 2026-06-19 (breathe@76924b0) — **this field has NO effect on this band kind.** It is not read by the carve gate; setting it to `true` does not hold the band in shadow, and a band with `dryRun: true` and no `mode` carves for real once its confirm window elapses.
+
+                  It is kept, not deleted, because it is the record of a decision an operator authored — but it decides nothing. Authorization is `spec.writeIntent`; the live verdict (and its reason or witness) is `status.effectiveGate`.
                 type: boolean
               floor:
                 default: 256Mi
@@ -1569,7 +2010,10 @@ spec:
                 nullable: true
                 type: integer
               mode:
-                description: 'The PROMOTION LIFECYCLE. Unset ⇒ resolved by `promotion_mode()` (legacy `dryRun:true` → Shadow, else the fleet default `ShadowConfirmEffect`). Set explicitly to pin the state: `shadow` | `effect` | `shadowConfirmEffect` | `suspended`.'
+                description: |-
+                  The RETIRED promotion lifecycle. Still read (below `writeIntent`), so an already-authored CR keeps working; new CRs should author `writeIntent` instead. Unset ⇒ the compiled fleet default `shadowConfirmEffect`.
+
+                  NOTE: unset does **not** mean "derived from `dryRun`" — that resolution was removed on 2026-06-19 (`76924b0`) and this description said otherwise until 2026-07-26. Values: `shadow` | `effect` | `shadowConfirmEffect` | `suspended`.
                 enum:
                 - shadow
                 - effect
@@ -1641,6 +2085,36 @@ spec:
                 format: uint64
                 minimum: 0.0
                 type: integer
+              writeIntent:
+                description: |-
+                  **The authorization intent — what this band is permitted to do and who says so.** The first and highest link in the resolution chain `writeIntent` > `mode` > the compiled `shadowConfirmEffect`.
+
+                  * `{intent: observe}` — decide, report, attest; never write. * `{intent: calibrateThenWrite, confirmAfterSeconds: 1800}` — shadow until a clean-observation window proves the band safe, then write. * `{intent: write, authorizedBy: "…"}` — write now. `authorizedBy` is REQUIRED: a CR that says "go live" and does not say who is rejected at parse time. * `{intent: frozen}` — never write, but keep observing.
+
+                  Unset ⇒ the retired `mode`/default chain decides, and `status.effectiveGate.witness` reports `legacyDefault` so an unauthored live band is visible as such.
+                nullable: true
+                properties:
+                  authorizedBy:
+                    description: '**Required for `write`** — who authorized going live, and ideally when and why. An empty or absent value on a `write` is rejected by [`Self::parse`]; an unattributed go-live is never granted.'
+                    nullable: true
+                    type: string
+                  confirmAfterSeconds:
+                    description: Only meaningful for `calibrateThenWrite`; defaults to 1800s.
+                    format: uint64
+                    minimum: 0.0
+                    nullable: true
+                    type: integer
+                  intent:
+                    description: '`observe` | `calibrateThenWrite` | `write` | `frozen`.'
+                    enum:
+                    - observe
+                    - calibrateThenWrite
+                    - write
+                    - frozen
+                    type: string
+                required:
+                - intent
+                type: object
             required:
             - targetRef
             type: object
@@ -1715,9 +2189,78 @@ spec:
                 nullable: true
                 type: string
               effectiveDryRun:
-                description: 'The effective mode: `true` = SHADOW (observe + attest, never carve).'
+                description: |-
+                  The effective mode: `true` = SHADOW (observe + attest, never carve).
+
+                  **Kept for compatibility; superseded by [`BandStatus::effective_gate`],** which carries the same verdict plus the one thing a bare bool never could: *why*. Both are written every tick and can never disagree — this bool is literally `effective_gate.state == shadow`.
                 nullable: true
                 type: boolean
+              effectiveGate:
+                description: |-
+                  **The typed authorization verdict for the last tick** — shadow with a named reason, or live with a named witness.
+
+                  This is the field that answers, from the CR alone, the two questions `effectiveDryRun` could not: *why is this band held?* (an authored `observe`, or an accidental `NotReady`/`Stale`/`Conflict` — a distinction that mattered on camelot-eks, where six bands were shadowed by accident while every surface reported "dryRun") and *what authorizes this band to write?* A `witness` of `legacyDefault` means the write rests on a pre-2026-07 resolution path rather than an authored `spec.writeIntent` — i.e. migration debt, and the burn-down metric.
+                nullable: true
+                properties:
+                  authorizedBy:
+                    description: Who authorized it, when a human named themselves.
+                    nullable: true
+                    type: string
+                  heldSecs:
+                    description: Seconds of clean observation held so far (a pending or just-passed confirm window).
+                    format: int64
+                    nullable: true
+                    type: integer
+                  legacyPath:
+                    description: The pre-2026-07 resolution path, when this write rests on no authored `writeIntent`. **Non-empty here is the migration burn-down signal.**
+                    enum:
+                    - modeEffect
+                    - twoStateDryRun
+                    - confirmGate
+                    - operatorAnnotation
+                    nullable: true
+                    type: string
+                  needSecs:
+                    description: Seconds of clean observation required.
+                    format: int64
+                    nullable: true
+                    type: integer
+                  readySinceEpoch:
+                    description: When the target most recently became Ready, for a window that passed.
+                    format: int64
+                    nullable: true
+                    type: integer
+                  reason:
+                    description: Why it is held (shadow only). An authored `modeShadow`/`suspended` and an accidental `notReady`/`stale`/`conflict` are different answers.
+                    enum:
+                    - frozen
+                    - modeShadow
+                    - suspended
+                    - notReady
+                    - stale
+                    - conflict
+                    - intentMalformed
+                    - confirmPending
+                    nullable: true
+                    type: string
+                  state:
+                    description: '`shadow` | `live` — the headline.'
+                    enum:
+                    - shadow
+                    - live
+                    type: string
+                  witness:
+                    description: What authorizes it (live only).
+                    enum:
+                    - explicitIntent
+                    - confirmGatePassed
+                    - operatorAnnotation
+                    - legacyDefault
+                    nullable: true
+                    type: string
+                required:
+                - state
+                type: object
               effectivePolicy:
                 description: The DisruptionPolicy in effect for this band (`restartFreeOnly` / …).
                 nullable: true
@@ -1862,6 +2405,12 @@ spec:
     - jsonPath: .status.phase
       name: Phase
       type: string
+    - jsonPath: .status.effectiveGate.state
+      name: Gate
+      type: string
+    - jsonPath: .status.effectiveGate.reason
+      name: Why
+      type: string
     - jsonPath: .status.conditions[?(@.type=='Ready')].status
       name: Ready
       type: string
@@ -1900,6 +2449,10 @@ spec:
                 type: string
               dryRun:
                 default: false
+                description: |-
+                  RETIRED 2026-06-19 (breathe@76924b0) — **this field has NO effect on this band kind.** It is not read by the carve gate; setting it to `true` does not hold the band in shadow, and a band with `dryRun: true` and no `mode` carves for real once its confirm window elapses.
+
+                  It is kept, not deleted, because it is the record of a decision an operator authored — but it decides nothing. Authorization is `spec.writeIntent`; the live verdict (and its reason or witness) is `status.effectiveGate`.
                 type: boolean
               floor:
                 default: 256Mi
@@ -1926,7 +2479,10 @@ spec:
                 nullable: true
                 type: integer
               mode:
-                description: 'The PROMOTION LIFECYCLE. Unset ⇒ resolved by `promotion_mode()` (legacy `dryRun:true` → Shadow, else the fleet default `ShadowConfirmEffect`). Set explicitly to pin the state: `shadow` | `effect` | `shadowConfirmEffect` | `suspended`.'
+                description: |-
+                  The RETIRED promotion lifecycle. Still read (below `writeIntent`), so an already-authored CR keeps working; new CRs should author `writeIntent` instead. Unset ⇒ the compiled fleet default `shadowConfirmEffect`.
+
+                  NOTE: unset does **not** mean "derived from `dryRun`" — that resolution was removed on 2026-06-19 (`76924b0`) and this description said otherwise until 2026-07-26. Values: `shadow` | `effect` | `shadowConfirmEffect` | `suspended`.
                 enum:
                 - shadow
                 - effect
@@ -1998,6 +2554,36 @@ spec:
                 format: uint64
                 minimum: 0.0
                 type: integer
+              writeIntent:
+                description: |-
+                  **The authorization intent — what this band is permitted to do and who says so.** The first and highest link in the resolution chain `writeIntent` > `mode` > the compiled `shadowConfirmEffect`.
+
+                  * `{intent: observe}` — decide, report, attest; never write. * `{intent: calibrateThenWrite, confirmAfterSeconds: 1800}` — shadow until a clean-observation window proves the band safe, then write. * `{intent: write, authorizedBy: "…"}` — write now. `authorizedBy` is REQUIRED: a CR that says "go live" and does not say who is rejected at parse time. * `{intent: frozen}` — never write, but keep observing.
+
+                  Unset ⇒ the retired `mode`/default chain decides, and `status.effectiveGate.witness` reports `legacyDefault` so an unauthored live band is visible as such.
+                nullable: true
+                properties:
+                  authorizedBy:
+                    description: '**Required for `write`** — who authorized going live, and ideally when and why. An empty or absent value on a `write` is rejected by [`Self::parse`]; an unattributed go-live is never granted.'
+                    nullable: true
+                    type: string
+                  confirmAfterSeconds:
+                    description: Only meaningful for `calibrateThenWrite`; defaults to 1800s.
+                    format: uint64
+                    minimum: 0.0
+                    nullable: true
+                    type: integer
+                  intent:
+                    description: '`observe` | `calibrateThenWrite` | `write` | `frozen`.'
+                    enum:
+                    - observe
+                    - calibrateThenWrite
+                    - write
+                    - frozen
+                    type: string
+                required:
+                - intent
+                type: object
             required:
             - targetRef
             type: object
@@ -2072,9 +2658,78 @@ spec:
                 nullable: true
                 type: string
               effectiveDryRun:
-                description: 'The effective mode: `true` = SHADOW (observe + attest, never carve).'
+                description: |-
+                  The effective mode: `true` = SHADOW (observe + attest, never carve).
+
+                  **Kept for compatibility; superseded by [`BandStatus::effective_gate`],** which carries the same verdict plus the one thing a bare bool never could: *why*. Both are written every tick and can never disagree — this bool is literally `effective_gate.state == shadow`.
                 nullable: true
                 type: boolean
+              effectiveGate:
+                description: |-
+                  **The typed authorization verdict for the last tick** — shadow with a named reason, or live with a named witness.
+
+                  This is the field that answers, from the CR alone, the two questions `effectiveDryRun` could not: *why is this band held?* (an authored `observe`, or an accidental `NotReady`/`Stale`/`Conflict` — a distinction that mattered on camelot-eks, where six bands were shadowed by accident while every surface reported "dryRun") and *what authorizes this band to write?* A `witness` of `legacyDefault` means the write rests on a pre-2026-07 resolution path rather than an authored `spec.writeIntent` — i.e. migration debt, and the burn-down metric.
+                nullable: true
+                properties:
+                  authorizedBy:
+                    description: Who authorized it, when a human named themselves.
+                    nullable: true
+                    type: string
+                  heldSecs:
+                    description: Seconds of clean observation held so far (a pending or just-passed confirm window).
+                    format: int64
+                    nullable: true
+                    type: integer
+                  legacyPath:
+                    description: The pre-2026-07 resolution path, when this write rests on no authored `writeIntent`. **Non-empty here is the migration burn-down signal.**
+                    enum:
+                    - modeEffect
+                    - twoStateDryRun
+                    - confirmGate
+                    - operatorAnnotation
+                    nullable: true
+                    type: string
+                  needSecs:
+                    description: Seconds of clean observation required.
+                    format: int64
+                    nullable: true
+                    type: integer
+                  readySinceEpoch:
+                    description: When the target most recently became Ready, for a window that passed.
+                    format: int64
+                    nullable: true
+                    type: integer
+                  reason:
+                    description: Why it is held (shadow only). An authored `modeShadow`/`suspended` and an accidental `notReady`/`stale`/`conflict` are different answers.
+                    enum:
+                    - frozen
+                    - modeShadow
+                    - suspended
+                    - notReady
+                    - stale
+                    - conflict
+                    - intentMalformed
+                    - confirmPending
+                    nullable: true
+                    type: string
+                  state:
+                    description: '`shadow` | `live` — the headline.'
+                    enum:
+                    - shadow
+                    - live
+                    type: string
+                  witness:
+                    description: What authorizes it (live only).
+                    enum:
+                    - explicitIntent
+                    - confirmGatePassed
+                    - operatorAnnotation
+                    - legacyDefault
+                    nullable: true
+                    type: string
+                required:
+                - state
+                type: object
               effectivePolicy:
                 description: The DisruptionPolicy in effect for this band (`restartFreeOnly` / …).
                 nullable: true
@@ -2219,6 +2874,12 @@ spec:
     - jsonPath: .status.phase
       name: Phase
       type: string
+    - jsonPath: .status.effectiveGate.state
+      name: Gate
+      type: string
+    - jsonPath: .status.effectiveGate.reason
+      name: Why
+      type: string
     - jsonPath: .status.conditions[?(@.type=='Ready')].status
       name: Ready
       type: string
@@ -2257,6 +2918,10 @@ spec:
                 type: string
               dryRun:
                 default: false
+                description: |-
+                  RETIRED 2026-06-19 (breathe@76924b0) — **this field has NO effect on this band kind.** It is not read by the carve gate; setting it to `true` does not hold the band in shadow, and a band with `dryRun: true` and no `mode` carves for real once its confirm window elapses.
+
+                  It is kept, not deleted, because it is the record of a decision an operator authored — but it decides nothing. Authorization is `spec.writeIntent`; the live verdict (and its reason or witness) is `status.effectiveGate`.
                 type: boolean
               floor:
                 default: 250m
@@ -2283,7 +2948,10 @@ spec:
                 nullable: true
                 type: integer
               mode:
-                description: 'The PROMOTION LIFECYCLE. Unset ⇒ resolved by `promotion_mode()` (legacy `dryRun:true` → Shadow, else the fleet default `ShadowConfirmEffect`). Set explicitly to pin the state: `shadow` | `effect` | `shadowConfirmEffect` | `suspended`.'
+                description: |-
+                  The RETIRED promotion lifecycle. Still read (below `writeIntent`), so an already-authored CR keeps working; new CRs should author `writeIntent` instead. Unset ⇒ the compiled fleet default `shadowConfirmEffect`.
+
+                  NOTE: unset does **not** mean "derived from `dryRun`" — that resolution was removed on 2026-06-19 (`76924b0`) and this description said otherwise until 2026-07-26. Values: `shadow` | `effect` | `shadowConfirmEffect` | `suspended`.
                 enum:
                 - shadow
                 - effect
@@ -2355,6 +3023,36 @@ spec:
                 format: uint64
                 minimum: 0.0
                 type: integer
+              writeIntent:
+                description: |-
+                  **The authorization intent — what this band is permitted to do and who says so.** The first and highest link in the resolution chain `writeIntent` > `mode` > the compiled `shadowConfirmEffect`.
+
+                  * `{intent: observe}` — decide, report, attest; never write. * `{intent: calibrateThenWrite, confirmAfterSeconds: 1800}` — shadow until a clean-observation window proves the band safe, then write. * `{intent: write, authorizedBy: "…"}` — write now. `authorizedBy` is REQUIRED: a CR that says "go live" and does not say who is rejected at parse time. * `{intent: frozen}` — never write, but keep observing.
+
+                  Unset ⇒ the retired `mode`/default chain decides, and `status.effectiveGate.witness` reports `legacyDefault` so an unauthored live band is visible as such.
+                nullable: true
+                properties:
+                  authorizedBy:
+                    description: '**Required for `write`** — who authorized going live, and ideally when and why. An empty or absent value on a `write` is rejected by [`Self::parse`]; an unattributed go-live is never granted.'
+                    nullable: true
+                    type: string
+                  confirmAfterSeconds:
+                    description: Only meaningful for `calibrateThenWrite`; defaults to 1800s.
+                    format: uint64
+                    minimum: 0.0
+                    nullable: true
+                    type: integer
+                  intent:
+                    description: '`observe` | `calibrateThenWrite` | `write` | `frozen`.'
+                    enum:
+                    - observe
+                    - calibrateThenWrite
+                    - write
+                    - frozen
+                    type: string
+                required:
+                - intent
+                type: object
             required:
             - targetRef
             type: object
@@ -2429,9 +3127,78 @@ spec:
                 nullable: true
                 type: string
               effectiveDryRun:
-                description: 'The effective mode: `true` = SHADOW (observe + attest, never carve).'
+                description: |-
+                  The effective mode: `true` = SHADOW (observe + attest, never carve).
+
+                  **Kept for compatibility; superseded by [`BandStatus::effective_gate`],** which carries the same verdict plus the one thing a bare bool never could: *why*. Both are written every tick and can never disagree — this bool is literally `effective_gate.state == shadow`.
                 nullable: true
                 type: boolean
+              effectiveGate:
+                description: |-
+                  **The typed authorization verdict for the last tick** — shadow with a named reason, or live with a named witness.
+
+                  This is the field that answers, from the CR alone, the two questions `effectiveDryRun` could not: *why is this band held?* (an authored `observe`, or an accidental `NotReady`/`Stale`/`Conflict` — a distinction that mattered on camelot-eks, where six bands were shadowed by accident while every surface reported "dryRun") and *what authorizes this band to write?* A `witness` of `legacyDefault` means the write rests on a pre-2026-07 resolution path rather than an authored `spec.writeIntent` — i.e. migration debt, and the burn-down metric.
+                nullable: true
+                properties:
+                  authorizedBy:
+                    description: Who authorized it, when a human named themselves.
+                    nullable: true
+                    type: string
+                  heldSecs:
+                    description: Seconds of clean observation held so far (a pending or just-passed confirm window).
+                    format: int64
+                    nullable: true
+                    type: integer
+                  legacyPath:
+                    description: The pre-2026-07 resolution path, when this write rests on no authored `writeIntent`. **Non-empty here is the migration burn-down signal.**
+                    enum:
+                    - modeEffect
+                    - twoStateDryRun
+                    - confirmGate
+                    - operatorAnnotation
+                    nullable: true
+                    type: string
+                  needSecs:
+                    description: Seconds of clean observation required.
+                    format: int64
+                    nullable: true
+                    type: integer
+                  readySinceEpoch:
+                    description: When the target most recently became Ready, for a window that passed.
+                    format: int64
+                    nullable: true
+                    type: integer
+                  reason:
+                    description: Why it is held (shadow only). An authored `modeShadow`/`suspended` and an accidental `notReady`/`stale`/`conflict` are different answers.
+                    enum:
+                    - frozen
+                    - modeShadow
+                    - suspended
+                    - notReady
+                    - stale
+                    - conflict
+                    - intentMalformed
+                    - confirmPending
+                    nullable: true
+                    type: string
+                  state:
+                    description: '`shadow` | `live` — the headline.'
+                    enum:
+                    - shadow
+                    - live
+                    type: string
+                  witness:
+                    description: What authorizes it (live only).
+                    enum:
+                    - explicitIntent
+                    - confirmGatePassed
+                    - operatorAnnotation
+                    - legacyDefault
+                    nullable: true
+                    type: string
+                required:
+                - state
+                type: object
               effectivePolicy:
                 description: The DisruptionPolicy in effect for this band (`restartFreeOnly` / …).
                 nullable: true
@@ -2607,6 +3374,7 @@ spec:
                 type: string
               dryRun:
                 default: false
+                description: 'SHADOW (two-state). **This kind is one of the only two that actually read `dryRun`**: `HostParamBand`/`KubeParamBand` override `promotion_mode()` with a pure `dryRun ? Shadow : Effect` reading and never auto-promote. (Every k8s / app / replica band kind ignores it — see their own field docs.) Superseded by `writeIntent`, which wins whenever it is authored.'
                 type: boolean
               floor:
                 default: 256Mi
@@ -2785,6 +3553,31 @@ spec:
                 - kind
                 - name
                 type: object
+              writeIntent:
+                description: '**The authorization intent** — supersedes `dryRun` on this kind. See `MemoryBandSpec::write_intent` for the four arms; `{intent: write}` requires naming an `authorizedBy`.'
+                nullable: true
+                properties:
+                  authorizedBy:
+                    description: '**Required for `write`** — who authorized going live, and ideally when and why. An empty or absent value on a `write` is rejected by [`Self::parse`]; an unattributed go-live is never granted.'
+                    nullable: true
+                    type: string
+                  confirmAfterSeconds:
+                    description: Only meaningful for `calibrateThenWrite`; defaults to 1800s.
+                    format: uint64
+                    minimum: 0.0
+                    nullable: true
+                    type: integer
+                  intent:
+                    description: '`observe` | `calibrateThenWrite` | `write` | `frozen`.'
+                    enum:
+                    - observe
+                    - calibrateThenWrite
+                    - write
+                    - frozen
+                    type: string
+                required:
+                - intent
+                type: object
             required:
             - knob
             - metric
@@ -2861,9 +3654,78 @@ spec:
                 nullable: true
                 type: string
               effectiveDryRun:
-                description: 'The effective mode: `true` = SHADOW (observe + attest, never carve).'
+                description: |-
+                  The effective mode: `true` = SHADOW (observe + attest, never carve).
+
+                  **Kept for compatibility; superseded by [`BandStatus::effective_gate`],** which carries the same verdict plus the one thing a bare bool never could: *why*. Both are written every tick and can never disagree — this bool is literally `effective_gate.state == shadow`.
                 nullable: true
                 type: boolean
+              effectiveGate:
+                description: |-
+                  **The typed authorization verdict for the last tick** — shadow with a named reason, or live with a named witness.
+
+                  This is the field that answers, from the CR alone, the two questions `effectiveDryRun` could not: *why is this band held?* (an authored `observe`, or an accidental `NotReady`/`Stale`/`Conflict` — a distinction that mattered on camelot-eks, where six bands were shadowed by accident while every surface reported "dryRun") and *what authorizes this band to write?* A `witness` of `legacyDefault` means the write rests on a pre-2026-07 resolution path rather than an authored `spec.writeIntent` — i.e. migration debt, and the burn-down metric.
+                nullable: true
+                properties:
+                  authorizedBy:
+                    description: Who authorized it, when a human named themselves.
+                    nullable: true
+                    type: string
+                  heldSecs:
+                    description: Seconds of clean observation held so far (a pending or just-passed confirm window).
+                    format: int64
+                    nullable: true
+                    type: integer
+                  legacyPath:
+                    description: The pre-2026-07 resolution path, when this write rests on no authored `writeIntent`. **Non-empty here is the migration burn-down signal.**
+                    enum:
+                    - modeEffect
+                    - twoStateDryRun
+                    - confirmGate
+                    - operatorAnnotation
+                    nullable: true
+                    type: string
+                  needSecs:
+                    description: Seconds of clean observation required.
+                    format: int64
+                    nullable: true
+                    type: integer
+                  readySinceEpoch:
+                    description: When the target most recently became Ready, for a window that passed.
+                    format: int64
+                    nullable: true
+                    type: integer
+                  reason:
+                    description: Why it is held (shadow only). An authored `modeShadow`/`suspended` and an accidental `notReady`/`stale`/`conflict` are different answers.
+                    enum:
+                    - frozen
+                    - modeShadow
+                    - suspended
+                    - notReady
+                    - stale
+                    - conflict
+                    - intentMalformed
+                    - confirmPending
+                    nullable: true
+                    type: string
+                  state:
+                    description: '`shadow` | `live` — the headline.'
+                    enum:
+                    - shadow
+                    - live
+                    type: string
+                  witness:
+                    description: What authorizes it (live only).
+                    enum:
+                    - explicitIntent
+                    - confirmGatePassed
+                    - operatorAnnotation
+                    - legacyDefault
+                    nullable: true
+                    type: string
+                required:
+                - state
+                type: object
               effectivePolicy:
                 description: The DisruptionPolicy in effect for this band (`restartFreeOnly` / …).
                 nullable: true
@@ -3036,6 +3898,7 @@ spec:
                 type: string
               dryRun:
                 default: false
+                description: 'SHADOW (two-state). **This kind is one of the only two that actually read `dryRun`**: `HostParamBand`/`KubeParamBand` override `promotion_mode()` with a pure `dryRun ? Shadow : Effect` reading and never auto-promote. (Every k8s / app / replica band kind ignores it — see their own field docs.) Superseded by `writeIntent`, which wins whenever it is authored.'
                 type: boolean
               floor:
                 default: 256Mi
@@ -3188,6 +4051,31 @@ spec:
                 - kind
                 - name
                 type: object
+              writeIntent:
+                description: '**The authorization intent** — supersedes `dryRun` on this kind. See `MemoryBandSpec::write_intent` for the four arms; `{intent: write}` requires naming an `authorizedBy`.'
+                nullable: true
+                properties:
+                  authorizedBy:
+                    description: '**Required for `write`** — who authorized going live, and ideally when and why. An empty or absent value on a `write` is rejected by [`Self::parse`]; an unattributed go-live is never granted.'
+                    nullable: true
+                    type: string
+                  confirmAfterSeconds:
+                    description: Only meaningful for `calibrateThenWrite`; defaults to 1800s.
+                    format: uint64
+                    minimum: 0.0
+                    nullable: true
+                    type: integer
+                  intent:
+                    description: '`observe` | `calibrateThenWrite` | `write` | `frozen`.'
+                    enum:
+                    - observe
+                    - calibrateThenWrite
+                    - write
+                    - frozen
+                    type: string
+                required:
+                - intent
+                type: object
             required:
             - layout
             - metric
@@ -3264,9 +4152,78 @@ spec:
                 nullable: true
                 type: string
               effectiveDryRun:
-                description: 'The effective mode: `true` = SHADOW (observe + attest, never carve).'
+                description: |-
+                  The effective mode: `true` = SHADOW (observe + attest, never carve).
+
+                  **Kept for compatibility; superseded by [`BandStatus::effective_gate`],** which carries the same verdict plus the one thing a bare bool never could: *why*. Both are written every tick and can never disagree — this bool is literally `effective_gate.state == shadow`.
                 nullable: true
                 type: boolean
+              effectiveGate:
+                description: |-
+                  **The typed authorization verdict for the last tick** — shadow with a named reason, or live with a named witness.
+
+                  This is the field that answers, from the CR alone, the two questions `effectiveDryRun` could not: *why is this band held?* (an authored `observe`, or an accidental `NotReady`/`Stale`/`Conflict` — a distinction that mattered on camelot-eks, where six bands were shadowed by accident while every surface reported "dryRun") and *what authorizes this band to write?* A `witness` of `legacyDefault` means the write rests on a pre-2026-07 resolution path rather than an authored `spec.writeIntent` — i.e. migration debt, and the burn-down metric.
+                nullable: true
+                properties:
+                  authorizedBy:
+                    description: Who authorized it, when a human named themselves.
+                    nullable: true
+                    type: string
+                  heldSecs:
+                    description: Seconds of clean observation held so far (a pending or just-passed confirm window).
+                    format: int64
+                    nullable: true
+                    type: integer
+                  legacyPath:
+                    description: The pre-2026-07 resolution path, when this write rests on no authored `writeIntent`. **Non-empty here is the migration burn-down signal.**
+                    enum:
+                    - modeEffect
+                    - twoStateDryRun
+                    - confirmGate
+                    - operatorAnnotation
+                    nullable: true
+                    type: string
+                  needSecs:
+                    description: Seconds of clean observation required.
+                    format: int64
+                    nullable: true
+                    type: integer
+                  readySinceEpoch:
+                    description: When the target most recently became Ready, for a window that passed.
+                    format: int64
+                    nullable: true
+                    type: integer
+                  reason:
+                    description: Why it is held (shadow only). An authored `modeShadow`/`suspended` and an accidental `notReady`/`stale`/`conflict` are different answers.
+                    enum:
+                    - frozen
+                    - modeShadow
+                    - suspended
+                    - notReady
+                    - stale
+                    - conflict
+                    - intentMalformed
+                    - confirmPending
+                    nullable: true
+                    type: string
+                  state:
+                    description: '`shadow` | `live` — the headline.'
+                    enum:
+                    - shadow
+                    - live
+                    type: string
+                  witness:
+                    description: What authorizes it (live only).
+                    enum:
+                    - explicitIntent
+                    - confirmGatePassed
+                    - operatorAnnotation
+                    - legacyDefault
+                    nullable: true
+                    type: string
+                required:
+                - state
+                type: object
               effectivePolicy:
                 description: The DisruptionPolicy in effect for this band (`restartFreeOnly` / …).
                 nullable: true
@@ -3439,6 +4396,10 @@ spec:
                 type: string
               dryRun:
                 default: false
+                description: |-
+                  RETIRED 2026-06-19 (breathe@76924b0) — **this field has NO effect on this band kind.** `AppBand` resolves through the compiled `shadowConfirmEffect` default and never consults `dryRun`, so a band authored `dryRun: true` writes for real once its confirm window elapses. Kept as the record of an authored decision, never read.
+
+                  Note `AppBand` carries no `mode` field either — so until `writeIntent` landed, **shadow was entirely unrepresentable on the app plane** (Redis maxmemory, connection pools). Authorization is `spec.writeIntent`; the live verdict is `status.effectiveGate`.
                 type: boolean
               floor:
                 default: 256Mi
@@ -3577,6 +4538,31 @@ spec:
                 - kind
                 - name
                 type: object
+              writeIntent:
+                description: '**The authorization intent** — on this kind, the ONLY way to hold the band in shadow. See `MemoryBandSpec::write_intent` for the four arms; `{intent: write}` requires naming an `authorizedBy`.'
+                nullable: true
+                properties:
+                  authorizedBy:
+                    description: '**Required for `write`** — who authorized going live, and ideally when and why. An empty or absent value on a `write` is rejected by [`Self::parse`]; an unattributed go-live is never granted.'
+                    nullable: true
+                    type: string
+                  confirmAfterSeconds:
+                    description: Only meaningful for `calibrateThenWrite`; defaults to 1800s.
+                    format: uint64
+                    minimum: 0.0
+                    nullable: true
+                    type: integer
+                  intent:
+                    description: '`observe` | `calibrateThenWrite` | `write` | `frozen`.'
+                    enum:
+                    - observe
+                    - calibrateThenWrite
+                    - write
+                    - frozen
+                    type: string
+                required:
+                - intent
+                type: object
             required:
             - layout
             - metric
@@ -3653,9 +4639,78 @@ spec:
                 nullable: true
                 type: string
               effectiveDryRun:
-                description: 'The effective mode: `true` = SHADOW (observe + attest, never carve).'
+                description: |-
+                  The effective mode: `true` = SHADOW (observe + attest, never carve).
+
+                  **Kept for compatibility; superseded by [`BandStatus::effective_gate`],** which carries the same verdict plus the one thing a bare bool never could: *why*. Both are written every tick and can never disagree — this bool is literally `effective_gate.state == shadow`.
                 nullable: true
                 type: boolean
+              effectiveGate:
+                description: |-
+                  **The typed authorization verdict for the last tick** — shadow with a named reason, or live with a named witness.
+
+                  This is the field that answers, from the CR alone, the two questions `effectiveDryRun` could not: *why is this band held?* (an authored `observe`, or an accidental `NotReady`/`Stale`/`Conflict` — a distinction that mattered on camelot-eks, where six bands were shadowed by accident while every surface reported "dryRun") and *what authorizes this band to write?* A `witness` of `legacyDefault` means the write rests on a pre-2026-07 resolution path rather than an authored `spec.writeIntent` — i.e. migration debt, and the burn-down metric.
+                nullable: true
+                properties:
+                  authorizedBy:
+                    description: Who authorized it, when a human named themselves.
+                    nullable: true
+                    type: string
+                  heldSecs:
+                    description: Seconds of clean observation held so far (a pending or just-passed confirm window).
+                    format: int64
+                    nullable: true
+                    type: integer
+                  legacyPath:
+                    description: The pre-2026-07 resolution path, when this write rests on no authored `writeIntent`. **Non-empty here is the migration burn-down signal.**
+                    enum:
+                    - modeEffect
+                    - twoStateDryRun
+                    - confirmGate
+                    - operatorAnnotation
+                    nullable: true
+                    type: string
+                  needSecs:
+                    description: Seconds of clean observation required.
+                    format: int64
+                    nullable: true
+                    type: integer
+                  readySinceEpoch:
+                    description: When the target most recently became Ready, for a window that passed.
+                    format: int64
+                    nullable: true
+                    type: integer
+                  reason:
+                    description: Why it is held (shadow only). An authored `modeShadow`/`suspended` and an accidental `notReady`/`stale`/`conflict` are different answers.
+                    enum:
+                    - frozen
+                    - modeShadow
+                    - suspended
+                    - notReady
+                    - stale
+                    - conflict
+                    - intentMalformed
+                    - confirmPending
+                    nullable: true
+                    type: string
+                  state:
+                    description: '`shadow` | `live` — the headline.'
+                    enum:
+                    - shadow
+                    - live
+                    type: string
+                  witness:
+                    description: What authorizes it (live only).
+                    enum:
+                    - explicitIntent
+                    - confirmGatePassed
+                    - operatorAnnotation
+                    - legacyDefault
+                    nullable: true
+                    type: string
+                required:
+                - state
+                type: object
               effectivePolicy:
                 description: The DisruptionPolicy in effect for this band (`restartFreeOnly` / …).
                 nullable: true
