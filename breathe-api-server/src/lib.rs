@@ -396,6 +396,7 @@ pub mod grpc {
             P::HostParam => Ok(DimensionId::HostParam),
             P::KubeParam => Ok(DimensionId::KubeParam),
             P::AppParam => Ok(DimensionId::AppParam),
+            P::Request => Ok(DimensionId::Request),
             P::Unspecified => Err(Status::invalid_argument("band kind unspecified")),
         }
     }
@@ -936,6 +937,7 @@ mod tests {
             (P::HostParam, DimensionId::HostParam),
             (P::KubeParam, DimensionId::KubeParam),
             (P::AppParam, DimensionId::AppParam),
+            (P::Request, DimensionId::Request),
         ] {
             assert_eq!(grpc::kind_of(p as i32).unwrap(), d);
         }
@@ -945,5 +947,19 @@ mod tests {
         assert_eq!(P::Storage as i32, 3);
         assert_eq!(P::Arc as i32, 4);
         assert_eq!(P::Cgroup as i32, 5);
+        // The eleventh kind took the next free number rather than reusing one.
+        assert_eq!(P::Request as i32, 11);
+    }
+
+    /// The wire enum must stay a BIJECTION with `DimensionId::ALL`. The loop
+    /// above proves every proto arm maps somewhere; this proves no dimension is
+    /// missing from the proto — the direction that actually goes wrong, and the
+    /// one that left five kinds unreachable over gRPC before.
+    #[test]
+    fn every_dimension_has_a_wire_number() {
+        for d in DimensionId::ALL {
+            let found = (1..=64).any(|n| grpc::kind_of(n).ok() == Some(d));
+            assert!(found, "dimension {d} has no BandKind wire number — add one, never renumber");
+        }
     }
 }

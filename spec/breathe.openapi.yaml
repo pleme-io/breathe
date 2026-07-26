@@ -196,13 +196,15 @@ components:
       type: string
       # ORDER MATCHES breathe_provider::DimensionId::ALL, pinned by
       # `openapi_spec_band_kinds_match_the_code`. Not alphabetical, not arbitrary.
-      enum: [memory, storage, cpu, replica, arc, cgroup, cgroup-cpu, host-param, kube-param, app-param]
+      enum: [memory, storage, cpu, replica, arc, cgroup, cgroup-cpu, host-param, kube-param, app-param, request]
       description: >-
         The dimension a band controls. memory/cpu/storage/replica are k8s-plane;
         arc/cgroup/cgroup-cpu/host-param are host-plane; kube-param and app-param
-        are generic CR / application-knob bands. Mirrors
-        breathe_provider::DimensionId, which is the one vocabulary every surface
-        dispatches on.
+        are generic CR / application-knob bands; request carves the RESERVATION
+        (resources.requests.<res>) and the QoS class it derives — the field
+        oom_score_adj and schedulability key on, where every other kind carves a
+        limit. Mirrors breathe_provider::DimensionId, which is the one vocabulary
+        every surface dispatches on.
     TargetRef:
       type: object
       required: [kind, name]

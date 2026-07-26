@@ -72,7 +72,19 @@ pub enum ResourceClass {
 /// Dimensions whose floor is a hard constraint (must be provisioned from the
 /// PEAK, never an average) and must therefore appear in the L2 never-swap sum.
 /// Exactly the `Hard` ∪ `HardDownSoftUp` rows; asserted against the catalog.
-pub const STATIC_FLOOR_DIMENSIONS: [DimensionId; 2] = [DimensionId::Memory, DimensionId::Storage];
+///
+/// **`Request` joined 2026-07-26.** A reservation under-set is an OOM-kill, so
+/// its floor is peak-derived exactly like memory's. If anything it has the
+/// stronger claim on a never-swap sum than a *limit* does: a limit may
+/// over-commit freely and often does, whereas a request is the scheduler's
+/// guaranteed share — the bytes that must genuinely be there.
+///
+/// Tier-honest note: **nothing outside this crate reads this constant today**
+/// (the L2 partition consumer is named in its doc but not yet wired), so adding
+/// a member here is a declaration for a future consumer, not a change in live
+/// behaviour. Said plainly so the entry is not mistaken for a shipped effect.
+pub const STATIC_FLOOR_DIMENSIONS: [DimensionId; 3] =
+    [DimensionId::Memory, DimensionId::Storage, DimensionId::Request];
 
 impl ResourceClass {
     /// True when this class needs a peak-derived static floor (not an anti-flap
@@ -266,6 +278,61 @@ pub const CATALOG: &[DimensionSpec] = &[
         upstream_mirror: Some("config files · redis/kafka/nats CONFIG · JMX MBeans · app admin RPC"),
         depends_on: &[],
     },
+    // ── THE RESERVATION dimension — the one that decides SURVIVAL ──
+    DimensionSpec {
+        id: DimensionId::Request,
+        name: "request",
+        authoring_keyword: "defdimension-request",
+        // M2Typed, NOT Working, and the distinction is the honest one: the typed
+        // border + the two-door algebra ship and are tested, while the carve law,
+        // the descriptor and the controller watcher do not exist. Claiming
+        // `Working` here would be exactly the claimed-but-uncarved shape the
+        // sibling `breathe-invariant` matrix exists to catch.
+        maturity: Maturity::M2Typed,
+        // BIDIRECTIONAL — the dimension's MECHANICAL truth, which is what this
+        // field means everywhere else in the catalog. k8s can lower a request
+        // (within its QoS class) and raise it again; nothing about the actuator
+        // is irreversible, so `GrowOnly` here would be a category error. The
+        // catalog invariant `grow_only_iff_hard_down_soft_up` states that
+        // precisely: the ONLY reason to mark a dimension GrowOnly is a physically
+        // irreversible down-cliff (a PVC that CSI cannot shrink). A request has
+        // no such cliff.
+        //
+        // The M0 grow-only POSTURE is real, and it is carried in the two places
+        // that can actually enforce it, at two different tiers:
+        //   * `reclaim_for(Request) = ObserveOnly` in the controller — the slack
+        //     is measured and reported every tick, never taken;
+        //   * `request::RequestShrinkEvidence` has NO constructor, so no shrink
+        //     code path exists to call in the first place.
+        // This is exactly `Memory`'s shape (catalogued Bidirectional, reclaim
+        // routed to ObserveOnly), and following it keeps `Directionality` meaning
+        // one consistent thing across all eleven rows instead of two.
+        directionality: Directionality::Bidirectional,
+        // HARD: under-RESERVING is an OOM-kill — instantaneous, lossy and
+        // controller-irreversible, exactly like `Memory`. Hence its presence in
+        // STATIC_FLOOR_DIMENSIONS: the floor must be provisioned from the peak,
+        // never from an average.
+        resource_class: ResourceClass::Hard,
+        // The reservation's suppressed demand is visible in the SAME primary path
+        // as memory's: a container's working set can climb above its request
+        // freely (a request is a scheduling reservation, not a cap), so the
+        // demonstrated peak already reveals true demand. Nothing throttles at the
+        // request, so there is no separate throttle signal to read — which is
+        // precisely why this is `WorkingSetExceedsSoftLimit` and not
+        // `CfsThrottling` even for the cpu resource: the cpu REQUEST is a share
+        // weight, and it is the cpu LIMIT that CFS caps.
+        suppressed_demand: SuppressedDemand::WorkingSetExceedsSoftLimit,
+        purpose: "hold the RESERVATION at the band by carving resources.requests.<res> — the field oom_score_adj, QoS class and schedulability all derive from, and the only lever that can save a workload whose limit is never binding (the sui-cache-pg 34-OOMKill receipt: 202.8Mi peak under a 1Gi limit, cgroup failcnt=0)",
+        upstream_mirror: Some("k8s pods/{name}/resize subresource · ComputePodQOS"),
+        // Replica: a request's real cost is per-pod × replicas, so the
+        // allocatable-headroom admission cannot be computed without the count.
+        // Memory: the two write adjacent fields of one container and interact —
+        // breathe-core overrides `BandConfig.request_floor_bytes` with the live
+        // observed request whenever the live one is larger, so a rising request
+        // raises the memory band's own floor. That edge is declared here so the
+        // coupling is visible in the DAG rather than discovered as a ratchet.
+        depends_on: &[DimensionId::Replica, DimensionId::Memory],
+    },
 ];
 
 /// All dimension ids the substrate knows (the partition the catalog must cover).
@@ -275,7 +342,7 @@ pub const CATALOG: &[DimensionSpec] = &[
 /// exactly [`DimensionId::ALL`], whose totality the compiler guards via
 /// `DimensionId::index`. Callers keep the familiar spelling; there is only one
 /// list.
-pub const ALL_DIMENSIONS: [DimensionId; 10] = DimensionId::ALL;
+pub const ALL_DIMENSIONS: [DimensionId; 11] = DimensionId::ALL;
 
 /// Look up a dimension's row.
 #[must_use]

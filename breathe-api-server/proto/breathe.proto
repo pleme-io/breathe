@@ -13,8 +13,8 @@ message Band {
   BandStatus status = 5;
 }
 
-// The ten shipped band dimensions. Numbers 1-5 are FROZEN at their original
-// values: this enum previously stopped at CGROUP while five kinds shipped, so 6-10
+// The eleven shipped band dimensions. Numbers 1-5 are FROZEN at their original
+// values: this enum previously stopped at CGROUP while five kinds shipped, so 6-11
 // are purely additive and every existing client keeps working. Never reuse or
 // renumber an existing value.
 enum BandKind {
@@ -29,6 +29,9 @@ enum BandKind {
   BAND_KIND_HOST_PARAM = 8;
   BAND_KIND_KUBE_PARAM = 9;
   BAND_KIND_APP_PARAM = 10;
+  // The RESERVATION dimension (resources.requests.<res> + the QoS class it
+  // derives). Next free number; purely additive, nothing renumbered.
+  BAND_KIND_REQUEST = 11;
 }
 
 message BandSpec {

@@ -39,6 +39,15 @@ members = [
   # its follow-up ("fold into the breathe workspace members ... once the
   # concurrent band-crate work lands") — this IS that band-crate work.
   "crates/breathe-spread", # the ARCH × AUCTION × SPOT config-spread lock (Lane/AuctionSpread) — renamed from breathe-auction, see its Cargo.toml header
+  # The BREATHABILITY variant/invariant CONTRACT — the doctrine's typed lock
+  # (six-clause invariant + dimension catalog + the isolation SEAL). Folded in
+  # 2026-07-26, the follow-up its own header named: `breathe-provider`'s Request
+  # dimension consumes `isolation::{QosClass, WorkloadClass}`, and a path dep
+  # onto a nested `[workspace]` root is a cargo hard error. The payoff beyond
+  # the dep: `no_dimension_claimed_but_uncarved` — the gate that catches exactly
+  # the claimed-but-uncarved class this dimension closes — now runs in breathe
+  # CI instead of being invisible to it.
+  "crates/breathe-invariant",
 ]
 
 [workspace.package]

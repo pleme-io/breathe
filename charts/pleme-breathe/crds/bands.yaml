@@ -4919,6 +4919,534 @@ spec:
 apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
+  name: requestbands.breathe.pleme.io
+spec:
+  group: breathe.pleme.io
+  names:
+    categories:
+    - breathe
+    kind: RequestBand
+    plural: requestbands
+    shortNames:
+    - rqband
+    singular: requestband
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.targetRef.name
+      name: Target
+      type: string
+    - jsonPath: .spec.resource
+      name: Resource
+      type: string
+    - jsonPath: .spec.workloadClass
+      name: Class
+      type: string
+    - jsonPath: .spec.qosTarget
+      name: QoSTarget
+      type: string
+    - jsonPath: .spec.durability
+      name: Durability
+      type: string
+    - jsonPath: .status.lastUtil
+      name: Util
+      type: string
+    - jsonPath: .status.lastDecision
+      name: Last
+      type: string
+    - jsonPath: .status.phase
+      name: Phase
+      type: string
+    - jsonPath: .status.effectiveGate.state
+      name: Gate
+      type: string
+    - jsonPath: .status.effectiveGate.reason
+      name: Why
+      type: string
+    name: v1
+    schema:
+      openAPIV3Schema:
+        description: Auto-generated derived type for RequestBandSpec via `CustomResource`
+        properties:
+          spec:
+            description: |-
+              **The RESERVATION band — `resources.requests.<res>` and the QoS class it derives.**
+
+              # What this kind does that no other kind can
+
+              Every other band carves a LIMIT, which bounds blast radius. This one carves the REQUEST, which decides survival: `oom_score_adj` is computed from the request, QoS class is a pure function of requests-vs-limits, and schedulability keys on requests. A workload can be OOM-killed repeatedly while its limit is never once binding — `sui-cache-pg` took 34 OOMKills at a 202.8Mi high-water under a 1Gi limit with cgroup `failcnt = 0`.
+
+              # What it deliberately does NOT do
+
+              It never performs a QoS **class transition** in place. Kubernetes refuses one unconditionally (`ValidatePodResize`, release-1.33 `validation.go:5665` — "Pod QOS Class may not change as a result of resizing"), so a class change is a template edit and therefore a git commit. `spec.qosTarget` declares the desired class; a gap between it and the observed class produces a proposal for the durable door, never an in-place write. The two actuations carry disjoint payload types through disjoint traits (`breathe_provider::request`), so routing one through the other is a compile error rather than a runtime check.
+
+              # Status, and what is honestly missing from it
+
+              This kind reuses [`BandStatus`] verbatim. The request-specific projection an operator will eventually want — `qosObserved`, the typed `qosGap`, a `pendingProposal` — is **not** on the status yet, on purpose: nothing writes it at this stage, and a status field with no writer is precisely the claimed-but-not-real shape this whole dimension exists to end. The types (`QosGap`, `ClassTransitionBlocked`) ship in `breathe-provider` ready for the controller pass that fills them.
+            properties:
+              boundIntroduction:
+                description: |-
+                  May breathe create a request on a target whose author declared none? Default `forbidden`.
+
+                  This is the BestEffort case, and it is load-bearing: a BestEffort pod is the one most in danger AND the one a bound-introduction would change most (it moves the pod's QoS class, which cannot be done in place at all). So the default refuses, and the honest path for a BestEffort target is a declared `qosTarget` plus a durable writer — not a silently-seeded request.
+                enum:
+                - forbidden
+                - allowed
+                nullable: true
+                type: string
+              ceiling:
+                description: Advisory upper bound. **NOT the binding ceiling** — that is always the LIVE limit, because k8s rejects `request > limit` at admission and a band's declared ceiling is capacity policy, not the value the apiserver measures against. Enforced by `RequestTarget::new`, which has no arm above the live limit.
+                type: string
+              confirmAfterSeconds:
+                default: 1800
+                format: uint64
+                minimum: 0.0
+                type: integer
+              cooldownSeconds:
+                format: uint64
+                minimum: 0.0
+                nullable: true
+                type: integer
+              demand:
+                description: The demand statistic. Unset ⇒ the posture's, else the compiled default.
+                nullable: true
+                properties:
+                  headroom:
+                    default: 0.15
+                    description: |-
+                      Fractional headroom above the quantile, `≥ 0`. Default 0.15.
+
+                      Note this is a MULTIPLIER near 1.0 (`target = raw × (1 + headroom)`), not the limit law's `1/setpoint` divisor near 1.25 — the two carve different quantities toward different goals and must not share a constant.
+                    format: double
+                    type: number
+                  quantile:
+                    default: 0.95
+                    description: The quantile of observed usage the reservation tracks, `∈ (0,1)`. Default 0.95 — a stable high-water, not the peak.
+                    format: double
+                    type: number
+                  window:
+                    default: 7d
+                    description: 'The trailing window the quantile is taken over, as a PromQL duration (`7d`). Long by design: a reservation should reflect a duty cycle, not an afternoon.'
+                    type: string
+                type: object
+              disruptionPolicy:
+                description: The FLAG that makes "without restart" controllable + explicit. Set per band / per node; the actuator refuses any action whose [`DisruptionClass`] the policy does not permit (returning a typed deferral, never a silent roll). The default is the cautious one — never restart a workload unless explicitly allowed.
+                enum:
+                - restartFreeOnly
+                - allowConditional
+                - allowRestart
+                nullable: true
+                type: string
+              dryRun:
+                default: false
+                description: |-
+                  RETIRED 2026-06-19 (breathe@76924b0) — **this field has NO effect on this band kind.** It is not read by the carve gate; setting it to `true` does not hold the band in shadow, and a band with `dryRun: true` and no `mode` carves for real once its confirm window elapses.
+
+                  It is kept, not deleted, because it is the record of a decision an operator authored — but it decides nothing. Authorization is `spec.writeIntent`; the live verdict (and its reason or witness) is `status.effectiveGate`.
+                type: boolean
+              durability:
+                default: committed
+                description: Where a converged value must land. Defaults to `committed`.
+                enum:
+                - ephemeral
+                - committed
+                type: string
+              floor:
+                description: Advisory lower bound in the band's unit (`256Mi` / `250m`).
+                type: string
+              forceLimit:
+                nullable: true
+                type: string
+              forceLimitExpiry:
+                nullable: true
+                type: string
+              growAbove:
+                format: double
+                nullable: true
+                type: number
+              growFactor:
+                format: double
+                nullable: true
+                type: number
+              maxStalenessSeconds:
+                format: uint64
+                minimum: 0.0
+                nullable: true
+                type: integer
+              mode:
+                description: 'The RETIRED promotion lifecycle. Still read (below `writeIntent`), so an already-authored CR keeps working; new CRs should author `writeIntent` instead. Unset ⇒ the compiled fleet default `shadowConfirmEffect` — it does **not** mean "derived from `dryRun`". Values: `shadow` | `effect` | `shadowConfirmEffect` | `suspended`.'
+                enum:
+                - shadow
+                - effect
+                - shadowConfirmEffect
+                - suspended
+                nullable: true
+                type: string
+              peakDecay:
+                default: 0.98
+                format: double
+                type: number
+              postureRef:
+                description: The named [`BreathePosture`] this band's unset behavioral fields fall back to — including the request-policy fields (`workloadClass`, `qosTarget`, `demand`) added for this kind.
+                nullable: true
+                type: string
+              qosTarget:
+                description: |-
+                  The DESIRED QoS class. Unset ⇒ the posture's `qosTarget`, else the resolved `workloadClass`'s default.
+
+                  **Note the order, because it is a safety property and it is not the order people guess.** The fold is PER FIELD: an explicit posture `qosTarget` outranks a class-DERIVED default, so setting `workloadClass: batch` on a band does NOT quietly downgrade a workload the posture pinned to `guaranteed`. To weaken a pinned seal you must say `qosTarget` explicitly on the band — out loud, where a reviewer sees it. The other reading would let a band author strip a seal as a side effect of naming a class, which is the victoria-logs-422 shape arriving by a new route.
+
+                  A gap between this and the observed class is reported and, when a durable writer exists, proposed as a manifest edit. It is **never** actuated in place — see the type doc.
+                enum:
+                - guaranteed
+                - burstable
+                - best-effort
+                nullable: true
+                type: string
+              resource:
+                description: Which resource's request to carve. REQUIRED — there is no sensible default, and guessing between the OOM lever and the scheduling lever is exactly the ambiguity this dimension exists to remove.
+                enum:
+                - memory
+                - cpu
+                type: string
+              setpoint:
+                format: double
+                nullable: true
+                type: number
+              shrinkBelow:
+                format: double
+                nullable: true
+                type: number
+              shrinkFactor:
+                format: double
+                nullable: true
+                type: number
+              suspend:
+                type: boolean
+              targetRef:
+                description: The workload owner whose limit a band controls. For CNPG the kind is `Cluster` (the patched field lives on the `Cluster` CR); for storage the kind is `PersistentVolumeClaim`.
+                properties:
+                  apiVersion:
+                    nullable: true
+                    type: string
+                  container:
+                    nullable: true
+                    type: string
+                  kind:
+                    type: string
+                  name:
+                    type: string
+                  podSelector:
+                    description: When set, breathe resolves the band's pods DIRECTLY by this k8s label selector (`k=v,k2=v2`) instead of via an owner's `spec.selector.matchLabels`. The path for **ephemeral / owner-less pod groups** whose name is not stable and which have no single resolvable workload owner — GitHub ARC `EphemeralRunner`s (`actions.github.com/scale-set-name=<set>`), bare pods, Job pods. A selector ALWAYS carves in-place (`PodResize`, zero restart) within `targetRef`'s namespace; `name` then serves only as the metrics pod-name prefix + the human label. Omit it for Deployment/StatefulSet/CNPG owners.
+                    nullable: true
+                    type: string
+                required:
+                - kind
+                - name
+                type: object
+              warmupSeconds:
+                default: 600
+                format: uint64
+                minimum: 0.0
+                type: integer
+              workloadClass:
+                description: The workload's criticality class. Unset ⇒ the posture's, else `standard`.
+                enum:
+                - critical
+                - standard
+                - batch
+                - noisy
+                nullable: true
+                type: string
+              writeIntent:
+                description: |-
+                  **The authorization intent** — the first and highest link in the resolution chain `writeIntent` > `mode` > the compiled `shadowConfirmEffect`.
+
+                  * `{intent: observe}` — decide, report, attest; never write. * `{intent: calibrateThenWrite, confirmAfterSeconds: 1800}` — shadow until a clean-observation window proves the band safe, then write. * `{intent: write, authorizedBy: "…"}` — write now. * `{intent: frozen}` — never write, but keep observing.
+
+                  `authorizedBy` is REQUIRED on `write`: an `{intent: write}` naming no `authorizedBy` never goes live: it is held in shadow as `intentMalformed`. NOTE the tier — that is a runtime mitigation, not an apiserver rejection: a k8s structural schema cannot express "this property is required only when another property has this value", so the API accepts the object and the controller refuses to act on it.
+                nullable: true
+                properties:
+                  authorizedBy:
+                    description: '**Required for `write`** — who authorized going live, and ideally when and why. An empty or absent value on a `write` is rejected by [`Self::parse`]; an unattributed go-live is never granted.'
+                    nullable: true
+                    type: string
+                  confirmAfterSeconds:
+                    description: Only meaningful for `calibrateThenWrite`; defaults to 1800s.
+                    format: uint64
+                    minimum: 0.0
+                    nullable: true
+                    type: integer
+                  intent:
+                    description: '`observe` | `calibrateThenWrite` | `write` | `frozen`.'
+                    enum:
+                    - observe
+                    - calibrateThenWrite
+                    - write
+                    - frozen
+                    type: string
+                required:
+                - intent
+                type: object
+            required:
+            - resource
+            - targetRef
+            type: object
+          status:
+            description: |-
+              The per-cycle typed status receipt — shared across all band kinds.
+
+              Derives `PartialEq` so the controller can diff a freshly-computed status against the CR's current live status and skip the `patch_status` write entirely when they're byte-identical (task #220) — every field here is itself `PartialEq` (`Condition`/`TrendSample` included), so the derive is a real structural comparison, not a stand-in.
+            nullable: true
+            properties:
+              carvesTotal:
+                description: Cumulative count of carves (Applied) over this controller's lifetime.
+                format: int64
+                nullable: true
+                type: integer
+              conditions:
+                description: Standard conditions (Ready / Converged / Throttled / Stale / Conflict).
+                items:
+                  description: A standard k8s `metav1.Condition` (schemars-derivable — k8s_openapi's own `Condition` is not `JsonSchema`). Enables `kubectl wait --for=condition=…` and Flux/Argo health assessment off breathe bands.
+                  properties:
+                    lastTransitionTime:
+                      description: RFC3339 time the condition last flipped status (stable while status holds).
+                      type: string
+                    message:
+                      description: Human-readable message.
+                      type: string
+                    observedGeneration:
+                      description: The `metadata.generation` the controller observed when setting this.
+                      format: int64
+                      nullable: true
+                      type: integer
+                    reason:
+                      description: Machine-readable PascalCase reason.
+                      type: string
+                    status:
+                      description: '`True` | `False` | `Unknown`.'
+                      type: string
+                    type:
+                      description: Condition type, e.g. `Ready` / `Converged` / `Throttled` / `Stale` / `Conflict`.
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+              conflictManager:
+                nullable: true
+                type: string
+              conflictsTotal:
+                description: Cumulative count of single-writer conflicts (yielded to another manager).
+                format: int64
+                nullable: true
+                type: integer
+              cooldownRemainingSeconds:
+                description: Seconds remaining in the post-carve cooldown (0 = ready to carve).
+                format: int64
+                nullable: true
+                type: integer
+              currentLimit:
+                nullable: true
+                type: string
+              deferralsTotal:
+                description: Cumulative count of deferred ceiling crossings (policy refused a restart).
+                format: int64
+                nullable: true
+                type: integer
+              edgeTier:
+                description: Where the last tick sat on the golden/ceiling line (`GoldenPreserving` / `CeilingCrossing`) — the K4 continuity evidence, surfaced.
+                nullable: true
+                type: string
+              effectiveDryRun:
+                description: |-
+                  The effective mode: `true` = SHADOW (observe + attest, never carve).
+
+                  **Kept for compatibility; superseded by [`BandStatus::effective_gate`],** which carries the same verdict plus the one thing a bare bool never could: *why*. Both are written every tick and can never disagree — this bool is literally `effective_gate.state == shadow`.
+                nullable: true
+                type: boolean
+              effectiveGate:
+                description: |-
+                  **The typed authorization verdict for the last tick** — shadow with a named reason, or live with a named witness.
+
+                  This is the field that answers, from the CR alone, the two questions `effectiveDryRun` could not: *why is this band held?* (an authored `observe`, or an accidental `NotReady`/`Stale`/`Conflict` — a distinction that mattered on camelot-eks, where six bands were shadowed by accident while every surface reported "dryRun") and *what authorizes this band to write?* A `witness` of `legacyDefault` means the write rests on a pre-2026-07 resolution path rather than an authored `spec.writeIntent` — i.e. migration debt, and the burn-down metric.
+                nullable: true
+                properties:
+                  authorizedBy:
+                    description: Who authorized it, when a human named themselves.
+                    nullable: true
+                    type: string
+                  heldSecs:
+                    description: Seconds of clean observation held so far (a pending or just-passed confirm window).
+                    format: int64
+                    nullable: true
+                    type: integer
+                  legacyPath:
+                    description: The pre-2026-07 resolution path, when this write rests on no authored `writeIntent`. **Non-empty here is the migration burn-down signal.**
+                    enum:
+                    - modeEffect
+                    - twoStateDryRun
+                    - confirmGate
+                    - operatorAnnotation
+                    nullable: true
+                    type: string
+                  needSecs:
+                    description: Seconds of clean observation required.
+                    format: int64
+                    nullable: true
+                    type: integer
+                  readySinceEpoch:
+                    description: When the target most recently became Ready, for a window that passed.
+                    format: int64
+                    nullable: true
+                    type: integer
+                  reason:
+                    description: Why it is held (shadow only). An authored `modeShadow`/`suspended` and an accidental `notReady`/`stale`/`conflict` are different answers.
+                    enum:
+                    - frozen
+                    - modeShadow
+                    - suspended
+                    - notReady
+                    - stale
+                    - conflict
+                    - intentMalformed
+                    - confirmPending
+                    nullable: true
+                    type: string
+                  state:
+                    description: '`shadow` | `live` — the headline.'
+                    enum:
+                    - shadow
+                    - live
+                    type: string
+                  witness:
+                    description: What authorizes it (live only).
+                    enum:
+                    - explicitIntent
+                    - confirmGatePassed
+                    - operatorAnnotation
+                    - legacyDefault
+                    nullable: true
+                    type: string
+                required:
+                - state
+                type: object
+              effectivePolicy:
+                description: The DisruptionPolicy in effect for this band (`restartFreeOnly` / …).
+                nullable: true
+                type: string
+              freshnessSeconds:
+                description: Age of the driving metric sample, in seconds (the freshness gate input).
+                format: int64
+                nullable: true
+                type: integer
+              health:
+                description: Cross-dimension health rollup, derived purely from `conditions` (no new per-band state) — `"Healthy"` | `"Stuck"` | `"Unsupported"`. See `breathe_runtime::health_verdict`. Generalizes the storage-only `Supported=False` terminal into a single normalized signal every band kind carries, so a reactive consumer (NATS/escuta, a dashboard, an operator) never has to interpret `phase` strings per-dimension to answer "is this band OK right now".
+                nullable: true
+                type: string
+              history:
+                description: The recent TRAJECTORY (over-time view as a k8s object) — appended on a carve or a phase change, capped to the last N samples.
+                items:
+                  description: A point in a band's recent trajectory — the OVER-TIME view as a k8s object (no Grafana needed). Appended on a carve or a phase change, capped to the last N, so `kubectl get <band> -o yaml` shows how the adjustments have been going inline.
+                  properties:
+                    decision:
+                      description: The decision that produced this sample (carve / transition).
+                      nullable: true
+                      type: string
+                    limit:
+                      description: The limit at this point.
+                      format: int64
+                      nullable: true
+                      type: integer
+                    phase:
+                      description: The phase at this point.
+                      type: string
+                    time:
+                      description: RFC3339 time of this sample.
+                      type: string
+                    util:
+                      description: Observed utilization ratio at this point.
+                      format: double
+                      nullable: true
+                      type: number
+                  required:
+                  - phase
+                  - time
+                  type: object
+                type: array
+              lastActionClass:
+                description: The restart cost of the last carve/decision (`RestartFree` / `RestartConditional` / `RestartRequiring`) — the per-tick attestation evidence, now typed in status.
+                nullable: true
+                type: string
+              lastChangeEpoch:
+                format: int64
+                nullable: true
+                type: integer
+              lastDecision:
+                nullable: true
+                type: string
+              lastUtil:
+                nullable: true
+                type: string
+              observedCapacity:
+                description: The observed `capacity` (the current limit the util is measured against).
+                format: int64
+                nullable: true
+                type: integer
+              observedCostRemainingCents:
+                description: Cost remaining (cents) under the namespace's `Densa` envelope SLA; negative ⇒ over budget. Read from the namespace `Densa`'s status — the Dev-Loop cost-guard surfaced on the band, so `kubectl get <band>` shows the env's budget headroom. Read-only (breathe never writes the Densa from a band).
+                format: int64
+                nullable: true
+                type: integer
+              observedEnvId:
+                description: The `EphemeralEnvId` of the band's namespace, if it carries one (the ephemeral-env binding) — read from the namespace label, never written.
+                nullable: true
+                type: string
+              observedGeneration:
+                description: '`metadata.generation` the controller last reconciled — the "controller has seen my latest spec edit" signal.'
+                format: int64
+                nullable: true
+                type: integer
+              observedPeakUsed:
+                description: 'The trailing-window PEAK working set (max RSS, with slow decay) — the never-OOM shrink floor is keyed on THIS, not the instantaneous `observed_used` (the authentik-Celery-worker OOM fix). Carried across ticks: each tick folds the current `used` into the prior peak via `breathe_control::update_peak`, so a recently-demonstrated spike holds the floor up for a meaningful window.'
+                format: int64
+                nullable: true
+                type: integer
+              observedUsed:
+                description: The observed `used` scalar (bytes for memory/arc/cgroup; millicores for cpu).
+                format: int64
+                nullable: true
+                type: integer
+              observedUtil:
+                description: The observed utilization that drove this tick, as a ratio (`used/capacity`).
+                format: double
+                nullable: true
+                type: number
+              phase:
+                nullable: true
+                type: string
+              warmupStartEpoch:
+                description: The epoch (unix secs) the band's WARMUP window started — the last observed (re)start of the target, or the band's first successful observation. The reconcile layer derives `observed_for_secs = now - warmup_start_epoch` to drive the warmup gate (a shrink is held until this exceeds `warmup_seconds`). Reset to `now` whenever a target restart is detected (the live limit dropped back to the template default / the observed capacity collapsed), so a fresh boot spike is always observed before any carve resumes. `None` until first observed.
+                format: int64
+                nullable: true
+                type: integer
+            type: object
+        required:
+        - spec
+        title: RequestBand
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
   name: breathenodepools.breathe.pleme.io
 spec:
   group: breathe.pleme.io
@@ -5050,6 +5578,28 @@ spec:
                 format: uint32
                 minimum: 0.0
                 type: integer
+              demand:
+                description: The demand statistic a reservation tracks. `None` ⇒ the compiled default (p95 over 7d, +15%).
+                nullable: true
+                properties:
+                  headroom:
+                    default: 0.15
+                    description: |-
+                      Fractional headroom above the quantile, `≥ 0`. Default 0.15.
+
+                      Note this is a MULTIPLIER near 1.0 (`target = raw × (1 + headroom)`), not the limit law's `1/setpoint` divisor near 1.25 — the two carve different quantities toward different goals and must not share a constant.
+                    format: double
+                    type: number
+                  quantile:
+                    default: 0.95
+                    description: The quantile of observed usage the reservation tracks, `∈ (0,1)`. Default 0.95 — a stable high-water, not the peak.
+                    format: double
+                    type: number
+                  window:
+                    default: 7d
+                    description: 'The trailing window the quantile is taken over, as a PromQL duration (`7d`). Long by design: a reservation should reflect a duty cycle, not an afternoon.'
+                    type: string
+                type: object
               description:
                 description: Human-readable rationale for this class — carries the "why" WITH the tuple instead of it living only in a copy-pasted CR's comment (or, as found live, only in a since-retired sibling file's history).
                 nullable: true
@@ -5071,6 +5621,14 @@ spec:
                 format: uint32
                 minimum: 0.0
                 type: integer
+              qosTarget:
+                description: The desired QoS class. `None` ⇒ the resolved `workloadClass`'s default (`critical → guaranteed`, `standard|noisy → burstable`, `batch → best-effort`) — delegated to `WorkloadClass::default_qos` upstream, never re-decided here.
+                enum:
+                - guaranteed
+                - burstable
+                - best-effort
+                nullable: true
+                type: string
               setpoint:
                 format: double
                 type: number
@@ -5080,6 +5638,15 @@ spec:
               shrinkFactor:
                 format: double
                 type: number
+              workloadClass:
+                description: The criticality class bands referencing this posture inherit. `None` ⇒ this posture carries no request policy; a band falls through to its own value, then to `standard`.
+                enum:
+                - critical
+                - standard
+                - batch
+                - noisy
+                nullable: true
+                type: string
             required:
             - cooldownSeconds
             - disruptionPolicy

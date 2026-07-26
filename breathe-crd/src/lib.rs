@@ -2249,6 +2249,559 @@ impl crate::Band for ReplicaBand {
     }
 }
 
+// ───────────── RequestBand — the RESERVATION band (requests + QoS) ─────────────
+//
+// Hand-rolled rather than `band_kind!`-stamped for the same reason
+// HostParamBand/KubeParamBand are: it carries EXTRA spec fields the macro's
+// fixed shape cannot express (`resource`, `demand`, `workloadClass`,
+// `qosTarget`, `durability`), and its unit is a FUNCTION of `resource` rather
+// than a constant baked into the macro call.
+//
+// ── The mirror pattern, and why it is not duplication ──
+//
+// `QosClass` / `WorkloadClass` live exactly once, in
+// `breathe_invariant::isolation`, together with the algebra that matters
+// (`requires_seal`, `default_qos`, `try_seal`, `carve_respecting_seal`). That
+// crate deliberately depends on serde ALONE — no schemars, no kube — so a CRD
+// field cannot name those types directly.
+//
+// This is the SAME situation `PromotionMode` is in, and it takes the SAME
+// documented answer: a local `JsonSchema`-bearing mirror with a total
+// conversion back to the canonical type. What makes it a mirror rather than a
+// fork is that (a) it holds no logic at all, and (b)
+// `qos_class_mirror_covers_every_arm` / `workload_class_mirror_covers_every_arm`
+// iterate the upstream's own `ALL` and fail the build if a variant is added
+// there and not here. The enums cannot silently drift.
+
+/// CRD mirror of [`breathe_invariant::isolation::QosClass`]. Schema-only; the
+/// algebra lives upstream.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "kebab-case")]
+pub enum QosClassSpec {
+    /// `requests == limits`. Never throttled below its request; LAST evicted.
+    Guaranteed,
+    /// `requests < limits`. A reserved floor plus burst headroom.
+    Burstable,
+    /// No requests. FIRST evicted — **no isolation at all**.
+    BestEffort,
+}
+
+impl QosClassSpec {
+    /// The canonical type. Total by construction.
+    #[must_use]
+    pub const fn to_invariant(self) -> breathe_invariant::isolation::QosClass {
+        use breathe_invariant::isolation::QosClass as Q;
+        match self {
+            Self::Guaranteed => Q::Guaranteed,
+            Self::Burstable => Q::Burstable,
+            Self::BestEffort => Q::BestEffort,
+        }
+    }
+
+    /// The inverse. Total both ways — that totality is what the drift test pins.
+    #[must_use]
+    pub const fn from_invariant(q: breathe_invariant::isolation::QosClass) -> Self {
+        use breathe_invariant::isolation::QosClass as Q;
+        match q {
+            Q::Guaranteed => Self::Guaranteed,
+            Q::Burstable => Self::Burstable,
+            Q::BestEffort => Self::BestEffort,
+        }
+    }
+}
+
+#[allow(clippy::doc_markdown)] // "QoS"/"BestEffort" are English here, not code items
+/// CRD mirror of [`breathe_invariant::isolation::WorkloadClass`] — the
+/// criticality axis that selects a default QoS posture.
+///
+/// **Name collision, stated so nobody trips on it:** `breathe_catalog::preset`
+/// also exports a `WorkloadClass`, and it means something else entirely (the
+/// replica TOPOLOGY axis). This mirror is the *criticality* one. The two are
+/// unrelated and neither is renamed here — a rename is a separate, deliberate
+/// change, not a side effect of adding a dimension.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "kebab-case")]
+pub enum WorkloadClassSpec {
+    /// Interference-sensitive, must-not-be-disturbed. MUST be sealed — an
+    /// unsealed Critical is the invariant violation (`IsolationPosture::try_seal`).
+    Critical,
+    /// The ordinary workload: a reserved floor plus burst headroom.
+    Standard,
+    /// Interruptible / re-runnable. The one class for which BestEffort is CORRECT.
+    Batch,
+    /// A noisy neighbour: hard-capped so it cannot starve others.
+    Noisy,
+}
+
+#[allow(clippy::doc_markdown)] // "QoS" is an English acronym in these method docs
+impl WorkloadClassSpec {
+    #[must_use]
+    pub const fn to_invariant(self) -> breathe_invariant::isolation::WorkloadClass {
+        use breathe_invariant::isolation::WorkloadClass as W;
+        match self {
+            Self::Critical => W::Critical,
+            Self::Standard => W::Standard,
+            Self::Batch => W::Batch,
+            Self::Noisy => W::Noisy,
+        }
+    }
+
+    #[must_use]
+    pub const fn from_invariant(w: breathe_invariant::isolation::WorkloadClass) -> Self {
+        use breathe_invariant::isolation::WorkloadClass as W;
+        match w {
+            W::Critical => Self::Critical,
+            W::Standard => Self::Standard,
+            W::Batch => Self::Batch,
+            W::Noisy => Self::Noisy,
+        }
+    }
+
+    /// The best-known QoS posture for this class — delegated upstream, never
+    /// re-decided here.
+    #[must_use]
+    pub const fn default_qos(self) -> QosClassSpec {
+        QosClassSpec::from_invariant(self.to_invariant().default_qos())
+    }
+}
+
+/// Which resource's request this band carves. CRD mirror of
+/// [`breathe_provider::RequestResource`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "kebab-case")]
+pub enum RequestResourceSpec {
+    /// `resources.requests.memory`, in bytes. The OOM-ranking lever.
+    Memory,
+    /// `resources.requests.cpu`, in millicores.
+    Cpu,
+}
+
+impl RequestResourceSpec {
+    #[must_use]
+    pub const fn to_provider(self) -> breathe_provider::RequestResource {
+        use breathe_provider::RequestResource as R;
+        match self {
+            Self::Memory => R::Memory,
+            Self::Cpu => R::Cpu,
+        }
+    }
+
+    /// The band's unit — a FUNCTION of the resource, which is exactly why this
+    /// kind could not be `band_kind!`-stamped (that macro takes one constant).
+    #[must_use]
+    pub const fn unit(self) -> Unit {
+        match self {
+            Self::Memory => Unit::Bytes,
+            Self::Cpu => Unit::Millicores,
+        }
+    }
+}
+
+#[allow(clippy::doc_markdown)] // "QoS" is an English acronym in this prose
+/// Where a converged request value must LAND. CRD mirror of
+/// [`breathe_provider::Durability`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "kebab-case")]
+pub enum DurabilitySpec {
+    /// In-place only — **lost on the next rollout**, never visible in git.
+    Ephemeral,
+    /// The value must reach the committed manifest. The default, and the only
+    /// honest setting for anything whose QoS posture matters: an in-place
+    /// request change silently reverts on redeploy, i.e. the OOM protection
+    /// evaporates at exactly the moment things are already moving.
+    #[default]
+    Committed,
+}
+
+impl DurabilitySpec {
+    #[must_use]
+    pub const fn to_provider(self) -> breathe_provider::Durability {
+        use breathe_provider::Durability as D;
+        match self {
+            Self::Ephemeral => D::Ephemeral,
+            Self::Committed => D::Committed,
+        }
+    }
+}
+
+#[allow(clippy::doc_markdown)] // "PromQL" is a proper noun in this prose
+/// **The demand statistic a RESERVATION tracks — deliberately NOT the limit's
+/// setpoint chase.**
+///
+/// A limit bounds blast radius, so its correct value sits *above* the
+/// demonstrated peak and the band chases it with a two-sided deadband. A request
+/// buys scheduling priority and OOM ranking, so its correct value is what the
+/// workload typically needs resident — reserving the peak wastes cluster capacity
+/// linearly in replica count and, past node allocatable, makes the workload
+/// permanently unschedulable.
+///
+/// Running the LIMIT's law on a request is not merely suboptimal, it is unsafe in
+/// the one direction that matters: `safe_min` is keyed on a geometrically-decaying
+/// PEAK, so a single boot spike would ratchet the *reservation* to the spike and
+/// hold it for hundreds of ticks.
+///
+/// The statistic is computed in PromQL, not in breathe: `quantile_over_time` over
+/// a multi-day window is already stored by Prometheus, so the controller holds no
+/// history and a restart loses nothing — the same reason the storage dimension
+/// reads its peak from PromQL rather than accumulating it.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct DemandSignalSpec {
+    /// The quantile of observed usage the reservation tracks, `∈ (0,1)`.
+    /// Default 0.95 — a stable high-water, not the peak.
+    #[serde(default = "d_demand_quantile")]
+    pub quantile: f64,
+    /// The trailing window the quantile is taken over, as a PromQL duration
+    /// (`7d`). Long by design: a reservation should reflect a duty cycle, not an
+    /// afternoon.
+    #[serde(default = "d_demand_window")]
+    pub window: String,
+    /// Fractional headroom above the quantile, `≥ 0`. Default 0.15.
+    ///
+    /// Note this is a MULTIPLIER near 1.0 (`target = raw × (1 + headroom)`), not
+    /// the limit law's `1/setpoint` divisor near 1.25 — the two carve different
+    /// quantities toward different goals and must not share a constant.
+    #[serde(default = "d_demand_headroom")]
+    pub headroom: f64,
+}
+
+impl Default for DemandSignalSpec {
+    fn default() -> Self {
+        Self { quantile: d_demand_quantile(), window: d_demand_window(), headroom: d_demand_headroom() }
+    }
+}
+
+#[allow(clippy::doc_markdown)] // "QoS"/"BestEffort"/"OOMKills" are English here
+/// **The RESERVATION band — `resources.requests.<res>` and the QoS class it
+/// derives.**
+///
+/// # What this kind does that no other kind can
+///
+/// Every other band carves a LIMIT, which bounds blast radius. This one carves
+/// the REQUEST, which decides survival: `oom_score_adj` is computed from the
+/// request, QoS class is a pure function of requests-vs-limits, and
+/// schedulability keys on requests. A workload can be OOM-killed repeatedly
+/// while its limit is never once binding — `sui-cache-pg` took 34 OOMKills at a
+/// 202.8Mi high-water under a 1Gi limit with cgroup `failcnt = 0`.
+///
+/// # What it deliberately does NOT do
+///
+/// It never performs a QoS **class transition** in place. Kubernetes refuses one
+/// unconditionally (`ValidatePodResize`, release-1.33
+/// `validation.go:5665` — "Pod QOS Class may not change as a result of
+/// resizing"), so a class change is a template edit and therefore a git commit.
+/// `spec.qosTarget` declares the desired class; a gap between it and the observed
+/// class produces a proposal for the durable door, never an in-place write. The
+/// two actuations carry disjoint payload types through disjoint traits
+/// (`breathe_provider::request`), so routing one through the other is a compile
+/// error rather than a runtime check.
+///
+/// # Status, and what is honestly missing from it
+///
+/// This kind reuses [`BandStatus`] verbatim. The request-specific projection an
+/// operator will eventually want — `qosObserved`, the typed `qosGap`, a
+/// `pendingProposal` — is **not** on the status yet, on purpose: nothing writes
+/// it at this stage, and a status field with no writer is precisely the
+/// claimed-but-not-real shape this whole dimension exists to end. The types
+/// (`QosGap`, `ClassTransitionBlocked`) ship in `breathe-provider` ready for the
+/// controller pass that fills them.
+#[derive(CustomResource, Serialize, Deserialize, Clone, Debug, JsonSchema)]
+#[kube(
+    group = "breathe.pleme.io",
+    version = "v1",
+    kind = "RequestBand",
+    namespaced,
+    status = "BandStatus",
+    shortname = "rqband",
+    category = "breathe",
+    printcolumn = r#"{"name":"Target","type":"string","jsonPath":".spec.targetRef.name"}"#,
+    printcolumn = r#"{"name":"Resource","type":"string","jsonPath":".spec.resource"}"#,
+    printcolumn = r#"{"name":"Class","type":"string","jsonPath":".spec.workloadClass"}"#,
+    printcolumn = r#"{"name":"QoSTarget","type":"string","jsonPath":".spec.qosTarget"}"#,
+    printcolumn = r#"{"name":"Durability","type":"string","jsonPath":".spec.durability"}"#,
+    printcolumn = r#"{"name":"Util","type":"string","jsonPath":".status.lastUtil"}"#,
+    printcolumn = r#"{"name":"Last","type":"string","jsonPath":".status.lastDecision"}"#,
+    printcolumn = r#"{"name":"Phase","type":"string","jsonPath":".status.phase"}"#,
+    printcolumn = r#"{"name":"Gate","type":"string","jsonPath":".status.effectiveGate.state"}"#,
+    printcolumn = r#"{"name":"Why","type":"string","jsonPath":".status.effectiveGate.reason"}"#
+)]
+#[serde(rename_all = "camelCase")]
+pub struct RequestBandSpec {
+    pub target_ref: TargetRef,
+    /// Which resource's request to carve. REQUIRED — there is no sensible
+    /// default, and guessing between the OOM lever and the scheduling lever is
+    /// exactly the ambiguity this dimension exists to remove.
+    pub resource: RequestResourceSpec,
+    /// The named [`BreathePosture`] this band's unset behavioral fields fall back
+    /// to — including the request-policy fields (`workloadClass`, `qosTarget`,
+    /// `demand`) added for this kind.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub posture_ref: Option<String>,
+    /// The demand statistic. Unset ⇒ the posture's, else the compiled default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub demand: Option<DemandSignalSpec>,
+    /// The workload's criticality class. Unset ⇒ the posture's, else `standard`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workload_class: Option<WorkloadClassSpec>,
+    /// The DESIRED QoS class. Unset ⇒ the posture's `qosTarget`, else the
+    /// resolved `workloadClass`'s default.
+    ///
+    /// **Note the order, because it is a safety property and it is not the
+    /// order people guess.** The fold is PER FIELD: an explicit posture
+    /// `qosTarget` outranks a class-DERIVED default, so setting `workloadClass:
+    /// batch` on a band does NOT quietly downgrade a workload the posture pinned
+    /// to `guaranteed`. To weaken a pinned seal you must say `qosTarget`
+    /// explicitly on the band — out loud, where a reviewer sees it. The other
+    /// reading would let a band author strip a seal as a side effect of naming a
+    /// class, which is the victoria-logs-422 shape arriving by a new route.
+    ///
+    /// A gap between this and the observed class is reported and, when a durable
+    /// writer exists, proposed as a manifest edit. It is **never** actuated in
+    /// place — see the type doc.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub qos_target: Option<QosClassSpec>,
+    /// Where a converged value must land. Defaults to `committed`.
+    #[serde(default)]
+    pub durability: DurabilitySpec,
+    /// Advisory lower bound in the band's unit (`256Mi` / `250m`).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub floor: String,
+    /// Advisory upper bound. **NOT the binding ceiling** — that is always the
+    /// LIVE limit, because k8s rejects `request > limit` at admission and a
+    /// band's declared ceiling is capacity policy, not the value the apiserver
+    /// measures against. Enforced by `RequestTarget::new`, which has no arm
+    /// above the live limit.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub ceiling: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub setpoint: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grow_above: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shrink_below: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grow_factor: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shrink_factor: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cooldown_seconds: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_staleness_seconds: Option<u64>,
+    /// RETIRED 2026-06-19 (breathe@76924b0) — **this field has NO effect on this
+    /// band kind.** It is not read by the carve gate; setting it to `true` does
+    /// not hold the band in shadow, and a band with `dryRun: true` and no `mode`
+    /// carves for real once its confirm window elapses.
+    ///
+    /// It is kept, not deleted, because it is the record of a decision an
+    /// operator authored — but it decides nothing. Authorization is
+    /// `spec.writeIntent`; the live verdict (and its reason or witness) is
+    /// `status.effectiveGate`.
+    #[serde(default)]
+    pub dry_run: bool,
+    /// **The authorization intent** — the first and highest link in the
+    /// resolution chain `writeIntent` > `mode` > the compiled
+    /// `shadowConfirmEffect`.
+    ///
+    /// * `{intent: observe}` — decide, report, attest; never write.
+    /// * `{intent: calibrateThenWrite, confirmAfterSeconds: 1800}` — shadow until
+    ///   a clean-observation window proves the band safe, then write.
+    /// * `{intent: write, authorizedBy: "…"}` — write now.
+    /// * `{intent: frozen}` — never write, but keep observing.
+    ///
+    /// `authorizedBy` is REQUIRED on `write`: an `{intent: write}` naming no
+    /// `authorizedBy` never goes live: it is held in shadow as `intentMalformed`.
+    /// NOTE the tier — that is a runtime mitigation, not an apiserver rejection:
+    /// a k8s structural schema cannot express "this property is required only
+    /// when another property has this value", so the API accepts the object and
+    /// the controller refuses to act on it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub write_intent: Option<WriteIntentSpec>,
+    /// The RETIRED promotion lifecycle. Still read (below `writeIntent`), so an
+    /// already-authored CR keeps working; new CRs should author `writeIntent`
+    /// instead. Unset ⇒ the compiled fleet default `shadowConfirmEffect` — it
+    /// does **not** mean "derived from `dryRun`". Values: `shadow` | `effect` |
+    /// `shadowConfirmEffect` | `suspended`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<PromotionMode>,
+    #[serde(default = "d_confirm_after")]
+    pub confirm_after_seconds: u64,
+    /// May breathe create a request on a target whose author declared none?
+    /// Default `forbidden`.
+    ///
+    /// This is the BestEffort case, and it is load-bearing: a BestEffort pod is
+    /// the one most in danger AND the one a bound-introduction would change most
+    /// (it moves the pod's QoS class, which cannot be done in place at all). So
+    /// the default refuses, and the honest path for a BestEffort target is a
+    /// declared `qosTarget` plus a durable writer — not a silently-seeded request.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bound_introduction: Option<BoundIntroductionSpec>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub disruption_policy: Option<DisruptionPolicy>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub suspend: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub force_limit: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub force_limit_expiry: Option<String>,
+    #[serde(default = "d_peak_decay")]
+    pub peak_decay: f64,
+    #[serde(default = "d_warmup_seconds")]
+    pub warmup_seconds: u64,
+}
+
+#[allow(clippy::doc_markdown)] // "QoS" is an English acronym in these method docs
+impl RequestBandSpec {
+    /// The resolved workload class (spec > posture > `standard`).
+    #[must_use]
+    pub fn resolved_workload_class(&self, posture: Option<&BreathePostureSpec>) -> WorkloadClassSpec {
+        self.workload_class
+            .or_else(|| posture.and_then(|p| p.workload_class))
+            .unwrap_or(WorkloadClassSpec::Standard)
+    }
+
+    /// The resolved QoS TARGET (spec > posture > the workload class's default).
+    #[must_use]
+    pub fn resolved_qos_target(&self, posture: Option<&BreathePostureSpec>) -> QosClassSpec {
+        self.qos_target
+            .or_else(|| posture.and_then(|p| p.qos_target))
+            .unwrap_or_else(|| self.resolved_workload_class(posture).default_qos())
+    }
+
+    /// The resolved demand statistic (spec > posture > compiled default).
+    #[must_use]
+    pub fn resolved_demand(&self, posture: Option<&BreathePostureSpec>) -> DemandSignalSpec {
+        self.demand
+            .clone()
+            .or_else(|| posture.and_then(|p| p.demand.clone()))
+            .unwrap_or_default()
+    }
+
+    /// The typed layout this band carves — the REQUEST peer of `PodResize`.
+    #[must_use]
+    pub fn provider_layout(&self) -> LimitLayout {
+        LimitLayout::PodRequestResize { container: self.target_ref.container.clone() }
+    }
+}
+
+impl crate::Band for RequestBand {
+    fn dimension_id(&self) -> breathe_provider::DimensionId {
+        breathe_provider::DimensionId::Request
+    }
+    fn target_ref(&self) -> &TargetRef {
+        &self.spec.target_ref
+    }
+    fn band_config(&self) -> anyhow::Result<BandConfig> {
+        self.band_config_with_posture(None)
+    }
+    fn peak_decay(&self) -> f64 {
+        self.spec.peak_decay
+    }
+    fn warmup_seconds(&self) -> u64 {
+        self.spec.warmup_seconds
+    }
+    fn max_staleness_seconds(&self) -> u64 {
+        self.spec.max_staleness_seconds.unwrap_or_else(d_max_staleness)
+    }
+    fn cooldown_seconds(&self) -> u64 {
+        self.spec.cooldown_seconds.unwrap_or_else(d_cooldown)
+    }
+    fn dry_run(&self) -> bool {
+        self.spec.dry_run
+    }
+    fn write_intent_spec(&self) -> Option<&WriteIntentSpec> {
+        self.spec.write_intent.as_ref()
+    }
+    fn mode_spec(&self) -> Option<PromotionMode> {
+        self.spec.mode
+    }
+    fn bound_introduction_spec(&self) -> Option<BoundIntroductionSpec> {
+        self.spec.bound_introduction
+    }
+    fn confirm_after_seconds(&self) -> u64 {
+        self.spec.confirm_after_seconds
+    }
+    fn last_change_epoch(&self) -> Option<i64> {
+        self.status.as_ref().and_then(|s| s.last_change_epoch)
+    }
+    fn disruption_policy(&self) -> DisruptionPolicy {
+        self.spec.disruption_policy.unwrap_or_default()
+    }
+    fn suspended(&self) -> bool {
+        self.spec.suspend
+    }
+    fn force_limit_value(&self) -> Option<u64> {
+        self.spec.force_limit.as_deref().and_then(|q| self.spec.resource.unit().parse(q))
+    }
+    fn force_limit_expiry(&self) -> Option<&str> {
+        self.spec.force_limit_expiry.as_deref()
+    }
+    /// **Always `None` — predictive carving is deliberately not offered here.**
+    ///
+    /// Predictive grow pre-raises a bound for a *projected* burst. On a limit
+    /// that is free: an unhit ceiling costs nothing. On a RESERVATION it is not
+    /// free — every predicted byte is capacity actually withheld from the
+    /// scheduler, times replicas, and a wrong prediction is a workload that
+    /// cannot place. The reservation tracks a measured quantile of what the
+    /// workload really used; it does not speculate.
+    fn predictive(&self) -> Option<f64> {
+        None
+    }
+    fn status(&self) -> Option<&BandStatus> {
+        self.status.as_ref()
+    }
+    fn posture_ref(&self) -> Option<&str> {
+        self.spec.posture_ref.as_deref()
+    }
+    fn band_config_with_posture(&self, posture: Option<&BreathePostureSpec>) -> anyhow::Result<BandConfig> {
+        let s = &self.spec;
+        let unit = s.resource.unit();
+        // A blank floor/ceiling means "unset" and falls back to the unit's
+        // compiled default, so an author who cares about only the demand signal
+        // does not have to restate capacity bounds. The band's `ceiling` is
+        // advisory regardless — the BINDING ceiling is the live limit, enforced
+        // by `RequestTarget::new`, which no CRD value can widen.
+        let (d_floor, d_ceiling) = match s.resource {
+            RequestResourceSpec::Memory => (d_floor_bytes(), d_ceiling_bytes()),
+            RequestResourceSpec::Cpu => (d_floor_milli(), d_ceiling_milli()),
+        };
+        let floor = if s.floor.is_empty() { d_floor } else { s.floor.clone() };
+        let ceiling = if s.ceiling.is_empty() { d_ceiling } else { s.ceiling.clone() };
+        crate::band_config_of(
+            s.setpoint.or_else(|| posture.map(|p| p.setpoint)).unwrap_or_else(d_setpoint),
+            s.grow_above.or_else(|| posture.map(|p| p.grow_above)).unwrap_or_else(d_grow_above),
+            s.shrink_below.or_else(|| posture.map(|p| p.shrink_below)).unwrap_or_else(d_shrink_below),
+            s.grow_factor.or_else(|| posture.map(|p| p.grow_factor)).unwrap_or_else(d_grow_factor),
+            s.shrink_factor.or_else(|| posture.map(|p| p.shrink_factor)).unwrap_or_else(d_shrink_factor),
+            &floor,
+            &ceiling,
+            // No `requestFloor`: on THIS kind the carved value IS the request, so
+            // a "request floor" separate from the floor would be the same number
+            // twice — and a second place to get it wrong.
+            "",
+            s.warmup_seconds,
+            unit,
+        )
+    }
+    fn cooldown_seconds_with_posture(&self, posture: Option<&BreathePostureSpec>) -> u64 {
+        self.spec
+            .cooldown_seconds
+            .or_else(|| posture.map(|p| u64::from(p.cooldown_seconds)))
+            .unwrap_or_else(d_cooldown)
+    }
+    fn max_staleness_seconds_with_posture(&self, posture: Option<&BreathePostureSpec>) -> u64 {
+        self.spec
+            .max_staleness_seconds
+            .or_else(|| posture.map(|p| u64::from(p.max_staleness_seconds)))
+            .unwrap_or_else(d_max_staleness)
+    }
+    fn disruption_policy_with_posture(&self, posture: Option<&BreathePostureSpec>) -> DisruptionPolicy {
+        self.spec
+            .disruption_policy
+            .or_else(|| posture.map(|p| p.disruption_policy))
+            .unwrap_or_default()
+    }
+}
+
 // ─────────────────── BreatheNodePool — host enrollment ──────────────────
 
 /// A GiB quantity bounded to a sane node maximum (1 PiB) so that `value * 2^30`
@@ -3661,6 +4214,11 @@ fn d_ceiling_milli() -> String { "2".into() }
 // tier reaches only with real data.
 fn d_storage_floor_bytes() -> String { "2Gi".into() }
 fn d_storage_ceiling_bytes() -> String { "200Gi".into() }
+// The RESERVATION demand statistic. A stable high-water over a duty cycle, with
+// a small multiplicative headroom — NOT the limit law's `1/setpoint` divisor.
+fn d_demand_quantile() -> f64 { 0.95 }
+fn d_demand_window() -> String { "7d".into() }
+fn d_demand_headroom() -> f64 { 0.15 }
 fn d_setpoint() -> f64 { 0.80 }
 fn d_grow_above() -> f64 { 0.85 }
 fn d_shrink_below() -> f64 { 0.70 }
@@ -4431,6 +4989,14 @@ mod tests {
                 })
             ),
             probe!(ReplicaBand, serde_json::json!({ "metric": { "prometheus": "rate(http_requests_total[1m])" } })),
+            // The RESERVATION band. Proven here to be one of the EIGHT kinds for
+            // which `dryRun` is inert — a `dryRun: true` RequestBand with nothing
+            // else authored still resolves LIVE once its confirm window elapses.
+            // That is deliberately inherited, not overridden: authorization is
+            // `writeIntent`, and a band that can decide whether a workload
+            // survives must not be holdable by a field that decides nothing
+            // everywhere else.
+            probe!(RequestBand, serde_json::json!({ "resource": "memory" })),
         ];
 
         // Every dimension is probed exactly once — no kind quietly skipped.
@@ -4928,6 +5494,14 @@ mod tests {
             cooldown_seconds: 999,
             max_staleness_seconds: 555,
             disruption_policy: DisruptionPolicy::AllowConditional,
+            // The request-policy axis is `None` here on purpose: this fixture
+            // exercises the BAND-LAW 8-tuple fold, and leaving the new axis unset
+            // is the shape every one of the five live camelot postures actually
+            // has. `request_policy_falls_through_the_same_three_tiers` covers the
+            // Some(_) case separately.
+            workload_class: None,
+            qos_target: None,
+            demand: None,
         }
     }
 
@@ -5277,5 +5851,277 @@ spec:
         .expect("deserializes");
         assert_eq!(ceded.bound_introduction_spec(), Some(BoundIntroductionSpec::Allowed));
         assert_eq!(ceded.bound_introduction(), BoundIntroduction::Allowed);
+    }
+
+    // ═════════════════ RequestBand — the RESERVATION dimension ═════════════════
+
+    /// **The mirror-drift gate for `QosClass`.** Iterates the UPSTREAM's own
+    /// `ALL` and round-trips each arm, so adding a variant in
+    /// `breathe-invariant` without adding it here fails the build (`E0004` in
+    /// `from_invariant`) rather than silently producing a CRD that cannot express
+    /// a class the algebra knows about.
+    ///
+    /// This is what makes `QosClassSpec` a MIRROR rather than a FORK — the same
+    /// standard `PromotionMode`↔`outorga::PromotionMode` is held to.
+    #[test]
+    fn qos_class_mirror_covers_every_arm() {
+        use breathe_invariant::isolation::QosClass;
+        for q in QosClass::ALL {
+            assert_eq!(QosClassSpec::from_invariant(q).to_invariant(), q, "round-trip must be identity for {q:?}");
+        }
+        // …and the serde spelling matches the upstream's, so a CR and a contract
+        // value are the same string on the wire.
+        for q in QosClass::ALL {
+            let mirrored = serde_json::to_value(QosClassSpec::from_invariant(q)).unwrap();
+            assert_eq!(mirrored, serde_json::json!(q.as_str()), "wire spelling must match upstream for {q:?}");
+        }
+    }
+
+    /// The same gate for `WorkloadClass`, plus the delegation check: the mirror
+    /// must not re-decide `default_qos`, it must ask upstream.
+    #[test]
+    fn workload_class_mirror_covers_every_arm_and_delegates_its_default() {
+        use breathe_invariant::isolation::WorkloadClass;
+        for w in WorkloadClass::ALL {
+            let m = WorkloadClassSpec::from_invariant(w);
+            assert_eq!(m.to_invariant(), w, "round-trip must be identity for {w:?}");
+            assert_eq!(
+                serde_json::to_value(m).unwrap(),
+                serde_json::json!(w.as_str()),
+                "wire spelling must match upstream for {w:?}"
+            );
+            assert_eq!(
+                m.default_qos().to_invariant(),
+                w.default_qos(),
+                "the mirror must DELEGATE default_qos, never restate it"
+            );
+        }
+        // The concrete postures, pinned so a silent upstream change is visible.
+        assert_eq!(WorkloadClassSpec::Critical.default_qos(), QosClassSpec::Guaranteed);
+        assert_eq!(WorkloadClassSpec::Standard.default_qos(), QosClassSpec::Burstable);
+        assert_eq!(WorkloadClassSpec::Batch.default_qos(), QosClassSpec::BestEffort);
+        assert_eq!(WorkloadClassSpec::Noisy.default_qos(), QosClassSpec::Burstable);
+    }
+
+    /// A minimal `RequestBand` parses, and every default is the safe one.
+    #[test]
+    fn a_minimal_request_band_defaults_to_the_safe_posture() {
+        let b: RequestBand = serde_yaml::from_str(
+            r"
+apiVersion: breathe.pleme.io/v1
+kind: RequestBand
+metadata: { name: sui-request, namespace: camelot-build }
+spec:
+  targetRef: { kind: Deployment, name: sui, apiVersion: apps/v1 }
+  resource: memory
+",
+        )
+        .expect("a minimal RequestBand deserializes");
+
+        assert_eq!(b.spec.resource, RequestResourceSpec::Memory);
+        assert_eq!(b.dimension_id(), breathe_provider::DimensionId::Request);
+        // COMMITTED by default — an in-place-only request silently reverts on the
+        // next rollout, taking the QoS protection with it.
+        assert_eq!(b.spec.durability, DurabilitySpec::Committed);
+        // No bound introduction: breathe does not seed a request onto a
+        // BestEffort target by default, because doing so moves the QoS class and
+        // a class move has no in-place path at all.
+        assert_eq!(b.spec.bound_introduction, None);
+        // Predictive is structurally unavailable on a reservation — every
+        // predicted byte is capacity actually withheld from the scheduler.
+        assert_eq!(b.predictive(), None);
+        // Grow-only in practice: the controller withholds the reclaim.
+        assert!(!b.suspended());
+    }
+
+    /// The band's UNIT is a function of `resource` — the reason this kind could
+    /// not be `band_kind!`-stamped (that macro takes one constant unit).
+    #[test]
+    fn the_unit_follows_the_resource() {
+        let build = |res: &str| -> RequestBand {
+            serde_yaml::from_str(&format!(
+                r#"
+apiVersion: breathe.pleme.io/v1
+kind: RequestBand
+metadata: {{ name: b, namespace: n }}
+spec:
+  targetRef: {{ kind: Deployment, name: d, apiVersion: apps/v1 }}
+  resource: {res}
+  forceLimit: "512Mi"
+"#
+            ))
+            .expect("deserializes")
+        };
+        // Bytes: "512Mi" parses as 512 MiB.
+        assert_eq!(build("memory").force_limit_value(), Some(512 * 1024 * 1024));
+        // Millicores: the SAME string parses differently (or not at all) — which
+        // is exactly why the unit must not be a constant on this kind.
+        assert_ne!(build("cpu").force_limit_value(), Some(512 * 1024 * 1024));
+
+        assert_eq!(RequestResourceSpec::Memory.unit(), Unit::Bytes);
+        assert_eq!(RequestResourceSpec::Cpu.unit(), Unit::Millicores);
+    }
+
+    /// The request-policy axis folds through the SAME three tiers as the band-law
+    /// fields: an explicit per-CR value ALWAYS wins > the referenced posture >
+    /// the compiled default.
+    #[test]
+    fn request_policy_falls_through_the_same_three_tiers() {
+        let band = |spec_extra: &str| -> RequestBand {
+            serde_yaml::from_str(&format!(
+                r"
+apiVersion: breathe.pleme.io/v1
+kind: RequestBand
+metadata: {{ name: b, namespace: n }}
+spec:
+  targetRef: {{ kind: Deployment, name: d, apiVersion: apps/v1 }}
+  resource: memory
+{spec_extra}"
+            ))
+            .expect("deserializes")
+        };
+
+        let mut posture = posture_fixture();
+        posture.workload_class = Some(WorkloadClassSpec::Critical);
+        posture.qos_target = Some(QosClassSpec::Guaranteed);
+        posture.demand = Some(DemandSignalSpec { quantile: 0.99, window: "30d".into(), headroom: 0.5 });
+
+        // Tier 3 — nothing authored anywhere: compiled defaults.
+        let bare = band("");
+        assert_eq!(bare.spec.resolved_workload_class(None), WorkloadClassSpec::Standard);
+        assert_eq!(bare.spec.resolved_qos_target(None), QosClassSpec::Burstable);
+        assert_eq!(bare.spec.resolved_demand(None), DemandSignalSpec::default());
+
+        // Tier 2 — the posture fills every unset field.
+        assert_eq!(bare.spec.resolved_workload_class(Some(&posture)), WorkloadClassSpec::Critical);
+        assert_eq!(bare.spec.resolved_qos_target(Some(&posture)), QosClassSpec::Guaranteed);
+        assert_eq!(bare.spec.resolved_demand(Some(&posture)).window, "30d");
+
+        // Tier 1 — an explicit per-CR value beats the posture.
+        let explicit = band("  workloadClass: batch\n  demand: { quantile: 0.5, window: 1h, headroom: 0.0 }\n");
+        assert_eq!(explicit.spec.resolved_workload_class(Some(&posture)), WorkloadClassSpec::Batch);
+        assert_eq!(explicit.spec.resolved_demand(Some(&posture)).window, "1h");
+
+        // ── THE SUBTLE ONE, pinned because it is a safety property ──
+        //
+        // The band says `workloadClass: batch` (whose default QoS is
+        // best-effort) while the posture explicitly pins `qosTarget: guaranteed`.
+        // The posture WINS, and that is deliberate.
+        //
+        // The fold is PER FIELD, exactly as it is for the eight band-law fields:
+        // `qosTarget` is unset on this band, so the band has expressed no opinion
+        // about it, and an explicit posture value outranks a *derived* default.
+        // The alternative reading — let `workloadClass` re-derive `qosTarget` and
+        // beat the posture — errs in the dangerous direction: it would let a band
+        // author silently strip the seal off a workload an operator had pinned to
+        // guaranteed, which is the victoria-logs-422 shape arriving by a new
+        // route. Over-provisioning is wasteful; under-sealing is fatal.
+        assert_eq!(
+            explicit.spec.resolved_qos_target(Some(&posture)),
+            QosClassSpec::Guaranteed,
+            "an explicit posture qosTarget outranks a class-DERIVED default — the safe direction"
+        );
+        // The band can still say so explicitly; it just has to say it out loud.
+        let loud = band("  workloadClass: batch\n  qosTarget: best-effort\n");
+        assert_eq!(loud.spec.resolved_qos_target(Some(&posture)), QosClassSpec::BestEffort);
+        // And with NO posture pin, the class's own default does apply.
+        let mut unpinned = posture.clone();
+        unpinned.qos_target = None;
+        assert_eq!(explicit.spec.resolved_qos_target(Some(&unpinned)), QosClassSpec::BestEffort);
+    }
+
+    /// The reverse of the case above, which is the one that actually bites: a
+    /// posture pins `critical`/`guaranteed`, and a band declares a weaker class.
+    /// The seal must survive.
+    #[test]
+    fn a_band_cannot_silently_strip_a_postures_pinned_seal() {
+        let mut critical = posture_fixture();
+        critical.workload_class = Some(WorkloadClassSpec::Critical);
+        critical.qos_target = Some(QosClassSpec::Guaranteed);
+
+        let weaker: RequestBand = serde_yaml::from_str(
+            r"
+apiVersion: breathe.pleme.io/v1
+kind: RequestBand
+metadata: { name: b, namespace: n }
+spec:
+  targetRef: { kind: Deployment, name: d, apiVersion: apps/v1 }
+  resource: memory
+  workloadClass: standard
+",
+        )
+        .expect("deserializes");
+
+        assert_eq!(weaker.spec.resolved_workload_class(Some(&critical)), WorkloadClassSpec::Standard);
+        assert_eq!(
+            weaker.spec.resolved_qos_target(Some(&critical)),
+            QosClassSpec::Guaranteed,
+            "downgrading the class must NOT silently unseal a workload the posture pinned"
+        );
+    }
+
+    /// **Backward compatibility, asserted rather than assumed.** The five live
+    /// `BreathePosture` CRs on camelot-eks carry only the 8 band-law fields. If
+    /// the request-policy axis had been added as REQUIRED, every one of them
+    /// would stop deserializing and the controller would break on the postures it
+    /// is currently serving. This pins that it does not.
+    #[test]
+    fn a_live_posture_without_the_request_axis_still_deserializes() {
+        let p: BreathePosture = serde_yaml::from_str(
+            r"
+apiVersion: breathe.pleme.io/v1
+kind: BreathePosture
+metadata: { name: standard }
+spec:
+  setpoint: 0.80
+  growAbove: 0.85
+  growFactor: 1.25
+  shrinkBelow: 0.70
+  shrinkFactor: 0.90
+  cooldownSeconds: 600
+  maxStalenessSeconds: 120
+  disruptionPolicy: restartFreeOnly
+",
+        )
+        .expect("a posture with no request policy must still parse");
+        assert_eq!(p.spec.workload_class, None);
+        assert_eq!(p.spec.qos_target, None);
+        assert_eq!(p.spec.demand, None);
+        // …and it round-trips without inventing the absent fields.
+        let round = serde_json::to_value(&p.spec).unwrap();
+        assert!(round.get("workloadClass").is_none(), "an absent axis must not be serialized back");
+        assert!(round.get("qosTarget").is_none());
+        assert!(round.get("demand").is_none());
+    }
+
+    /// The RESERVATION dimension is a k8s-plane kind, not a host one — pinned
+    /// because `is_host` used to be a `matches!`, which answered `false` for any
+    /// new variant with no compile error. The answer is right here; the point is
+    /// that it is now CHOSEN rather than defaulted.
+    #[test]
+    fn the_request_dimension_is_k8s_plane() {
+        assert!(!breathe_provider::DimensionId::Request.is_host());
+        assert_eq!(breathe_provider::DimensionId::Request.as_str(), "request");
+    }
+
+    /// The layout a RequestBand carves is the REQUEST peer of `PodResize`, and it
+    /// carries the band's container through.
+    #[test]
+    fn the_request_band_carves_the_request_layout() {
+        let b: RequestBand = serde_yaml::from_str(
+            r"
+apiVersion: breathe.pleme.io/v1
+kind: RequestBand
+metadata: { name: b, namespace: n }
+spec:
+  targetRef: { kind: Deployment, name: d, apiVersion: apps/v1, container: app }
+  resource: cpu
+",
+        )
+        .expect("deserializes");
+        match b.spec.provider_layout() {
+            LimitLayout::PodRequestResize { container } => assert_eq!(container.as_deref(), Some("app")),
+            other => panic!("a RequestBand must carve PodRequestResize, got {other:?}"),
+        }
     }
 }

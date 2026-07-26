@@ -10,6 +10,14 @@ description = "The ResourceProvider + Cluster traits — the non-overloadable, c
 
 [dependencies]
 breathe-control = { path = "../breathe-control", version = "0.1.0" }
+# The BREATHABILITY contract crate — consumed for its ISOLATION algebra, which
+# the `request` module below is the runtime face of: `QosClass` (the k8s-derived
+# seal strength), `WorkloadClass` (the criticality axis), `IsolationPosture::
+# try_seal` (a critical workload cannot be BestEffort — parse-time-rejected) and
+# `carve_respecting_seal -> SealedCarve` (a below-seal carve has no code path in
+# the OUTPUT type). Reused, never re-declared: this is the one home of that
+# algebra, and the Request dimension is its second consumer.
+breathe-invariant = { path = "../crates/breathe-invariant", version = "0.1.0" }
 async-trait = "0.1"
 # DisruptionPolicy is the one canonical restart-policy type: the behavior gate
 # (permits()) here AND the per-band CRD field (breathe-crd) — so it carries the
@@ -23,11 +31,21 @@ schemars = "0.8"
 # 1.x derive under a renamed dep, scoped to itself via `#[schemars(crate = ...)]`.
 # DisruptionPolicy and every other CRD-facing type keep the 0.8 derive untouched.
 schemars1 = { package = "schemars", version = "1" }
+# `request`'s ClassTransitionProposal is CONTENT-ADDRESSED: a proposal published
+# in status must be checkable, byte-for-byte, against the commit that later
+# lands. Same blake3 already used by breathe-store's decision-log chain — one
+# hash function fleet-wide, not a second.
+blake3 = "1"
+# The proposal's address is taken over the canonical JSON of the desired block.
+serde_json = "1"
 
 [dev-dependencies]
 # The gate module's parse-boundary tests (an unattributed `intent: write` must
 # FAIL to deserialize) assert on real serde behavior, not on a mock.
 serde_json = "1"
+# `request`'s two actuation doors are `async_trait`s; proving NullManifestWriter
+# refuses needs an executor. rt + macros only — no net, no time, no I/O.
+tokio = { version = "1", features = ["macros", "rt"] }
 
 [features]
 # The in-memory MockCluster test double — the typed-spec-triplet testability seam.

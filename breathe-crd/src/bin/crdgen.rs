@@ -4,7 +4,7 @@
 use breathe_crd::{
     AppBand, ArcBand, BreatheCloudPool, BreatheConfig, BreatheNodePool, BreatheOverview, BreathePosture, CgroupBand,
     CgroupCpuBand, CpuBand, Densa, HostParamBand, IsolationBand, KubeParamBand, MemoryBand, PodMemoryHigh,
-    QuinhaoPool, ReplicaBand, StorageBand,
+    QuinhaoPool, ReplicaBand, RequestBand, StorageBand,
 };
 use kube::CustomResourceExt;
 
@@ -25,6 +25,10 @@ fn main() {
         KubeParamBand::crd(),
         // Step-9/13 — the generic app-plane actuator band (ConfigFile/ApiCall via ActuatorCluster)
         AppBand::crd(),
+        // The RESERVATION band — resources.requests.<res> and the QoS class it
+        // derives. The dimension oom_score_adj, schedulability and QoS all key
+        // on, and the only one that can save a workload whose limit never binds.
+        RequestBand::crd(),
         BreatheNodePool::crd(),
         // The cluster-scoped named default policy the 6 band_kind! kinds (above +
         // ArcBand/CgroupBand/CgroupCpuBand) can opt into via `spec.postureRef`,

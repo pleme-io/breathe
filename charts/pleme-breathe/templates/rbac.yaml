@@ -61,8 +61,21 @@ rules:
     verbs: ["get", "list", "watch", "patch", "update"]
   # Host-dim bands: READ-ONLY. The controller lists these only to aggregate the
   # fleet BreatheOverview — the host-agent owns their status (no patch here).
+  #
+  # `requestbands` joins this READ-ONLY block deliberately, and the narrower verb
+  # set is the honest one: the controller `summarize`s RequestBands into the fleet
+  # BreatheOverview but does NOT reconcile them — there is no `gen_controller!`
+  # entry for the kind, and `KubeCluster::apply`'s `PodRequestResize` arm returns a
+  # typed permanent error. Granting patch/update here would hand out an authority
+  # nothing exercises.
+  #
+  # It is granted NOW rather than "when the controller lands" precisely because of
+  # the drift history recorded above: `summarize::<RequestBand>` starts listing the
+  # moment this chart ships, and a missing grant would log a 403 every overview
+  # tick. Widening to patch/update is a deliberate, separate edit that must come
+  # WITH the actuation, not before it.
   - apiGroups: ["breathe.pleme.io"]
-    resources: ["arcbands", "cgroupbands", "cgroupcpubands"]
+    resources: ["arcbands", "cgroupbands", "cgroupcpubands", "requestbands"]
     verbs: ["get", "list", "watch"]
   # BreathePosture: READ-ONLY, same shape as the host-dim bands above — pure
   # reference data the controller resolves via a reflector::Store every

@@ -18,7 +18,7 @@
 use async_trait::async_trait;
 use breathe_crd::{
     AppBand, ArcBand, BreatheNodePool, BreathePosture, CgroupBand, CgroupCpuBand, CpuBand, HostParamBand,
-    KubeParamBand, MemoryBand, ReplicaBand, StorageBand,
+    KubeParamBand, MemoryBand, ReplicaBand, RequestBand, StorageBand,
 };
 use kube::{
     api::{Api, ListParams, Patch, PatchParams},
@@ -119,6 +119,7 @@ macro_rules! on_band {
             DimensionId::HostParam => { let $api: Api<HostParamBand> = mk_api($client, $ns); $body }
             DimensionId::KubeParam => { let $api: Api<KubeParamBand> = mk_api($client, $ns); $body }
             DimensionId::AppParam => { let $api: Api<AppBand> = mk_api($client, $ns); $body }
+            DimensionId::Request => { let $api: Api<RequestBand> = mk_api($client, $ns); $body }
         }
     };
 }
