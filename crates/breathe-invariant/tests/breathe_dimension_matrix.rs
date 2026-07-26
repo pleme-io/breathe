@@ -44,6 +44,12 @@ const MATRIX: &[MatrixRow] = &[
     // architecture-aware contract (ReplicationTopology + discovery seam +
     // FailoverMachine + 5-engine DB_ARCHITECTURES + DatabasePermutation lattice).
     MatrixRow { dimension: DimensionId::Database, expected_maturity: Maturity::Landing },
+    // RequestBand — the RESERVATION dimension, entered AT Landing 2026-07-26.
+    // Every row above carves a LIMIT; this one carves the request. Its absence
+    // was the gap `no_dimension_claimed_but_uncarved` exists to catch and could
+    // not, because §II.7's requests-floor lever was claimed in prose without a
+    // catalogued dimension to hang the gate on. Now it has one.
+    MatrixRow { dimension: DimensionId::Request, expected_maturity: Maturity::Landing },
 ];
 
 #[test]
@@ -58,7 +64,7 @@ fn matrix_covers_every_dimension() {
         catalog_ids, matrix_ids,
         "matrix ⇄ catalog drift: every catalogued dimension needs exactly one matrix row"
     );
-    assert!(MATRIX.len() >= 6, "matrix regressed below the six known dimensions");
+    assert!(MATRIX.len() >= 7, "matrix regressed below the seven known dimensions");
 }
 
 #[test]

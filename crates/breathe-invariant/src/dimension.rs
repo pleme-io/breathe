@@ -37,17 +37,31 @@ pub enum DimensionId {
     /// carves — the isolation floor is a lower bound the cost carve may never
     /// cross (see [`crate::isolation`]).
     Isolation,
+    /// The RESERVATION — `resources.requests.<res>`, carved by `RequestBand`.
+    /// Every other dimension here carves a LIMIT; this one carves the field the
+    /// kernel's `oom_score_adj`, the `QoS` class and schedulability all derive
+    /// from. It exists because the doctrine leaned on a requests-floor
+    /// ([`crate::isolation`]) that nothing actuated: the `sui-cache-pg` receipt
+    /// is 34 OOM kills at a 202.8Mi high-water under a 1Gi limit with cgroup
+    /// `failcnt = 0` — a limit that was never binding, so no `MemoryBand`
+    /// setting at any value could have saved it (BREATHABILITY.md §II.8).
+    ///
+    /// ONE name fleet-wide: this is the same dimension as
+    /// `breathe_provider::DimensionId::Request` and the `RequestBand` CRD kind.
+    /// "Reservation" is the concept; `Request` is the identifier everywhere.
+    Request,
 }
 
 impl DimensionId {
     /// Every dimension, in canonical order. The partition the matrix covers.
-    pub const ALL: [DimensionId; 6] = [
+    pub const ALL: [DimensionId; 7] = [
         DimensionId::Memory,
         DimensionId::Cpu,
         DimensionId::Storage,
         DimensionId::Replica,
         DimensionId::Database,
         DimensionId::Isolation,
+        DimensionId::Request,
     ];
 
     /// The stable kebab-case label (the axis the catalog + lisp key on).
@@ -60,6 +74,7 @@ impl DimensionId {
             DimensionId::Replica => "replica",
             DimensionId::Database => "database",
             DimensionId::Isolation => "isolation",
+            DimensionId::Request => "request",
         }
     }
 }
@@ -87,6 +102,14 @@ pub enum CarveAlgorithm {
     /// constrained cost minimization (bin-packing / QoS-assignment) whose seal is
     /// a HARD constraint — classical, no ML. Isolation.
     ConstrainedIsolationAssignment,
+    /// `target = demand_quantile × (1 + headroom)` — a stable high percentile
+    /// scaled by a headroom near 1.0, NOT a decaying peak divided by a setpoint
+    /// near 1.25. The distinction is load-bearing, not cosmetic: an over-sized
+    /// LIMIT is a ceiling nobody hits, while an over-sized RESERVATION withholds
+    /// node allocatable linearly in replica count and past allocatable the pod
+    /// never schedules at all. Feeding this law `update_peak` would ratchet a
+    /// reservation to one boot spike and hold it there. Request.
+    HeadroomScaledReservation,
 }
 
 impl CarveAlgorithm {
@@ -98,6 +121,7 @@ impl CarveAlgorithm {
             CarveAlgorithm::ReplicaTopologyScale => "replica-topology-scale",
             CarveAlgorithm::ArchitectureAwareEngine => "architecture-aware-engine",
             CarveAlgorithm::ConstrainedIsolationAssignment => "constrained-isolation-assignment",
+            CarveAlgorithm::HeadroomScaledReservation => "headroom-scaled-reservation",
         }
     }
 }

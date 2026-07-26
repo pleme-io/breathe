@@ -115,3 +115,26 @@
   :overlays (default kanchi-discovered contextual override)
   :cost "right-size requests/limits toward the working set without over-reserving isolation — batch bin-packs BestEffort, standard runs Burstable"
   :resiliency "seal a critical / interference-sensitive workload (guaranteed floor + Guaranteed QoS + anti-affinity) so a noisy neighbor can never throttle or evict it, and the floor bounds the carve so cost never strips the seal")
+
+;; The RESERVATION — every band above carves a LIMIT; this one carves
+;; resources.requests.<res>, the field oom_score_adj, the QoS class and
+;; schedulability all derive from. It actuates the requests-floor lever the
+;; isolation band above has always DECLARED and nothing carved (the receipt:
+;; sui-cache-pg, 34 OOMKills at a 202.8Mi high-water under a 1Gi limit with
+;; cgroup failcnt=0 — a limit never once binding, so no memory band at any
+;; setting could have saved it). BREATHABILITY.md §II.8.
+;;
+;; TWO doors, because k8s says so: a QoS-class change through the pods/resize
+;; subresource is refused unconditionally (release-1.33 validation.go:5665), so
+;; a within-class change is an in-place patch and a class transition is a
+;; template write — disjoint payload types, no conversion between them.
+;; QoS itself is NOT a band: it is a 3-valued class k8s DERIVES from
+;; (requests, limits), so banding it would invent an ordering k8s does not have.
+(defband-request RequestBand
+  :setpoint 0.80 :carve headroom-scaled-reservation :discovery kanchi-discovered :maturity landing
+  :doors ((:door in-place    :payload ssa-patch                 :scope within-class :durable no)
+          (:door manifest    :payload class-transition-proposal :scope class-change :durable yes))
+  :direction grow-only          ; shrink evidence token has no constructor at M0
+  :demand (:statistic quantile :q 0.95 :window "7d" :headroom 0.15)
+  :cost "reserve what the workload needs resident rather than its peak — an over-sized request withholds node allocatable linearly in replica count"
+  :resiliency "set the field that decides who the kernel kills — a reservation at the demonstrated demand lowers oom_score_adj and lifts the QoS class, the only lever that saves a workload whose limit is never binding")
