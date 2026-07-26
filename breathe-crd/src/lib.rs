@@ -905,9 +905,16 @@ macro_rules! band_kind {
             ///   shadow until a clean-observation window proves the band safe,
             ///   then write.
             /// * `{intent: write, authorizedBy: "…"}` — write now.
-            ///   `authorizedBy` is REQUIRED: a CR that says "go live" and does
-            ///   not say who is rejected at parse time.
             /// * `{intent: frozen}` — never write, but keep observing.
+            ///
+            /// `authorizedBy` is REQUIRED on `write`: an `{intent: write}`
+            /// naming no `authorizedBy` never goes live: it is held in shadow
+            /// as `intentMalformed`. NOTE the tier — that is a runtime
+            /// mitigation, not an apiserver rejection: a k8s structural schema
+            /// cannot express "this property is required only when another
+            /// property has this value", so the API accepts the object and the
+            /// controller refuses to act on it. (This description said
+            /// "rejected at parse time" until 2026-07-26; it was not.)
             ///
             /// Unset ⇒ the retired `mode`/default chain decides, and
             /// `status.effectiveGate.witness` reports `legacyDefault` so an
@@ -1288,8 +1295,10 @@ pub struct HostParamBandSpec {
     #[serde(default)]
     pub dry_run: bool,
     /// **The authorization intent** — supersedes `dryRun` on this kind. See
-    /// `MemoryBandSpec::write_intent` for the four arms; `{intent: write}`
-    /// requires naming an `authorizedBy`.
+    /// `MemoryBandSpec::write_intent` for the four arms. `authorizedBy` is
+    /// REQUIRED on `write`: an `{intent: write}` naming no `authorizedBy` never goes live: it is
+    /// held in shadow as `intentMalformed` (a runtime mitigation — a k8s
+    /// structural schema cannot express a conditional `required`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub write_intent: Option<WriteIntentSpec>,
     #[serde(default, skip_serializing_if = "breathe_provider::DisruptionPolicy::is_restart_free_only")]
@@ -1518,8 +1527,10 @@ pub struct KubeParamBandSpec {
     #[serde(default)]
     pub dry_run: bool,
     /// **The authorization intent** — supersedes `dryRun` on this kind. See
-    /// `MemoryBandSpec::write_intent` for the four arms; `{intent: write}`
-    /// requires naming an `authorizedBy`.
+    /// `MemoryBandSpec::write_intent` for the four arms. `authorizedBy` is
+    /// REQUIRED on `write`: an `{intent: write}` naming no `authorizedBy` never goes live: it is
+    /// held in shadow as `intentMalformed` (a runtime mitigation — a k8s
+    /// structural schema cannot express a conditional `required`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub write_intent: Option<WriteIntentSpec>,
     #[serde(default, skip_serializing_if = "breathe_provider::DisruptionPolicy::is_restart_free_only")]
@@ -1758,8 +1769,10 @@ pub struct AppBandSpec {
     #[serde(default)]
     pub dry_run: bool,
     /// **The authorization intent** — on this kind, the ONLY way to hold the
-    /// band in shadow. See `MemoryBandSpec::write_intent` for the four arms;
-    /// `{intent: write}` requires naming an `authorizedBy`.
+    /// band in shadow. See `MemoryBandSpec::write_intent` for the four arms.
+    /// `authorizedBy` is REQUIRED on `write`: an `{intent: write}` naming no `authorizedBy` never goes live: it is
+    /// held in shadow as `intentMalformed` (a runtime mitigation — a k8s
+    /// structural schema cannot express a conditional `required`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub write_intent: Option<WriteIntentSpec>,
     #[serde(default, skip_serializing_if = "breathe_provider::DisruptionPolicy::is_restart_free_only")]
@@ -2087,8 +2100,11 @@ pub struct ReplicaBandSpec {
     #[serde(default)]
     pub dry_run: bool,
     /// **The authorization intent** — the first and highest link in the
-    /// resolution chain, above `mode`. See `MemoryBandSpec::write_intent` for
-    /// the four arms; `{intent: write}` requires naming an `authorizedBy`.
+    /// resolution chain `writeIntent` > `mode` > the compiled
+    /// `shadowConfirmEffect`. See `MemoryBandSpec::write_intent` for the four
+    /// arms. `authorizedBy` is REQUIRED on `write`: an `{intent: write}` naming no `authorizedBy` never goes live: it is
+    /// held in shadow as `intentMalformed` (a runtime mitigation — a k8s
+    /// structural schema cannot express a conditional `required`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub write_intent: Option<WriteIntentSpec>,
     /// The PROMOTION LIFECYCLE (unset ⇒ the fleet default `ShadowConfirmEffect`:
