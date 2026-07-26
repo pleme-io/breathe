@@ -8,6 +8,7 @@
 
 use std::sync::Arc;
 
+use breathe_control::{BoundIntroduction, Reclaim};
 use breathe_core::{reconcile_one, ReconcileInput};
 use breathe_crd::{Band, KubeParamBand};
 use breathe_provider::{
@@ -117,10 +118,11 @@ pub async fn reconcile_kube_param(obj: Arc<KubeParamBand>, ctx: Arc<Ctx>) -> Res
         cfg: &cfg,
         max_staleness_secs: obj.max_staleness_seconds(),
         in_cooldown,
-        // FSM-derived gate (the promotion lifecycle), NOT the raw `dry_run` boolean:
-        // a `dryRun:true` CR-field band calibrates then auto-promotes like every
-        // other plane; permanent shadow needs explicit `mode: shadow`.
-        dry_run: obj.effective_dry_run(now_secs()),
+        // The typed authorization verdict (`writeIntent` > the retired `mode` > the
+        // compiled ShadowConfirmEffect default), NOT the raw `dry_run` boolean — which
+        // this kind has never read. A shadowed gate carries no `LiveWitness`, so the
+        // refusal to carve is structural, not a conditional.
+        gate: obj.resolve_gate(now_secs(), false),
         policy: obj.disruption_policy(),
         force,
         predictive: None,
@@ -128,8 +130,12 @@ pub async fn reconcile_kube_param(obj: Arc<KubeParamBand>, ctx: Arc<Ctx>) -> Res
         // generic CR-field bands (Istio/HPA/CNPG retention/quota) have no pod
         // restart concept ⇒ warmup not applicable (u64::MAX ⇒ the gate never fires).
         observed_for_secs: None,
-        // generic CR-field bands carve their own field directly — no soft-plane split.
-        hard_plane_grow_only: false,
+        // generic CR-field bands carve their own field directly — no soft-plane
+        // split, so reclaim is unrestricted (byte-identical to the prior `false` pin).
+        reclaim: Reclaim::Enabled,
+        // A CR field addressed by an explicit `field_path` exists by construction;
+        // `absence_is_unconstrained() == false` for those layouts, so this is inert.
+        bound_introduction: BoundIntroduction::Forbidden,
     };
 
     let outcome = reconcile_one(&input, &provider).await;

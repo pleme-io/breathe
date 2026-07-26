@@ -299,9 +299,29 @@ pub enum Decision {
     AtCeiling { current: u64 },
     /// Would shrink but cannot do so safely (floor / safe-min binds).
     NoSafeShrink { current: u64 },
-    /// Container declares no memory limit — the controller refuses to reason
-    /// about utilization without a denominator. Skip + surface.
+    /// The target declares NO bound for this dimension and this band may not
+    /// introduce one — the controller refuses to reason about utilization without
+    /// a denominator, and refuses to invent the denominator.
+    ///
+    /// Produced by [`plan_tick`]'s bound-introduction gate from
+    /// [`Capacity::Absent`] + [`BoundIntroduction::Forbidden`]. (Before that gate
+    /// existed this variant had TEN consumers and ZERO producers — the doc
+    /// promised a refusal that no code path could reach.)
     NoLimit,
+    /// A shrink was warranted and safe, but this band's [`Reclaim`] policy is
+    /// [`Reclaim::ObserveOnly`] — the slack is NAMED, never taken.
+    ///
+    /// Distinct from [`Self::NoSafeShrink`] on purpose: `NoSafeShrink` means "we
+    /// looked and there is nothing safe to take" (the band is genuinely at its
+    /// floor), while this means "there is `reclaimable` to take and policy says
+    /// don't". Reporting the first when the second is true is the `AtFloor` lie
+    /// that made 36 idle camelot-eks MemoryBands look converged.
+    ReclaimWithheld {
+        /// The limit, left exactly as it was.
+        current: u64,
+        /// How much the band law would have reclaimed, had the policy permitted.
+        reclaimable: u64,
+    },
     /// Would shrink, but the workload is still in its WARMUP window (it (re)started
     /// less than `warmup_seconds` ago and has not demonstrated a full duty cycle).
     /// A shrink is HELD — the idle reading is not yet proof the slack is safe to take
@@ -1462,6 +1482,180 @@ pub enum Directionality {
     ObserveOnly,
 }
 
+/// **The RECLAIM axis — may this band write DOWNWARD, and if not, does it still
+/// say what it would have reclaimed?**
+///
+/// This is the typed replacement for `ReconcileInput::hard_plane_grow_only`, an
+/// untyped bool the controller set from `provider.id() == Memory`. That bool was
+/// a real safety pin — a k8s `limits.memory` IS the cgroup `memory.max`, a HARD
+/// kill ceiling, so lowering it for efficiency is the carve-induced-OOM path (see
+/// [`CarveSemantics`]) — but as an anonymous boolean it (a) could not be reported,
+/// so 36 camelot-eks MemoryBands sitting at 4–25% utilization reported the phase
+/// `AtFloor`, which is a *lie* (they are nowhere near a floor; their reclaim is
+/// structurally withheld), and (b) named neither the policy nor the reason.
+///
+/// The axis is deliberately NOT symmetric with [`Directionality`]: directionality
+/// is what a *dimension* can physically do (storage cannot shrink a volume);
+/// reclaim is what this *deployment* has decided to let it do. They compose —
+/// [`Reclaim::narrow`] intersects the two — and both are enforced, so a policy
+/// can only ever be more conservative than the dimension's physics.
+///
+/// **Writes are identical for `Disabled` and `ObserveOnly`** (neither ever lowers
+/// a limit); they differ only in whether the withheld reclaim is *reported*.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Reclaim {
+    /// Downward writes permitted — still through every other gate (peak floor,
+    /// request floor, warmup, throttle, cooldown, disruption policy). The default,
+    /// and the behaviour of every dimension except the memory hard plane.
+    #[default]
+    Enabled,
+    /// Never write downward, and do not compute the opportunity: a shrink becomes
+    /// [`Decision::NoSafeShrink`] — indistinguishable from genuinely having no
+    /// safe shrink. This is EXACTLY what `hard_plane_grow_only` did, kept as an
+    /// arm so the prior behaviour stays expressible verbatim.
+    Disabled,
+    /// Never write downward, but DO name the opportunity: a shrink becomes
+    /// [`Decision::ReclaimWithheld`], carrying how much could be reclaimed if the
+    /// policy were widened. "I want to see the slack, I just don't want it taken."
+    ObserveOnly,
+}
+
+impl Reclaim {
+    /// Intersect this policy with a dimension's physical [`Directionality`] — the
+    /// composition that makes the pair enforceable in ONE place. A policy can only
+    /// narrow: `Enabled` leaves the dimension alone; either withholding arm turns a
+    /// `Bidirectional` dimension `GrowOnly`. `GrowOnly`/`ObserveOnly` dimensions are
+    /// already at or past the narrowing, so they are returned unchanged.
+    ///
+    /// Byte-identity note: `Reclaim::{Disabled,ObserveOnly}.narrow(Bidirectional)`
+    /// reproduces the old `hard_plane_grow_only` substitution exactly, INCLUDING
+    /// its effect on the `GrowOnly`-scoped gates in [`plan_tick`] (the capability
+    /// gate and the per-entity metric invariant). Those scopings were load-bearing
+    /// for the memory plane and are preserved deliberately, not by accident.
+    #[must_use]
+    pub fn narrow(self, dir: Directionality) -> Directionality {
+        match (self, dir) {
+            (Self::Enabled, d) => d,
+            (Self::Disabled | Self::ObserveOnly, Directionality::Bidirectional) => Directionality::GrowOnly,
+            (Self::Disabled | Self::ObserveOnly, d) => d,
+        }
+    }
+
+    /// Stable label for status/logging.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Enabled => "enabled",
+            Self::Disabled => "disabled",
+            Self::ObserveOnly => "observe-only",
+        }
+    }
+}
+
+/// **The BOUND-INTRODUCTION axis — may this band create a bound the author never
+/// declared?**
+///
+/// The load-bearing distinction is between *right-sizing an existing limit* and
+/// *newly constraining a workload that was deliberately left unconstrained*. They
+/// look identical to a controller reading `limit == 0`, and breathe has been doing
+/// the second while believing it did the first: on camelot-eks, `coredns` (101
+/// carves) and `ebs-csi-controller` (162 carves) both declare NO cpu limit at all,
+/// and breathe introduced one. That is not homeostasis — it is a new constraint on
+/// cluster DNS and the CSI control plane that no human ever asked for.
+///
+/// [`Forbidden`](Self::Forbidden) is the default because the two directions are not
+/// symmetric: failing to right-size a declared limit wastes some quota; capping a
+/// component the author left uncapped can wedge a cluster.
+///
+/// The escape hatch is real and needed — a field genuinely *ceded* to breathe (a
+/// CNPG/Flux manager relinquishing `limits.memory`) is the case
+/// [`decide_with`]'s floor-seed was written for. That case now has to say so, with
+/// [`Allowed`](Self::Allowed), instead of being inferred from a zero.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum BoundIntroduction {
+    /// A target with no declared bound is reported ([`Decision::NoLimit`]) and left
+    /// alone. The default.
+    #[default]
+    Forbidden,
+    /// breathe may seed a bound onto a target that declares none — the ceded-field
+    /// takeover, and the "cap this noisy neighbour" case. A deliberate declaration.
+    Allowed,
+}
+
+impl BoundIntroduction {
+    /// Stable label for status/logging.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Forbidden => "forbidden",
+            Self::Allowed => "allowed",
+        }
+    }
+}
+
+/// The per-tick **carve policy** — the axes that govern *whether a direction or a
+/// bound may be written at all*, as distinct from [`BandConfig`] (the band's
+/// numeric shape: thresholds, factors, floor, ceiling).
+///
+/// Bundled into one value rather than added as two more positional parameters to
+/// [`plan_tick`], which already takes eight. The [`Default`] is the permissive-on-
+/// direction, conservative-on-bounds pair (`Enabled` + `Forbidden`) — the same
+/// posture the fleet's non-memory dimensions have today.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct CarvePolicy {
+    /// May this band write downward, and does it report what it withheld?
+    pub reclaim: Reclaim,
+    /// May this band create a bound the author never declared?
+    pub bound_introduction: BoundIntroduction,
+}
+
+/// **The PROVENANCE of the bound a band is reasoning about.**
+///
+/// Replaces the bare `capacity: u64` on [`Observation`], where the value `0` was
+/// doing double duty as "unset" and as a number the band law divides by. The two
+/// are different facts, and conflating them is what let the floor-seed in
+/// [`decide_with`] fire on a workload that had deliberately declared no limit.
+///
+/// There is exactly ONE numeric field, so the provenance and the value cannot
+/// drift — the drift a parallel `capacity: u64` + `bound_absent: bool` pair would
+/// have made representable.
+///
+/// A `Ceded` arm — "a field manager RELINQUISHED a limit breathe used to own" —
+/// belongs here eventually, but is deliberately **not shipped**: it is not
+/// derivable from a live read (`read_limit` returns `0` for both cases), so it
+/// would need a status-carried witness that no band has yet. Shipping an arm with
+/// no producer is precisely the defect [`Decision::NoLimit`] itself had. Until
+/// then, a genuinely-ceded field declares [`BoundIntroduction::Allowed`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Capacity {
+    /// The target declares a bound of this size. The ordinary case.
+    Declared(u64),
+    /// The target declares NO bound for this dimension, and its absence means
+    /// *unconstrained* (a k8s container `resources.limits.<resource>` that was
+    /// never set). breathe has no denominator, and inventing one would be a new
+    /// constraint — see [`BoundIntroduction`].
+    Absent,
+}
+
+impl Capacity {
+    /// The numeric bound the band law operates on. `Absent` reads as `0` — the
+    /// same number the pre-`Capacity` code carried — so every existing arithmetic
+    /// path is byte-unchanged; what changed is that the *decision* to act on a
+    /// zero is now gated on provenance rather than made blindly.
+    #[must_use]
+    pub fn value(self) -> u64 {
+        match self {
+            Self::Declared(v) => v,
+            Self::Absent => 0,
+        }
+    }
+    /// `true` iff the target declares no bound at all.
+    #[must_use]
+    pub fn is_absent(self) -> bool {
+        matches!(self, Self::Absent)
+    }
+}
+
 /// The STORAGE CAPABILITY CONTRACT — what a `GrowOnly` dimension's backing
 /// StorageClass can actually do, discovered once per tick
 /// (`Cluster::read_storage_capability`) and folded into
@@ -1530,7 +1724,11 @@ pub struct Observation {
     /// each tick, so `peak_used ≥ used` always holds. On the first tick (no
     /// history) it equals `used` — behaviour-identical to the instantaneous form.
     pub peak_used: u64,
-    pub capacity: u64,
+    /// The bound this band is reasoning about, WITH its provenance — a declared
+    /// limit and a target that declares none are different facts, not the same
+    /// `0`. Read the number via [`Observation::capacity`]; match on the enum only
+    /// where the provenance itself matters (the bound-introduction gate).
+    pub bound: Capacity,
     pub owners: Vec<FieldOwner>,
     /// Age of the metric sample driving `used`, in seconds. A scrape gap that
     /// returns a stale/zero `used` is indistinguishable from a real reading
@@ -1594,6 +1792,16 @@ pub struct Observation {
     /// caught on the very first tick, regardless of field-manager noise. See
     /// [`StorageCapability`].
     pub storage_capability: Option<StorageCapability>,
+}
+
+impl Observation {
+    /// The numeric bound, for the arithmetic paths. There is exactly one place
+    /// this number can come from ([`Observation::bound`]), so it cannot drift from
+    /// its own provenance.
+    #[must_use]
+    pub fn capacity(&self) -> u64 {
+        self.bound.value()
+    }
 }
 
 /// The WARMUP GATE: hold a SHRINK while the workload is still warming up. A
@@ -1666,6 +1874,32 @@ pub fn clamp_to_throttle(d: Decision, throttle_signal: u64, restarting: bool) ->
     match d {
         Decision::Shrink { from, .. } => Decision::Throttled { current: from, restarting },
         other => other,
+    }
+}
+
+/// THE RECLAIM GATE: withhold a SHRINK when the band's [`Reclaim`] policy forbids
+/// downward writes — and say which kind of withholding it is.
+///
+/// Runs in [`plan_tick`] immediately BEFORE [`clamp_to_directionality`], and that
+/// order is load-bearing: the directionality clamp collapses every refused shrink
+/// to `NoSafeShrink`, discarding the target, so a reclaim gate placed after it
+/// could never report `reclaimable`. Running first means the policy's own, more
+/// specific verdict wins and the physics clamp then sees a non-shrink and passes
+/// it through untouched.
+///
+/// A GROW is never withheld — buying headroom is the safe direction under every
+/// policy. `Reclaim::Enabled` is a no-op (behaviour-preserving).
+#[must_use]
+pub fn clamp_to_reclaim(d: Decision, reclaim: Reclaim) -> Decision {
+    match (reclaim, d) {
+        (Reclaim::Enabled, d) => d,
+        // Byte-identical to the pre-`Reclaim` `hard_plane_grow_only` path: the
+        // directionality clamp would have produced exactly this.
+        (Reclaim::Disabled, Decision::Shrink { from, .. }) => Decision::NoSafeShrink { current: from },
+        (Reclaim::ObserveOnly, Decision::Shrink { from, to }) => {
+            Decision::ReclaimWithheld { current: from, reclaimable: from.saturating_sub(to) }
+        }
+        (_, other) => other,
     }
 }
 
@@ -1771,6 +2005,7 @@ pub fn plan_tick(
     our_field: &str,
     max_staleness_secs: u64,
     predictive: Option<(i64, f64)>,
+    policy: CarvePolicy,
 ) -> TickPlan {
     // STEP 0 — CAPABILITY GATE. Scoped to `GrowOnly` (storage is the only
     // dimension that ever populates `storage_capability`); `None` (every
@@ -1790,6 +2025,20 @@ pub fn plan_tick(
     if let Some(manager) = competing_field_manager(&obs.owners, our_manager, our_field) {
         return TickPlan::Conflict { manager };
     }
+    // STEP 1.5 — BOUND-INTRODUCTION GATE. The target declares no bound at all and
+    // this band may not create one: report and stop. Placed AFTER the single-writer
+    // guard deliberately — a field another manager owns but has not yet populated
+    // is that manager's business, and `Conflict` is the more actionable answer —
+    // and BEFORE the per-entity metric invariant, which would otherwise report the
+    // absence as `used > capacity(=0)` (a real red herring for a GrowOnly band).
+    //
+    // This is the gate that stops breathe capping `coredns` and
+    // `ebs-csi-controller`, neither of which declares a cpu limit. It can only ever
+    // REMOVE a write: the path it intercepts is `decide_with`'s floor-seed, which
+    // is a Grow.
+    if obs.bound.is_absent() && policy.bound_introduction == BoundIntroduction::Forbidden {
+        return TickPlan::Observe { decision: Decision::NoLimit };
+    }
     // PER-ENTITY METRIC INVARIANT (storage / any GrowOnly hard-capped dimension):
     // a real per-entity usage gauge can never exceed the entity's own capacity —
     // a full filesystem reports used STRICTLY below capacity (reserved blocks), a
@@ -1799,8 +2048,8 @@ pub fn plan_tick(
     // surface it as a typed, observable, non-mutating outcome instead. Scoped to
     // GrowOnly so a Bidirectional memory/cpu band — where a transient over-limit
     // sample is a legitimate "grow hard" signal — is untouched.
-    if dir == Directionality::GrowOnly && obs.used > obs.capacity {
-        return TickPlan::Unrepresentable { used: obs.used, capacity: obs.capacity };
+    if dir == Directionality::GrowOnly && obs.used > obs.capacity() {
+        return TickPlan::Unrepresentable { used: obs.used, capacity: obs.capacity() };
     }
     // Per-resource law selection (M0): predictive `Some((rate, lookahead))` carves
     // through the proven `PredictiveGrow<BandLaw>` — pre-grows for the burst the
@@ -1823,7 +2072,7 @@ pub fn plan_tick(
     // RAISES the inputs, so the never-OOM oracle is untouched. `None` ⇒ no throttle,
     // byte-identical to before.
     let (law_used, law_peak) =
-        match throttled_demand(obs.used, obs.capacity, obs.throttle_signal, obs.restarting, cfg) {
+        match throttled_demand(obs.used, obs.capacity(), obs.throttle_signal, obs.restarting, cfg) {
             Some(demand) => (obs.used.max(demand), obs.peak_used.max(demand)),
             None => (obs.used, obs.peak_used),
         };
@@ -1832,13 +2081,18 @@ pub fn plan_tick(
             &PredictiveGrow { inner: BandLaw, lookahead_secs },
             law_used,
             law_peak,
-            obs.capacity,
+            obs.capacity(),
             cfg,
             rate,
         ),
-        None => decide_with(&BandLaw, law_used, law_peak, obs.capacity, cfg),
+        None => decide_with(&BandLaw, law_used, law_peak, obs.capacity(), cfg),
     };
-    let decision = clamp_to_directionality(raw, dir);
+    // RECLAIM GATE, then the physics clamp. This order is load-bearing — see
+    // `clamp_to_reclaim`: the directionality clamp discards a refused shrink's
+    // target, so the policy's own verdict (which needs it, to report `reclaimable`)
+    // must be taken first. `Reclaim::Enabled` makes this a no-op.
+    let decision = clamp_to_reclaim(raw, policy.reclaim);
+    let decision = clamp_to_directionality(decision, dir);
     // WARMUP GATE: a SHRINK is held while the workload is still warming up (observed
     // for fewer than `warmup_seconds` since its last restart) — its idle reading is
     // not yet proof the slack is safe to reclaim (the un-observed-boot-spike OOM).
@@ -2431,12 +2685,12 @@ mod tests {
     fn obs(used: u64, cap: u64, owners: Vec<FieldOwner>) -> Observation {
         // peak == used: no trailing-window history ⇒ instantaneous-equivalent.
         // observed_for u64::MAX ⇒ past warmup (warmup is exercised in its own tests).
-        Observation { used, peak_used: used, capacity: cap, owners, staleness_secs: 0, memory_shrink_restart_free: false, observed_for_secs: u64::MAX, request_floor: 0, throttle_signal: 0, restarting: false, storage_capability: None }
+        Observation { used, peak_used: used, bound: Capacity::Declared(cap), owners, staleness_secs: 0, memory_shrink_restart_free: false, observed_for_secs: u64::MAX, request_floor: 0, throttle_signal: 0, restarting: false, storage_capability: None }
     }
     /// An observation with an explicit trailing-window peak (peak ≥ used).
     #[allow(dead_code)] // a shared test helper retained for peak-keyed observations.
     fn obs_peak(used: u64, peak: u64, cap: u64, owners: Vec<FieldOwner>) -> Observation {
-        Observation { used, peak_used: peak.max(used), capacity: cap, owners, staleness_secs: 0, memory_shrink_restart_free: false, observed_for_secs: u64::MAX, request_floor: 0, throttle_signal: 0, restarting: false, storage_capability: None }
+        Observation { used, peak_used: peak.max(used), bound: Capacity::Declared(cap), owners, staleness_secs: 0, memory_shrink_restart_free: false, observed_for_secs: u64::MAX, request_floor: 0, throttle_signal: 0, restarting: false, storage_capability: None }
     }
     fn ours() -> Vec<FieldOwner> {
         vec![owns("breathe-memory", MEMORY_LIMIT_FIELD)]
@@ -2448,14 +2702,14 @@ mod tests {
         // util 0.95 would Act, but a competing same-field owner must yield FIRST.
         let owners = vec![owns("vpa", MEMORY_LIMIT_FIELD)];
         assert_eq!(
-            plan_tick(&obs(950 * MI, GI, owners), &cfg(), Directionality::Bidirectional, false, "breathe-memory", MEMORY_LIMIT_FIELD, FRESH, None),
+            plan_tick(&obs(950 * MI, GI, owners), &cfg(), Directionality::Bidirectional, false, "breathe-memory", MEMORY_LIMIT_FIELD, FRESH, None, CarvePolicy::default()),
             TickPlan::Conflict { manager: "vpa".into() }
         );
     }
 
     #[test]
     fn plan_acts_when_mutation_and_not_in_cooldown() {
-        match plan_tick(&obs(950 * MI, GI, ours()), &cfg(), Directionality::Bidirectional, false, "breathe-memory", MEMORY_LIMIT_FIELD, FRESH, None) {
+        match plan_tick(&obs(950 * MI, GI, ours()), &cfg(), Directionality::Bidirectional, false, "breathe-memory", MEMORY_LIMIT_FIELD, FRESH, None, CarvePolicy::default()) {
             TickPlan::Act { decision: Decision::Grow { .. } } => {}
             p => panic!("expected Act(Grow), got {p:?}"),
         }
@@ -2463,7 +2717,7 @@ mod tests {
 
     #[test]
     fn plan_defers_mutation_in_cooldown() {
-        match plan_tick(&obs(950 * MI, GI, ours()), &cfg(), Directionality::Bidirectional, true, "breathe-memory", MEMORY_LIMIT_FIELD, FRESH, None) {
+        match plan_tick(&obs(950 * MI, GI, ours()), &cfg(), Directionality::Bidirectional, true, "breathe-memory", MEMORY_LIMIT_FIELD, FRESH, None, CarvePolicy::default()) {
             TickPlan::Cooldown { decision: Decision::Grow { .. } } => {}
             p => panic!("expected Cooldown(Grow), got {p:?}"),
         }
@@ -2472,7 +2726,7 @@ mod tests {
     #[test]
     fn plan_observes_hold_without_mutation() {
         assert_eq!(
-            plan_tick(&obs(800 * MI, GI, ours()), &cfg(), Directionality::Bidirectional, false, "breathe-memory", MEMORY_LIMIT_FIELD, FRESH, None),
+            plan_tick(&obs(800 * MI, GI, ours()), &cfg(), Directionality::Bidirectional, false, "breathe-memory", MEMORY_LIMIT_FIELD, FRESH, None, CarvePolicy::default()),
             TickPlan::Observe { decision: Decision::Hold }
         );
     }
@@ -2481,7 +2735,7 @@ mod tests {
     fn plan_observes_growonly_shrink_as_nosafeshrink() {
         // storage-like: util 0.20 would Shrink, but GrowOnly turns it into an
         // observable NoSafeShrink — one band law, no storage-specific path.
-        match plan_tick(&obs(200 * MI, GI, ours()), &cfg(), Directionality::GrowOnly, false, "breathe-memory", MEMORY_LIMIT_FIELD, FRESH, None) {
+        match plan_tick(&obs(200 * MI, GI, ours()), &cfg(), Directionality::GrowOnly, false, "breathe-memory", MEMORY_LIMIT_FIELD, FRESH, None, CarvePolicy::default()) {
             TickPlan::Observe { decision: Decision::NoSafeShrink { .. } } => {}
             p => panic!("expected Observe(NoSafeShrink), got {p:?}"),
         }
@@ -2493,7 +2747,7 @@ mod tests {
         // (used 2Gi) for a 1Gi volume (capacity). A per-volume gauge can NEVER do
         // this (reserved blocks keep a full fs strictly below capacity), so the
         // metric isn't about this entity — refuse to carve, surface it typed.
-        match plan_tick(&obs(2 * GI, GI, ours()), &cfg(), Directionality::GrowOnly, false, "breathe-memory", MEMORY_LIMIT_FIELD, FRESH, None) {
+        match plan_tick(&obs(2 * GI, GI, ours()), &cfg(), Directionality::GrowOnly, false, "breathe-memory", MEMORY_LIMIT_FIELD, FRESH, None, CarvePolicy::default()) {
             TickPlan::Unrepresentable { used, capacity } => {
                 assert_eq!((used, capacity), (2 * GI, GI));
             }
@@ -2505,7 +2759,7 @@ mod tests {
     fn plan_does_not_flag_bidirectional_over_limit_as_unrepresentable() {
         // a memory/cpu band reading momentarily ABOVE its limit is a legitimate
         // "grow hard" signal — the guard is scoped to GrowOnly and must not fire.
-        match plan_tick(&obs(2 * GI, GI, ours()), &cfg(), Directionality::Bidirectional, false, "breathe-memory", MEMORY_LIMIT_FIELD, FRESH, None) {
+        match plan_tick(&obs(2 * GI, GI, ours()), &cfg(), Directionality::Bidirectional, false, "breathe-memory", MEMORY_LIMIT_FIELD, FRESH, None, CarvePolicy::default()) {
             TickPlan::Act { decision: Decision::Grow { .. } } => {}
             p => panic!("expected Act(Grow) for an over-limit Bidirectional band, got {p:?}"),
         }
@@ -2516,7 +2770,7 @@ mod tests {
         // a genuinely 100%-full GrowOnly volume reads used == capacity (a valid
         // per-volume reading) — it must carve (grow), NOT be flagged unrepresentable.
         // Only used STRICTLY > capacity proves the wrong-entity metric.
-        match plan_tick(&obs(GI, GI, ours()), &cfg(), Directionality::GrowOnly, false, "breathe-memory", MEMORY_LIMIT_FIELD, FRESH, None) {
+        match plan_tick(&obs(GI, GI, ours()), &cfg(), Directionality::GrowOnly, false, "breathe-memory", MEMORY_LIMIT_FIELD, FRESH, None, CarvePolicy::default()) {
             TickPlan::Act { decision: Decision::Grow { .. } } => {}
             p => panic!("expected Act(Grow) for a full GrowOnly volume, got {p:?}"),
         }
@@ -2546,7 +2800,7 @@ mod tests {
         // would fall through to whatever the metric happened to say — now it never
         // reaches that far.
         let o = Observation { storage_capability: Some(unsupported_cap()), ..obs(GI, GI, ours()) };
-        match plan_tick(&o, &cfg(), Directionality::GrowOnly, false, "breathe-memory", MEMORY_LIMIT_FIELD, FRESH, None) {
+        match plan_tick(&o, &cfg(), Directionality::GrowOnly, false, "breathe-memory", MEMORY_LIMIT_FIELD, FRESH, None, CarvePolicy::default()) {
             TickPlan::CapabilityMissing { volume_expansion, per_volume_metrics, provisioner } => {
                 assert!(!volume_expansion);
                 assert!(!per_volume_metrics);
@@ -2567,7 +2821,7 @@ mod tests {
         let competing_owner = vec![owns("k3s-controller-manager", "spec.resources.requests.storage")];
         let o = Observation { storage_capability: Some(unsupported_cap()), ..obs(GI, GI, competing_owner) };
         assert_eq!(
-            plan_tick(&o, &cfg(), Directionality::GrowOnly, false, "breathe-storage", "spec.resources.requests.storage", FRESH, None),
+            plan_tick(&o, &cfg(), Directionality::GrowOnly, false, "breathe-storage", "spec.resources.requests.storage", FRESH, None, CarvePolicy::default()),
             TickPlan::CapabilityMissing {
                 volume_expansion: false,
                 per_volume_metrics: false,
@@ -2581,7 +2835,7 @@ mod tests {
         // a StorageClass that DOES support both properties must carve normally —
         // the gate is additive, never a regression on the golden path.
         let o = Observation { storage_capability: Some(supported_cap()), ..obs(GI, GI, ours()) };
-        match plan_tick(&o, &cfg(), Directionality::GrowOnly, false, "breathe-memory", MEMORY_LIMIT_FIELD, FRESH, None) {
+        match plan_tick(&o, &cfg(), Directionality::GrowOnly, false, "breathe-memory", MEMORY_LIMIT_FIELD, FRESH, None, CarvePolicy::default()) {
             TickPlan::Act { decision: Decision::Grow { .. } } => {}
             p => panic!("expected Act(Grow) for a supported StorageClass, got {p:?}"),
         }
@@ -2593,7 +2847,7 @@ mod tests {
         // dimension that ever populates storage_capability) — a hypothetical
         // Bidirectional observation carrying `Some` must never be gated.
         let o = Observation { storage_capability: Some(unsupported_cap()), ..obs(950 * MI, GI, ours()) };
-        match plan_tick(&o, &cfg(), Directionality::Bidirectional, false, "breathe-memory", MEMORY_LIMIT_FIELD, FRESH, None) {
+        match plan_tick(&o, &cfg(), Directionality::Bidirectional, false, "breathe-memory", MEMORY_LIMIT_FIELD, FRESH, None, CarvePolicy::default()) {
             TickPlan::Act { decision: Decision::Grow { .. } } => {}
             p => panic!("expected Act(Grow) — the capability gate is scoped to GrowOnly, got {p:?}"),
         }
@@ -2604,7 +2858,7 @@ mod tests {
         // `None` (every non-storage dimension, and a storage read that couldn't
         // determine the class) is byte-identical to before this gate existed.
         let o = Observation { storage_capability: None, ..obs(GI, GI, ours()) };
-        match plan_tick(&o, &cfg(), Directionality::GrowOnly, false, "breathe-memory", MEMORY_LIMIT_FIELD, FRESH, None) {
+        match plan_tick(&o, &cfg(), Directionality::GrowOnly, false, "breathe-memory", MEMORY_LIMIT_FIELD, FRESH, None, CarvePolicy::default()) {
             TickPlan::Act { decision: Decision::Grow { .. } } => {}
             p => panic!("expected Act(Grow) for an unknown (None) capability, got {p:?}"),
         }
@@ -2614,8 +2868,8 @@ mod tests {
     fn plan_refuses_to_mutate_on_stale_metric() {
         // util 0.95 would Act(Grow), but a sample older than the bound must never
         // carve — the never-OOM proof holds only on a fresh metric.
-        let stale = Observation { used: 950 * MI, peak_used: 950 * MI, capacity: GI, owners: ours(), staleness_secs: 120, memory_shrink_restart_free: false, observed_for_secs: u64::MAX, request_floor: 0, throttle_signal: 0, restarting: false, storage_capability: None };
-        match plan_tick(&stale, &cfg(), Directionality::Bidirectional, false, "breathe-memory", MEMORY_LIMIT_FIELD, FRESH, None) {
+        let stale = Observation { used: 950 * MI, peak_used: 950 * MI, bound: Capacity::Declared(GI), owners: ours(), staleness_secs: 120, memory_shrink_restart_free: false, observed_for_secs: u64::MAX, request_floor: 0, throttle_signal: 0, restarting: false, storage_capability: None };
+        match plan_tick(&stale, &cfg(), Directionality::Bidirectional, false, "breathe-memory", MEMORY_LIMIT_FIELD, FRESH, None, CarvePolicy::default()) {
             TickPlan::Stale { staleness_secs: 120, decision: Decision::Grow { .. } } => {}
             p => panic!("expected Stale(Grow), got {p:?}"),
         }
@@ -2624,7 +2878,7 @@ mod tests {
     #[test]
     fn plan_observeonly_never_mutates() {
         // a replica-like ObserveOnly dim: even a strong grow signal yields no write.
-        match plan_tick(&obs(950 * MI, GI, ours()), &cfg(), Directionality::ObserveOnly, false, "breathe-memory", MEMORY_LIMIT_FIELD, FRESH, None) {
+        match plan_tick(&obs(950 * MI, GI, ours()), &cfg(), Directionality::ObserveOnly, false, "breathe-memory", MEMORY_LIMIT_FIELD, FRESH, None, CarvePolicy::default()) {
             TickPlan::Observe { .. } => {}
             p => panic!("expected Observe (no mutation), got {p:?}"),
         }
@@ -3115,8 +3369,8 @@ mod tests {
         let mut trail = Vec::with_capacity(samples.len());
         for &used in samples {
             peak = update_peak(peak, used, decay);
-            let o = Observation { used, peak_used: peak, capacity: limit, owners: ours(), staleness_secs: 0, memory_shrink_restart_free: false, observed_for_secs: u64::MAX, request_floor: 0, throttle_signal: 0, restarting: false, storage_capability: None };
-            match plan_tick(&o, c, Directionality::Bidirectional, false, "breathe-memory", MEMORY_LIMIT_FIELD, FRESH, None) {
+            let o = Observation { used, peak_used: peak, bound: Capacity::Declared(limit), owners: ours(), staleness_secs: 0, memory_shrink_restart_free: false, observed_for_secs: u64::MAX, request_floor: 0, throttle_signal: 0, restarting: false, storage_capability: None };
+            match plan_tick(&o, c, Directionality::Bidirectional, false, "breathe-memory", MEMORY_LIMIT_FIELD, FRESH, None, CarvePolicy::default()) {
                 TickPlan::Act { decision: Decision::Grow { to, .. } | Decision::Shrink { to, .. } } => limit = to,
                 _ => {}
             }
@@ -3185,8 +3439,8 @@ mod tests {
                             // — the floor must hold the peak at least the tick it is seen.
                             peak = update_peak(peak, used, 0.0); // = max(peak, used)
                             let floor = ((peak as f64 / c.setpoint).ceil() as u64).max(c.floor_bytes);
-                            let o = Observation { used, peak_used: peak, capacity: limit, owners: ours(), staleness_secs: 0, memory_shrink_restart_free: false, observed_for_secs: u64::MAX, request_floor: 0, throttle_signal: 0, restarting: false, storage_capability: None };
-                            match plan_tick(&o, &c, Directionality::Bidirectional, false, "breathe-memory", MEMORY_LIMIT_FIELD, FRESH, None) {
+                            let o = Observation { used, peak_used: peak, bound: Capacity::Declared(limit), owners: ours(), staleness_secs: 0, memory_shrink_restart_free: false, observed_for_secs: u64::MAX, request_floor: 0, throttle_signal: 0, restarting: false, storage_capability: None };
+                            match plan_tick(&o, &c, Directionality::Bidirectional, false, "breathe-memory", MEMORY_LIMIT_FIELD, FRESH, None, CarvePolicy::default()) {
                                 TickPlan::Act { decision: Decision::Shrink { to, .. } } => {
                                     assert!(
                                         to >= floor,
@@ -3218,9 +3472,9 @@ mod tests {
             d => panic!("expected a request-floor-bound Shrink/NoSafeShrink, got {d:?}"),
         }
         // and the request floor composes with the peak floor (max of the two binds).
-        let o = Observation { used: 100 * MI, peak_used: GI + 200 * MI, capacity: 4 * GI, owners: ours(), staleness_secs: 0, memory_shrink_restart_free: false, observed_for_secs: u64::MAX, request_floor: 0, throttle_signal: 0, restarting: false, storage_capability: None };
+        let o = Observation { used: 100 * MI, peak_used: GI + 200 * MI, bound: Capacity::Declared(4 * GI), owners: ours(), staleness_secs: 0, memory_shrink_restart_free: false, observed_for_secs: u64::MAX, request_floor: 0, throttle_signal: 0, restarting: false, storage_capability: None };
         if let TickPlan::Act { decision: Decision::Shrink { to, .. } } =
-            plan_tick(&o, &c, Directionality::Bidirectional, false, "breathe-memory", MEMORY_LIMIT_FIELD, FRESH, None)
+            plan_tick(&o, &c, Directionality::Bidirectional, false, "breathe-memory", MEMORY_LIMIT_FIELD, FRESH, None, CarvePolicy::default())
         {
             let peak_floor = ((GI + 200 * MI) as f64 / c.setpoint).ceil() as u64;
             assert!(to >= peak_floor.max(GI), "shrink {to} below max(peak_floor, request_floor)");
@@ -3547,10 +3801,10 @@ mod tests {
         for &used in &[1u64, 10 * MI, 100 * MI, 350 * MI] {
             for &observed_for in &[0u64, 1, 60, 300, 599] {
                 let o = Observation {
-                    used, peak_used: used, capacity: 2 * GI, owners: ours(),
+                    used, peak_used: used, bound: Capacity::Declared(2 * GI), owners: ours(),
                     staleness_secs: 0, memory_shrink_restart_free: false, observed_for_secs: observed_for, request_floor: 0, throttle_signal: 0, restarting: false, storage_capability: None,
                 };
-                let plan = plan_tick(&o, &c, Directionality::Bidirectional, false, "breathe-memory", MEMORY_LIMIT_FIELD, FRESH, None);
+                let plan = plan_tick(&o, &c, Directionality::Bidirectional, false, "breathe-memory", MEMORY_LIMIT_FIELD, FRESH, None, CarvePolicy::default());
                 assert!(
                     matches!(plan, TickPlan::Warmup { .. }),
                     "used={used} observed_for={observed_for}: a warming-up workload must HOLD (never shrink), got {plan:?}"
@@ -3561,11 +3815,11 @@ mod tests {
         }
         // past warmup, the same idle workload DOES shrink (the gate only delays).
         let warm = Observation {
-            used: 100 * MI, peak_used: 100 * MI, capacity: 2 * GI, owners: ours(),
+            used: 100 * MI, peak_used: 100 * MI, bound: Capacity::Declared(2 * GI), owners: ours(),
             staleness_secs: 0, memory_shrink_restart_free: false, observed_for_secs: 601, request_floor: 0, throttle_signal: 0, restarting: false, storage_capability: None,
         };
         assert!(
-            matches!(plan_tick(&warm, &c, Directionality::Bidirectional, false, "breathe-memory", MEMORY_LIMIT_FIELD, FRESH, None), TickPlan::Act { decision: Decision::Shrink { .. } }),
+            matches!(plan_tick(&warm, &c, Directionality::Bidirectional, false, "breathe-memory", MEMORY_LIMIT_FIELD, FRESH, None, CarvePolicy::default()), TickPlan::Act { decision: Decision::Shrink { .. } }),
             "past warmup the idle workload shrinks normally"
         );
     }
@@ -3577,11 +3831,11 @@ mod tests {
         let c = cfg();
         // util 0.93 @ 1Gi, restarted 5s ago (deep in warmup) ⇒ STILL grows.
         let booting = Observation {
-            used: 950 * MI, peak_used: 950 * MI, capacity: GI, owners: ours(),
+            used: 950 * MI, peak_used: 950 * MI, bound: Capacity::Declared(GI), owners: ours(),
             staleness_secs: 0, memory_shrink_restart_free: false, observed_for_secs: 5, request_floor: 0, throttle_signal: 0, restarting: false, storage_capability: None,
         };
         assert!(
-            matches!(plan_tick(&booting, &c, Directionality::Bidirectional, false, "breathe-memory", MEMORY_LIMIT_FIELD, FRESH, None), TickPlan::Act { decision: Decision::Grow { .. } }),
+            matches!(plan_tick(&booting, &c, Directionality::Bidirectional, false, "breathe-memory", MEMORY_LIMIT_FIELD, FRESH, None, CarvePolicy::default()), TickPlan::Act { decision: Decision::Grow { .. } }),
             "a grow at boot must still act (the spike needs headroom)"
         );
     }
@@ -3603,10 +3857,10 @@ mod tests {
         for (i, &(observed_for, used)) in samples.iter().enumerate() {
             peak = update_peak(peak, used, 0.99);
             let o = Observation {
-                used, peak_used: peak, capacity: limit, owners: ours(),
+                used, peak_used: peak, bound: Capacity::Declared(limit), owners: ours(),
                 staleness_secs: 0, memory_shrink_restart_free: false, observed_for_secs: observed_for, request_floor: 0, throttle_signal: 0, restarting: false, storage_capability: None,
             };
-            match plan_tick(&o, &c, Directionality::Bidirectional, false, "breathe-memory", MEMORY_LIMIT_FIELD, FRESH, None) {
+            match plan_tick(&o, &c, Directionality::Bidirectional, false, "breathe-memory", MEMORY_LIMIT_FIELD, FRESH, None, CarvePolicy::default()) {
                 TickPlan::Act { decision: Decision::Shrink { to, .. } } => { if i < 2 { ever_shrank_before_spike = true; } limit = to; }
                 TickPlan::Act { decision: Decision::Grow { to, .. } } => limit = to,
                 TickPlan::Warmup { .. } => {} // held — the correct behaviour during warmup
@@ -3626,7 +3880,7 @@ mod tests {
     /// never exceed its limit.
     fn obs_throttled(used: u64, cap: u64, throttle: u64, restarting: bool) -> Observation {
         Observation {
-            used, peak_used: used, capacity: cap, owners: ours(),
+            used, peak_used: used, bound: Capacity::Declared(cap), owners: ours(),
             staleness_secs: 0, memory_shrink_restart_free: false, observed_for_secs: u64::MAX,
             request_floor: 0, throttle_signal: throttle, restarting, storage_capability: None,
         }
@@ -3649,7 +3903,7 @@ mod tests {
                 for &throttle in &[1u64, 5, 100] {
                     for &restarting in &[false, true] {
                         let o = obs_throttled(used, limit, throttle, restarting);
-                        let plan = plan_tick(&o, &c, Directionality::Bidirectional, false, "breathe-memory", MEMORY_LIMIT_FIELD, FRESH, None);
+                        let plan = plan_tick(&o, &c, Directionality::Bidirectional, false, "breathe-memory", MEMORY_LIMIT_FIELD, FRESH, None, CarvePolicy::default());
                         // the carve must NEVER be a shrink — neither an Act(Shrink) nor a
                         // cooldown'd/stale Shrink decision; the only permitted outcomes are
                         // a hold (Throttled / Observe) or a GROW.
@@ -3674,7 +3928,7 @@ mod tests {
         let c = cfg();
         for &used in &[0u64, 10 * MI, 100 * MI, 400 * MI] {
             let o = obs_throttled(used, 2 * GI, 0, true); // idle, no live throttle, but restarting
-            let plan = plan_tick(&o, &c, Directionality::Bidirectional, false, "breathe-memory", MEMORY_LIMIT_FIELD, FRESH, None);
+            let plan = plan_tick(&o, &c, Directionality::Bidirectional, false, "breathe-memory", MEMORY_LIMIT_FIELD, FRESH, None, CarvePolicy::default());
             assert!(
                 !matches!(plan, TickPlan::Act { decision: Decision::Shrink { .. } }),
                 "a restarting workload must never be shrunk: used={used} → {plan:?}"
@@ -3694,7 +3948,7 @@ mod tests {
         let cpu_cfg = BandConfig { floor_bytes: 100, ceiling_bytes: 4000, ..BandConfig::default() };
         let limit = 1000u64; // 1000m, the pre-incident limit
         let o = obs_throttled(1, limit, /*throttle*/ 5, false); // ~1m idle, actively throttled
-        match plan_tick(&o, &cpu_cfg, Directionality::Bidirectional, false, "breathe-memory", MEMORY_LIMIT_FIELD, FRESH, None) {
+        match plan_tick(&o, &cpu_cfg, Directionality::Bidirectional, false, "breathe-memory", MEMORY_LIMIT_FIELD, FRESH, None, CarvePolicy::default()) {
             // the throttle lifts demand above the cap ⇒ the band law GROWS (climb out).
             TickPlan::Act { decision: Decision::Grow { from, to } } => {
                 assert_eq!(from, limit);
@@ -3711,7 +3965,7 @@ mod tests {
         let mut lim = limit;
         for _ in 0..20 {
             let o = obs_throttled(1, lim, 5, false); // still idle-but-throttled at the new cap
-            match plan_tick(&o, &cpu_cfg, Directionality::Bidirectional, false, "breathe-memory", MEMORY_LIMIT_FIELD, FRESH, None) {
+            match plan_tick(&o, &cpu_cfg, Directionality::Bidirectional, false, "breathe-memory", MEMORY_LIMIT_FIELD, FRESH, None, CarvePolicy::default()) {
                 TickPlan::Act { decision: Decision::Grow { to, .. } } => { assert!(to >= lim); lim = to; }
                 TickPlan::Observe { decision: Decision::AtCeiling { .. } } | TickPlan::Throttled { .. } => break,
                 p => panic!("sustained throttle must only ever grow or hold, got {p:?}"),
@@ -3730,7 +3984,7 @@ mod tests {
         // idle @ 2Gi, NO throttle, past warmup ⇒ the legacy idle shrink.
         let o = obs_throttled(100 * MI, 2 * GI, 0, false);
         assert!(
-            matches!(plan_tick(&o, &c, Directionality::Bidirectional, false, "breathe-memory", MEMORY_LIMIT_FIELD, FRESH, None), TickPlan::Act { decision: Decision::Shrink { .. } }),
+            matches!(plan_tick(&o, &c, Directionality::Bidirectional, false, "breathe-memory", MEMORY_LIMIT_FIELD, FRESH, None, CarvePolicy::default()), TickPlan::Act { decision: Decision::Shrink { .. } }),
             "without a throttle signal an idle workload still shrinks (the signal is load-bearing)"
         );
     }
@@ -3743,7 +3997,7 @@ mod tests {
         // high util @ 1Gi + throttle ⇒ a grow, never held.
         let o = obs_throttled(950 * MI, GI, 5, false);
         assert!(
-            matches!(plan_tick(&o, &c, Directionality::Bidirectional, false, "breathe-memory", MEMORY_LIMIT_FIELD, FRESH, None), TickPlan::Act { decision: Decision::Grow { .. } }),
+            matches!(plan_tick(&o, &c, Directionality::Bidirectional, false, "breathe-memory", MEMORY_LIMIT_FIELD, FRESH, None, CarvePolicy::default()), TickPlan::Act { decision: Decision::Grow { .. } }),
             "a grow under throttle must still act"
         );
     }
@@ -3806,5 +4060,180 @@ mod tests {
         // and the proven safety_clamp turns an aggressive shrink proposal into a grow/hold.
         let d = safety_clamp(Proposal::Target(1), demand, demand, limit, &c);
         assert!(!matches!(d, Decision::Shrink { .. }), "the proven clamp must not produce a shrink under the lift, got {d:?}");
+    }
+
+    // ══ S2: THE TWO NEW CARVE-POLICY AXES ═════════════════════════════════════
+
+    /// Helper: an observation whose bound is genuinely ABSENT (the target declares
+    /// no limit for this dimension at all).
+    fn obs_unbounded(used: u64) -> Observation {
+        Observation { bound: Capacity::Absent, ..obs(used, 0, ours()) }
+    }
+
+    // ── the bound-introduction gate (D7) ─────────────────────────────────────
+
+    /// **The coredns / ebs-csi-controller case, at the law layer.** A target that
+    /// declares NO bound is reported, never seeded — and the refusal is keyed on
+    /// PROVENANCE (`Capacity::Absent`), not on the number being zero.
+    #[test]
+    fn an_absent_bound_is_reported_never_seeded() {
+        let plan = plan_tick(
+            &obs_unbounded(500 * MI), &cfg(), Directionality::Bidirectional, false,
+            "breathe-memory", MEMORY_LIMIT_FIELD, FRESH, None, CarvePolicy::default(),
+        );
+        assert_eq!(
+            plan,
+            TickPlan::Observe { decision: Decision::NoLimit },
+            "with no declared bound there is no denominator, and inventing one is a NEW constraint"
+        );
+    }
+
+    /// `Decision::NoLimit` finally HAS a producer. It shipped with ten consumers
+    /// and zero producers — a documented refusal no code path could reach — which
+    /// is the same "the doc says one thing, the code does another" defect class as
+    /// the `dryRun` inversion this whole stage exists to close.
+    #[test]
+    fn no_limit_is_reachable_at_all() {
+        let reached = plan_tick(
+            &obs_unbounded(1), &cfg(), Directionality::GrowOnly, false,
+            "breathe-memory", MEMORY_LIMIT_FIELD, FRESH, None, CarvePolicy::default(),
+        );
+        assert_eq!(reached, TickPlan::Observe { decision: Decision::NoLimit });
+    }
+
+    /// The escape hatch: an AUTHORED `boundIntroduction: allowed` still seeds the
+    /// ceded field to the floor, exactly as the pre-gate code did.
+    #[test]
+    fn an_allowed_bound_introduction_still_seeds_to_the_floor() {
+        let policy = CarvePolicy { bound_introduction: BoundIntroduction::Allowed, ..CarvePolicy::default() };
+        match plan_tick(
+            &obs_unbounded(500 * MI), &cfg(), Directionality::Bidirectional, false,
+            "breathe-memory", MEMORY_LIMIT_FIELD, FRESH, None, policy,
+        ) {
+            TickPlan::Act { decision: Decision::Grow { from, to } } => {
+                assert_eq!(from, 0);
+                assert_eq!(to, cfg().floor_bytes, "the ceded-field takeover is preserved, it just has to say so");
+            }
+            other => panic!("an allowed introduction must seed, got {other:?}"),
+        }
+    }
+
+    /// The gate is keyed on ABSENCE, not on a zero: a bound genuinely DECLARED as
+    /// below-floor still snaps up to the floor. (A naive `limit == 0` rule would
+    /// have conflated these, and a `Count`-unit band scaled to zero would have
+    /// stopped scaling from zero.)
+    #[test]
+    fn a_declared_below_floor_bound_still_snaps_up() {
+        let low = Observation { bound: Capacity::Declared(1), ..obs(1, 0, ours()) };
+        match plan_tick(
+            &low, &cfg(), Directionality::Bidirectional, false,
+            "breathe-memory", MEMORY_LIMIT_FIELD, FRESH, None, CarvePolicy::default(),
+        ) {
+            TickPlan::Act { decision: Decision::Grow { from: 1, to } } => assert_eq!(to, cfg().floor_bytes),
+            other => panic!("a DECLARED below-floor bound must still snap up, got {other:?}"),
+        }
+        // ...and a declared ZERO is likewise a real value the law reasons on.
+        let zero = Observation { bound: Capacity::Declared(0), ..obs(0, 0, ours()) };
+        assert!(
+            !matches!(
+                plan_tick(&zero, &cfg(), Directionality::Bidirectional, false, "breathe-memory", MEMORY_LIMIT_FIELD, FRESH, None, CarvePolicy::default()),
+                TickPlan::Observe { decision: Decision::NoLimit }
+            ),
+            "a DECLARED zero is a value, not an absence — only provenance decides"
+        );
+    }
+
+    /// The provenance and the number cannot drift: there is exactly one field.
+    #[test]
+    fn capacity_carries_one_number_and_its_provenance() {
+        assert_eq!(Capacity::Declared(42).value(), 42);
+        assert_eq!(Capacity::Absent.value(), 0, "absence reads as the same 0 the old code carried");
+        assert!(Capacity::Absent.is_absent());
+        assert!(!Capacity::Declared(0).is_absent(), "a declared zero is NOT an absence");
+        assert_eq!(obs(1, 7, ours()).capacity(), 7);
+    }
+
+    // ── the reclaim axis (D6) ────────────────────────────────────────────────
+
+    /// `ObserveOnly` withholds the shrink and NAMES what it withheld —
+    /// `ReclaimWithheld`, not the `NoSafeShrink`/`AtFloor` the band is nowhere
+    /// near. This is the phase-lie fix for 36 idle camelot-eks MemoryBands.
+    #[test]
+    fn observe_only_withholds_the_shrink_and_names_the_slack() {
+        let policy = CarvePolicy { reclaim: Reclaim::ObserveOnly, ..CarvePolicy::default() };
+        // idle @ 2Gi ⇒ a real, safe shrink the policy declines to take.
+        let o = obs(100 * MI, 2 * GI, ours());
+        match plan_tick(
+            &o, &cfg(), Reclaim::ObserveOnly.narrow(Directionality::Bidirectional), false,
+            "breathe-memory", MEMORY_LIMIT_FIELD, FRESH, None, policy,
+        ) {
+            TickPlan::Observe { decision: Decision::ReclaimWithheld { current, reclaimable } } => {
+                assert_eq!(current, 2 * GI, "the limit is left exactly as it was");
+                assert!(reclaimable > 0, "and the amount NOT taken is reported");
+            }
+            other => panic!("expected ReclaimWithheld, got {other:?}"),
+        }
+    }
+
+    /// `Disabled` reproduces the pre-`Reclaim` `hard_plane_grow_only` outcome
+    /// VERBATIM — same refusal, same `NoSafeShrink`. The vocabulary widened; the
+    /// prior behaviour stayed expressible.
+    #[test]
+    fn disabled_reclaim_is_byte_identical_to_the_old_grow_only_pin() {
+        let o = obs(100 * MI, 2 * GI, ours());
+        let policy = CarvePolicy { reclaim: Reclaim::Disabled, ..CarvePolicy::default() };
+        let typed = plan_tick(
+            &o, &cfg(), Reclaim::Disabled.narrow(Directionality::Bidirectional), false,
+            "breathe-memory", MEMORY_LIMIT_FIELD, FRESH, None, policy,
+        );
+        // the OLD path: substitute GrowOnly by hand, no reclaim policy at all.
+        let legacy = plan_tick(
+            &o, &cfg(), Directionality::GrowOnly, false,
+            "breathe-memory", MEMORY_LIMIT_FIELD, FRESH, None, CarvePolicy::default(),
+        );
+        assert_eq!(typed, legacy, "Reclaim::Disabled must be indistinguishable from the old pin");
+        assert_eq!(typed, TickPlan::Observe { decision: Decision::NoSafeShrink { current: 2 * GI } });
+    }
+
+    /// No reclaim policy ever withholds a GROW — buying headroom is the safe
+    /// direction under every policy, and refusing it is how you OOM a workload.
+    #[test]
+    fn no_reclaim_policy_ever_withholds_a_grow() {
+        for r in [Reclaim::Enabled, Reclaim::Disabled, Reclaim::ObserveOnly] {
+            let policy = CarvePolicy { reclaim: r, ..CarvePolicy::default() };
+            let plan = plan_tick(
+                &obs(950 * MI, GI, ours()), &cfg(), r.narrow(Directionality::Bidirectional), false,
+                "breathe-memory", MEMORY_LIMIT_FIELD, FRESH, None, policy,
+            );
+            assert!(matches!(plan, TickPlan::Act { decision: Decision::Grow { .. } }), "{r:?} must still grow");
+        }
+    }
+
+    /// A policy can only ever NARROW the dimension's own physics — never widen it.
+    /// (`Enabled` on a grow-only storage band does not make it shrinkable.)
+    #[test]
+    fn reclaim_narrows_never_widens() {
+        use Directionality::{Bidirectional, GrowOnly, ObserveOnly as DirObserveOnly};
+        assert_eq!(Reclaim::Enabled.narrow(Bidirectional), Bidirectional);
+        assert_eq!(Reclaim::Disabled.narrow(Bidirectional), GrowOnly);
+        assert_eq!(Reclaim::ObserveOnly.narrow(Bidirectional), GrowOnly);
+        for r in [Reclaim::Enabled, Reclaim::Disabled, Reclaim::ObserveOnly] {
+            assert_eq!(r.narrow(GrowOnly), GrowOnly, "{r:?} cannot make storage shrinkable");
+            assert_eq!(r.narrow(DirObserveOnly), DirObserveOnly, "{r:?} cannot make an observe-only band write");
+        }
+    }
+
+    /// The ORDER of the two clamps is load-bearing: the reclaim gate must run
+    /// FIRST, because the directionality clamp discards a refused shrink's target
+    /// and `ReclaimWithheld` needs it to report `reclaimable`. Proven by showing
+    /// the reversed order loses the information.
+    #[test]
+    fn the_reclaim_clamp_must_run_before_the_directionality_clamp() {
+        let shrink = Decision::Shrink { from: 2 * GI, to: GI };
+        let right = clamp_to_directionality(clamp_to_reclaim(shrink, Reclaim::ObserveOnly), Directionality::GrowOnly);
+        assert_eq!(right, Decision::ReclaimWithheld { current: 2 * GI, reclaimable: GI });
+        let wrong = clamp_to_reclaim(clamp_to_directionality(shrink, Directionality::GrowOnly), Reclaim::ObserveOnly);
+        assert_eq!(wrong, Decision::NoSafeShrink { current: 2 * GI }, "reversed, the reclaimable amount is lost");
+        assert_ne!(right, wrong, "so the order is not a style choice");
     }
 }

@@ -50,6 +50,20 @@ spec:
         properties:
           spec:
             properties:
+              boundIntroduction:
+                description: |-
+                  **May breathe create a bound this target's author never declared?** Default `forbidden`.
+
+                  Right-sizing an existing limit and newly capping a workload that was deliberately left uncapped look identical to a controller reading `limit == 0` — and breathe was doing the second while believing it did the first. On camelot-eks it introduced a cpu limit onto `coredns` and `ebs-csi-controller`, neither of which declares one.
+
+                  * `forbidden` (default) — a target with no declared bound reports phase `NoLimit` and is left alone. * `allowed` — breathe may seed a bound. This is the CEDED-FIELD case (a CNPG/Flux manager relinquishing `limits.memory` for breathe to take over) and the deliberate "cap this noisy neighbour" case. It has to be said out loud now, rather than inferred from a zero.
+
+                  Inert for a band whose layout's absence does not mean "unconstrained" (a PVC always has a size; a sysctl always has a value; `0` replicas is a real count) — see `LimitLayout::absence_is_unconstrained`.
+                enum:
+                - forbidden
+                - allowed
+                nullable: true
+                type: string
               ceiling:
                 default: 16Gi
                 type: string
@@ -519,6 +533,20 @@ spec:
         properties:
           spec:
             properties:
+              boundIntroduction:
+                description: |-
+                  **May breathe create a bound this target's author never declared?** Default `forbidden`.
+
+                  Right-sizing an existing limit and newly capping a workload that was deliberately left uncapped look identical to a controller reading `limit == 0` — and breathe was doing the second while believing it did the first. On camelot-eks it introduced a cpu limit onto `coredns` and `ebs-csi-controller`, neither of which declares one.
+
+                  * `forbidden` (default) — a target with no declared bound reports phase `NoLimit` and is left alone. * `allowed` — breathe may seed a bound. This is the CEDED-FIELD case (a CNPG/Flux manager relinquishing `limits.memory` for breathe to take over) and the deliberate "cap this noisy neighbour" case. It has to be said out loud now, rather than inferred from a zero.
+
+                  Inert for a band whose layout's absence does not mean "unconstrained" (a PVC always has a size; a sysctl always has a value; `0` replicas is a real count) — see `LimitLayout::absence_is_unconstrained`.
+                enum:
+                - forbidden
+                - allowed
+                nullable: true
+                type: string
               ceiling:
                 default: '2'
                 type: string
@@ -988,6 +1016,20 @@ spec:
         properties:
           spec:
             properties:
+              boundIntroduction:
+                description: |-
+                  **May breathe create a bound this target's author never declared?** Default `forbidden`.
+
+                  Right-sizing an existing limit and newly capping a workload that was deliberately left uncapped look identical to a controller reading `limit == 0` — and breathe was doing the second while believing it did the first. On camelot-eks it introduced a cpu limit onto `coredns` and `ebs-csi-controller`, neither of which declares one.
+
+                  * `forbidden` (default) — a target with no declared bound reports phase `NoLimit` and is left alone. * `allowed` — breathe may seed a bound. This is the CEDED-FIELD case (a CNPG/Flux manager relinquishing `limits.memory` for breathe to take over) and the deliberate "cap this noisy neighbour" case. It has to be said out loud now, rather than inferred from a zero.
+
+                  Inert for a band whose layout's absence does not mean "unconstrained" (a PVC always has a size; a sysctl always has a value; `0` replicas is a real count) — see `LimitLayout::absence_is_unconstrained`.
+                enum:
+                - forbidden
+                - allowed
+                nullable: true
+                type: string
               ceiling:
                 default: 200Gi
                 type: string
@@ -1952,6 +1994,20 @@ spec:
         properties:
           spec:
             properties:
+              boundIntroduction:
+                description: |-
+                  **May breathe create a bound this target's author never declared?** Default `forbidden`.
+
+                  Right-sizing an existing limit and newly capping a workload that was deliberately left uncapped look identical to a controller reading `limit == 0` — and breathe was doing the second while believing it did the first. On camelot-eks it introduced a cpu limit onto `coredns` and `ebs-csi-controller`, neither of which declares one.
+
+                  * `forbidden` (default) — a target with no declared bound reports phase `NoLimit` and is left alone. * `allowed` — breathe may seed a bound. This is the CEDED-FIELD case (a CNPG/Flux manager relinquishing `limits.memory` for breathe to take over) and the deliberate "cap this noisy neighbour" case. It has to be said out loud now, rather than inferred from a zero.
+
+                  Inert for a band whose layout's absence does not mean "unconstrained" (a PVC always has a size; a sysctl always has a value; `0` replicas is a real count) — see `LimitLayout::absence_is_unconstrained`.
+                enum:
+                - forbidden
+                - allowed
+                nullable: true
+                type: string
               ceiling:
                 default: 16Gi
                 type: string
@@ -2421,6 +2477,20 @@ spec:
         properties:
           spec:
             properties:
+              boundIntroduction:
+                description: |-
+                  **May breathe create a bound this target's author never declared?** Default `forbidden`.
+
+                  Right-sizing an existing limit and newly capping a workload that was deliberately left uncapped look identical to a controller reading `limit == 0` — and breathe was doing the second while believing it did the first. On camelot-eks it introduced a cpu limit onto `coredns` and `ebs-csi-controller`, neither of which declares one.
+
+                  * `forbidden` (default) — a target with no declared bound reports phase `NoLimit` and is left alone. * `allowed` — breathe may seed a bound. This is the CEDED-FIELD case (a CNPG/Flux manager relinquishing `limits.memory` for breathe to take over) and the deliberate "cap this noisy neighbour" case. It has to be said out loud now, rather than inferred from a zero.
+
+                  Inert for a band whose layout's absence does not mean "unconstrained" (a PVC always has a size; a sysctl always has a value; `0` replicas is a real count) — see `LimitLayout::absence_is_unconstrained`.
+                enum:
+                - forbidden
+                - allowed
+                nullable: true
+                type: string
               ceiling:
                 default: 16Gi
                 type: string
@@ -2890,6 +2960,20 @@ spec:
         properties:
           spec:
             properties:
+              boundIntroduction:
+                description: |-
+                  **May breathe create a bound this target's author never declared?** Default `forbidden`.
+
+                  Right-sizing an existing limit and newly capping a workload that was deliberately left uncapped look identical to a controller reading `limit == 0` — and breathe was doing the second while believing it did the first. On camelot-eks it introduced a cpu limit onto `coredns` and `ebs-csi-controller`, neither of which declares one.
+
+                  * `forbidden` (default) — a target with no declared bound reports phase `NoLimit` and is left alone. * `allowed` — breathe may seed a bound. This is the CEDED-FIELD case (a CNPG/Flux manager relinquishing `limits.memory` for breathe to take over) and the deliberate "cap this noisy neighbour" case. It has to be said out loud now, rather than inferred from a zero.
+
+                  Inert for a band whose layout's absence does not mean "unconstrained" (a PVC always has a size; a sysctl always has a value; `0` replicas is a real count) — see `LimitLayout::absence_is_unconstrained`.
+                enum:
+                - forbidden
+                - allowed
+                nullable: true
+                type: string
               ceiling:
                 default: '2'
                 type: string

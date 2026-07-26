@@ -20,7 +20,7 @@
 use std::collections::BTreeMap;
 
 use breathe_control::replica::{ReplicaBandConfig, ReplicaSignal, Topology};
-use breathe_control::{BandConfig, MetricMissingPolicy, Unit};
+use breathe_control::{BandConfig, BoundIntroduction, MetricMissingPolicy, Unit};
 use breathe_provider::gate::{
     self, ConfirmVerdict, EffectiveGate, EffectiveGateReport, GateInputs, LegacyDecision, LegacyPath, WriteIntent,
     WriteIntentSpec,
@@ -232,6 +232,40 @@ pub struct BandStatus {
     pub observed_cost_remaining_cents: Option<i64>,
 }
 
+/// The CRD wire form of [`BoundIntroduction`] — **may breathe create a bound the
+/// target's author never declared?**
+///
+/// A separate type from the `breathe-control` enum for the same, already-blessed
+/// reason [`PromotionMode`] is separate from `outorga::PromotionMode`: a CRD field
+/// needs the `JsonSchema` derive, and `breathe-control` is deliberately
+/// dependency-free (its whole thesis is that the band law is solved once, in std).
+/// The two are pinned one-to-one by an exhaustive round-trip test.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum BoundIntroductionSpec {
+    /// A target with no declared bound is reported (phase `NoLimit`) and left
+    /// alone. **The default** — the two directions are not symmetric: failing to
+    /// right-size a declared limit wastes quota, while capping a deliberately
+    /// uncapped component can wedge a cluster.
+    #[default]
+    Forbidden,
+    /// breathe may seed a bound onto a target that declares none — the ceded-field
+    /// takeover (CNPG/Flux relinquishing `limits.memory`) and the deliberate "cap
+    /// this noisy neighbour" case.
+    Allowed,
+}
+
+impl BoundIntroductionSpec {
+    /// Project onto the pure `breathe-control` policy atom.
+    #[must_use]
+    pub fn to_control(self) -> BoundIntroduction {
+        match self {
+            Self::Forbidden => BoundIntroduction::Forbidden,
+            Self::Allowed => BoundIntroduction::Allowed,
+        }
+    }
+}
+
 /// The band's PROMOTION LIFECYCLE — the typed state controlling whether (and
 /// when) breathe moves from observing (SHADOW) to carving (EFFECT).
 ///
@@ -343,6 +377,24 @@ pub trait Band:
     /// param kinds that override [`Band::promotion_mode`], to their two-state
     /// `dryRun` reading).
     fn mode_spec(&self) -> Option<PromotionMode>;
+    /// The band's authored `spec.boundIntroduction`, if any.
+    ///
+    /// Defaults to `None` so every band kind compiles unchanged; the six
+    /// `band_kind!` kinds override it to read their own field. The kinds that do
+    /// NOT (host-param / kube-param / app / replica) address knobs whose absence
+    /// is not "unconstrained", so the gate cannot fire for them regardless — see
+    /// `LimitLayout::absence_is_unconstrained`.
+    fn bound_introduction_spec(&self) -> Option<BoundIntroductionSpec> {
+        None
+    }
+    /// **May this band create a bound the target's author never declared?**
+    /// Resolves the authored `spec.boundIntroduction` against the compiled
+    /// default, which is `Forbidden` — capping a deliberately-uncapped workload
+    /// is a new constraint, and the two directions are not symmetric (failing to
+    /// right-size wastes quota; capping cluster DNS can wedge a cluster).
+    fn bound_introduction(&self) -> BoundIntroduction {
+        self.bound_introduction_spec().map_or(BoundIntroduction::Forbidden, BoundIntroductionSpec::to_control)
+    }
     /// The clean-observation window (seconds) a `ShadowConfirmEffect` band holds
     /// Ready-and-healthy before it auto-promotes to carving.
     fn confirm_after_seconds(&self) -> u64;
@@ -867,6 +919,27 @@ macro_rules! band_kind {
             /// Ready-and-healthy before it auto-promotes to carving (default 1800).
             #[serde(default = "d_confirm_after")]
             pub confirm_after_seconds: u64,
+            /// **May breathe create a bound this target's author never declared?**
+            /// Default `forbidden`.
+            ///
+            /// Right-sizing an existing limit and newly capping a workload that was
+            /// deliberately left uncapped look identical to a controller reading
+            /// `limit == 0` — and breathe was doing the second while believing it did
+            /// the first. On camelot-eks it introduced a cpu limit onto `coredns` and
+            /// `ebs-csi-controller`, neither of which declares one.
+            ///
+            /// * `forbidden` (default) — a target with no declared bound reports
+            ///   phase `NoLimit` and is left alone.
+            /// * `allowed` — breathe may seed a bound. This is the CEDED-FIELD case
+            ///   (a CNPG/Flux manager relinquishing `limits.memory` for breathe to
+            ///   take over) and the deliberate "cap this noisy neighbour" case. It
+            ///   has to be said out loud now, rather than inferred from a zero.
+            ///
+            /// Inert for a band whose layout's absence does not mean "unconstrained"
+            /// (a PVC always has a size; a sysctl always has a value; `0` replicas is
+            /// a real count) — see `LimitLayout::absence_is_unconstrained`.
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            pub bound_introduction: Option<BoundIntroductionSpec>,
             /// The golden/ceiling gate (default `restartFreeOnly`). `None` ⇒ resolve
             /// via the 3-tier fold, same as the other 7 behavioral fields.
             #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -973,6 +1046,9 @@ macro_rules! band_kind {
             }
             fn mode_spec(&self) -> Option<PromotionMode> {
                 self.spec.mode
+            }
+            fn bound_introduction_spec(&self) -> Option<BoundIntroductionSpec> {
+                self.spec.bound_introduction
             }
             fn confirm_after_seconds(&self) -> u64 {
                 self.spec.confirm_after_seconds
@@ -3584,7 +3660,7 @@ mod tests {
         let mem = MemoryBand::new("m", MemoryBandSpec {
             target_ref: tr.clone(), posture_ref: None, setpoint: Some(0.80), grow_above: Some(0.85), shrink_below: Some(0.70),
             grow_factor: Some(1.25), shrink_factor: Some(0.90), floor: "512Mi".into(), ceiling: "4Gi".into(),
-            cooldown_seconds: Some(600), max_staleness_seconds: Some(120), dry_run: true, disruption_policy: Default::default(), disruption_policy_rationale: None, suspend: false, force_limit: None, force_limit_expiry: None, predictive: false, predictive_lookahead_seconds: 60, request_floor: String::new(), peak_decay: 0.98, mode: None, write_intent: None, confirm_after_seconds: 1800, warmup_seconds: 600,
+            cooldown_seconds: Some(600), max_staleness_seconds: Some(120), dry_run: true, disruption_policy: Default::default(), disruption_policy_rationale: None, suspend: false, force_limit: None, force_limit_expiry: None, predictive: false, predictive_lookahead_seconds: 60, request_floor: String::new(), peak_decay: 0.98, mode: None, write_intent: None, bound_introduction: None, confirm_after_seconds: 1800, warmup_seconds: 600,
         });
         let cfg = Band::band_config(&mem).unwrap();
         assert_eq!(cfg.floor_bytes, 512 * (1 << 20));
@@ -3597,7 +3673,7 @@ mod tests {
         let cpu = CpuBand::new("c", CpuBandSpec {
             target_ref: tr, posture_ref: None, setpoint: Some(0.80), grow_above: Some(0.85), shrink_below: Some(0.70),
             grow_factor: Some(1.25), shrink_factor: Some(0.90), floor: "250m".into(), ceiling: "2".into(),
-            cooldown_seconds: Some(600), max_staleness_seconds: Some(120), dry_run: false, disruption_policy: Default::default(), disruption_policy_rationale: None, suspend: false, force_limit: None, force_limit_expiry: None, predictive: false, predictive_lookahead_seconds: 60, request_floor: String::new(), peak_decay: 0.98, mode: None, write_intent: None, confirm_after_seconds: 1800, warmup_seconds: 600,
+            cooldown_seconds: Some(600), max_staleness_seconds: Some(120), dry_run: false, disruption_policy: Default::default(), disruption_policy_rationale: None, suspend: false, force_limit: None, force_limit_expiry: None, predictive: false, predictive_lookahead_seconds: 60, request_floor: String::new(), peak_decay: 0.98, mode: None, write_intent: None, bound_introduction: None, confirm_after_seconds: 1800, warmup_seconds: 600,
         });
         let cfg = Band::band_config(&cpu).unwrap();
         // millicores, NOT bytes: "250m" → 250, "2" cores → 2000m.
@@ -3649,7 +3725,7 @@ mod tests {
         let arc = ArcBand::new("rio-arc", ArcBandSpec {
             target_ref: tr, posture_ref: None, setpoint: Some(0.80), grow_above: Some(0.85), shrink_below: Some(0.70),
             grow_factor: Some(1.25), shrink_factor: Some(0.90), floor: "1Gi".into(), ceiling: "6Gi".into(),
-            cooldown_seconds: Some(600), max_staleness_seconds: Some(120), dry_run: true, disruption_policy: Default::default(), disruption_policy_rationale: None, suspend: false, force_limit: None, force_limit_expiry: None, predictive: false, predictive_lookahead_seconds: 60, request_floor: String::new(), peak_decay: 0.98, mode: None, write_intent: None, confirm_after_seconds: 1800, warmup_seconds: 600,
+            cooldown_seconds: Some(600), max_staleness_seconds: Some(120), dry_run: true, disruption_policy: Default::default(), disruption_policy_rationale: None, suspend: false, force_limit: None, force_limit_expiry: None, predictive: false, predictive_lookahead_seconds: 60, request_floor: String::new(), peak_decay: 0.98, mode: None, write_intent: None, bound_introduction: None, confirm_after_seconds: 1800, warmup_seconds: 600,
         });
         let cfg = Band::band_config(&arc).unwrap();
         assert_eq!(cfg.floor_bytes, 1 << 30);
@@ -3660,7 +3736,7 @@ mod tests {
         let g = CgroupBand::new("nix-daemon", CgroupBandSpec {
             target_ref: TargetRef { kind: "HostUnit".into(), name: "nix-daemon.service".into(), api_version: None, container: None, pod_selector: None },
             posture_ref: None, setpoint: Some(0.80), grow_above: Some(0.85), shrink_below: Some(0.70), grow_factor: Some(1.25), shrink_factor: Some(0.90),
-            floor: "1Gi".into(), ceiling: "12Gi".into(), cooldown_seconds: Some(600), max_staleness_seconds: Some(120), dry_run: true, disruption_policy: Default::default(), disruption_policy_rationale: None, suspend: false, force_limit: None, force_limit_expiry: None, predictive: false, predictive_lookahead_seconds: 60, request_floor: String::new(), peak_decay: 0.98, mode: None, write_intent: None, confirm_after_seconds: 1800, warmup_seconds: 600,
+            floor: "1Gi".into(), ceiling: "12Gi".into(), cooldown_seconds: Some(600), max_staleness_seconds: Some(120), dry_run: true, disruption_policy: Default::default(), disruption_policy_rationale: None, suspend: false, force_limit: None, force_limit_expiry: None, predictive: false, predictive_lookahead_seconds: 60, request_floor: String::new(), peak_decay: 0.98, mode: None, write_intent: None, bound_introduction: None, confirm_after_seconds: 1800, warmup_seconds: 600,
         });
         assert_eq!(g.target_ref().name, "nix-daemon.service");
     }
@@ -4951,5 +5027,76 @@ spec:
             bare.disruption_policy_with_posture(Some(&stateful.spec)),
             DisruptionPolicy::AllowConditional
         );
+    }
+
+    // ══ S2: the bound-introduction axis on the CRD border ═════════════════════
+
+    /// The wire enum and the pure `breathe-control` atom are pinned ONE-TO-ONE by
+    /// an exhaustive match in both directions. The two types exist separately only
+    /// because a CRD field needs `JsonSchema` and `breathe-control` is deliberately
+    /// dependency-free — the same already-blessed split as `PromotionMode` vs
+    /// `outorga::PromotionMode`. Adding an arm to either without the other is a
+    /// compile error here, so they cannot drift.
+    #[test]
+    fn bound_introduction_spec_maps_one_to_one_onto_the_control_atom() {
+        for (wire, control) in [
+            (BoundIntroductionSpec::Forbidden, BoundIntroduction::Forbidden),
+            (BoundIntroductionSpec::Allowed, BoundIntroduction::Allowed),
+        ] {
+            assert_eq!(wire.to_control(), control);
+            // the reverse direction, exhaustively — a new control arm fails to compile.
+            let back = match control {
+                BoundIntroduction::Forbidden => BoundIntroductionSpec::Forbidden,
+                BoundIntroduction::Allowed => BoundIntroductionSpec::Allowed,
+            };
+            assert_eq!(back, wire);
+        }
+    }
+
+    /// The compiled default is `forbidden`, and it is a DEFAULT — not a reading of
+    /// some other field. A band that says nothing does not cap a workload whose
+    /// author declared no limit.
+    #[test]
+    fn an_unauthored_band_may_not_introduce_a_bound() {
+        let bare: CpuBand = serde_yaml::from_str(
+            r#"
+apiVersion: breathe.pleme.io/v1
+kind: CpuBand
+metadata: { name: coredns, namespace: kube-system }
+spec:
+  targetRef: { kind: Deployment, name: coredns }
+  floor: "50m"
+  ceiling: "2"
+"#,
+        )
+        .expect("deserializes");
+        assert_eq!(bare.bound_introduction_spec(), None, "nothing authored");
+        assert_eq!(
+            bare.bound_introduction(),
+            BoundIntroduction::Forbidden,
+            "and the compiled default refuses to invent a cpu limit for cluster DNS"
+        );
+    }
+
+    /// The escape hatch is authorable, and reads through the same accessor the
+    /// controller uses — so "I declared allowed" and "the tick saw allowed" cannot
+    /// diverge.
+    #[test]
+    fn an_authored_allowance_reaches_the_reconcile_input() {
+        let ceded: MemoryBand = serde_yaml::from_str(
+            r#"
+apiVersion: breathe.pleme.io/v1
+kind: MemoryBand
+metadata: { name: pg, namespace: pangea-system }
+spec:
+  targetRef: { kind: Cluster, name: pangea-database, apiVersion: postgresql.cnpg.io/v1 }
+  floor: "1Gi"
+  ceiling: "8Gi"
+  boundIntroduction: allowed
+"#,
+        )
+        .expect("deserializes");
+        assert_eq!(ceded.bound_introduction_spec(), Some(BoundIntroductionSpec::Allowed));
+        assert_eq!(ceded.bound_introduction(), BoundIntroduction::Allowed);
     }
 }

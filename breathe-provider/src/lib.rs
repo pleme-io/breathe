@@ -11,7 +11,9 @@
 
 use async_trait::async_trait;
 
-pub use breathe_control::{Directionality, FieldOwner, Observation, StorageCapability};
+pub use breathe_control::{
+    BoundIntroduction, Capacity, CarvePolicy, Directionality, FieldOwner, Observation, Reclaim, StorageCapability,
+};
 
 // The AUTHORIZATION axis. Lives here — not in a new crate — for the same
 // reason `DisruptionPolicy` does (see this crate's Cargo.toml header): it is a
@@ -713,6 +715,33 @@ impl LimitLayout {
         }
     }
 
+    /// **Does the ABSENCE of a value at this layout mean "unconstrained"?**
+    ///
+    /// The bound-introduction gate ([`breathe_control::BoundIntroduction`]) needs
+    /// to distinguish "the author declared no limit" from "the field is simply
+    /// zero" — and only the LAYOUT knows which. `read_limit` returns `0` for both,
+    /// which is exactly why the two were conflated.
+    ///
+    /// `true` for the three k8s **container resource-limit** layouts, where
+    /// `resources.limits.<resource>` is an OPTIONAL field whose absence means the
+    /// container runs uncapped. Introducing one there is a new constraint, not a
+    /// right-sizing.
+    ///
+    /// `false` everywhere else, and each `false` is a fact about that layout, not a
+    /// default:
+    /// * `PvcRequest`/`ClusterStorage` — a volume always has a declared size.
+    /// * `Host(_)` — a sysctl / cgroup property always has a live value (an unset
+    ///   `MemoryHigh` reads as `max`, not as `0`).
+    /// * `Replica { .. }` — `0` is a REAL replica count (scaled to zero), and
+    ///   growing off it is the intended scale-from-zero path.
+    /// * the CR-path / app-protocol layouts — the knob they address exists by
+    ///   construction (a band declares its own `field_path`); a zero there is the
+    ///   knob's value.
+    #[must_use]
+    pub fn absence_is_unconstrained(&self) -> bool {
+        matches!(self, Self::PodResize { .. } | Self::PodTemplate { .. } | Self::ClusterTopLevel)
+    }
+
     /// The PRECISE restart cost of the SPECIFIC carve `(direction, resource)` —
     /// the fact `disruption_class()` throws away. A `PodResize` carve is
     /// `RestartFree` for cpu (either direction) AND for a memory GROW; only a
@@ -1097,8 +1126,30 @@ pub trait ResourceProvider: Send + Sync + 'static {
         setpoint_reachability(&self.layout_for(target), self.directionality(), self.resource_key())
     }
     async fn observe(&self, target: &Target) -> Result<Observation, ProviderError>;
-    async fn assign(&self, target: &Target, to_value: u64)
-        -> Result<AssignReceipt, ProviderError>;
+    /// **THE MUTATION DOOR — the one function in breathe that writes.**
+    ///
+    /// It takes a [`LiveWitness`] because a write must be *attributable*: the
+    /// witness names who or what authorized it (an operator's `writeIntent`, an
+    /// elapsed calibration window, the confirm annotation, or a legacy resolution
+    /// path — see [`gate::WitnessKind`]).
+    ///
+    /// The parameter is not documentation. [`LiveWitness`] is a newtype over a
+    /// private enum whose only constructors are `pub(crate)`, and the sole way to
+    /// obtain one from outside this crate is [`gate::resolve_gate`], which produces
+    /// one **only** on the [`EffectiveGate::Live`] arm. `EffectiveGate::Shadow`
+    /// carries no field of this type. So a caller holding a shadowed gate has
+    /// nothing to pass here, and *carving a shadowed band is a compile error* —
+    /// not a runtime `if dry_run` a future refactor can silently invert, which is
+    /// exactly what `76924b0` did to `spec.dryRun`.
+    ///
+    /// The witness is deliberately unused by the write itself (a witness cannot
+    /// change what bytes are written). Its job is to exist, and to be recorded.
+    async fn assign(
+        &self,
+        witness: &LiveWitness,
+        target: &Target,
+        to_value: u64,
+    ) -> Result<AssignReceipt, ProviderError>;
     async fn release(&self, target: &Target) -> Result<ReleaseReceipt, ProviderError>;
 }
 
@@ -1187,7 +1238,17 @@ impl<C: Cluster + 'static, D: DimensionDescriptor> ResourceProvider for BandProv
             }
             other => other?,
         };
-        let capacity = self.cluster.read_limit(target, &layout, self.descriptor.resource()).await?;
+        // THE BOUND, WITH ITS PROVENANCE. `read_limit` reports `0` both for "the
+        // author declared no limit" and for "the limit is genuinely zero"; only the
+        // LAYOUT can tell those apart (`absence_is_unconstrained`). Classifying here
+        // — at the one read — is what lets `plan_tick` refuse to invent a bound
+        // nobody asked for, instead of seeding one from an ambiguous zero.
+        let raw_limit = self.cluster.read_limit(target, &layout, self.descriptor.resource()).await?;
+        let bound = if raw_limit == 0 && layout.absence_is_unconstrained() {
+            Capacity::Absent
+        } else {
+            Capacity::Declared(raw_limit)
+        };
         let owners = self
             .cluster
             .field_owners(target, &layout, self.descriptor.resource(), self.descriptor.logical_field())
@@ -1242,7 +1303,7 @@ impl<C: Cluster + 'static, D: DimensionDescriptor> ResourceProvider for BandProv
             // trailing-window peak from the band status) folds the real demonstrated
             // peak in before the decision (see `breathe_core::reconcile_one`).
             peak_used: used.value,
-            capacity,
+            bound,
             owners,
             staleness_secs: used.age_secs,
             memory_shrink_restart_free,
@@ -1258,7 +1319,15 @@ impl<C: Cluster + 'static, D: DimensionDescriptor> ResourceProvider for BandProv
         })
     }
 
-    async fn assign(&self, target: &Target, to_value: u64) -> Result<AssignReceipt, ProviderError> {
+    async fn assign(
+        &self,
+        witness: &LiveWitness,
+        target: &Target,
+        to_value: u64,
+    ) -> Result<AssignReceipt, ProviderError> {
+        // The witness is the AUTHORIZATION, not an input to the write — holding one
+        // is what made reaching this line possible at all (see the trait's doc).
+        let _ = witness;
         let layout = self.descriptor.layout(target);
         let from = self.cluster.read_limit(target, &layout, self.descriptor.resource()).await?;
         if to_value == from {

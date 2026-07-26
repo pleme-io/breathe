@@ -27,6 +27,7 @@
 
 use std::{sync::Arc, time::Duration};
 
+use breathe_control::{BoundIntroduction, Reclaim};
 use breathe_core::{reconcile_one, ReconcileInput};
 use breathe_crd::{
     ArcBand, Band, BreatheNodePool, CgroupBand, CgroupCpuBand, GiB, HostParamBand, NodePoolStatus,
@@ -199,18 +200,12 @@ async fn reconcile_host_with<B: Band, D: DimensionDescriptor>(
         .is_some_and(|last| now_secs().saturating_sub(last) < obj.cooldown_seconds() as i64);
 
     // The node master switch forces shadow: never report Applied when the agent
-    // is not permitted to write the host. `effective_dry_run_frozen` is the
-    // TWO-KEY `outorga`-backed gate (`Band::effective_dry_run` + an explicit
-    // `frozen` key) — NOT the raw `dry_run()` field. Before this fix the host
-    // reconcile composed the raw field directly, which bypassed the confirm-
-    // gate/auto-promote lifecycle the k8s-plane controller already gives the
-    // SAME CRD kinds (ArcBand/CgroupBand never auto-promoted off shadow on the
-    // host side, even after their k8s-side sibling had). `frozen` carries the
-    // node's `BreatheNodePool.writeEnabled` master switch as the external
-    // freeze key, exactly like the k8s-plane controller's own per-pool/per-node
-    // switches now do via `breathe_crd::legacy_effective_dry_run`.
-    let effective_dry_run = obj.effective_dry_run_frozen(now_secs(), !write_enabled);
-
+    // is not permitted to write the host. The gate is resolved by
+    // `Band::resolve_gate` at the `ReconcileInput` below, carrying the node's
+    // `BreatheNodePool.writeEnabled` as the external `frozen` key — the TWO-KEY
+    // rule. (This replaced the `effective_dry_run_frozen` bool: same two keys,
+    // same verdict, but the `Live` arm now carries the `LiveWitness` that is the
+    // only key to the mutation door, so a frozen node cannot reach it at all.)
     let provider = BandProvider::new(
         HostCluster::new(SystemdSysfsEnv::from_env(), envelopes, write_enabled)
             .with_cpu_samples(ctx.cpu_samples.clone()),
@@ -230,7 +225,11 @@ async fn reconcile_host_with<B: Band, D: DimensionDescriptor>(
         cfg: &cfg,
         max_staleness_secs: obj.max_staleness_seconds(),
         in_cooldown,
-        dry_run: effective_dry_run,
+        // The typed authorization verdict, carrying the SAME two-key freeze the
+        // host plane already honoured (`frozen = !pool.writeEnabled`) — so a node
+        // with writes disabled resolves to `Shadow { Frozen }`, and there is no
+        // `LiveWitness` for the mutation door to accept.
+        gate: obj.resolve_gate(now_secs(), !write_enabled),
         // host carves (ARC/cgroup) are ALWAYS RestartFree → any policy permits
         // them; honor the band's declared policy for consistency anyway.
         policy: obj.disruption_policy(),
@@ -241,8 +240,13 @@ async fn reconcile_host_with<B: Band, D: DimensionDescriptor>(
         // warmup is not applicable (u64::MAX ⇒ the gate never fires). A host cgroup
         // shrink targets MemoryHigh (soft/reclaim) already — never an OOM-kill.
         observed_for_secs: None,
-        // host cgroup shrinks ALREADY target MemoryHigh (soft) — no hard-plane pin.
-        hard_plane_grow_only: false,
+        // host cgroup shrinks ALREADY target MemoryHigh (soft, reclaim-not-kill) —
+        // no hard-plane pin needed (byte-identical to the prior `false`).
+        reclaim: Reclaim::Enabled,
+        // A sysctl / cgroup property always has a live value (an unset `MemoryHigh`
+        // reads as `max`, not `0`), so `absence_is_unconstrained()` is false for the
+        // Host layout and this is inert — set explicitly to keep the choice visible.
+        bound_introduction: BoundIntroduction::Forbidden,
     };
 
     let outcome = reconcile_one(&input, &provider).await;
