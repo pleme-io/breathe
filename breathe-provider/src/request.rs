@@ -78,6 +78,7 @@
 //! ([`NullManifestWriter`]) refuses every write by construction.
 
 use crate::gate::LiveWitness;
+use crate::manifest::{AddressedProposal, CommitOutcome};
 use crate::{LimitLayout, ProviderError, SsaPatch, Target};
 use async_trait::async_trait;
 use breathe_control::Decision;
@@ -746,8 +747,22 @@ pub enum ClassTransitionBlocked {
     /// An in-place class transition does not exist; the honest report is that the
     /// band was authored in a shape that cannot reach its own target.
     EphemeralCannotTransition,
-    /// No [`ManifestWriter`] is configured — the M0 state, and the honest one.
+    /// No [`ManifestWriter`] is configured — the default state, and the honest
+    /// one. A durable door exists ([`GitManifestWriter`](crate::manifest::GitManifestWriter))
+    /// but nothing has injected a transport behind its seam.
     NoWriterConfigured,
+    /// The band declares no `manifestRef`, so there is nowhere in git to land
+    /// the value. Deliberately distinct from `NoWriterConfigured`: one is a
+    /// deployment gap (no transport wired), the other is an authoring gap (this
+    /// band never said which file it owns), and conflating them would send an
+    /// operator to fix the wrong thing.
+    NoManifestCoordinate,
+    /// The band's single `manifestRef` cannot address every scalar the
+    /// transition moves — a Guaranteed promotion touching N containers needs N
+    /// markers. Names each unaddressed scalar rather than committing the subset
+    /// it *can* reach, because a partial class transition lands the workload in
+    /// a class nobody asked for.
+    CoordinateGap { missing: Vec<String> },
     /// The target's own resources make the desired class unreachable (e.g.
     /// Guaranteed is asked for but a container declares no limit at all, so
     /// requests can never equal limits).
@@ -894,9 +909,18 @@ pub trait RequestActuator: Send + Sync {
 pub struct CommitReceipt {
     /// The commit the writer produced.
     pub commit_sha: String,
-    /// The address it claims to have committed — checkable against the
-    /// proposal's own [`ClassTransitionProposal::addr`].
+    /// The address of the **proposal that was discharged** — echoed back, so a
+    /// receipt is auditable against the `pendingProposal` that asked for it.
     pub addr: ContentAddr,
+    /// The address of the **bytes that actually landed**.
+    ///
+    /// Deliberately a second field rather than a reuse of `addr`: the two
+    /// answer different questions ("which proposal is this?" vs "what is now in
+    /// the file?"), and collapsing them would make a writer that committed
+    /// something else indistinguishable from one that committed the proposal.
+    /// Neither is a *proof* the commit is honest — see [`ManifestWriter`]'s
+    /// tier note — but two addresses make the lie checkable by a third party.
+    pub rendered_addr: ContentAddr,
 }
 
 /// Why a durable write could not happen.
@@ -907,6 +931,18 @@ pub enum WriterError {
     Disabled,
     /// The proposal addresses a path outside this writer's allowed prefix.
     OutsideBlastRadius { path: String, allowed_prefix: String },
+    /// The working tree carries edits the writer did not make. Refused rather
+    /// than committed on top of: breathe never lands a change over unknown work.
+    RepoNotClean,
+    /// The proposal could not be anchored to a span in the manifest — no
+    /// marker, an ambiguous marker, or a marked line that is not a scalar
+    /// assignment. Carries the underlying
+    /// [`crate::manifest::EditError`]'s rendering.
+    Unanchorable { detail: String },
+    /// The remote moved under us. Surfaced, never forced — the same
+    /// non-`.force()` discipline the SSA path already holds, so breathe never
+    /// clobbers a field another writer owns.
+    Conflict { detail: String },
     /// The transport failed.
     Transport { detail: String },
 }
@@ -918,6 +954,9 @@ impl std::fmt::Display for WriterError {
             Self::OutsideBlastRadius { path, allowed_prefix } => {
                 write!(f, "path {path:?} is outside the writer's allowed prefix {allowed_prefix:?}")
             }
+            Self::RepoNotClean => f.write_str("the manifest repo has uncommitted edits — refusing to commit on top"),
+            Self::Unanchorable { detail } => write!(f, "the proposal has no anchor in the manifest: {detail}"),
+            Self::Conflict { detail } => write!(f, "manifest repo conflict: {detail}"),
             Self::Transport { detail } => write!(f, "manifest writer transport failed: {detail}"),
         }
     }
@@ -931,37 +970,50 @@ impl std::error::Error for WriterError {}
 /// whole mechanism: the two doors cannot be confused because they do not accept
 /// each other's currency.
 ///
-/// # Not built at M0, and that is stated rather than stubbed
+/// # The currency is an [`AddressedProposal`], not a bare one
 ///
-/// The only implementation is [`NullManifestWriter`], which refuses every call.
-/// The transport this trait will eventually stand on (a comment-preserving,
-/// marker-anchored YAML scalar setter, plus a Contents-API client) **does not
-/// exist anywhere in pleme-io Rust** — `serde_yaml` round-trips destroy comments,
-/// which would delete adjacent Flux `$imagepolicy` markers. Flux's own
-/// `ImageUpdateAutomation` cannot be reused: its only strategy is `Setters`,
-/// which resolves `$imagepolicy` markers to an ImagePolicy's image/tag/digest and
-/// cannot write `"384Mi"`. It is a shape to imitate — trailing marker on the
-/// value line, `update.path` as a hard blast-radius wall, the commit log as the
-/// audit trail — never a mechanism to reuse.
+/// A [`ClassTransitionProposal`] knows *what* to write and not *where*. Handing
+/// the writer one would force every implementation to carry a runtime "and if
+/// there is no coordinate?" branch. Instead the coordinate is fused in at
+/// construction: an [`AddressedProposal`] cannot exist without a path and a
+/// non-empty assignment list, so a band with no `manifestRef` reports
+/// [`ClassTransitionBlocked::NoManifestCoordinate`] and simply never produces
+/// something this door accepts.
 ///
-/// So a band whose `durability` is `Committed` computes a real, content-addressed
-/// proposal and publishes it in status; nothing commits it. That is a named gap,
-/// not a silent one.
+/// # What is and is not built
+///
+/// [`GitManifestWriter`](crate::manifest::GitManifestWriter) is real: it
+/// anchors on an operator-authored marker, refuses an ambiguous one, walls
+/// itself to a construction-time path prefix, short-circuits a no-op before
+/// touching the repo, and preserves every unrelated byte — proven against a
+/// mock [`ManifestRepo`](crate::manifest::ManifestRepo).
+///
+/// What is **not** built is the transport behind that seam: no git client and
+/// no Contents-API caller ships in this crate, so nothing commits until a
+/// controller injects one. [`NullManifestWriter`] remains the default and
+/// refuses every call, which is why an unwired band reports
+/// `Blocked(NoWriterConfigured)` instead of appearing to work.
+///
+/// Flux's own `ImageUpdateAutomation` is imitated, never reused: its only
+/// strategy is `Setters`, which resolves `$imagepolicy` markers to an
+/// ImagePolicy's image/tag/digest and cannot write `"384Mi"`. What carries over
+/// is the *shape* — a trailing marker on the value line, `update.path` as a
+/// hard blast-radius wall, the commit log as the audit trail.
 #[async_trait]
 pub trait ManifestWriter: Send + Sync {
-    /// Commit a class transition into the manifest the reconciler reads.
+    /// Commit an addressed proposal into the manifest the reconciler reads.
     ///
     /// # Errors
     ///
-    /// [`WriterError`] — always [`WriterError::Disabled`] for the M0 impl.
+    /// [`WriterError`] — always [`WriterError::Disabled`] for [`NullManifestWriter`].
     async fn propose(
         &self,
         live: &LiveWitness,
-        proposal: &ClassTransitionProposal,
-    ) -> Result<CommitReceipt, WriterError>;
+        proposal: &AddressedProposal,
+    ) -> Result<CommitOutcome, WriterError>;
 }
 
-/// The M0 default: refuses every write.
+/// The default: refuses every write.
 ///
 /// The `NullExecutor` shape — a real type that really says no, so the absence of
 /// a durable path is visible in status as `Blocked(NoWriterConfigured)` rather
@@ -974,9 +1026,20 @@ impl ManifestWriter for NullManifestWriter {
     async fn propose(
         &self,
         _live: &LiveWitness,
-        _proposal: &ClassTransitionProposal,
-    ) -> Result<CommitReceipt, WriterError> {
+        _proposal: &AddressedProposal,
+    ) -> Result<CommitOutcome, WriterError> {
         Err(WriterError::Disabled)
+    }
+}
+
+#[async_trait]
+impl<R: crate::manifest::ManifestRepo> ManifestWriter for crate::manifest::GitManifestWriter<R> {
+    async fn propose(
+        &self,
+        live: &LiveWitness,
+        proposal: &AddressedProposal,
+    ) -> Result<CommitOutcome, WriterError> {
+        self.commit(live, proposal).await
     }
 }
 
@@ -1753,12 +1816,81 @@ mod tests {
 
     #[tokio::test]
     async fn the_null_writer_refuses_every_proposal() {
-        let observed = PodResources::new(vec![c("a", Some(200), Some(400), Some(512), Some(1024))]);
-        let promoted = PodResources::new(vec![c("a", Some(400), Some(400), Some(1024), Some(1024))]);
-        let p = ClassTransitionProposal::new(t(), &observed, promoted).unwrap();
+        let coord = crate::manifest::ManifestCoordinate::new("clusters/camelot/sui.yaml", "sui-request");
+        let p = AddressedProposal::carve(&coord, "3Gi", "memory", "sui");
         let gate = crate::gate::authored_write_gate("drzzln: test");
         let w = gate.witness().expect("an authored write resolves Live");
         assert_eq!(NullManifestWriter.propose(w, &p).await, Err(WriterError::Disabled));
+    }
+
+    /// The durable door takes an [`AddressedProposal`] — a proposal fused to a
+    /// manifest coordinate — and a bare [`ClassTransitionProposal`] is not one.
+    ///
+    /// This is the SECOND disjointness, and it is the one B3 adds. The first
+    /// (a transition cannot travel the in-place door) was already a type fact;
+    /// this one says a durable write cannot happen without knowing where it
+    /// lands. Together they mean neither door can be reached with the other's
+    /// currency, and neither can be reached with a half-specified payload.
+    ///
+    /// Enforced mechanically below rather than only asserted in prose.
+    #[test]
+    fn a_bare_transition_proposal_cannot_reach_the_durable_door() {
+        // Scan the PRODUCTION surface only — everything above `mod tests`.
+        // Scanning the whole file would match this test's own literals, which
+        // is exactly what the first run of this test did.
+        let full = include_str!("request.rs");
+        let src = full.split("\nmod tests {").next().expect("the test module is the last item");
+
+        // A `From`/`TryFrom` in either direction would silently re-open the
+        // hole the type split exists to close. Assembled at runtime so the
+        // needle is never itself a literal in the scanned region.
+        let bare = "ClassTransitionProposal";
+        let addressed = "AddressedProposal";
+        for (from, to) in [(bare, addressed), (addressed, "SsaPatch"), (addressed, bare)] {
+            for verb in ["From", "TryFrom"] {
+                let mut needle = String::from("impl ");
+                needle.push_str(verb);
+                needle.push('<');
+                needle.push_str(from);
+                needle.push_str("> for ");
+                needle.push_str(to);
+                assert!(!src.contains(&needle), "{needle} would re-open the door split");
+            }
+        }
+        // And the door's own signature names the addressed type, not the bare one.
+        assert!(src.contains("proposal: &AddressedProposal,"));
+    }
+
+    /// A transition whose block touches more scalars than the band has markers
+    /// for is REFUSED, naming each one — never committed as the reachable subset.
+    #[test]
+    fn a_transition_needs_one_marker_per_scalar_or_it_names_the_gap() {
+        let observed = PodResources::new(vec![
+            c("api", Some(200), Some(400), Some(512), Some(1024)),
+            c("sidecar", Some(50), Some(100), Some(64), Some(128)),
+        ]);
+        let promoted = PodResources::new(vec![
+            c("api", Some(400), Some(400), Some(1024), Some(1024)),
+            c("sidecar", Some(100), Some(100), Some(128), Some(128)),
+        ]);
+        let p = ClassTransitionProposal::new(t(), &observed, promoted).expect("Burstable → Guaranteed");
+
+        // The band supplies ONE marker — the single-`manifestRef` shape.
+        let only_one = [("api.requests.memory".to_owned(), "sui-request".to_owned())];
+        let Err(gap) = AddressedProposal::transition("clusters/camelot/sui.yaml", &p, &only_one) else {
+            panic!("one marker cannot address a four-scalar promotion")
+        };
+        assert_eq!(gap.missing.len(), 3, "each unaddressed scalar is named: {:?}", gap.missing);
+        assert!(gap.missing.contains(&"sidecar.requests.memory".to_owned()));
+
+        // With every marker supplied it succeeds — the gap is about coverage,
+        // not a blanket refusal of transitions.
+        let all: Vec<_> = ["api.requests.memory", "api.requests.cpu", "sidecar.requests.memory", "sidecar.requests.cpu"]
+            .iter()
+            .map(|k| ((*k).to_owned(), (*k).to_owned()))
+            .collect();
+        let ok = AddressedProposal::transition("clusters/camelot/sui.yaml", &p, &all).expect("full coverage");
+        assert_eq!(ok.assignments().len(), 4);
     }
 
     // ═══════════════ THE CARVE PLANNER — Gate 0, row by row ═════════════════
