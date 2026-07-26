@@ -23,6 +23,35 @@ mod quinhao;
 mod pod_memory_high;
 mod replica_band;
 
+/// The two Tier-B authorization verdicts this crate's tests actuate under,
+/// defined ONCE for the whole crate.
+///
+/// They go through `legacy_two_state_gate` — the same single resolution point
+/// the production controllers use — because that is the only way to obtain a
+/// `Live` verdict at all: `EffectiveGate::Live` carries a `LiveWitness`, whose
+/// constructors are `pub(crate)` to `breathe-provider`. A test cannot spell one
+/// by hand, which is exactly the property that makes the provedors' gate
+/// unforgeable in production too.
+#[cfg(test)]
+pub(crate) mod test_gate {
+    use breathe_provider::EffectiveGate;
+
+    /// A LIVE verdict (`dryRun: false`, not frozen) — the provedor actuates.
+    pub(crate) fn live_gate() -> EffectiveGate {
+        let g = breathe_provider::legacy_two_state_gate(false, false);
+        assert!(g.is_live(), "an unfrozen, non-dryRun Tier-B pool must resolve live");
+        g
+    }
+
+    /// A SHADOW verdict (`dryRun: true`) — the provedor computes the `would`
+    /// and mutates nothing.
+    pub(crate) fn shadow_gate() -> EffectiveGate {
+        let g = breathe_provider::legacy_two_state_gate(true, false);
+        assert!(g.is_shadow(), "a dryRun Tier-B pool must resolve shadow");
+        g
+    }
+}
+
 use breathe_core::{reconcile_one, PredictiveInput, ReconcileInput};
 use breathe_crd::{
     AppBand, ArcBand, Band, BandSummary, BreatheCloudPool, BreatheConfig, BreatheConfigSpec, BreatheOverview,

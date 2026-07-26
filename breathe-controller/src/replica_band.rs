@@ -103,15 +103,16 @@ pub async fn reconcile_replica_band(obj: Arc<ReplicaBand>, ctx: Arc<Ctx>) -> Res
     // resolution the vertical bands use, resolved once and shared by the plan gate
     // and the status. `dry_run` is derived from it, never stored beside it.
     //
-    // NOTE (tier-honest): the horizontal plane actuates through its own
-    // `plan_replica_tick`/`ReplicaEnvironment` path, NOT through
-    // `breathe_core::reconcile_one`, so its refusal to write is a RUNTIME bool
-    // here — only-mitigated — where the vertical planes' is a compile error (a
-    // shadowed gate has no `LiveWitness` to hand the mutation door). The VERDICT is
-    // identical; the enforcement tier is not. Threading the witness through
-    // `ReplicaEnvironment::scale` is the named follow-on.
-    let gate = obj.resolve_gate(now, false);
-    let dry_run = gate.is_shadow();
+    // TIER (updated 2026-07-26 — the named follow-on landed): the horizontal plane
+    // plans through its own `plan_replica_tick`, NOT through
+    // `breathe_core::reconcile_one`, so `plan.actuate` is still decided by a
+    // runtime bool (`ReplicaGate.dry_run`) — only-mitigated. But the WRITE itself
+    // now goes through `Cluster::apply`, which demands a `&LiveWitness`, so a
+    // shadowed tick cannot reach a real SSA even if `plan_replica_tick` were to
+    // hand back `actuate: Some(..)` by mistake. Planning: only-mitigated.
+    // Writing: truly-unrepresentable without a witness.
+    let auth = obj.resolve_gate(now, false);
+    let dry_run = auth.is_shadow();
 
     // NEVER SCALE ON A STALE SAMPLE → held, reported Stale (no plan, no write).
     let receipt = if staleness > obj.max_staleness_seconds() {
@@ -141,8 +142,18 @@ pub async fn reconcile_replica_band(obj: Arc<ReplicaBand>, ctx: Arc<Ctx>) -> Res
 
         // ACTUATE (async SSA) only when the plan says to — the SAME no-`.force()`
         // cooperative-yield write every generic-path layout uses (a 409 = yield).
-        let (applied, conflict) = match plan.actuate {
-            Some(to) => {
+        let (applied, conflict) = match (plan.actuate, auth.witness()) {
+            // A planned scale with NO witness is a CONTRADICTION, not a write.
+            // `plan_replica_tick` sets `actuate: None` whenever `ReplicaGate.dry_run`
+            // is set, and `dry_run` is `auth.is_shadow()`, so this arm is unreachable
+            // by construction today. It exists because "unreachable by construction"
+            // is a property of code that can be edited: if the two ever disagree, the
+            // answer is a loud refusal, never a silent unauthorized scale.
+            (Some(to), None) => {
+                warn!(band = %name, would_scale_to = to, "REFUSED: a replica scale was planned with no authorization witness — this is a bug in the plan/gate agreement, not a shadow tick");
+                (false, false)
+            }
+            (Some(to), Some(witness)) => {
                 let patch = SsaPatch {
                     target: target.clone(),
                     field_manager: FIELD_MANAGER.into(),
@@ -150,7 +161,7 @@ pub async fn reconcile_replica_band(obj: Arc<ReplicaBand>, ctx: Arc<Ctx>) -> Res
                     resource: "count".into(),
                     value: u64::from(to),
                 };
-                match cluster.apply(&patch).await {
+                match cluster.apply(witness, &patch).await {
                     Ok(_) => (true, false),
                     // KubeCluster maps a 409 field-conflict (a competing KEDA/HPA owns
                     // `.spec.replicas`) to ApiTransient → yield + re-observe next tick.
@@ -164,7 +175,7 @@ pub async fn reconcile_replica_band(obj: Arc<ReplicaBand>, ctx: Arc<Ctx>) -> Res
                     }
                 }
             }
-            None => (false, false),
+            (None, _) => (false, false),
         };
         ReplicaReceipt::resolve(&plan, applied, conflict, dry_run, in_cooldown)
     };
@@ -192,9 +203,9 @@ pub async fn reconcile_replica_band(obj: Arc<ReplicaBand>, ctx: Arc<Ctx>) -> Res
         counters,
     );
     // Dual-write the typed verdict alongside the legacy bool, from the ONE `gate`
-    // that drove the tick — so `kubectl get rband` can finally answer "is this band
+    // that drove the tick (`auth`) — so `kubectl get rband` can finally answer "is this band
     // writing to my cluster, and why", exactly like the vertical kinds.
-    breathe_runtime::set_effective_gate(&mut status, &gate);
+    breathe_runtime::set_effective_gate(&mut status, &auth);
     metrics::gauge!("breathe_replica_current_replicas", "namespace" => ns.clone(), "name" => name.clone())
         .set(f64::from(env.current()));
     info!(dim = "replica", band = %name, target = %target.name, phase = ?status.phase, ratio = metric_ratio, "replica reconciled");

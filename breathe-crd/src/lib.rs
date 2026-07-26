@@ -2445,6 +2445,19 @@ pub struct PodMemoryHighStatus {
     /// A typed error message when the write failed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,
+    /// **The typed authorization verdict for the last tick** — the same field
+    /// `BandStatus` carries, on a Tier-B kind. Added 2026-07-26: this kind wrote
+    /// ONLY the legacy `effectiveDryRun` bool, so after a refactor whose whole
+    /// point was one legible verdict, two status surfaces still answered "why?"
+    /// with nothing at all. `witness: legacyDefault` + `legacyPath:
+    /// twoStateDryRun` is the honest reading here — this kind has no
+    /// `spec.writeIntent` field yet, so every live write it makes IS migration
+    /// debt, and now says so.
+    ///
+    /// Written from the SAME `EffectiveGate` value as `effectiveDryRun` below,
+    /// so the two can never disagree.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effective_gate: Option<EffectiveGateReport>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_seen_epoch: Option<i64>,
 }
@@ -2728,6 +2741,19 @@ pub struct CloudPoolStatus {
     /// confirm the predictive posture is live from the status alone.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub predictive_active: Option<bool>,
+    /// **The typed authorization verdict for the last tick** — the same field
+    /// `BandStatus` carries, on a Tier-B kind. Added 2026-07-26: this kind wrote
+    /// ONLY the legacy `effectiveDryRun` bool, so after a refactor whose whole
+    /// point was one legible verdict, two status surfaces still answered "why?"
+    /// with nothing at all. `witness: legacyDefault` + `legacyPath:
+    /// twoStateDryRun` is the honest reading here — this kind has no
+    /// `spec.writeIntent` field yet, so every live write it makes IS migration
+    /// debt, and now says so.
+    ///
+    /// Written from the SAME `EffectiveGate` value as `effectiveDryRun` below,
+    /// so the two can never disagree.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effective_gate: Option<EffectiveGateReport>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub effective_dry_run: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -2959,6 +2985,19 @@ pub struct IsolationBandStatus {
     /// at a glance.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub unauthorized_count: Option<i64>,
+    /// **The typed authorization verdict for the last tick** — the same field
+    /// `BandStatus` carries, on a Tier-B kind. Added 2026-07-26: this kind wrote
+    /// ONLY the legacy `effectiveDryRun` bool, so after a refactor whose whole
+    /// point was one legible verdict, two status surfaces still answered "why?"
+    /// with nothing at all. `witness: legacyDefault` + `legacyPath:
+    /// twoStateDryRun` is the honest reading here — this kind has no
+    /// `spec.writeIntent` field yet, so every live write it makes IS migration
+    /// debt, and now says so.
+    ///
+    /// Written from the SAME `EffectiveGate` value as `effectiveDryRun` below,
+    /// so the two can never disagree.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effective_gate: Option<EffectiveGateReport>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub effective_dry_run: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -3890,6 +3929,9 @@ mod tests {
             nodes_tainted: Some(1),
             unauthorized_pods: vec!["default/stray-pod".into()],
             unauthorized_count: Some(1),
+            // A LIVE Tier-B write: `legacyDefault` witness on the `twoStateDryRun`
+            // path, since this kind carries no `spec.writeIntent` yet.
+            effective_gate: Some(breathe_provider::legacy_two_state_gate(false, false).report()),
             effective_dry_run: Some(false),
             last_seen_epoch: Some(1_000),
         };

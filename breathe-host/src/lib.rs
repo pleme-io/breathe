@@ -34,6 +34,7 @@ use std::{
 };
 
 use async_trait::async_trait;
+use breathe_provider::LiveWitness;
 use breathe_provider::{
     AppliedReceipt, ApplySemantics, CgroupDriver, Cluster, DimensionDescriptor, DimensionId, Directionality,
     HostKnob, HostMetric, IoMaxField, LimitLayout, MetricSource, ProviderError, Sample, SsaPatch, Target,
@@ -829,7 +830,11 @@ impl<H: HostEnvironment> Cluster for HostCluster<H> {
         Ok(Vec::new())
     }
 
-    async fn apply(&self, patch: &SsaPatch) -> Result<AppliedReceipt, ProviderError> {
+    // `_witness`: the authorization is enforced at the CALL BOUNDARY (see
+    // `Cluster::apply`'s doc) — a caller with a shadow verdict has no witness to
+    // pass, so this function is unreachable from one. A witness cannot change what
+    // bytes go out, so a leaf actuator has nothing to do with the value itself.
+    async fn apply(&self, _witness: &LiveWitness, patch: &SsaPatch) -> Result<AppliedReceipt, ProviderError> {
         let LimitLayout::Host(knob) = &patch.layout else {
             return Err(ProviderError::ApiPermanent(
                 "k8s layout on HostCluster apply (route k8s dimensions to KubeCluster)".into(),
@@ -1063,6 +1068,18 @@ impl DimensionDescriptor for HostParamDescriptor {
 mod tests {
     use super::*;
     use breathe_provider::{BandProvider, ResourceProvider};
+
+    /// A [`LiveWitness`] for the `apply` calls below — obtained the ONLY way any
+    /// crate can: through the real resolver, on a real authored write. There is
+    /// no test-only constructor, and adding one would defeat the type.
+    fn w() -> breathe_provider::LiveWitness {
+        match breathe_provider::authored_write_gate("breathe-test") {
+            breathe_provider::EffectiveGate::Live { witness } => witness,
+            breathe_provider::EffectiveGate::Shadow { reason } => {
+                unreachable!("an authored write resolves live, got {reason:?}")
+            }
+        }
+    }
     use std::collections::VecDeque;
     use std::sync::Mutex;
 
@@ -1196,7 +1213,7 @@ mod tests {
             resource: "memory".into(),
             value: 256 * GI / 1024,
         };
-        cluster.apply(&patch).await.unwrap();
+        cluster.apply(&w(), &patch).await.unwrap();
         assert!(
             cluster.env().writes().iter().any(|(p, v)| p == &sysctl_path("vm.dirty_bytes") && *v == 256 * GI / 1024),
             "the generic Sysctl arm wrote the mapped procfs path"
@@ -1273,7 +1290,7 @@ mod tests {
             resource: "memory".into(),
             value: 40_000_000,
         };
-        cluster.apply(&patch).await.unwrap();
+        cluster.apply(&w(), &patch).await.unwrap();
         assert!(
             cluster.env().str_writes().iter().any(|(p, v)| p == "nix-daemon.service:IOWriteBandwidthMax" && v == "259:0 40000000"),
             "wrote the per-device wbps cap"
@@ -1331,7 +1348,7 @@ mod tests {
             resource: "memory".into(),
             value: 4 * GI,
         };
-        cluster.apply(&patch).await.unwrap();
+        cluster.apply(&w(), &patch).await.unwrap();
         assert!(cluster.env().writes().is_empty(), "shadow mode must not write the host");
     }
 
@@ -1346,7 +1363,7 @@ mod tests {
             resource: "memory".into(),
             value: 4 * GI, // ≤ 6 GiB ceiling
         };
-        cluster.apply(&patch).await.unwrap();
+        cluster.apply(&w(), &patch).await.unwrap();
         assert_eq!(cluster.env().writes(), vec![(ZFS_ARC_MAX_PATH.to_string(), 4 * GI)]);
     }
 
@@ -1361,7 +1378,7 @@ mod tests {
             resource: "memory".into(),
             value: 8 * GI, // > 6 GiB ceiling — must be refused
         };
-        let err = cluster.apply(&patch).await.unwrap_err();
+        let err = cluster.apply(&w(), &patch).await.unwrap_err();
         assert!(matches!(err, ProviderError::ApiPermanent(_)), "over-ceiling host write must be refused");
         assert!(cluster.env().writes().is_empty(), "a refused write must not touch the host");
     }
@@ -1414,7 +1431,7 @@ mod tests {
             value: GI,
         };
         // no L2 envelope for `unknown.service` ⇒ no ceiling ⇒ refuse (never write blind).
-        assert!(cluster.apply(&patch).await.is_err());
+        assert!(cluster.apply(&w(), &patch).await.is_err());
         assert!(cluster.env().writes().is_empty());
     }
 
@@ -1526,16 +1543,16 @@ mod tests {
         };
         // LIVE: 1500 millicores → CPUQuota=150% (a string set-property, not u64).
         let live = HostCluster::new(MockHostEnv::default(), envelopes(), true);
-        live.apply(&patch(1500)).await.unwrap();
+        live.apply(&w(), &patch(1500)).await.unwrap();
         assert_eq!(live.env().str_writes(), vec![("nix-daemon.service:CPUQuota".to_string(), "150%".to_string())]);
         assert!(live.env().writes().is_empty(), "cpu quota goes through the STRING set-property");
         // SAFETY WALL 2: over the 8000m L2 ceiling ⇒ refused, nothing written.
         let over = HostCluster::new(MockHostEnv::default(), envelopes(), true);
-        assert!(matches!(over.apply(&patch(9000)).await.unwrap_err(), ProviderError::ApiPermanent(_)));
+        assert!(matches!(over.apply(&w(), &patch(9000)).await.unwrap_err(), ProviderError::ApiPermanent(_)));
         assert!(over.env().str_writes().is_empty(), "a refused cpu write touches nothing");
         // SHADOW: decides but writes nothing.
         let shadow = HostCluster::shadow(MockHostEnv::default(), envelopes());
-        shadow.apply(&patch(1500)).await.unwrap();
+        shadow.apply(&w(), &patch(1500)).await.unwrap();
         assert!(shadow.env().str_writes().is_empty(), "shadow never writes the host");
     }
 
@@ -1593,19 +1610,19 @@ mod tests {
         let expected = pod_cgroup_memory_high_path(PodQosClass::Burstable, "p-1", "containerd://c1");
         // LIVE: exactly one write — to the pod's memory.high file.
         let live = HostCluster::new(MockHostEnv::default(), envelopes(), true);
-        live.apply(&patch).await.unwrap();
+        live.apply(&w(), &patch).await.unwrap();
         assert_eq!(live.env().writes(), vec![(expected.clone(), 448 * 1024 * 1024)]);
         assert!(live.env().writes().iter().all(|(p, _)| !p.contains("memory.max")), "never writes memory.max");
         // SHADOW: writes nothing.
         let shadow = HostCluster::shadow(MockHostEnv::default(), envelopes());
-        shadow.apply(&patch).await.unwrap();
+        shadow.apply(&w(), &patch).await.unwrap();
         assert!(shadow.env().writes().is_empty(), "shadow never writes the pod cgroup");
         // an unknown QoS is a typed error, never a write to a wrong path.
         let bad = SsaPatch {
             layout: LimitLayout::Host(HostKnob::PodCgroupMemoryHigh { driver: CgroupDriver::Systemd, qos: "Bogus".into(), pod_uid: "p".into(), container_runtime_id: "c".into() }),
             ..patch.clone()
         };
-        assert!(matches!(live.apply(&bad).await.unwrap_err(), ProviderError::ApiPermanent(_)));
+        assert!(matches!(live.apply(&w(), &bad).await.unwrap_err(), ProviderError::ApiPermanent(_)));
     }
 
     #[test]

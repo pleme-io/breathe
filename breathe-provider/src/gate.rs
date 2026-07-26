@@ -35,10 +35,45 @@
 //!
 //! [`LiveWitness`] is a newtype over a **private** enum whose only constructors
 //! are `pub(crate)`. The sole path to one from outside this crate is
-//! [`resolve_gate`]. Therefore, once `ResourceProvider::assign` takes a
-//! `&LiveWitness` (stage S2), **carving a shadowed band is a compile error**,
-//! not a runtime check — `EffectiveGate::Shadow` has no field of that type, so
-//! the shadow arm has nothing to pass.
+//! [`resolve_gate`]. So both mutation doors — `ResourceProvider::assign` (the
+//! band plane) and `Cluster::apply` (the I/O boundary every plane funnels
+//! through) — take a `&LiveWitness`, and **a caller holding a shadow verdict
+//! cannot reach either**: `EffectiveGate::Shadow` has no field of that type, so
+//! there is nothing to pass and the call does not compile.
+//!
+//! ## Exactly what that covers, and exactly what it does not
+//!
+//! An adversarial review on 2026-07-26 found this claim was, as originally
+//! written, **true only for the vertical band plane** — three production paths
+//! reached a real write with no witness anywhere on them. Two are now closed and
+//! one is not, so the honest per-path table is:
+//!
+//! | path | tier |
+//! |---|---|
+//! | vertical bands (`assign` → `apply`) | **truly-unrepresentable** at the caller |
+//! | host-agent `PodMemoryHigh` cgroup write | **truly-unrepresentable** — the shadow arm no longer calls `apply` at all |
+//! | `ReplicaBand` SSA | **truly-unrepresentable** for the *write*; the *plan* (`plan.actuate`) is still a runtime bool |
+//! | actuator plane (`ConfigReload` / `ApiCall` / JMX / `AppRpc`) | **truly-unrepresentable** at the caller |
+//! | **cloud node provision / deprovision** (`Provedor`) | **only-mitigated** — see below |
+//!
+//! The provisioning path is the honest exception, and it is the one with the
+//! largest blast radius (it creates and destroys cloud nodes). `Provedor::
+//! provision` cannot simply demand a witness the way a write-only door can,
+//! because it must ALSO run under a shadow verdict: its shadow arm reads live
+//! cloud state to compute the clamped `would`. What changed is that the value
+//! deciding the branch is no longer a forgeable `bool` but an [`EffectiveGate`],
+//! whose `Live` arm cannot be spelled by hand. The branch itself is still a
+//! runtime `if`. The destination that would close it is a split — a read-only
+//! `plan_provision(n) -> would` plus a `provision(&LiveWitness, n)` that only
+//! ever writes — named here, and deliberately not attempted in the same change.
+//!
+//! Two further residuals, stated so they are not mistaken for coverage:
+//! *implementations* of these traits are not constrained by the witness (an impl
+//! that ignores it still writes — which is why `HostCluster::write_enabled` and
+//! the `NodeEnvelopes` L2 ceiling remain as independent walls), and a write
+//! surface with no CRD at all would be invisible to
+//! `gate_matrix::WRITE_SURFACE_CENSUS`, which is a CI test over generated
+//! schemas, not a type.
 //!
 //! (Note for reviewers: Rust has no per-variant field privacy — the fields of a
 //! `pub enum`'s variants are always public. A public enum could therefore be
@@ -817,6 +852,76 @@ pub fn resolve_gate(i: &GateInputs) -> EffectiveGate {
             LegacyDecision::Shadow(reason) => EffectiveGate::Shadow { reason },
         },
     }
+}
+
+/// [`resolve_gate`] for an EXPLICIT authored write, in one call.
+///
+/// **This grants nothing new.** It is exactly [`resolve_gate`] on a
+/// `{intent: write, authorizedBy}` input — an input every crate in the fleet can
+/// already build. It exists because seven test modules and every future non-band
+/// write surface would otherwise each re-derive the same six-line [`GateInputs`]
+/// literal, and a hand-copied authorization literal is precisely the shape this
+/// module exists to delete.
+///
+/// Attribution is preserved by the signature: there is no way to call this
+/// without naming an authority, and a blank one is refused (a blank
+/// `authorized_by` is [`IntentError::UnattributedWrite`], so the result is
+/// `Shadow { IntentMalformed }` — fail-safe, never an anonymous write).
+///
+/// Returns an [`EffectiveGate`], not a [`LiveWitness`]: the caller still has to
+/// match, and the `Shadow` arm still has nothing to hand a mutation door.
+#[must_use]
+pub fn authored_write_gate(authorized_by: &str) -> EffectiveGate {
+    resolve_gate(&GateInputs {
+        intent: Some(WriteIntentSpec {
+            intent: IntentKind::Write,
+            confirm_after_seconds: None,
+            authorized_by: Some(authorized_by.to_owned()),
+        }
+        .parse()),
+        frozen: false,
+        confirm: ConfirmVerdict::NotEvaluated,
+        // Unreachable: an authored intent short-circuits the legacy chain. Named
+        // rather than defaulted, because "what does the legacy arm say" is
+        // exactly the question `76924b0` answered silently.
+        legacy: LegacyDecision::Shadow(ShadowReason::ModeShadow),
+    })
+}
+
+/// [`resolve_gate`] for a **Tier-B legacy-boolean CRD kind** — one carrying a
+/// bare `dryRun` + `writeEnabled` pair and no `writeIntent`, `mode`, or
+/// Ready/Stale/Conflict status (`BreatheCloudPool`, `IsolationBand`, the
+/// `PodMemoryHigh` dispatch).
+///
+/// The two-key rule, unchanged: `dry_run` selects shadow-vs-effect, `frozen` is
+/// the pool/node master write switch and overrides everything. What changes is
+/// the RETURN TYPE — these kinds used to reduce the decision to a bare bool that
+/// each call site then re-tested with a raw `if dry_run`, which is why three
+/// mutation paths reached a real cluster write with no witness at all. Now they
+/// get the same [`EffectiveGate`] the vertical band plane gets, so their write
+/// sites can demand a [`LiveWitness`] too.
+///
+/// `frozen` is applied by [`resolve_gate`] itself rather than folded into the
+/// legacy decision, so a shadowed-because-frozen band reports `Frozen` and not
+/// the less specific `ModeShadow` — same composed verdict, better attribution.
+///
+/// The witness a live Tier-B write carries is
+/// [`LegacyPath::TwoStateDryRun`]-attributed migration debt, and correctly so:
+/// these kinds genuinely have no `writeIntent` field yet. They will report
+/// [`WitnessKind::LegacyDefault`] until they grow one — which is the S5
+/// burn-down metric doing its job, not a gap.
+#[must_use]
+pub fn legacy_two_state_gate(dry_run: bool, frozen: bool) -> EffectiveGate {
+    resolve_gate(&GateInputs {
+        intent: None,
+        frozen,
+        confirm: ConfirmVerdict::NotEvaluated,
+        legacy: if dry_run {
+            LegacyDecision::Shadow(ShadowReason::ModeShadow)
+        } else {
+            LegacyDecision::Apply(LegacyPath::TwoStateDryRun)
+        },
+    })
 }
 
 #[cfg(test)]

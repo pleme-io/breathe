@@ -375,19 +375,19 @@ async fn reconcile_pod_memory_high(obj: Arc<PodMemoryHigh>, ctx: Arc<Ctx>) -> Re
         }
     };
     // SHADOW unless BOTH the node master switch is on AND the dispatch is not
-    // dryRun — threaded through the SAME two-key `outorga::PromotionPolicy::decide`
-    // every `Band` and the node-Forma/isolation-band controllers use
-    // (`breathe_crd::legacy_effective_dry_run`; `PodMemoryHigh` is a
-    // controller-computed VALUE dispatch, not a self-deciding band, so it rides
-    // the pure two-state Shadow/Effect arm — see that function's doc).
-    let promotion = breathe_crd::legacy_effective_dry_run(obj.spec.dry_run, !write_enabled);
-    let do_write = promotion.is_apply();
-    if let Some(reason) = promotion.shadow_reason() {
-        debug!(node = %ctx.node_name, pmh = %name, reason = ?reason, "pod memory.high: held in shadow");
-    }
-    // The pod memory.high lever has no L2 envelope (it is bounded by the pod's own
-    // memory.max + the band's CRD ceiling), so empty NodeEnvelopes is correct here.
-    let cluster = HostCluster::new(SystemdSysfsEnv::from_env(), NodeEnvelopes::default(), do_write);
+    // dryRun — the same two-key rule every `Band` and the node-Forma/isolation-band
+    // controllers obey, now resolved to the same TYPED verdict
+    // (`breathe_provider::legacy_two_state_gate`; `PodMemoryHigh` is a
+    // controller-computed VALUE dispatch, not a self-deciding band, so it rides the
+    // pure two-state Shadow/Effect arm — see that function's doc).
+    //
+    // Until 2026-07-26 this was a bare `do_write` bool handed to
+    // `HostCluster::new`, and the shadow path still CALLED `cluster.apply`,
+    // relying on that constructor argument to make the write a no-op. Two runtime
+    // booleans in series, no type-level statement of authorization anywhere on the
+    // path — and `PodMemoryHigh` is not a `DimensionId`, so the ten-arm
+    // exhaustiveness guard could not see this surface at all.
+    let gate = breathe_provider::legacy_two_state_gate(obj.spec.dry_run, !write_enabled);
     let patch = SsaPatch {
         target: Target {
             namespace: String::new(),
@@ -402,26 +402,53 @@ async fn reconcile_pod_memory_high(obj: Arc<PodMemoryHigh>, ctx: Arc<Ctx>) -> Re
         resource: "memory".into(),
         value: obj.spec.desired_bytes,
     };
-    let status = match cluster.apply(&patch).await {
-        Ok(_) => {
-            let phase = if do_write { "Applied" } else { "ShadowWouldApply" };
-            info!(node = %ctx.node_name, pmh = %name, desired = obj.spec.desired_bytes, do_write, "pod memory.high reconciled");
+    // Cast once, not per arm (all three report the same intended value).
+    let desired_i64 = i64::try_from(obj.spec.desired_bytes).unwrap_or(i64::MAX);
+    // THE MUTATION DOOR. The `Shadow` arm does not reach `apply` at all now — it
+    // has no `LiveWitness` to hand it, so the call does not compile. That is
+    // strictly FEWER writes than before (the shadow path used to make the call and
+    // rely on `HostCluster`'s internal `write_enabled` to swallow it).
+    let status = match &gate {
+        breathe_provider::EffectiveGate::Shadow { reason } => {
+            debug!(node = %ctx.node_name, pmh = %name, reason = ?reason, "pod memory.high: held in shadow");
             PodMemoryHighStatus {
-                phase: Some(phase.into()),
-                written_bytes: Some(obj.spec.desired_bytes as i64),
+                phase: Some("ShadowWouldApply".into()),
+                written_bytes: Some(desired_i64),
                 observed_node: Some(ctx.node_name.clone()),
+                effective_gate: Some(gate.report()),
                 last_seen_epoch: Some(now_secs()),
                 ..Default::default()
             }
         }
-        Err(e) => {
-            warn!(node = %ctx.node_name, pmh = %name, error = %e, "pod memory.high write failed");
-            PodMemoryHighStatus {
-                phase: Some("Error".into()),
-                observed_node: Some(ctx.node_name.clone()),
-                message: Some(e.to_string()),
-                last_seen_epoch: Some(now_secs()),
-                ..Default::default()
+        breathe_provider::EffectiveGate::Live { witness } => {
+            // `write_enabled` is TRUE on this arm by construction (a false one
+            // resolves `Frozen` above), so the second gate agrees — belt and
+            // braces, deliberately kept: `HostCluster`'s own wall and the L2
+            // ceiling are independent of authorization and stay where they are.
+            let cluster = HostCluster::new(SystemdSysfsEnv::from_env(), NodeEnvelopes::default(), true);
+            match cluster.apply(witness, &patch).await {
+                Ok(_) => {
+                    info!(node = %ctx.node_name, pmh = %name, desired = obj.spec.desired_bytes, witness = ?witness.kind(), "pod memory.high reconciled");
+                    PodMemoryHighStatus {
+                        phase: Some("Applied".into()),
+                        written_bytes: Some(desired_i64),
+                        observed_node: Some(ctx.node_name.clone()),
+                        effective_gate: Some(gate.report()),
+                        last_seen_epoch: Some(now_secs()),
+                        ..Default::default()
+                    }
+                }
+                Err(e) => {
+                    warn!(node = %ctx.node_name, pmh = %name, error = %e, "pod memory.high write failed");
+                    PodMemoryHighStatus {
+                        phase: Some("Error".into()),
+                        observed_node: Some(ctx.node_name.clone()),
+                        message: Some(e.to_string()),
+                        effective_gate: Some(gate.report()),
+                        last_seen_epoch: Some(now_secs()),
+                        ..Default::default()
+                    }
+                }
             }
         }
     };
