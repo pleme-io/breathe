@@ -423,6 +423,18 @@ pub mod grpc {
             // omits the rest (None) → correct RFC-7386 merge: present writes, absent
             // leaves unchanged. (Without presence, proto3 would drop zero values.)
             let spec = serde_json::to_value(r.body.unwrap_or_default()).map_err(|e| Status::internal(e.to_string()))?;
+            // Same border check as the REST and MCP surfaces: a go-live must name
+            // its author. Refusing here keeps all four surfaces answering
+            // identically, instead of gRPC being the one that writes a CR the
+            // controller will only ever resolve to a fail-safe shadow.
+            if spec["writeIntent"]["intent"] == "write"
+                && spec["writeIntent"]["authorizedBy"].as_str().map(str::trim).unwrap_or_default().is_empty()
+            {
+                return Err(Status::invalid_argument(
+                    "writeIntent.intent=write requires authorizedBy — a live carve must name who \
+                     authorized it. Nothing was written.",
+                ));
+            }
             let v = self.store.patch_band_spec(kind_of(r.kind)?, r.namespace, r.name, spec).await.map_err(st)?;
             Ok(Response::new(typed(v)?))
         }
@@ -436,7 +448,8 @@ pub mod grpc {
             if !k.dry_run_is_honored() {
                 return Err(Status::failed_precondition(
                     "spec.dryRun has no effect on this band kind (retired breathe@76924b0, 2026-06-19); \
-                     use BandSetWriteIntent. Only host-param and kube-param read it. Nothing was written.",
+                     set BandSpec.write_intent via BandPatch instead. Only host-param and kube-param \
+                     read dryRun. Nothing was written.",
                 ));
             }
             let v = self.store.patch_band_spec(k, r.namespace, r.name, serde_json::json!({ "dryRun": r.dry_run })).await.map_err(st)?;
@@ -837,6 +850,35 @@ mod tests {
         let resp = svc.band_set_dry_run(call(grpc::pb::BandKind::HostParam)).await.unwrap();
         assert_eq!(resp.into_inner().spec.unwrap().dry_run, Some(false));
         assert_eq!(mock.patches.lock().unwrap()[0].1, json!({ "dryRun": false }));
+    }
+
+    /// gRPC can finally author `writeIntent` at all — its `BandSpec` carried only
+    /// `dry_run`, which is inert on eight kinds, so this surface had no way to
+    /// hold or release a band. And it applies the same unattributed-go-live
+    /// refusal as REST and MCP, so all four surfaces answer identically.
+    #[tokio::test]
+    async fn grpc_band_patch_carries_write_intent_and_refuses_an_unattributed_go_live() {
+        use grpc::pb::breathe_server::Breathe;
+        let mock = Arc::new(MockStore::default());
+        let svc = grpc::GrpcService { store: mock.clone() };
+        let call = |wi: grpc::pb::WriteIntent| {
+            tonic::Request::new(grpc::pb::BandPatchRequest {
+                kind: grpc::pb::BandKind::Cpu as i32,
+                namespace: "camelot".into(),
+                name: "coredns".into(),
+                body: Some(grpc::pb::BandSpec { write_intent: Some(wi), ..Default::default() }),
+            })
+        };
+        let unattributed =
+            grpc::pb::WriteIntent { intent: "write".into(), confirm_after_seconds: None, authorized_by: None };
+        let err = svc.band_patch(call(unattributed)).await.unwrap_err();
+        assert_eq!(err.code(), tonic::Code::InvalidArgument);
+        assert!(mock.patches.lock().unwrap().is_empty(), "a refused go-live must not reach the store");
+
+        let observe =
+            grpc::pb::WriteIntent { intent: "observe".into(), confirm_after_seconds: None, authorized_by: None };
+        svc.band_patch(call(observe)).await.unwrap();
+        assert_eq!(mock.patches.lock().unwrap()[0].1["writeIntent"]["intent"], "observe");
     }
 
     /// **The spec-drift gate.** `spec/breathe.openapi.yaml` calls itself the

@@ -47,6 +47,18 @@ message BandSpec {
   optional double shrink_factor = 13;
   optional bool suspend = 14;
   TargetRef target_ref = 15;
+  // THE authorization gate, on every band kind. Added 2026-07-26: gRPC could
+  // previously set only dry_run, which is inert on eight of the ten kinds, so
+  // this surface had no way to hold or release a band at all.
+  WriteIntent write_intent = 16;
+}
+
+// spec.writeIntent. `authorized_by` is REQUIRED when intent is "write" — an
+// unattributed go-live is refused rather than granted anonymously.
+message WriteIntent {
+  string intent = 1;                          // observe|calibrateThenWrite|write|frozen
+  optional uint64 confirm_after_seconds = 2;
+  optional string authorized_by = 3;
 }
 
 message BandStatus {
