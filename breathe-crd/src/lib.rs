@@ -21,6 +21,10 @@ use std::collections::BTreeMap;
 
 use breathe_control::replica::{ReplicaBandConfig, ReplicaSignal, Topology};
 use breathe_control::{BandConfig, MetricMissingPolicy, Unit};
+use breathe_provider::gate::{
+    self, ConfirmVerdict, EffectiveGate, EffectiveGateReport, GateInputs, LegacyDecision, LegacyPath, WriteIntent,
+    WriteIntentSpec,
+};
 use breathe_provider::{DisruptionPolicy, LimitLayout, MetricSource};
 use kube::CustomResource;
 use schemars::JsonSchema;
@@ -170,8 +174,26 @@ pub struct BandStatus {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub effective_policy: Option<String>,
     /// The effective mode: `true` = SHADOW (observe + attest, never carve).
+    ///
+    /// **Kept for compatibility; superseded by [`BandStatus::effective_gate`],**
+    /// which carries the same verdict plus the one thing a bare bool never
+    /// could: *why*. Both are written every tick and can never disagree —
+    /// this bool is literally `effective_gate.state == shadow`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub effective_dry_run: Option<bool>,
+    /// **The typed authorization verdict for the last tick** — shadow with a
+    /// named reason, or live with a named witness.
+    ///
+    /// This is the field that answers, from the CR alone, the two questions
+    /// `effectiveDryRun` could not: *why is this band held?* (an authored
+    /// `observe`, or an accidental `NotReady`/`Stale`/`Conflict` — a
+    /// distinction that mattered on camelot-eks, where six bands were shadowed
+    /// by accident while every surface reported "dryRun") and *what authorizes
+    /// this band to write?* A `witness` of `legacyDefault` means the write
+    /// rests on a pre-2026-07 resolution path rather than an authored
+    /// `spec.writeIntent` — i.e. migration debt, and the burn-down metric.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effective_gate: Option<EffectiveGateReport>,
     /// Seconds remaining in the post-carve cooldown (0 = ready to carve).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cooldown_remaining_seconds: Option<i64>,
@@ -210,11 +232,22 @@ pub struct BandStatus {
     pub observed_cost_remaining_cents: Option<i64>,
 }
 
-/// The band's PROMOTION LIFECYCLE — the typed, configurable state controlling
-/// whether (and when) breathe moves from observing (SHADOW) to carving (EFFECT).
-/// The fleet default is `ShadowConfirmEffect`: no band is parked in permanent
-/// shadow, and none goes live unconfirmed — it shadows until a clean-observation
-/// window proves it's safe, then auto-begins.
+/// The band's PROMOTION LIFECYCLE — the typed state controlling whether (and
+/// when) breathe moves from observing (SHADOW) to carving (EFFECT).
+///
+/// **SUPERSEDED by [`WriteIntent`], retired-not-deleted.** `spec.mode` is still
+/// read (it is the second link in the resolution chain `writeIntent` >
+/// `mode` > the compiled `ShadowConfirmEffect`) so every already-authored CR
+/// keeps working unchanged. New CRs should author `spec.writeIntent`, whose
+/// arms map one-to-one: `shadow` → `observe`, `effect` → `write` (which
+/// additionally requires naming an author), `shadowConfirmEffect` →
+/// `calibrateThenWrite`, `suspended` → `frozen`.
+///
+/// When neither `writeIntent` nor `mode` is authored, the default remains
+/// `ShadowConfirmEffect` — no band is parked in permanent shadow with no exit,
+/// and none goes live unconfirmed. Note this is a real, load-bearing default,
+/// **not** a reading of `spec.dryRun`: that field has been unread for every
+/// k8s band kind since 2026-06-19 (`76924b0`) and is now explicitly retired.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub enum PromotionMode {
@@ -235,8 +268,32 @@ pub enum PromotionMode {
 }
 
 /// The operator fast-path annotation: setting `breathe.pleme.io/confirmed: "true"`
-/// satisfies a `ShadowConfirmEffect` band's confirm gate immediately.
-pub const CONFIRMED_ANNOTATION: &str = "breathe.pleme.io/confirmed";
+/// satisfies a calibrating band's confirm gate immediately.
+///
+/// Re-exported from `breathe_provider::gate` (its home since the authorization
+/// axis was typed) so this path keeps working for every existing consumer.
+pub use breathe_provider::gate::CONFIRMED_ANNOTATION;
+
+/// Map `outorga`'s typed shadow reason onto the CRD-facing mirror.
+///
+/// A `From` impl is impossible here — both types are foreign to this crate, so
+/// the orphan rule forbids it. This free function is the one conversion point;
+/// it is exhaustive, so an arm added upstream is a compile error here rather
+/// than a silently-dropped reason.
+#[must_use]
+pub fn map_shadow_reason(r: outorga::ShadowReason) -> gate::ShadowReason {
+    match r {
+        outorga::ShadowReason::Frozen => gate::ShadowReason::Frozen,
+        outorga::ShadowReason::ModeShadow => gate::ShadowReason::ModeShadow,
+        outorga::ShadowReason::Suspended => gate::ShadowReason::Suspended,
+        outorga::ShadowReason::NotReady => gate::ShadowReason::NotReady,
+        outorga::ShadowReason::Stale => gate::ShadowReason::Stale,
+        outorga::ShadowReason::Conflict => gate::ShadowReason::Conflict,
+        outorga::ShadowReason::ConfirmPending { held_secs, need_secs } => {
+            gate::ShadowReason::ConfirmPending { held_secs, need_secs }
+        }
+    }
+}
 
 fn d_confirm_after() -> u64 {
     1800
@@ -258,9 +315,33 @@ pub trait Band:
     fn band_config(&self) -> anyhow::Result<BandConfig>;
     fn max_staleness_seconds(&self) -> u64;
     fn cooldown_seconds(&self) -> u64;
+    /// The RETIRED `spec.dryRun` boolean, verbatim.
+    ///
+    /// **This is not the carve gate and has not been since 2026-06-19
+    /// (`76924b0`).** It is read at exactly two sites in the whole workspace —
+    /// `HostParamBand`'s and `KubeParamBand`'s two-state `promotion_mode`
+    /// overrides — and by no other band kind. For every k8s / app / replica
+    /// kind it is inert. Use [`Band::resolve_gate`] (or its bool projection
+    /// [`Band::effective_dry_run`]) to ask whether a write is authorized.
+    ///
+    /// The field is kept, not dropped: it is the record of a decision an
+    /// operator authored, and silently deleting authored intent is how this
+    /// defect class propagates.
     fn dry_run(&self) -> bool;
-    /// The band's explicit `mode`, if authored. `None` ⇒ derive in
-    /// [`Band::promotion_mode`] (legacy `dryRun:true` → Shadow, else the default).
+    /// The band's authored [`WriteIntent`], if any — **the first and highest
+    /// link** in the resolution chain (`writeIntent` > `mode` > the compiled
+    /// `ShadowConfirmEffect`).
+    ///
+    /// Defaults to `None` so every band kind compiles unchanged; each kind
+    /// overrides it to read its own `spec.writeIntent`.
+    fn write_intent_spec(&self) -> Option<&WriteIntentSpec> {
+        None
+    }
+    /// The band's explicit, RETIRED `spec.mode`, if authored — the second link
+    /// in the resolution chain, below [`Band::write_intent`]. `None` ⇒ fall
+    /// through to the compiled `ShadowConfirmEffect` default (or, for the two
+    /// param kinds that override [`Band::promotion_mode`], to their two-state
+    /// `dryRun` reading).
     fn mode_spec(&self) -> Option<PromotionMode>;
     /// The clean-observation window (seconds) a `ShadowConfirmEffect` band holds
     /// Ready-and-healthy before it auto-promotes to carving.
@@ -379,6 +460,95 @@ pub trait Band:
         matches!(policy.confirm_gate(&BandObservation(self), now_epoch), outorga::ConfirmGate::Passed)
     }
 
+    /// Which pre-`writeIntent` path authorized a write, for attribution in
+    /// status. Only meaningful when the legacy chain actually applied; every
+    /// arm is migration debt whose burn-down is the definition of done for the
+    /// authorization refactor.
+    fn legacy_path(&self) -> LegacyPath {
+        match (self.mode_spec(), self.promotion_mode()) {
+            // Authored through the retired field.
+            (Some(PromotionMode::Effect), _) => LegacyPath::ModeEffect,
+            // No `mode`, yet the kind resolved to Effect ⇒ it overrode
+            // `promotion_mode` with the two-state `dryRun` reading. Exactly two
+            // kinds do this: `HostParamBand` and `KubeParamBand`.
+            (None, PromotionMode::Effect) => LegacyPath::TwoStateDryRun,
+            _ if self.operator_confirmed() => LegacyPath::OperatorAnnotation,
+            _ => LegacyPath::ConfirmGate {
+                required_secs: i64::try_from(self.confirm_after_seconds()).unwrap_or(i64::MAX),
+            },
+        }
+    }
+
+    /// **Resolve this tick's authorization verdict** — the typed replacement
+    /// for the bare `effectiveDryRun` bool.
+    ///
+    /// Precedence, highest first: an external `frozen` key (the pool/fleet
+    /// master switch) ⇒ the authored [`WriteIntent`] ⇒ the legacy chain
+    /// (`mode`, else the compiled `ShadowConfirmEffect`). `spec.dryRun` is
+    /// **not** in that list — see [`Band::dry_run`].
+    ///
+    /// The confirm-gate math is NOT re-implemented here: it is
+    /// `outorga::PromotionPolicy`'s, computed below and handed to
+    /// `breathe_provider::gate::resolve_gate` as an input, so the fleet keeps
+    /// exactly one tested FSM.
+    ///
+    /// **Additive by construction:** when no `writeIntent` is authored — which
+    /// is every CR in existence as of this change — the verdict is derived from
+    /// the very same `outorga::PromotionPolicy::decide` call the previous
+    /// implementation made, with the same arguments. Behaviour is byte-identical;
+    /// only the verdict's *type* (and hence its legibility) changes.
+    fn resolve_gate(&self, now_epoch: i64, frozen: bool) -> EffectiveGate {
+        // Parse the authored wire value at the border. A malformed intent
+        // (`{intent: write}` naming no author) resolves to a fail-safe,
+        // clearly-named shadow rather than a granted anonymous write.
+        let intent = self.write_intent_spec().map(WriteIntentSpec::parse);
+
+        // The confirm gate is consulted only for a calibrating intent; the
+        // legacy path runs its own gate inside `decide` below.
+        let confirm = match &intent {
+            Some(Ok(WriteIntent::CalibrateThenWrite { confirm_after_seconds })) => {
+                let obs = BandObservation(self);
+                let policy = outorga::PromotionPolicy::new(outorga::PromotionMode::ShadowConfirmEffect)
+                    .confirm_after(*confirm_after_seconds);
+                let required_secs = i64::try_from(*confirm_after_seconds).unwrap_or(i64::MAX);
+                match policy.confirm_gate(&obs, now_epoch) {
+                    outorga::ConfirmGate::Passed => {
+                        if outorga::Observation::operator_confirmed(&obs) {
+                            ConfirmVerdict::OperatorConfirmed
+                        } else {
+                            let since = outorga::Observation::ready_since(&obs).unwrap_or(now_epoch);
+                            ConfirmVerdict::Passed {
+                                ready_since_epoch: since,
+                                held_secs: (now_epoch - since).max(0),
+                                required_secs,
+                            }
+                        }
+                    }
+                    outorga::ConfirmGate::Pending { held_secs, need_secs } => {
+                        ConfirmVerdict::Pending { held_secs, required_secs: need_secs }
+                    }
+                    outorga::ConfirmGate::Blocked(r) => ConfirmVerdict::Blocked(map_shadow_reason(r)),
+                }
+            }
+            _ => ConfirmVerdict::NotEvaluated,
+        };
+
+        // The legacy chain, EXACTLY as before. `frozen` is passed as `false`
+        // here because `resolve_gate` applies the freeze key itself, ahead of
+        // everything — the composed result is identical either way (outorga
+        // also short-circuits on `frozen`), and this keeps the legacy path's
+        // attribution meaningful rather than always reading `Frozen`.
+        let legacy = match outorga::PromotionPolicy::new(self.promotion_mode().to_outorga())
+            .confirm_after(self.confirm_after_seconds())
+            .decide(&BandObservation(self), now_epoch, false)
+        {
+            outorga::PromotionDecision::Apply => LegacyDecision::Apply(self.legacy_path()),
+            outorga::PromotionDecision::Shadow(r) => LegacyDecision::Shadow(map_shadow_reason(r)),
+        };
+
+        gate::resolve_gate(&GateInputs { intent, frozen, confirm, legacy })
+    }
+
     /// The EFFECTIVE dry-run for this tick, derived from the promotion lifecycle.
     /// THIS — not the raw `dryRun` field — is what gates the carve. Equivalent to
     /// [`Band::effective_dry_run_frozen`] with `frozen = false` (no external
@@ -398,10 +568,12 @@ pub trait Band:
     /// confirm-gate/auto-promote lifecycle the k8s-plane controller already
     /// gives the SAME CRD kinds — call this instead, with
     /// `frozen = !pool.spec.write_enabled`.
+    ///
+    /// Now a projection of [`Band::resolve_gate`] rather than a second,
+    /// independently-drifting derivation of the same rule — the bool an
+    /// existing consumer wants, folded out of the typed verdict.
     fn effective_dry_run_frozen(&self, now_epoch: i64, frozen: bool) -> bool {
-        let policy = outorga::PromotionPolicy::new(self.promotion_mode().to_outorga())
-            .confirm_after(self.confirm_after_seconds());
-        policy.effective_dry_run(&BandObservation(self), now_epoch, frozen)
+        self.resolve_gate(now_epoch, frozen).is_shadow()
     }
     /// M0 PREDICTIVE: `Some(lookahead_secs)` when the band opts into preemptive
     /// carving (`predictive: true`) — the controller measures the working-set
@@ -612,6 +784,10 @@ macro_rules! band_kind {
             printcolumn = r#"{"name":"Limit","type":"string","jsonPath":".status.currentLimit"}"#,
             printcolumn = r#"{"name":"Last","type":"string","jsonPath":".status.lastDecision"}"#,
             printcolumn = r#"{"name":"Phase","type":"string","jsonPath":".status.phase"}"#,
+            // The question `kubectl get` could not answer before: is this band
+            // WRITING to my cluster, and why. `dryRun` was never the answer.
+            printcolumn = r#"{"name":"Gate","type":"string","jsonPath":".status.effectiveGate.state"}"#,
+            printcolumn = r#"{"name":"Why","type":"string","jsonPath":".status.effectiveGate.reason"}"#,
             printcolumn = r#"{"name":"Ready","type":"string","jsonPath":".status.conditions[?(@.type=='Ready')].status"}"#
         )]
         #[serde(rename_all = "camelCase")]
@@ -646,11 +822,44 @@ macro_rules! band_kind {
             pub cooldown_seconds: Option<u64>,
             #[serde(default, skip_serializing_if = "Option::is_none")]
             pub max_staleness_seconds: Option<u64>,
+            /// RETIRED 2026-06-19 (breathe@76924b0) — **this field has NO
+            /// effect on this band kind.** It is not read by the carve gate;
+            /// setting it to `true` does not hold the band in shadow, and a
+            /// band with `dryRun: true` and no `mode` carves for real once its
+            /// confirm window elapses.
+            ///
+            /// It is kept, not deleted, because it is the record of a decision
+            /// an operator authored — but it decides nothing. Authorization is
+            /// `spec.writeIntent`; the live verdict (and its reason or witness)
+            /// is `status.effectiveGate`.
             #[serde(default)]
             pub dry_run: bool,
-            /// The PROMOTION LIFECYCLE. Unset ⇒ resolved by `promotion_mode()`
-            /// (legacy `dryRun:true` → Shadow, else the fleet default
-            /// `ShadowConfirmEffect`). Set explicitly to pin the state:
+            /// **The authorization intent — what this band is permitted to do
+            /// and who says so.** The first and highest link in the resolution
+            /// chain `writeIntent` > `mode` > the compiled `shadowConfirmEffect`.
+            ///
+            /// * `{intent: observe}` — decide, report, attest; never write.
+            /// * `{intent: calibrateThenWrite, confirmAfterSeconds: 1800}` —
+            ///   shadow until a clean-observation window proves the band safe,
+            ///   then write.
+            /// * `{intent: write, authorizedBy: "…"}` — write now.
+            ///   `authorizedBy` is REQUIRED: a CR that says "go live" and does
+            ///   not say who is rejected at parse time.
+            /// * `{intent: frozen}` — never write, but keep observing.
+            ///
+            /// Unset ⇒ the retired `mode`/default chain decides, and
+            /// `status.effectiveGate.witness` reports `legacyDefault` so an
+            /// unauthored live band is visible as such.
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            pub write_intent: Option<WriteIntentSpec>,
+            /// The RETIRED promotion lifecycle. Still read (below
+            /// `writeIntent`), so an already-authored CR keeps working; new CRs
+            /// should author `writeIntent` instead. Unset ⇒ the compiled fleet
+            /// default `shadowConfirmEffect`.
+            ///
+            /// NOTE: unset does **not** mean "derived from `dryRun`" — that
+            /// resolution was removed on 2026-06-19 (`76924b0`) and this
+            /// description said otherwise until 2026-07-26. Values:
             /// `shadow` | `effect` | `shadowConfirmEffect` | `suspended`.
             #[serde(default, skip_serializing_if = "Option::is_none")]
             pub mode: Option<PromotionMode>,
@@ -758,6 +967,9 @@ macro_rules! band_kind {
             }
             fn dry_run(&self) -> bool {
                 self.spec.dry_run
+            }
+            fn write_intent_spec(&self) -> Option<&WriteIntentSpec> {
+                self.spec.write_intent.as_ref()
             }
             fn mode_spec(&self) -> Option<PromotionMode> {
                 self.spec.mode
@@ -978,8 +1190,19 @@ pub struct HostParamBandSpec {
     pub cooldown_seconds: u64,
     #[serde(default = "d_max_staleness")]
     pub max_staleness_seconds: u64,
+    /// SHADOW (two-state). **This kind is one of the only two that actually
+    /// read `dryRun`**: `HostParamBand`/`KubeParamBand` override
+    /// `promotion_mode()` with a pure `dryRun ? Shadow : Effect` reading and
+    /// never auto-promote. (Every k8s / app / replica band kind ignores it —
+    /// see their own field docs.) Superseded by `writeIntent`, which wins
+    /// whenever it is authored.
     #[serde(default)]
     pub dry_run: bool,
+    /// **The authorization intent** — supersedes `dryRun` on this kind. See
+    /// `MemoryBandSpec::write_intent` for the four arms; `{intent: write}`
+    /// requires naming an `authorizedBy`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub write_intent: Option<WriteIntentSpec>,
     #[serde(default, skip_serializing_if = "breathe_provider::DisruptionPolicy::is_restart_free_only")]
     pub disruption_policy: DisruptionPolicy,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -1060,6 +1283,9 @@ impl crate::Band for HostParamBand {
     }
     fn dry_run(&self) -> bool {
         self.spec.dry_run
+    }
+    fn write_intent_spec(&self) -> Option<&WriteIntentSpec> {
+        self.spec.write_intent.as_ref()
     }
     fn mode_spec(&self) -> Option<PromotionMode> {
         None
@@ -1191,8 +1417,19 @@ pub struct KubeParamBandSpec {
     pub cooldown_seconds: u64,
     #[serde(default = "d_max_staleness")]
     pub max_staleness_seconds: u64,
+    /// SHADOW (two-state). **This kind is one of the only two that actually
+    /// read `dryRun`**: `HostParamBand`/`KubeParamBand` override
+    /// `promotion_mode()` with a pure `dryRun ? Shadow : Effect` reading and
+    /// never auto-promote. (Every k8s / app / replica band kind ignores it —
+    /// see their own field docs.) Superseded by `writeIntent`, which wins
+    /// whenever it is authored.
     #[serde(default)]
     pub dry_run: bool,
+    /// **The authorization intent** — supersedes `dryRun` on this kind. See
+    /// `MemoryBandSpec::write_intent` for the four arms; `{intent: write}`
+    /// requires naming an `authorizedBy`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub write_intent: Option<WriteIntentSpec>,
     #[serde(default, skip_serializing_if = "breathe_provider::DisruptionPolicy::is_restart_free_only")]
     pub disruption_policy: DisruptionPolicy,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -1265,6 +1502,9 @@ impl crate::Band for KubeParamBand {
     }
     fn dry_run(&self) -> bool {
         self.spec.dry_run
+    }
+    fn write_intent_spec(&self) -> Option<&WriteIntentSpec> {
+        self.spec.write_intent.as_ref()
     }
     fn mode_spec(&self) -> Option<PromotionMode> {
         None
@@ -1410,8 +1650,23 @@ pub struct AppBandSpec {
     pub cooldown_seconds: u64,
     #[serde(default = "d_max_staleness")]
     pub max_staleness_seconds: u64,
+    /// RETIRED 2026-06-19 (breathe@76924b0) — **this field has NO effect on
+    /// this band kind.** `AppBand` resolves through the compiled
+    /// `shadowConfirmEffect` default and never consults `dryRun`, so a band
+    /// authored `dryRun: true` writes for real once its confirm window
+    /// elapses. Kept as the record of an authored decision, never read.
+    ///
+    /// Note `AppBand` carries no `mode` field either — so until `writeIntent`
+    /// landed, **shadow was entirely unrepresentable on the app plane** (Redis
+    /// maxmemory, connection pools). Authorization is `spec.writeIntent`; the
+    /// live verdict is `status.effectiveGate`.
     #[serde(default)]
     pub dry_run: bool,
+    /// **The authorization intent** — on this kind, the ONLY way to hold the
+    /// band in shadow. See `MemoryBandSpec::write_intent` for the four arms;
+    /// `{intent: write}` requires naming an `authorizedBy`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub write_intent: Option<WriteIntentSpec>,
     #[serde(default, skip_serializing_if = "breathe_provider::DisruptionPolicy::is_restart_free_only")]
     pub disruption_policy: DisruptionPolicy,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -1491,6 +1746,9 @@ impl crate::Band for AppBand {
     }
     fn dry_run(&self) -> bool {
         self.spec.dry_run
+    }
+    fn write_intent_spec(&self) -> Option<&WriteIntentSpec> {
+        self.spec.write_intent.as_ref()
     }
     fn last_change_epoch(&self) -> Option<i64> {
         self.status.as_ref().and_then(|s| s.last_change_epoch)
@@ -1721,8 +1979,20 @@ pub struct ReplicaBandSpec {
     pub cooldown_seconds: u64,
     #[serde(default = "d_max_staleness")]
     pub max_staleness_seconds: u64,
+    /// RETIRED 2026-06-19 (breathe@76924b0) — **this field has NO effect on
+    /// this band kind.** The carve gate resolves `writeIntent` > `mode` > the
+    /// compiled `shadowConfirmEffect` default; `dryRun` is not consulted, so a
+    /// band authored `dryRun: true` scales replicas for real once its confirm
+    /// window elapses. Kept as the record of an authored decision, never read.
+    /// Authorization is `spec.writeIntent`; the verdict is
+    /// `status.effectiveGate`.
     #[serde(default)]
     pub dry_run: bool,
+    /// **The authorization intent** — the first and highest link in the
+    /// resolution chain, above `mode`. See `MemoryBandSpec::write_intent` for
+    /// the four arms; `{intent: write}` requires naming an `authorizedBy`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub write_intent: Option<WriteIntentSpec>,
     /// The PROMOTION LIFECYCLE (unset ⇒ the fleet default `ShadowConfirmEffect`:
     /// shadow, then auto-promote once the clean-observation window proves it safe).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1827,6 +2097,9 @@ impl crate::Band for ReplicaBand {
     }
     fn dry_run(&self) -> bool {
         self.spec.dry_run
+    }
+    fn write_intent_spec(&self) -> Option<&WriteIntentSpec> {
+        self.spec.write_intent.as_ref()
     }
     fn mode_spec(&self) -> Option<PromotionMode> {
         self.spec.mode
@@ -3311,7 +3584,7 @@ mod tests {
         let mem = MemoryBand::new("m", MemoryBandSpec {
             target_ref: tr.clone(), posture_ref: None, setpoint: Some(0.80), grow_above: Some(0.85), shrink_below: Some(0.70),
             grow_factor: Some(1.25), shrink_factor: Some(0.90), floor: "512Mi".into(), ceiling: "4Gi".into(),
-            cooldown_seconds: Some(600), max_staleness_seconds: Some(120), dry_run: true, disruption_policy: Default::default(), disruption_policy_rationale: None, suspend: false, force_limit: None, force_limit_expiry: None, predictive: false, predictive_lookahead_seconds: 60, request_floor: String::new(), peak_decay: 0.98, mode: None, confirm_after_seconds: 1800, warmup_seconds: 600,
+            cooldown_seconds: Some(600), max_staleness_seconds: Some(120), dry_run: true, disruption_policy: Default::default(), disruption_policy_rationale: None, suspend: false, force_limit: None, force_limit_expiry: None, predictive: false, predictive_lookahead_seconds: 60, request_floor: String::new(), peak_decay: 0.98, mode: None, write_intent: None, confirm_after_seconds: 1800, warmup_seconds: 600,
         });
         let cfg = Band::band_config(&mem).unwrap();
         assert_eq!(cfg.floor_bytes, 512 * (1 << 20));
@@ -3324,7 +3597,7 @@ mod tests {
         let cpu = CpuBand::new("c", CpuBandSpec {
             target_ref: tr, posture_ref: None, setpoint: Some(0.80), grow_above: Some(0.85), shrink_below: Some(0.70),
             grow_factor: Some(1.25), shrink_factor: Some(0.90), floor: "250m".into(), ceiling: "2".into(),
-            cooldown_seconds: Some(600), max_staleness_seconds: Some(120), dry_run: false, disruption_policy: Default::default(), disruption_policy_rationale: None, suspend: false, force_limit: None, force_limit_expiry: None, predictive: false, predictive_lookahead_seconds: 60, request_floor: String::new(), peak_decay: 0.98, mode: None, confirm_after_seconds: 1800, warmup_seconds: 600,
+            cooldown_seconds: Some(600), max_staleness_seconds: Some(120), dry_run: false, disruption_policy: Default::default(), disruption_policy_rationale: None, suspend: false, force_limit: None, force_limit_expiry: None, predictive: false, predictive_lookahead_seconds: 60, request_floor: String::new(), peak_decay: 0.98, mode: None, write_intent: None, confirm_after_seconds: 1800, warmup_seconds: 600,
         });
         let cfg = Band::band_config(&cpu).unwrap();
         // millicores, NOT bytes: "250m" → 250, "2" cores → 2000m.
@@ -3376,7 +3649,7 @@ mod tests {
         let arc = ArcBand::new("rio-arc", ArcBandSpec {
             target_ref: tr, posture_ref: None, setpoint: Some(0.80), grow_above: Some(0.85), shrink_below: Some(0.70),
             grow_factor: Some(1.25), shrink_factor: Some(0.90), floor: "1Gi".into(), ceiling: "6Gi".into(),
-            cooldown_seconds: Some(600), max_staleness_seconds: Some(120), dry_run: true, disruption_policy: Default::default(), disruption_policy_rationale: None, suspend: false, force_limit: None, force_limit_expiry: None, predictive: false, predictive_lookahead_seconds: 60, request_floor: String::new(), peak_decay: 0.98, mode: None, confirm_after_seconds: 1800, warmup_seconds: 600,
+            cooldown_seconds: Some(600), max_staleness_seconds: Some(120), dry_run: true, disruption_policy: Default::default(), disruption_policy_rationale: None, suspend: false, force_limit: None, force_limit_expiry: None, predictive: false, predictive_lookahead_seconds: 60, request_floor: String::new(), peak_decay: 0.98, mode: None, write_intent: None, confirm_after_seconds: 1800, warmup_seconds: 600,
         });
         let cfg = Band::band_config(&arc).unwrap();
         assert_eq!(cfg.floor_bytes, 1 << 30);
@@ -3387,7 +3660,7 @@ mod tests {
         let g = CgroupBand::new("nix-daemon", CgroupBandSpec {
             target_ref: TargetRef { kind: "HostUnit".into(), name: "nix-daemon.service".into(), api_version: None, container: None, pod_selector: None },
             posture_ref: None, setpoint: Some(0.80), grow_above: Some(0.85), shrink_below: Some(0.70), grow_factor: Some(1.25), shrink_factor: Some(0.90),
-            floor: "1Gi".into(), ceiling: "12Gi".into(), cooldown_seconds: Some(600), max_staleness_seconds: Some(120), dry_run: true, disruption_policy: Default::default(), disruption_policy_rationale: None, suspend: false, force_limit: None, force_limit_expiry: None, predictive: false, predictive_lookahead_seconds: 60, request_floor: String::new(), peak_decay: 0.98, mode: None, confirm_after_seconds: 1800, warmup_seconds: 600,
+            floor: "1Gi".into(), ceiling: "12Gi".into(), cooldown_seconds: Some(600), max_staleness_seconds: Some(120), dry_run: true, disruption_policy: Default::default(), disruption_policy_rationale: None, suspend: false, force_limit: None, force_limit_expiry: None, predictive: false, predictive_lookahead_seconds: 60, request_floor: String::new(), peak_decay: 0.98, mode: None, write_intent: None, confirm_after_seconds: 1800, warmup_seconds: 600,
         });
         assert_eq!(g.target_ref().name, "nix-daemon.service");
     }
@@ -3769,6 +4042,188 @@ mod tests {
     }
 
     const EPOCH_1000: &str = "1970-01-01T00:16:40Z"; // 1000s after the epoch
+
+    // ── S1: the AUTHORIZATION AXIS (writeIntent > mode > default) ────────────
+    //
+    // `spec.dryRun` is absent from that chain, deliberately. These rows pin the
+    // fact `76924b0` changed silently: an authored `dryRun: true` does NOT hold
+    // a k8s band, and the verdict now SAYS so instead of reporting "dryRun".
+
+    /// **THE ROOT-DEFECT ROW.** The exact shape of ~70 live camelot-eks bands:
+    /// `dryRun: true`, no `mode`, no `writeIntent`, confirm window long past.
+    /// It is LIVE — and the typed verdict names the legacy path that promoted
+    /// it, so the state is attributable instead of merely surprising.
+    #[test]
+    fn dry_run_true_with_no_mode_is_live_and_says_which_legacy_path_promoted_it() {
+        let b = mk_band(
+            serde_json::json!({ "dryRun": true }),
+            Some(ready_status(EPOCH_1000, serde_json::json!([]))),
+            None,
+        );
+        let g = b.resolve_gate(1000 + 100_000, false);
+        assert!(g.is_live(), "dryRun has not gated a k8s band since 76924b0 — this is the truth, stated");
+        let w = g.witness().expect("live");
+        assert!(w.is_legacy_default(), "no writeIntent was authored ⇒ migration debt");
+        assert_eq!(w.legacy_path(), Some(LegacyPath::ConfirmGate { required_secs: 1800 }));
+        // The bool projection is unchanged — S1 is additive, not behavioural.
+        assert!(!b.effective_dry_run(1000 + 100_000));
+    }
+
+    /// An authored `writeIntent` beats the retired `mode`, in both directions.
+    #[test]
+    fn write_intent_outranks_mode() {
+        let ready = || Some(ready_status(EPOCH_1000, serde_json::json!([])));
+        // mode says carve; intent says observe ⇒ shadow.
+        let held = mk_band(
+            serde_json::json!({ "mode": "effect", "writeIntent": { "intent": "observe" } }),
+            ready(),
+            None,
+        );
+        let g = held.resolve_gate(1000 + 100_000, false);
+        assert!(g.is_shadow() && g.shadow_reason() == Some(gate::ShadowReason::ModeShadow));
+        assert!(g.shadow_reason().unwrap().is_authored(), "an authored hold, not an accident");
+
+        // mode says shadow; intent names an author ⇒ live, attributed.
+        let live = mk_band(
+            serde_json::json!({ "mode": "shadow", "writeIntent": { "intent": "write", "authorizedBy": "drzzln 2026-07-26" } }),
+            ready(),
+            None,
+        );
+        let g = live.resolve_gate(0, false);
+        assert_eq!(g.witness().and_then(gate::LiveWitness::authorized_by), Some("drzzln 2026-07-26"));
+    }
+
+    /// An unattributed go-live never carves — it shadows with a reason that
+    /// names the malformation. (Enforced in Rust, not by the apiserver: the
+    /// cross-field rule is not expressible in a structural schema. Deliberately
+    /// NOT a deserialize failure, which would break the watch for every band.)
+    #[test]
+    fn an_unattributed_write_intent_fails_safe() {
+        for bad in [serde_json::json!({ "intent": "write" }), serde_json::json!({ "intent": "write", "authorizedBy": "  " })] {
+            let b = mk_band(
+                serde_json::json!({ "mode": "effect", "writeIntent": bad }),
+                Some(ready_status(EPOCH_1000, serde_json::json!([]))),
+                None,
+            );
+            let g = b.resolve_gate(1000 + 100_000, false);
+            assert!(g.is_shadow(), "an anonymous go-live must never be granted");
+            assert_eq!(g.shadow_reason(), Some(gate::ShadowReason::IntentMalformed));
+        }
+    }
+
+    /// A calibrating intent runs the SAME outorga confirm gate the legacy
+    /// default does — shadow while the window holds, live once it passes, and
+    /// the reason carries the numbers rather than a bare "dryRun".
+    #[test]
+    fn calibrate_then_write_reports_its_window_then_promotes() {
+        let b = mk_band(
+            serde_json::json!({ "writeIntent": { "intent": "calibrateThenWrite", "confirmAfterSeconds": 1800 } }),
+            Some(ready_status(EPOCH_1000, serde_json::json!([]))),
+            None,
+        );
+        assert_eq!(
+            b.resolve_gate(1000 + 400, false).shadow_reason(),
+            Some(gate::ShadowReason::ConfirmPending { held_secs: 400, need_secs: 1800 })
+        );
+        let g = b.resolve_gate(1000 + 1801, false);
+        assert_eq!(g.witness().map(gate::LiveWitness::kind), Some(gate::WitnessKind::ConfirmGatePassed));
+    }
+
+    /// `writeIntent: frozen` holds without stopping observation — the single
+    /// word that now covers the retired `mode: suspended`. (`spec.suspend`
+    /// remains the distinct "stop reconciling entirely" switch, applied by the
+    /// controller before a band ever reaches this gate.)
+    #[test]
+    fn frozen_intent_holds_and_subsumes_mode_suspended() {
+        let by_intent = mk_band(serde_json::json!({ "writeIntent": { "intent": "frozen" } }), None, None);
+        let by_mode = mk_band(serde_json::json!({ "mode": "suspended" }), None, None);
+        assert_eq!(by_intent.resolve_gate(0, false).shadow_reason(), Some(gate::ShadowReason::Suspended));
+        assert_eq!(by_mode.resolve_gate(0, false).shadow_reason(), Some(gate::ShadowReason::Suspended));
+    }
+
+    /// The two-key rule survives the new axis: an external freeze outranks even
+    /// an explicitly-authored write.
+    #[test]
+    fn an_external_freeze_still_outranks_an_authored_write() {
+        let b = mk_band(
+            serde_json::json!({ "writeIntent": { "intent": "write", "authorizedBy": "drzzln" } }),
+            None,
+            None,
+        );
+        assert!(b.resolve_gate(0, false).is_live());
+        assert_eq!(b.resolve_gate(0, true).shadow_reason(), Some(gate::ShadowReason::Frozen));
+    }
+
+    /// ADDITIVITY GUARD — the property that makes S1 safe to deploy. For every
+    /// band shape that exists TODAY (i.e. no `writeIntent` authored), the new
+    /// typed verdict's bool projection must equal the old
+    /// `outorga::PromotionPolicy::decide` answer, exactly.
+    #[test]
+    fn unauthored_bands_are_byte_identical_to_the_previous_resolution() {
+        let shapes = [
+            serde_json::json!({}),
+            serde_json::json!({ "dryRun": true }),
+            serde_json::json!({ "dryRun": false }),
+            serde_json::json!({ "mode": "shadow" }),
+            serde_json::json!({ "mode": "effect" }),
+            serde_json::json!({ "mode": "suspended" }),
+            serde_json::json!({ "mode": "shadowConfirmEffect", "dryRun": true }),
+        ];
+        let statuses = [
+            None,
+            Some(ready_status(EPOCH_1000, serde_json::json!([]))),
+            Some(ready_status(EPOCH_1000, serde_json::json!([{ "type": "Stale", "status": "True", "reason": "R", "message": "m", "lastTransitionTime": EPOCH_1000 }]))),
+            Some(ready_status(EPOCH_1000, serde_json::json!([{ "type": "Conflict", "status": "True", "reason": "R", "message": "m", "lastTransitionTime": EPOCH_1000 }]))),
+        ];
+        for spec in &shapes {
+            for st in &statuses {
+                for frozen in [false, true] {
+                    for now in [0_i64, 1000 + 100, 1000 + 100_000] {
+                        let b = mk_band(spec.clone(), st.clone(), None);
+                        // The PREVIOUS implementation, verbatim.
+                        let old = outorga::PromotionPolicy::new(b.promotion_mode().to_outorga())
+                            .confirm_after(b.confirm_after_seconds())
+                            .effective_dry_run(&BandObservation(&b), now, frozen);
+                        assert_eq!(
+                            b.effective_dry_run_frozen(now, frozen),
+                            old,
+                            "spec={spec} frozen={frozen} now={now}: the typed gate must not change any existing band's behaviour"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// Every band kind reaches the new axis — including `AppBand`, for which
+    /// shadow was previously UNREPRESENTABLE (it carries no `mode` field at all,
+    /// and `dryRun` is inert), so the app plane could not be held at any price.
+    #[test]
+    fn every_band_kind_can_now_be_held_in_shadow() {
+        let intent = serde_json::json!({ "intent": "observe" });
+        let app: AppBand = serde_json::from_value(serde_json::json!({
+            "apiVersion": "breathe.pleme.io/v1", "kind": "AppBand",
+            "metadata": { "name": "a", "namespace": "n" },
+            "spec": {
+                "targetRef": { "kind": "Deployment", "name": "redis", "apiVersion": "apps/v1" },
+                "layout": { "apiCall": { "endpoint": "redis://redis:6379", "command": "maxmemory" } },
+                "metric": { "prometheus": "redis_memory_used_bytes" },
+                "writeIntent": intent,
+            }
+        })).expect("AppBand parses");
+        assert!(app.resolve_gate(i64::MAX / 2, false).is_shadow(), "the app plane can finally be held");
+
+        let replica: ReplicaBand = serde_json::from_value(serde_json::json!({
+            "apiVersion": "breathe.pleme.io/v1", "kind": "ReplicaBand",
+            "metadata": { "name": "r", "namespace": "n" },
+            "spec": {
+                "targetRef": { "kind": "Deployment", "name": "w", "apiVersion": "apps/v1" },
+                "metric": { "prometheus": "rate(http_requests_total[1m])" },
+                "writeIntent": intent,
+            }
+        })).expect("ReplicaBand parses");
+        assert!(replica.resolve_gate(i64::MAX / 2, false).is_shadow());
+    }
 
     #[test]
     fn shadow_mode_never_carves() {

@@ -447,6 +447,21 @@ pub fn should_emit_health_event(verdict: &HealthVerdict, prior_health: Option<&s
 /// single accumulation point — see [`entry_for`] / [`CumulativeCounters::fold`]);
 /// `status_for` no longer increments counters itself (the dual-source-of-truth the
 /// Urdume-microservice refactor removed).
+/// Attach the tick's TYPED authorization verdict to a status, alongside the
+/// legacy `effectiveDryRun` bool.
+///
+/// Kept as a separate call rather than a new `status_for` parameter so this is
+/// a purely additive change at five existing call sites — and so the two
+/// fields are written from ONE value and can never disagree: the bool is
+/// literally `gate.is_shadow()`, re-derived here rather than passed in.
+///
+/// A band whose status carries `effectiveGate` but whose `effectiveDryRun`
+/// contradicts it is therefore unrepresentable through this function.
+pub fn set_effective_gate(s: &mut BandStatus, gate: &breathe_provider::EffectiveGate) {
+    s.effective_dry_run = Some(gate.is_shadow());
+    s.effective_gate = Some(gate.report());
+}
+
 #[must_use]
 #[allow(clippy::too_many_lines)] // one exhaustive receipt→status match; the +1 Throttled arm pushed it over
 pub fn status_for(
