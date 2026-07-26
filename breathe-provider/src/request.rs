@@ -78,8 +78,9 @@
 //! ([`NullManifestWriter`]) refuses every write by construction.
 
 use crate::gate::LiveWitness;
-use crate::{ProviderError, SsaPatch, Target};
+use crate::{LimitLayout, ProviderError, SsaPatch, Target};
 use async_trait::async_trait;
+use breathe_control::Decision;
 
 pub use breathe_invariant::isolation::{QosClass, WorkloadClass};
 
@@ -979,6 +980,537 @@ impl ManifestWriter for NullManifestWriter {
     }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// THE CARVE PLANNER — one pure function, and the only place a request SsaPatch
+// can be born
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Seal strength, weakest first — the rank that lets the planner refuse a
+/// transition that would WEAKEN a workload's isolation.
+///
+/// Deliberately a local ranking rather than an `Ord` derive on [`QosClass`]:
+/// `Guaranteed > Burstable > BestEffort` is true for *seal strength* and false
+/// for several other orderings people reach for (cost, scheduling latitude,
+/// eviction order is the reverse), so the comparison is named where it is used
+/// instead of being silently available everywhere.
+const fn seal_rank(q: QosClass) -> u8 {
+    match q {
+        QosClass::BestEffort => 0,
+        QosClass::Burstable => 1,
+        QosClass::Guaranteed => 2,
+    }
+}
+
+/// Why a request carve produced no write. **Every arm is a typed refusal** — a
+/// silent `Ok` reporting a carve that did not happen is the one outcome worse
+/// than an error, and a `panic!`/`todo!` would take the controller down.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase", tag = "blocked")]
+pub enum RequestCarveBlocked {
+    /// I6 / I1 — the carve would move the pod's QoS class. No in-place path
+    /// exists for that, at any value.
+    ClassWouldChange(ClassWouldChange),
+    /// The band's container is not in the observed pod (a stale target).
+    NoSuchContainer(NoSuchContainer),
+    /// I2 — the carved value exceeds the live limit. Reachable through the
+    /// ISOLATION SEAL: when a posture's `requests_floor` sits above the
+    /// container's declared limit, no legal request satisfies both. That is a
+    /// genuine authoring conflict needing a template edit, not a value to clamp.
+    AboveLimit(AboveLimit),
+    /// I7 — the carved value would not schedule on its node class.
+    WouldNotSchedule(WouldNotSchedule),
+    /// I9 — the API server will not accept a resize of this shape.
+    ResizeIllegal { legality: ResizeLegality },
+    /// I3 — a SHRINK reached the planner. Unreachable through the intended
+    /// pipeline (the `Reclaim`/`Directionality` gates withhold it upstream), and
+    /// refused here rather than trusted: producing a shrink would require a
+    /// [`RequestShrinkEvidence`], which has no constructor.
+    ShrinkWithoutEvidence { from: u64, to: u64 },
+    /// A class transition was warranted but cannot be proposed.
+    Transition(ClassTransitionBlocked),
+    /// The declared `qosTarget` is a WEAKER seal than the observed class.
+    /// breathe proposes transitions that strengthen isolation; it never proposes
+    /// to strip a workload's reservation. Removing a seal is an operator edit,
+    /// made out loud in the manifest — never a controller's tick.
+    WouldWeakenSeal { observed: QosClass, target: QosClass },
+}
+
+impl std::fmt::Display for RequestCarveBlocked {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ClassWouldChange(e) => e.fmt(f),
+            Self::NoSuchContainer(e) => e.fmt(f),
+            Self::AboveLimit(e) => e.fmt(f),
+            Self::WouldNotSchedule(e) => e.fmt(f),
+            Self::ResizeIllegal { legality } => {
+                write!(f, "the API server will not accept this resize: {legality:?}")
+            }
+            Self::ShrinkWithoutEvidence { from, to } => write!(
+                f,
+                "a request shrink {from} → {to} reached the planner; lowering a reservation \
+                 requires RequestShrinkEvidence, which has no constructor"
+            ),
+            Self::Transition(b) => write!(f, "class transition blocked: {b:?}"),
+            Self::WouldWeakenSeal { observed, target } => write!(
+                f,
+                "qosTarget {} is a weaker seal than the observed {}; breathe never proposes \
+                 to strip a workload's reservation",
+                target.as_str(),
+                observed.as_str()
+            ),
+        }
+    }
+}
+
+impl std::error::Error for RequestCarveBlocked {}
+
+/// **A planned in-place request change.** Private fields: the ONLY producer is
+/// [`plan_request_carve`], so a request [`SsaPatch`] cannot exist without having
+/// passed the whole narrowing chain —
+/// `SealedCarve → RequestTarget → AdmittedRequest → ClassPreserved`.
+///
+/// Hand-assembling an `SsaPatch` with `LimitLayout::PodRequestResize` and calling
+/// [`RequestActuator::resize_in_place`] directly is still *writable* Rust — the
+/// door's real gate is the [`ClassPreserved`] argument, which has one
+/// constructor. What this type removes is the accidental path: a caller
+/// following the pipeline cannot skip a step, because there is no way to get a
+/// patch except by completing it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InPlaceCarve {
+    patch: SsaPatch,
+    preserved: ClassPreserved,
+    durability: Durability,
+    from: u64,
+    to: u64,
+    seal_bound: bool,
+}
+
+impl InPlaceCarve {
+    /// The scalar to write. Pass with [`Self::preserved`] to
+    /// [`RequestActuator::resize_in_place`].
+    #[must_use]
+    pub const fn patch(&self) -> &SsaPatch {
+        &self.patch
+    }
+
+    /// The class-preservation proof this carve was admitted under.
+    #[must_use]
+    pub const fn preserved(&self) -> &ClassPreserved {
+        &self.preserved
+    }
+
+    #[must_use]
+    pub const fn from(&self) -> u64 {
+        self.from
+    }
+
+    #[must_use]
+    pub const fn to(&self) -> u64 {
+        self.to
+    }
+
+    /// Did the isolation seal floor bind (i.e. the demand-driven seat wanted
+    /// less and the seal held the line)?
+    #[must_use]
+    pub const fn seal_bound(&self) -> bool {
+        self.seal_bound
+    }
+
+    /// **I5 — will this value survive the next rollout?** `true` when the band
+    /// declared [`Durability::Committed`] but the write lands only on the live
+    /// pod, so the converged reservation is lost on the next rollout and never
+    /// appears in git.
+    ///
+    /// **At M0 this is `true` for every `Committed` band**, because the durable
+    /// door's only implementation is [`NullManifestWriter`]. The in-place write
+    /// still happens — it fixes `oom_score_adj` *now*, which is the point — but
+    /// the caller must surface this rather than report a converged band.
+    #[must_use]
+    pub const fn durability_gap(&self) -> bool {
+        matches!(self.durability, Durability::Committed)
+    }
+}
+
+/// What one tick of a request band resolves to, **before any I/O**.
+///
+/// The sum type IS the two-door split: exactly one arm carries an [`SsaPatch`]
+/// (via [`InPlaceCarve`]) and exactly one carries a
+/// [`ClassTransitionProposal`], and there is no conversion between them. A class
+/// transition therefore cannot reach the in-place door by any route through this
+/// planner — not by a forgotten check, not by a mis-ordered branch.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RequestCarvePlan {
+    /// Converged, or nothing actionable this tick.
+    Hold,
+    /// **DOOR 1** — a within-class request change for [`RequestActuator`].
+    InPlace(InPlaceCarve),
+    /// **DOOR 2** — a class transition for [`ManifestWriter`]. Never an
+    /// `SsaPatch`; never actuated in place.
+    Transition(ClassTransitionProposal),
+    /// A downward move was warranted and is NOT taken. `reclaimable` is `None`
+    /// when the shared limit-shaped `safe_min` masked the amount upstream — see
+    /// `breathe_control::RequestLaw`'s `pending-request-reclaim-naming` note.
+    /// Reported either way, because "converged" would be a lie.
+    Withheld { current: u64, reclaimable: Option<u64> },
+    /// A typed refusal. Never a silent `Ok`.
+    Blocked(RequestCarveBlocked),
+}
+
+impl RequestCarvePlan {
+    /// Does this plan write to the live cluster?
+    #[must_use]
+    pub const fn writes(&self) -> bool {
+        matches!(self, Self::InPlace(_))
+    }
+
+    /// Project onto the CRD's typed [`QosGap`], given whether a durable writer is
+    /// wired. `writer_configured` is the caller's fact, not the planner's — the
+    /// planner says what *should* happen; the controller knows what is *wired*.
+    #[must_use]
+    pub fn qos_gap(&self, writer_configured: bool) -> QosGap {
+        match self {
+            Self::Transition(p) if writer_configured => {
+                QosGap::PromotionProposed { proposal: p.addr.to_string() }
+            }
+            Self::Transition(_) => QosGap::Blocked(ClassTransitionBlocked::NoWriterConfigured),
+            Self::Blocked(RequestCarveBlocked::Transition(b)) => QosGap::Blocked(b.clone()),
+            _ => QosGap::Held,
+        }
+    }
+}
+
+/// Everything the planner needs. Fields are non-`Option` wherever the value is
+/// REQUIRED to compute a safe carve — the forcing shape that makes "we forgot to
+/// check allocatable" (I7) and "we forgot the isolation seal" (I8) have no code
+/// path, because the target cannot be *computed* without them.
+#[derive(Debug, Clone, Copy)]
+pub struct RequestCarveInput<'a> {
+    pub target: &'a Target,
+    /// The container whose request is carved.
+    pub container: &'a str,
+    pub resource: RequestResource,
+    /// The WHOLE observed pod — every container, because `ComputePodQOS` is a
+    /// pod-level fold and a carve that leaves this container's class alone can
+    /// still move the pod's.
+    pub observed: &'a PodResources,
+    /// This tick's band decision, from
+    /// `breathe_control::decide_with(&RequestLaw{..}, demand, demand, current_request, cfg)`
+    /// with the `Reclaim`/`Directionality` gates already applied.
+    pub decision: Decision,
+    /// I8 — the workload's isolation seal. **Required, and that is the point:**
+    /// `IsolationPosture` can only be built through `try_seal`, so a critical
+    /// workload with no floor (or a BestEffort seal) cannot even be *presented*
+    /// to the planner.
+    pub posture: &'a breathe_invariant::isolation::IsolationPosture,
+    /// I7 — the node-class headroom this reservation must fit inside.
+    pub headroom: AllocatableHeadroom,
+    pub replicas: u32,
+    pub durability: Durability,
+    /// The posture-declared desired class. A gap produces a proposal, never an
+    /// in-place write.
+    pub qos_target: QosClass,
+    /// The API server's minor version (33 for `v1.33.13-eks`) — I9 is derived
+    /// per tick from this, never hardcoded.
+    pub server_minor: u32,
+    pub memory_resize_policy: MemoryResizePolicy,
+    pub field_manager: &'a str,
+}
+
+/// Why a target class cannot be constructed from the observed block.
+///
+/// A typed reason with a `Display` impl rather than an inline `format!()`: per
+/// ★★ TYPED EMISSION the sanctioned way to build a string is `write!` inside a
+/// `Display`, and the reason is a value worth matching on anyway. It renders into
+/// [`ClassTransitionBlocked::UnreachableFromObserved`]'s `detail`, which is a
+/// `String` on the wire.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Unreachable<'a> {
+    /// A container declares no limit for `resource`, so its request can never
+    /// equal it — the Guaranteed test can never pass.
+    NoLimitToMatch { container: &'a str, resource: RequestResource },
+    /// The carved container is not in the observed pod.
+    NoSuchContainer { container: &'a str },
+    /// De-sealing is an operator edit, never a controller proposal.
+    DeSealRefused,
+    /// The rendered block did not actually move the class.
+    StillSameClass { class: QosClass },
+}
+
+impl std::fmt::Display for Unreachable<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NoLimitToMatch { container, resource } => write!(
+                f,
+                "container {container:?} declares no {} limit, so its request can never equal it",
+                resource.as_str()
+            ),
+            Self::NoSuchContainer { container } => {
+                write!(f, "no container named {container:?} in the observed pod")
+            }
+            Self::DeSealRefused => {
+                f.write_str("de-sealing to BestEffort is an operator edit, never a controller proposal")
+            }
+            Self::StillSameClass { class } => {
+                write!(f, "the rendered block is still {}", class.as_str())
+            }
+        }
+    }
+}
+
+impl Unreachable<'_> {
+    fn block(self) -> ClassTransitionBlocked {
+        ClassTransitionBlocked::UnreachableFromObserved { detail: self.to_string() }
+    }
+}
+
+/// Build the resource block that would put `observed` in `to`, or say why it
+/// cannot be reached.
+fn transition_block(
+    observed: &PodResources,
+    to: QosClass,
+    container: &str,
+    resource: RequestResource,
+    seat: u64,
+) -> Result<PodResources, ClassTransitionBlocked> {
+    match to {
+        // Every request := its limit, on every container and BOTH resources.
+        // Anything less does not produce Guaranteed: `ComputePodQOS` requires a
+        // positive cpu AND memory limit on every container, with pod-summed
+        // requests equal to pod-summed limits.
+        QosClass::Guaranteed => {
+            let mut next = observed.clone();
+            for c in &mut next.containers {
+                for r in RequestResource::ALL {
+                    let Some(l) = c.limit(r) else {
+                        return Err(
+                            Unreachable::NoLimitToMatch { container: &c.name, resource: r }.block()
+                        );
+                    };
+                    *c = c.with_request(r, l);
+                }
+            }
+            Ok(next)
+        }
+        // From BestEffort: introduce a reservation on the carved container. The
+        // seat is the demand-derived value the band already computed, so the
+        // promotion lands at a real number rather than an invented one.
+        QosClass::Burstable => observed
+            .with_request(container, resource, seat)
+            .ok_or_else(|| Unreachable::NoSuchContainer { container }.block()),
+        // Reaching BestEffort means STRIPPING every reservation. The planner
+        // refuses a weakening target before ever getting here (`WouldWeakenSeal`),
+        // so this arm is unreachable through `plan_request_carve` — kept total
+        // and typed rather than `unreachable!()`, which would abort the process.
+        QosClass::BestEffort => Err(Unreachable::DeSealRefused.block()),
+    }
+}
+
+/// **DOOR 2's planner** — the observed class differs from the declared target,
+/// so this tick is a class transition and therefore a manifest edit.
+///
+/// Split out of [`plan_request_carve`] because it is a cohesive unit with its
+/// own three refusals, and because keeping it inline made the main planner read
+/// as one long branch instead of the four numbered steps its doc promises.
+///
+/// It **cannot** return [`RequestCarvePlan::InPlace`]: there is no
+/// [`ClassPreserved`] in scope here, and by construction there could not be —
+/// a class transition is precisely the case where `ClassPreserved::check` fails.
+fn plan_class_transition(
+    input: &RequestCarveInput<'_>,
+    observed_class: QosClass,
+    raw_seat: u64,
+) -> RequestCarvePlan {
+    // breathe strengthens seals; it never proposes to strip a reservation.
+    if seal_rank(input.qos_target) < seal_rank(observed_class) {
+        return RequestCarvePlan::Blocked(RequestCarveBlocked::WouldWeakenSeal {
+            observed: observed_class,
+            target: input.qos_target,
+        });
+    }
+    // An Ephemeral band has no durable door, and a transition has no in-place
+    // one — so it was authored in a shape that cannot reach its own target.
+    if matches!(input.durability, Durability::Ephemeral) {
+        return RequestCarvePlan::Blocked(RequestCarveBlocked::Transition(
+            ClassTransitionBlocked::EphemeralCannotTransition,
+        ));
+    }
+    let block = match transition_block(input.observed, input.qos_target, input.container, input.resource, raw_seat) {
+        Ok(b) => b,
+        Err(e) => return RequestCarvePlan::Blocked(RequestCarveBlocked::Transition(e)),
+    };
+
+    // I7 ON THE DURABLE PATH — and it matters MORE here than in place.
+    //
+    // An un-admitted in-place write fails loudly against the apiserver, now. An
+    // un-admitted value committed to a manifest lands SILENTLY and kills the
+    // NEXT rollout, at a time nobody associates with this tick. So the proposal
+    // is admitted before it is ever rendered.
+    //
+    // **What is admitted, honestly:** the carved container's carved resource
+    // only. `AllocatableHeadroom` is a single scalar in ONE unit (bytes or
+    // millicores), so it cannot speak to the other resource or to sibling
+    // containers — and a Guaranteed promotion moves every request on every
+    // container. Widening that check needs a per-resource headroom input, which
+    // is a real gap and is named rather than papered over
+    // (`pending-request-multi-resource-admission`).
+    if let Some(proposed) = block.containers.iter().find(|c| c.name == input.container) {
+        let value = proposed.request(input.resource).unwrap_or(0);
+        // `u64::MAX` as the ceiling: the `request <= limit` rule is enforced by
+        // the block builder itself (Guaranteed sets request TO the limit;
+        // Burstable-from-BestEffort has no limit to exceed), so the only bound
+        // left to apply here is the node's. The `Err` arm is therefore
+        // unreachable — and is still handled as a typed refusal rather than an
+        // `unwrap()`/`unreachable!()`, because a panic here would take the
+        // controller down over an impossible case.
+        match RequestTarget::new(value, u64::MAX) {
+            Ok(bounded) => {
+                if let Err(e) = input.headroom.admit(bounded, input.replicas) {
+                    return RequestCarvePlan::Blocked(RequestCarveBlocked::WouldNotSchedule(e));
+                }
+            }
+            Err(e) => return RequestCarvePlan::Blocked(RequestCarveBlocked::AboveLimit(e)),
+        }
+    }
+
+    match ClassTransitionProposal::new(input.target.clone(), input.observed, block) {
+        Ok(p) => RequestCarvePlan::Transition(p),
+        // The rendered block did not actually move the class — the target is not
+        // reachable by the construction above. Reported, never silently dropped
+        // as a no-op.
+        Err(SameClass { class }) => RequestCarvePlan::Blocked(RequestCarveBlocked::Transition(
+            Unreachable::StillSameClass { class }.block(),
+        )),
+    }
+}
+
+/// **The request band's tick, as one pure function.** No I/O, no clock, no
+/// cluster — every world-fact arrives in [`RequestCarveInput`], which is what
+/// makes the whole dimension provable against a mock.
+///
+/// The order is load-bearing and is the Gate-0 illegal-state list executed in
+/// dependency order:
+///
+/// 1. resolve the container (a stale target is not a carve);
+/// 2. **the QoS gap dominates** — a class transition has no in-place path at any
+///    value, so it is decided before any scalar is computed (I1/I4);
+/// 3. otherwise take the decision: a shrink is refused for want of evidence (I3),
+///    a withheld reclaim is reported, only a grow proceeds;
+/// 4. the narrowing chain, in this order and no other:
+///    `carve_respecting_seal` (raise to the seal, I8) → [`RequestTarget::new`]
+///    (cap at the LIVE limit, I2) → [`AllocatableHeadroom::admit`] (must fit the
+///    node, I7) → [`ClassPreserved::check`] on the FINAL value (I6).
+///
+/// The class check runs LAST, on the value actually being written, because every
+/// preceding step can move it — checking the pre-clamp value would prove a
+/// property of a number nobody writes.
+#[must_use]
+pub fn plan_request_carve(input: &RequestCarveInput<'_>) -> RequestCarvePlan {
+    use breathe_invariant::isolation::carve_respecting_seal;
+
+    let Some(observed_container) = input.observed.containers.iter().find(|c| c.name == input.container) else {
+        return RequestCarvePlan::Blocked(RequestCarveBlocked::NoSuchContainer(NoSuchContainer {
+            container: input.container.to_owned(),
+        }));
+    };
+
+    // The scalar this tick would seat at, before any narrowing. Used by both the
+    // in-place path and the BestEffort→Burstable promotion, so a promotion lands
+    // on the same demand-derived number an in-place carve would have.
+    let raw_seat = match input.decision {
+        Decision::Grow { to, .. } => to,
+        _ => observed_container.request(input.resource).unwrap_or(0),
+    };
+
+    // ── 2. THE QoS GAP DOMINATES ────────────────────────────────────────────
+    let observed_class = input.observed.qos_class();
+    if observed_class != input.qos_target {
+        return plan_class_transition(input, observed_class, raw_seat);
+    }
+
+    // ── 3. WITHIN-CLASS: only a grow proceeds ───────────────────────────────
+    let (from, to) = match input.decision {
+        Decision::Grow { from, to } => (from, to),
+        Decision::ReclaimWithheld { current, reclaimable } => {
+            return RequestCarvePlan::Withheld { current, reclaimable: Some(reclaimable) }
+        }
+        Decision::NoSafeShrink { current } => {
+            return RequestCarvePlan::Withheld { current, reclaimable: None }
+        }
+        // I3 — unreachable through the intended pipeline; refused, not trusted.
+        Decision::Shrink { from, to } => {
+            return RequestCarvePlan::Blocked(RequestCarveBlocked::ShrinkWithoutEvidence { from, to })
+        }
+        _ => return RequestCarvePlan::Hold,
+    };
+
+    // ── I9 — legality, derived per tick from the live server minor ──────────
+    let legality = ResizeLegality::evaluate(
+        input.server_minor,
+        input.memory_resize_policy,
+        input.resource,
+        CarveDirection::Grow,
+        false, // a REQUEST, never a limit
+    );
+    if !legality.is_allowed() {
+        return RequestCarvePlan::Blocked(RequestCarveBlocked::ResizeIllegal { legality });
+    }
+
+    // ── 4. THE NARROWING CHAIN ──────────────────────────────────────────────
+    // (a) I8 — raise to the isolation seal floor. `SealedCarve`'s output type
+    //     carries the ≥-floor property; there is no below-seal value to hold.
+    let sealed = carve_respecting_seal(to, input.posture);
+
+    // (b) I2 — cap at the LIVE limit. A container with NO declared limit has no
+    //     `request <= limit` rule to violate: k8s's admission check is
+    //     conditional on the limit being present, so the bound falls through to
+    //     allocatable. Adding a request where there was none can still move the
+    //     class — which is precisely what step (d) catches.
+    let live_limit = observed_container.limit(input.resource).unwrap_or(u64::MAX);
+    let bounded = match RequestTarget::new(sealed.target(), live_limit) {
+        Ok(t) => t,
+        Err(e) => return RequestCarvePlan::Blocked(RequestCarveBlocked::AboveLimit(e)),
+    };
+
+    // (c) I7 — must fit the node class it schedules onto.
+    let admitted = match input.headroom.admit(bounded, input.replicas) {
+        Ok(a) => a,
+        Err(e) => return RequestCarvePlan::Blocked(RequestCarveBlocked::WouldNotSchedule(e)),
+    };
+
+    // A chain that narrowed all the way back to the current value is a no-op, not
+    // a write. Reported as Hold so a band does not churn the API every tick.
+    if admitted.get() == from {
+        return RequestCarvePlan::Hold;
+    }
+
+    // (d) I6 — the class check, on the FINAL value, over the WHOLE pod.
+    let preserved =
+        match ClassPreserved::check(input.observed, input.container, input.resource, admitted.get()) {
+            Ok(w) => w,
+            Err(PreserveError::ClassWouldChange(e)) => {
+                return RequestCarvePlan::Blocked(RequestCarveBlocked::ClassWouldChange(e))
+            }
+            Err(PreserveError::NoSuchContainer(e)) => {
+                return RequestCarvePlan::Blocked(RequestCarveBlocked::NoSuchContainer(e))
+            }
+        };
+
+    RequestCarvePlan::InPlace(InPlaceCarve {
+        patch: SsaPatch {
+            target: input.target.clone(),
+            field_manager: input.field_manager.to_owned(),
+            layout: LimitLayout::PodRequestResize { container: Some(input.container.to_owned()) },
+            resource: input.resource.as_str().to_owned(),
+            value: admitted.get(),
+        },
+        preserved,
+        durability: input.durability,
+        from,
+        to: admitted.get(),
+        seal_bound: sealed.seal_bound(),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1227,6 +1759,394 @@ mod tests {
         let gate = crate::gate::authored_write_gate("drzzln: test");
         let w = gate.witness().expect("an authored write resolves Live");
         assert_eq!(NullManifestWriter.propose(w, &p).await, Err(WriterError::Disabled));
+    }
+
+    // ═══════════════ THE CARVE PLANNER — Gate 0, row by row ═════════════════
+
+    use breathe_invariant::isolation::{IsolationPosture, PlacementIsolation};
+
+    /// A posture with no isolation floor — the ordinary Standard/Burstable case.
+    fn posture_open() -> IsolationPosture {
+        IsolationPosture::try_seal(WorkloadClass::Standard, QosClass::Burstable, 0, 0, PlacementIsolation::CoLocate, false)
+            .expect("a Standard/Burstable posture with no floor is legal")
+    }
+
+    /// A sealed posture with a real reservation floor.
+    fn posture_sealed(floor: u64, ceiling: u64) -> IsolationPosture {
+        IsolationPosture::try_seal(
+            WorkloadClass::Critical,
+            QosClass::Burstable,
+            floor,
+            ceiling,
+            PlacementIsolation::CoLocate,
+            false,
+        )
+        .expect("a Critical posture WITH a floor seals")
+    }
+
+    /// The default input: the live `camelot-build/sui` shape, Burstable, holding
+    /// its class, with generous headroom. Each test perturbs exactly one field.
+    struct Fixture {
+        observed: PodResources,
+        posture: IsolationPosture,
+        target: Target,
+    }
+
+    impl Fixture {
+        fn sui() -> Self {
+            Self {
+                // requests.memory=512Mi vs limits.memory=6Gi; cpu ALREADY 200m/200m.
+                observed: PodResources::new(vec![c("sui", Some(200), Some(200), Some(512 << 20), Some(6144 << 20))]),
+                posture: posture_open(),
+                target: t(),
+            }
+        }
+
+        fn input(&self, decision: Decision, headroom: u64) -> RequestCarveInput<'_> {
+            RequestCarveInput {
+                target: &self.target,
+                container: "sui",
+                resource: RequestResource::Memory,
+                observed: &self.observed,
+                decision,
+                posture: &self.posture,
+                headroom: AllocatableHeadroom { per_node: headroom, observed_at_epoch: 1 },
+                replicas: 1,
+                durability: Durability::Committed,
+                qos_target: QosClass::Burstable,
+                server_minor: 33,
+                memory_resize_policy: MemoryResizePolicy::Unset,
+                field_manager: "breathe-request",
+            }
+        }
+    }
+
+    // ── the happy path ───────────────────────────────────────────────────────
+
+    #[test]
+    fn a_within_class_grow_plans_an_in_place_carve() {
+        let f = Fixture::sui();
+        let plan = plan_request_carve(&f.input(Decision::Grow { from: 512 << 20, to: 2048 << 20 }, 16 << 30));
+        let RequestCarvePlan::InPlace(carve) = plan else { panic!("expected InPlace, got {plan:?}") };
+
+        assert_eq!(carve.from(), 512 << 20);
+        assert_eq!(carve.to(), 2048 << 20);
+        assert_eq!(carve.patch().value, 2048 << 20);
+        assert_eq!(carve.patch().resource, "memory");
+        assert_eq!(carve.patch().field_manager, "breathe-request");
+        assert!(
+            matches!(carve.patch().layout, LimitLayout::PodRequestResize { .. }),
+            "a request carve must carry the REQUEST layout, never PodResize"
+        );
+        // The witness proves the class is untouched, and names the exact change.
+        assert_eq!(carve.preserved().class(), QosClass::Burstable);
+        assert_eq!(carve.preserved().to(), 2048 << 20);
+        assert_eq!(carve.preserved().from(), Some(512 << 20));
+        assert!(!carve.seal_bound(), "no seal floor was configured, so it cannot have bound");
+        // I5 — this value does NOT survive a rollout, and the plan says so.
+        assert!(carve.durability_gap(), "a Committed band with no writer must report the gap");
+        assert!(RequestCarvePlan::InPlace(carve).writes());
+    }
+
+    #[test]
+    fn an_ephemeral_carve_reports_no_durability_gap() {
+        let f = Fixture::sui();
+        let mut i = f.input(Decision::Grow { from: 512 << 20, to: 1024 << 20 }, 16 << 30);
+        i.durability = Durability::Ephemeral;
+        let RequestCarvePlan::InPlace(carve) = plan_request_carve(&i) else { panic!("expected InPlace") };
+        assert!(!carve.durability_gap(), "an Ephemeral band never claims a durable value");
+    }
+
+    // ── I6 / I1 — the class check, on the FINAL value ────────────────────────
+
+    #[test]
+    fn a_carve_that_would_promote_the_class_is_blocked_not_written() {
+        // The live sui trap: cpu is already 200m/200m, so seating memory AT the
+        // 6Gi limit flips the pod Burstable → Guaranteed. No in-place path exists.
+        let f = Fixture::sui();
+        let plan = plan_request_carve(&f.input(Decision::Grow { from: 512 << 20, to: 6144 << 20 }, 16 << 30));
+        match plan {
+            RequestCarvePlan::Blocked(RequestCarveBlocked::ClassWouldChange(e)) => {
+                assert_eq!(e.from, QosClass::Burstable);
+                assert_eq!(e.to, QosClass::Guaranteed);
+            }
+            other => panic!("a class-moving carve must be Blocked, got {other:?}"),
+        }
+    }
+
+    /// The class check runs on the value ACTUALLY written, not the pre-clamp one.
+    /// Here the raw decision is harmless but the SEAL raises it onto the limit,
+    /// so the class would move — a bug a pre-clamp check would wave through.
+    #[test]
+    fn the_class_check_runs_after_every_clamp_not_before() {
+        let f = Fixture { posture: posture_sealed(6144 << 20, 6144 << 20), ..Fixture::sui() };
+        let plan = plan_request_carve(&f.input(Decision::Grow { from: 512 << 20, to: 1024 << 20 }, 16 << 30));
+        match plan {
+            RequestCarvePlan::Blocked(RequestCarveBlocked::ClassWouldChange(e)) => {
+                assert_eq!(e.to, QosClass::Guaranteed, "the SEAL pushed it onto the limit");
+            }
+            other => panic!("expected the post-clamp class check to fire, got {other:?}"),
+        }
+    }
+
+    // ── I2 — request ≤ live limit ────────────────────────────────────────────
+
+    #[test]
+    fn a_seal_floor_above_the_live_limit_is_blocked_not_clamped() {
+        // The seal demands 8Gi; the container's limit is 6Gi. No legal request
+        // satisfies both — a real authoring conflict, reported rather than
+        // silently clamped to something neither side asked for.
+        let f = Fixture { posture: posture_sealed(8192 << 20, 0), ..Fixture::sui() };
+        let plan = plan_request_carve(&f.input(Decision::Grow { from: 512 << 20, to: 1024 << 20 }, 32 << 30));
+        match plan {
+            RequestCarvePlan::Blocked(RequestCarveBlocked::AboveLimit(e)) => {
+                assert_eq!(e.proposed, 8192 << 20);
+                assert_eq!(e.live_limit, 6144 << 20);
+            }
+            other => panic!("expected AboveLimit, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_container_with_no_declared_limit_falls_through_to_allocatable() {
+        // k8s's `request <= limit` rule is CONDITIONAL on the limit existing, so
+        // an unlimited container has no such bound — allocatable is what binds.
+        // (The pod stays Burstable throughout: it carries a cpu limit.)
+        let observed = PodResources::new(vec![c("sui", Some(200), Some(400), Some(256 << 20), None)]);
+        let f = Fixture { observed, ..Fixture::sui() };
+        let plan = plan_request_carve(&f.input(Decision::Grow { from: 256 << 20, to: 1024 << 20 }, 16 << 30));
+        let RequestCarvePlan::InPlace(carve) = plan else { panic!("expected InPlace, got {plan:?}") };
+        assert_eq!(carve.to(), 1024 << 20);
+    }
+
+    // ── I7 — allocatable headroom ────────────────────────────────────────────
+
+    #[test]
+    fn a_carve_that_would_not_schedule_is_blocked() {
+        let f = Fixture::sui();
+        // 2Gi wanted onto a node class with 1Gi of headroom.
+        let plan = plan_request_carve(&f.input(Decision::Grow { from: 512 << 20, to: 2048 << 20 }, 1024 << 20));
+        match plan {
+            RequestCarvePlan::Blocked(RequestCarveBlocked::WouldNotSchedule(e)) => {
+                assert_eq!(e.proposed, 2048 << 20);
+                assert_eq!(e.per_node_headroom, 1024 << 20);
+            }
+            other => panic!("expected WouldNotSchedule, got {other:?}"),
+        }
+    }
+
+    // ── I3 — no shrink path ──────────────────────────────────────────────────
+
+    #[test]
+    fn a_shrink_reaching_the_planner_is_refused_for_want_of_evidence() {
+        let f = Fixture::sui();
+        let plan = plan_request_carve(&f.input(Decision::Shrink { from: 512 << 20, to: 256 << 20 }, 16 << 30));
+        assert!(
+            matches!(plan, RequestCarvePlan::Blocked(RequestCarveBlocked::ShrinkWithoutEvidence { .. })),
+            "lowering a reservation needs RequestShrinkEvidence, which has no constructor: {plan:?}"
+        );
+        assert!(!plan.writes());
+    }
+
+    #[test]
+    fn a_withheld_reclaim_is_named_and_a_masked_one_is_honest_about_it() {
+        let f = Fixture::sui();
+        let named = plan_request_carve(
+            &f.input(Decision::ReclaimWithheld { current: 512 << 20, reclaimable: 128 << 20 }, 16 << 30),
+        );
+        assert_eq!(
+            named,
+            RequestCarvePlan::Withheld { current: 512 << 20, reclaimable: Some(128 << 20) }
+        );
+        // The shared limit-shaped safe_min masked the amount upstream — reported
+        // as unknown rather than as zero, which would read as "no slack".
+        let masked = plan_request_carve(&f.input(Decision::NoSafeShrink { current: 512 << 20 }, 16 << 30));
+        assert_eq!(masked, RequestCarvePlan::Withheld { current: 512 << 20, reclaimable: None });
+        assert!(!named.writes() && !masked.writes());
+    }
+
+    // ── I4 / the QoS gap — a class transition NEVER takes the in-place door ──
+
+    #[test]
+    fn a_best_effort_pod_targeted_at_burstable_yields_a_proposal_not_a_patch() {
+        // I4: a BestEffort pod has no in-place promotion path at all — k8s
+        // refuses the class change AND (on 1.33) refuses adding a memory limit
+        // without a RestartContainer resizePolicy.
+        let observed = PodResources::new(vec![c("sui", None, None, None, None)]);
+        assert_eq!(observed.qos_class(), QosClass::BestEffort);
+        let f = Fixture { observed, ..Fixture::sui() };
+        let plan = plan_request_carve(&f.input(Decision::Grow { from: 0, to: 256 << 20 }, 16 << 30));
+        match &plan {
+            RequestCarvePlan::Transition(p) => {
+                assert_eq!(p.from, QosClass::BestEffort);
+                assert_eq!(p.to, QosClass::Burstable);
+                assert_eq!(p.block.containers[0].memory_request, Some(256 << 20));
+            }
+            other => panic!("expected a Transition proposal, got {other:?}"),
+        }
+        assert!(!plan.writes(), "a class transition must NEVER write in place");
+        // With no writer wired (M0), the gap is reported as blocked, not held.
+        assert_eq!(plan.qos_gap(false), QosGap::Blocked(ClassTransitionBlocked::NoWriterConfigured));
+        assert!(matches!(plan.qos_gap(true), QosGap::PromotionProposed { .. }));
+    }
+
+    /// **I7 applies to the DURABLE path too — and matters more there.**
+    ///
+    /// An un-admitted in-place write fails loudly against the apiserver now; an
+    /// un-admitted value committed to a manifest lands silently and kills the
+    /// NEXT rollout. So a promotion whose value would not schedule is refused
+    /// before the proposal is ever rendered.
+    #[test]
+    fn a_promotion_that_would_not_schedule_is_refused_before_it_is_proposed() {
+        let observed = PodResources::new(vec![c("sui", None, None, None, None)]);
+        let f = Fixture { observed, ..Fixture::sui() };
+        // The promotion seat is 4Gi; the node class has 1Gi of headroom.
+        let plan = plan_request_carve(&f.input(Decision::Grow { from: 0, to: 4096 << 20 }, 1024 << 20));
+        match plan {
+            RequestCarvePlan::Blocked(RequestCarveBlocked::WouldNotSchedule(e)) => {
+                assert_eq!(e.proposed, 4096 << 20);
+            }
+            other => panic!("an unschedulable promotion must be refused, got {other:?}"),
+        }
+        // …and the same promotion WITH headroom proceeds, so the gate is the
+        // headroom and not the promotion itself.
+        let ok = plan_request_carve(&f.input(Decision::Grow { from: 0, to: 4096 << 20 }, 16 << 30));
+        assert!(matches!(ok, RequestCarvePlan::Transition(_)), "got {ok:?}");
+    }
+
+    #[test]
+    fn promoting_to_guaranteed_sets_every_request_to_its_limit_on_every_container() {
+        let observed = PodResources::new(vec![
+            c("app", Some(200), Some(400), Some(512), Some(1024)),
+            c("sidecar", Some(10), Some(50), Some(64), Some(128)),
+        ]);
+        let f = Fixture { observed, ..Fixture::sui() };
+        let mut i = f.input(Decision::Grow { from: 512, to: 600 }, 1 << 40);
+        i.container = "app";
+        i.qos_target = QosClass::Guaranteed;
+        let RequestCarvePlan::Transition(p) = plan_request_carve(&i) else { panic!("expected Transition") };
+        assert_eq!(p.to, QosClass::Guaranteed);
+        assert_eq!(p.block.qos_class(), QosClass::Guaranteed, "the rendered block really is Guaranteed");
+        for c in &p.block.containers {
+            assert_eq!(c.cpu_request, c.cpu_limit);
+            assert_eq!(c.memory_request, c.memory_limit);
+        }
+    }
+
+    #[test]
+    fn guaranteed_is_unreachable_when_any_container_declares_no_limit() {
+        let observed = PodResources::new(vec![
+            c("app", Some(200), Some(400), Some(512), Some(1024)),
+            c("sidecar", Some(10), None, Some(64), None), // no limits at all
+        ]);
+        let f = Fixture { observed, ..Fixture::sui() };
+        let mut i = f.input(Decision::Grow { from: 512, to: 600 }, 1 << 40);
+        i.container = "app";
+        i.qos_target = QosClass::Guaranteed;
+        match plan_request_carve(&i) {
+            RequestCarvePlan::Blocked(RequestCarveBlocked::Transition(
+                ClassTransitionBlocked::UnreachableFromObserved { detail },
+            )) => assert!(detail.contains("sidecar"), "the reason must NAME the blocking container: {detail}"),
+            other => panic!("expected UnreachableFromObserved, got {other:?}"),
+        }
+    }
+
+    /// I5 — an `Ephemeral` band cannot reach its own declared class target,
+    /// because a transition is a template write by definition. Reported as a
+    /// band authored in a shape that cannot converge, not silently ignored.
+    #[test]
+    fn an_ephemeral_band_cannot_transition() {
+        let observed = PodResources::new(vec![c("sui", None, None, None, None)]);
+        let f = Fixture { observed, ..Fixture::sui() };
+        let mut i = f.input(Decision::Grow { from: 0, to: 256 << 20 }, 16 << 30);
+        i.durability = Durability::Ephemeral;
+        assert!(matches!(
+            plan_request_carve(&i),
+            RequestCarvePlan::Blocked(RequestCarveBlocked::Transition(
+                ClassTransitionBlocked::EphemeralCannotTransition
+            ))
+        ));
+    }
+
+    /// breathe never proposes to STRIP a workload's reservation.
+    #[test]
+    fn a_weakening_qos_target_is_refused() {
+        let observed = PodResources::new(vec![c("sui", Some(200), Some(200), Some(512), Some(512))]);
+        assert_eq!(observed.qos_class(), QosClass::Guaranteed);
+        let f = Fixture { observed, ..Fixture::sui() };
+        for weaker in [QosClass::Burstable, QosClass::BestEffort] {
+            let mut i = f.input(Decision::Grow { from: 512, to: 600 }, 1 << 40);
+            i.qos_target = weaker;
+            match plan_request_carve(&i) {
+                RequestCarvePlan::Blocked(RequestCarveBlocked::WouldWeakenSeal { observed, target }) => {
+                    assert_eq!(observed, QosClass::Guaranteed);
+                    assert_eq!(target, weaker);
+                }
+                other => panic!("a de-seal to {weaker:?} must be refused, got {other:?}"),
+            }
+        }
+    }
+
+    // ── the remaining refusals ───────────────────────────────────────────────
+
+    #[test]
+    fn a_stale_container_target_is_blocked() {
+        let f = Fixture::sui();
+        let mut i = f.input(Decision::Grow { from: 512 << 20, to: 1024 << 20 }, 16 << 30);
+        i.container = "gone";
+        assert!(matches!(
+            plan_request_carve(&i),
+            RequestCarvePlan::Blocked(RequestCarveBlocked::NoSuchContainer(_))
+        ));
+    }
+
+    #[test]
+    fn a_non_actionable_decision_holds_without_writing() {
+        let f = Fixture::sui();
+        for d in [
+            Decision::Hold,
+            Decision::AtCeiling { current: 512 << 20 },
+            Decision::Warmup { current: 512 << 20, observed_for: 1, warmup: 600 },
+            Decision::NoLimit,
+        ] {
+            let plan = plan_request_carve(&f.input(d, 16 << 30));
+            assert_eq!(plan, RequestCarvePlan::Hold, "{d:?} must Hold");
+            assert!(!plan.writes());
+        }
+    }
+
+    /// A chain that narrowed all the way back to the current value is a no-op,
+    /// not a write — otherwise the band would re-patch the same number forever.
+    #[test]
+    fn a_carve_that_narrows_back_to_the_current_value_holds() {
+        let f = Fixture { posture: posture_sealed(512 << 20, 0), ..Fixture::sui() };
+        // The law wanted less; the seal raised it back to exactly the live value.
+        let plan = plan_request_carve(&f.input(Decision::Grow { from: 512 << 20, to: 300 << 20 }, 16 << 30));
+        assert_eq!(plan, RequestCarvePlan::Hold);
+    }
+
+    // ── the whole pipeline, on the receipt that motivated the dimension ──────
+
+    /// **The `sui-cache-pg` shape, end to end through the planner.** 34 OOMKills
+    /// at a 202.8Mi high-water under a 1Gi limit with cgroup `failcnt = 0`. The
+    /// LIMIT was never binding; the tiny REQUEST set `oom_score_adj`.
+    #[test]
+    fn the_sui_cache_pg_shape_plans_a_request_raise() {
+        let observed = PodResources::new(vec![c("db", Some(100), Some(500), Some(128 << 20), Some(1 << 30))]);
+        assert_eq!(observed.qos_class(), QosClass::Burstable);
+        let f = Fixture { observed, ..Fixture::sui() };
+        let mut i = f.input(Decision::Grow { from: 128 << 20, to: 233 << 20 }, 8 << 30);
+        i.container = "db";
+
+        let RequestCarvePlan::InPlace(carve) = plan_request_carve(&i) else {
+            panic!("the request band must plan a raise")
+        };
+        assert!(carve.to() > carve.from(), "the RESERVATION rises: {} → {}", carve.from(), carve.to());
+        assert!(carve.to() < (1 << 30), "and stays strictly under the never-binding 1Gi limit");
+        assert_eq!(carve.preserved().class(), QosClass::Burstable, "the class is untouched");
+        // The write targets requests — the field the kernel ranks on — via the
+        // request layout, not the limit layout a MemoryBand would use.
+        assert!(matches!(carve.patch().layout, LimitLayout::PodRequestResize { .. }));
     }
 
     /// The structural claim, asserted as a compiling program rather than prose:

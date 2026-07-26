@@ -1456,6 +1456,106 @@ impl ControlLaw for PercentileBand {
     }
 }
 
+/// **`RequestLaw`** — the RESERVATION law. Seat the value at a stable high
+/// quantile of demonstrated demand plus a small fractional headroom.
+///
+/// # Why this is not [`PercentileBand`], despite the arithmetic being a sibling
+///
+/// `PercentileBand` computes `demand / setpoint` — a DIVISOR near 1.25 that sizes
+/// a **limit** to sit comfortably above the workload. This law computes
+/// `demand × (1 + headroom)` — a MULTIPLIER near 1.15 that sizes a
+/// **reservation** to sit just above it. Numerically you can encode one as the
+/// other (`setpoint = 1/(1+headroom)`), and that is exactly why they must stay
+/// separate types: the two constants answer different questions, are tuned
+/// against different costs, and a shared knob would let a limit-tuning session
+/// silently move every reservation in the fleet.
+///
+/// The costs are genuinely asymmetric, which is what sets the headroom low:
+///
+/// | | over-sized | under-sized |
+/// |---|---|---|
+/// | a LIMIT | a ceiling nobody hits — free | throttle / OOM at the cap |
+/// | a REQUEST | node allocatable withheld, × replicas; past allocatable the pod never schedules | bad `oom_score_adj`, first evicted — **the kill** |
+///
+/// So a reservation tracks a *stable* statistic, never a peak. Feeding this law
+/// `update_peak`'s decaying max — which is right for a limit's never-OOM floor —
+/// would ratchet the reservation to a single boot spike and hold it there for
+/// hundreds of ticks, reserving (and wasting) the spike forever. The caller feeds
+/// a quantile computed in `PromQL` (`quantile_over_time(0.95, …[7d])`), so the
+/// controller holds no history and a restart loses nothing.
+///
+/// # Grow-only, and where that is enforced
+///
+/// This law proposes the honest seat in **both** directions, and the downward
+/// direction is refused *outside* it — by `Reclaim::ObserveOnly` (which converts
+/// a shrink to [`Decision::ReclaimWithheld`], NAMING the slack) composed with the
+/// `Request` dimension's `Directionality::GrowOnly`. Proposing `Hold` instead
+/// would be the [`Decision::ReclaimWithheld`] doc's own `AtFloor` lie in a new
+/// dress: the operator would see "converged" where the truth is "there is slack
+/// and policy says don't take it".
+///
+/// **Named cost of the M0 posture:** grow-only reservations ratchet upward and
+/// never come down, so reservation waste accumulates monotonically. That is the
+/// right trade — lowering a request is the direction that kills — but it is a
+/// real cost, which is why it is reported every tick instead of hidden.
+///
+/// **Named imperfection (`pending-request-reclaim-naming`):** whether a withheld
+/// downward move surfaces as `ReclaimWithheld { reclaimable }` or as the coarser
+/// `NoSafeShrink` depends on the SHARED [`safety_clamp`], whose [`safe_min`] is a
+/// limit-shaped `ceil(peak/setpoint)` formula. When that floor binds first the
+/// `reclaimable` figure is lost. Both outcomes are non-writes, so this is a
+/// reporting-fidelity gap and never a safety one; it is named rather than fixed
+/// by forking the one safety gate every law funnels through.
+///
+/// No deadband, deliberately: under-reservation is the failure mode this
+/// dimension exists to fix, so a demonstrated upward gap is acted on rather than
+/// tolerated, and write churn is bounded by `cooldown_seconds` in `plan_tick`
+/// (the gate that already exists for exactly this) rather than by a second,
+/// dimension-specific hysteresis knob.
+#[derive(Debug, Clone, Copy)]
+pub struct RequestLaw {
+    /// Fractional headroom above the demand quantile (`0.15` ⇒ `× 1.15`).
+    /// Negative / non-finite values are inert (treated as `0.0`) — matching
+    /// `BandConfig::with_override`'s NaN discipline, so a malformed CR degrades
+    /// to "seat exactly at the quantile" rather than producing a garbage target.
+    pub headroom: f64,
+}
+
+impl Default for RequestLaw {
+    /// `0.15` — the compiled `DemandSignalSpec::headroom` default.
+    fn default() -> Self {
+        Self { headroom: 0.15 }
+    }
+}
+
+impl RequestLaw {
+    /// The reservation seat for a demand reading, saturating rather than
+    /// wrapping. Pure; exposed so the carve planner and the band both compute the
+    /// seat through ONE function.
+    #[must_use]
+    #[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    pub fn seat(self, demand: u64) -> u64 {
+        let h = if self.headroom.is_finite() && self.headroom > 0.0 { self.headroom } else { 0.0 };
+        let raw = (demand as f64) * (1.0 + h);
+        // `as u64` saturates at u64::MAX for an out-of-range float in Rust 1.45+,
+        // and NaN maps to 0 — but `h` is already finite and `demand` is a u64, so
+        // the only reachable extreme is saturation, which the ceiling clamp then
+        // bounds. Never a wrap, never a panic.
+        raw.ceil() as u64
+    }
+}
+
+impl ControlLaw for RequestLaw {
+    fn propose(&self, demand: u64, current_request: u64, _cfg: &BandConfig) -> Proposal {
+        let seat = self.seat(demand);
+        if seat == current_request {
+            Proposal::Hold
+        } else {
+            Proposal::Target(seat)
+        }
+    }
+}
+
 /// **AIMD** — additive-increase / multiplicative-decrease, the TCP-congestion
 /// shape for RATE LIMITERS (samba quotaPct, adaptive concurrency). With no
 /// throttle signal it probes UP by a fixed `increment` (gently discover the
@@ -3263,6 +3363,181 @@ mod tests {
         }
         // in-band → hold.
         assert_eq!(decide_with(&PercentileBand, (0.78 * GI as f64) as u64, (0.78 * GI as f64) as u64, GI, &c), Decision::Hold);
+    }
+
+    // ═══════════════ RequestLaw — the RESERVATION law ═══════════════════════
+
+    /// The seat is `demand × (1 + headroom)`, and a malformed headroom is INERT
+    /// (seat exactly at the quantile) rather than producing a garbage target.
+    #[test]
+    fn the_reservation_seat_is_the_quantile_plus_headroom_and_degrades_safely() {
+        assert_eq!(RequestLaw { headroom: 0.15 }.seat(1000), 1150);
+        assert_eq!(RequestLaw { headroom: 0.0 }.seat(1000), 1000);
+        // Negative / NaN / infinite are inert — never a shrink-by-headroom, never
+        // a NaN-derived 0, never a saturated max.
+        for bad in [-1.0, f64::NAN, f64::NEG_INFINITY] {
+            assert_eq!(RequestLaw { headroom: bad }.seat(1000), 1000, "headroom {bad} must be inert");
+        }
+        // The compiled default matches DemandSignalSpec::headroom (0.15).
+        assert_eq!(RequestLaw::default().seat(1000), 1150);
+    }
+
+    /// A reservation must NOT be sized by the limit law's `1/setpoint` divisor.
+    /// Pinned as an inequality so a future "unify the constants" refactor has to
+    /// come here and say why.
+    #[test]
+    fn the_reservation_seat_is_tighter_than_the_limit_seat() {
+        let c = cfg(); // setpoint 0.80 ⇒ a limit seats at demand × 1.25
+        let demand = 400 * MI;
+        // The production limit-seat function, not a re-derivation of its formula
+        // — so this stays a true comparison if the limit law's shape ever moves.
+        let limit_seat = soft_min(demand, &c);
+        let request_seat = RequestLaw::default().seat(demand);
+        assert!(
+            request_seat < limit_seat,
+            "a reservation ({request_seat}) must sit tighter than a limit ({limit_seat}) — \
+             every reserved byte is capacity withheld from the scheduler"
+        );
+    }
+
+    /// A rise in demand GROWS the reservation, through the shared scaffolding.
+    #[test]
+    fn a_demand_above_the_reservation_grows_it() {
+        let c = cfg();
+        let demand = 800 * MI;
+        // peak == demand: this law is fed a PromQL quantile, not `update_peak`'s
+        // decaying max, so there is no separate peak history to carry.
+        match decide_with(&RequestLaw::default(), demand, demand, 512 * MI, &c) {
+            Decision::Grow { from, to } => {
+                assert_eq!(from, 512 * MI);
+                assert_eq!(to, RequestLaw::default().seat(demand));
+            }
+            d => panic!("expected Grow, got {d:?}"),
+        }
+    }
+
+    /// The reservation is already exactly right ⇒ Hold, no churn.
+    #[test]
+    fn a_reservation_already_at_the_seat_holds() {
+        let c = cfg();
+        let demand = 800 * MI;
+        let seat = RequestLaw::default().seat(demand);
+        assert_eq!(decide_with(&RequestLaw::default(), demand, demand, seat, &c), Decision::Hold);
+    }
+
+    /// I3 — a DOWNWARD move is never written. It surfaces as a withheld
+    /// non-write, and the test asserts the property that matters (no `Shrink`
+    /// escapes) rather than pinning which of the two withholding arms fires —
+    /// see `RequestLaw`'s `pending-request-reclaim-naming` note.
+    #[test]
+    fn a_downward_reservation_move_is_never_written() {
+        let c = cfg();
+        // Demand collapsed far below a generous existing reservation.
+        let demand = 100 * MI;
+        let current = 4 * GI;
+        let raw = decide_with(&RequestLaw::default(), demand, demand, current, &c);
+        let withheld = clamp_to_reclaim(raw, Reclaim::ObserveOnly);
+        match withheld {
+            Decision::ReclaimWithheld { current: c0, reclaimable } => {
+                assert_eq!(c0, current);
+                assert!(reclaimable > 0, "a withheld reclaim must NAME the slack");
+            }
+            // The shared limit-shaped `safe_min` bound first; still a non-write.
+            Decision::NoSafeShrink { current: c0 } => assert_eq!(c0, current),
+            d => panic!("a downward reservation move must never be written, got {d:?}"),
+        }
+        assert!(
+            !matches!(withheld, Decision::Shrink { .. }),
+            "no Shrink may escape the reclaim gate — lowering a request is the direction that kills"
+        );
+    }
+
+    /// The composed grow-only posture, asserted over the WHOLE demand range
+    /// rather than at a sampled point: for every demand from far below to far
+    /// above the current reservation, the outcome is `Grow`, `Hold`, or a
+    /// withheld non-write — never a `Shrink`.
+    #[test]
+    fn no_demand_reading_can_produce_a_reservation_shrink() {
+        let c = cfg();
+        let current = GI;
+        // Integer fractions of the reservation, so the sweep needs no float cast:
+        // 0, 1/100, 1/10, … 4× — from "metric collapsed" to "far over-demand".
+        for (num, den) in [(0u64, 1u64), (1, 100), (1, 10), (1, 2), (9, 10), (99, 100), (1, 1), (101, 100), (3, 2), (4, 1)] {
+            let demand = current / den * num;
+            let d = clamp_to_directionality(
+                clamp_to_reclaim(decide_with(&RequestLaw::default(), demand, demand, current, &c), Reclaim::ObserveOnly),
+                Directionality::GrowOnly,
+            );
+            assert!(
+                !matches!(d, Decision::Shrink { .. }),
+                "demand {num}/{den} of the reservation produced a Shrink — \
+                 the grow-only posture leaked: {d:?}"
+            );
+        }
+    }
+
+    /// **THE `sui-cache-pg` SHAPE — the receipt this dimension exists for.**
+    ///
+    /// 34 `OOMKills` at a 202.8Mi memory high-water under a **1Gi** limit with
+    /// cgroup `failcnt = 0`: the limit was never once binding, so the kill came
+    /// from `oom_score_adj`, which is derived from the tiny REQUEST.
+    ///
+    /// This test proves the two halves of that claim in one place:
+    /// (a) a `MemoryBand` on the LIMIT cannot help at ANY setting — its only
+    ///     available move is downward, and downward is withheld; and
+    /// (b) a `RequestBand` raises the REQUEST, which is the field that decides.
+    #[test]
+    fn the_sui_cache_pg_shape_is_fixed_by_the_request_and_not_by_the_limit() {
+        let c = cfg();
+        let high_water = 202_800 * 1024; // 202.8Mi, the observed high-water
+        let limit = GI; // never binding — cgroup failcnt was 0
+        let request = 128 * MI; // the tiny reservation that set oom_score_adj
+
+        // (a) THE LIMIT BAND CANNOT HELP. Utilization is 202.8Mi/1Gi ≈ 0.19, far
+        // below the deadband, so the ONLY move a MemoryBand has is downward —
+        // and memory's grow-only reclaim posture withholds it. There is no
+        // MemoryBand setting that raises anything the kernel ranks on.
+        let mem = clamp_to_reclaim(decide_with(&BandLaw, high_water, high_water, limit, &c), Reclaim::ObserveOnly);
+        assert!(
+            !matches!(mem, Decision::Grow { .. }),
+            "a MemoryBand must have NO upward move here — that is why 34 OOMKills happened under a 1Gi limit: {mem:?}"
+        );
+        assert!(!matches!(mem, Decision::Shrink { .. }), "and its downward move is withheld: {mem:?}");
+
+        // (b) THE REQUEST BAND FIXES IT. The reservation is raised toward the
+        // demonstrated demand plus headroom — the field oom_score_adj is derived
+        // from. Floor low enough that the LAW's own seat governs rather than the
+        // floor-seed; the floor-binding case is asserted separately below.
+        let law = RequestLaw::default();
+        let mut lc = c.clone();
+        lc.floor_bytes = 64 * MI;
+        match decide_with(&law, high_water, high_water, request, &lc) {
+            Decision::Grow { from, to } => {
+                assert_eq!(from, request);
+                assert_eq!(to, law.seat(high_water));
+                assert!(to > request, "the reservation must RISE");
+                assert!(
+                    to < limit,
+                    "and stay strictly under the live limit ({to} < {limit}) — at the limit it would \
+                     silently promote the pod to Guaranteed, which no in-place resize may do"
+                );
+            }
+            d => panic!("the request band must GROW the reservation, got {d:?}"),
+        }
+
+        // …and with the DEFAULT 256Mi floor the shared floor-seed binds FIRST and
+        // grows straight to the floor. Pinned rather than tuned away: the floor
+        // and the seat are both lower bounds on a reservation, `decide_with`
+        // applies the floor before the law runs, and the outcome is still a rise.
+        // What must never happen is a NON-rise.
+        match decide_with(&law, high_water, high_water, request, &c) {
+            Decision::Grow { from, to } => {
+                assert_eq!(from, request);
+                assert_eq!(to, c.floor_bytes, "the floor-seed governs when the floor exceeds the seat");
+                assert!(to > request, "either way the reservation RISES");
+            }
+            d => panic!("the request band must GROW the reservation, got {d:?}"),
+        }
     }
 
     #[test]

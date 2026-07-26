@@ -1325,6 +1325,7 @@ dependencies = [
  "blake3",
  "breathe-control",
  "breathe-invariant",
+ "breathe-provider",
  "schemars 0.8.22",
  "schemars 1.2.1",
  "serde",

@@ -13,6 +13,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use async_trait::async_trait;
 use breathe_control::{FieldOwner, Quantity, StorageCapability, Unit};
 use breathe_provider::LiveWitness;
+use breathe_provider::request::{ClassPreserved, RequestActuator};
 use breathe_provider::{
     AppliedReceipt, Cluster, LimitLayout, MetricSource, ProviderError, Sample, SsaPatch, Target,
 };
@@ -198,6 +199,54 @@ impl KubeCluster {
             .await
             .map_err(|e| ProviderError::ApiTransient(e.to_string()))?;
         Ok(pods.items)
+    }
+
+    /// **THE ONE in-place `pods/{name}/resize` I/O path**, shared by the LIMIT
+    /// carve (`Cluster::apply`'s `PodResize` arm) and the REQUEST carve
+    /// (`RequestActuator::resize_in_place`).
+    ///
+    /// The two dimensions differ ONLY in the `resources` block they write — a
+    /// limit carve writes `limits` (and clamps `requests` down when it must),
+    /// a request carve writes `requests` alone — so the block builder is the
+    /// injected parameter and everything else (pod listing, container
+    /// resolution, field-manager scoping, the subresource patch, error mapping)
+    /// is written once. Forking a second resize loop for requests would have
+    /// duplicated exactly the parts most expensive to get wrong twice.
+    ///
+    /// `mk_resources` receives the live pod's JSON and the resolved container
+    /// name, and returns the `resources` block for that pod.
+    async fn patch_pods_resize<F>(
+        &self,
+        target: &Target,
+        container: Option<&str>,
+        field_manager: &str,
+        mk_resources: F,
+    ) -> Result<AppliedReceipt, ProviderError>
+    where
+        F: Fn(&Value, &str) -> Value,
+    {
+        let pods = self.owner_pods(target).await?;
+        if pods.is_empty() {
+            return Err(ProviderError::TargetNotFound);
+        }
+        let gvk = GroupVersionKind::gvk("", "v1", "Pod");
+        let ar = ApiResource::from_gvk(&gvk);
+        let pod_api: Api<DynamicObject> = Api::namespaced_with(self.client.clone(), &target.namespace, &ar);
+        let pp = PatchParams { field_manager: Some(field_manager.to_owned()), ..Default::default() };
+        for pod in &pods {
+            let Some(pod_name) = pod.metadata.name.clone() else { continue };
+            let cname = match container {
+                Some(c) => c.to_owned(),
+                None => Self::pod_first_container(&pod.data).ok_or(ProviderError::NoCapacityField)?,
+            };
+            let resources = mk_resources(&pod.data, &cname);
+            let body = json!({ "spec": { "containers": [ { "name": cname, "resources": resources } ] } });
+            pod_api
+                .patch_subresource("resize", &pod_name, &pp, &Patch::Strategic(&body))
+                .await
+                .map_err(|e| ProviderError::ApiPermanent(e.to_string()))?;
+        }
+        Ok(AppliedReceipt { source_hash: [0u8; 16] })
     }
 
     /// **Part 1 (SOFT k8s carve):** resolve the cgroup-path coordinates of EVERY
@@ -424,6 +473,29 @@ fn resize_resources_block(qos: &str, resource: &str, value: u64, current_request
     }
 }
 
+/// The `resources` block for an in-place REQUEST carve — the RESERVATION
+/// sibling of [`resize_resources_block`].
+///
+/// **It writes `requests` and NOTHING else, and that omission is the safety
+/// property.** A limit carve legitimately touches both sides of the pair
+/// (`resize_resources_block` mirrors the value into `requests` for a Guaranteed
+/// pod, and clamps `requests` down when a shrink would leave `request > limit`).
+/// A request carve must never touch `limits`, because the `QoS` class is a
+/// function of the requests-vs-limits *relation*: moving the other side is
+/// precisely how a within-class carve turns into an undeclared class transition,
+/// which `ValidatePodResize` rejects outright.
+///
+/// The class-preservation decision is NOT made here. It was made — over the
+/// whole pod, every container, every resource — by
+/// `breathe_provider::request::ClassPreserved::check`, and this function is
+/// reached only with that witness in hand. Re-deriving it from one pod's
+/// `status.qosClass` string, the way the limit path does, would be a second
+/// source of truth for the one fact this dimension turns on.
+fn request_resources_block(resource: &str, value: u64) -> Value {
+    let qty = Quantity { value, unit: Unit::for_resource(resource) }.to_string();
+    json!({ "requests": { resource: qty } })
+}
+
 /// Provisioners known to report NODE-WIDE (not per-volume) usage stats via
 /// `kubelet_volume_stats_used_bytes` — `local-path`'s hostPath-backed PVs are
 /// the canonical case (the metric reports the whole node filesystem, not the
@@ -578,30 +650,17 @@ impl Cluster for KubeCluster {
         // cgroup write. The template is untouched (a re-created pod re-converges
         // in-place next tick); QoS is preserved per pod.
         if let LimitLayout::PodResize { container } = &patch.layout {
-            let pods = self.owner_pods(target).await?;
-            if pods.is_empty() {
-                return Err(ProviderError::TargetNotFound);
-            }
-            let gvk = GroupVersionKind::gvk("", "v1", "Pod");
-            let ar = ApiResource::from_gvk(&gvk);
-            let pod_api: Api<DynamicObject> = Api::namespaced_with(self.client.clone(), &target.namespace, &ar);
-            let pp = PatchParams { field_manager: Some(patch.field_manager.clone()), ..Default::default() };
-            for pod in &pods {
-                let Some(pod_name) = pod.metadata.name.clone() else { continue };
-                let cname = match container {
-                    Some(c) => c.clone(),
-                    None => Self::pod_first_container(&pod.data).ok_or(ProviderError::NoCapacityField)?,
-                };
-                let qos = pod.data.pointer("/status/qosClass").and_then(Value::as_str).unwrap_or("Burstable");
-                let current_req = Self::pod_container_qty(&pod.data, &Some(cname.clone()), "requests", &patch.resource);
-                let resources = resize_resources_block(qos, &patch.resource, patch.value, current_req.as_deref());
-                let body = json!({ "spec": { "containers": [ { "name": cname, "resources": resources } ] } });
-                pod_api
-                    .patch_subresource("resize", &pod_name, &pp, &Patch::Strategic(&body))
-                    .await
-                    .map_err(|e| ProviderError::ApiPermanent(e.to_string()))?;
-            }
-            return Ok(AppliedReceipt { source_hash: [0u8; 16] });
+            // ONE resize I/O path, shared with the REQUEST actuator below. Only
+            // the `resources` block differs between a limit carve and a request
+            // carve, so only the block builder is per-dimension.
+            return self
+                .patch_pods_resize(target, container.as_deref(), &patch.field_manager, |pod_data, cname| {
+                    let qos = pod_data.pointer("/status/qosClass").and_then(Value::as_str).unwrap_or("Burstable");
+                    let current_req =
+                        Self::pod_container_qty(pod_data, &Some(cname.to_owned()), "requests", &patch.resource);
+                    resize_resources_block(qos, &patch.resource, patch.value, current_req.as_deref())
+                })
+                .await;
         }
 
         let (g, v) = Self::group_version(target);
@@ -633,27 +692,28 @@ impl Cluster for KubeCluster {
                     "internal: PodResize must be handled by the in-place path".into(),
                 ))
             }
-            // ── THE B1 BOUNDARY, stated as a typed error rather than a stub ──
+            // ── THE PERMANENT BOUNDARY between the generic door and DOOR 1 ──
             //
-            // The REQUEST actuation is deliberately NOT wired. `breathe-provider`'s
-            // `request` module ships the full typed surface — the two disjoint
-            // doors, the `ClassPreserved` witness, the narrowing constructors —
-            // and NOTHING calls them. Reaching this arm means a `RequestBand` got
-            // as far as the generic write path, which cannot happen today (no
-            // descriptor, no controller watcher) and must fail LOUDLY the moment
-            // it can.
+            // A request write is actuated by `RequestActuator::resize_in_place`
+            // (implemented for `KubeCluster` below), never here. This arm stays a
+            // typed refusal FOREVER, not until it is "wired": the generic
+            // `Cluster::apply` path carries only a `LiveWitness`, and a request
+            // write additionally demands a `ClassPreserved` — the proof that the
+            // carve does not move the pod's QoS class. This path cannot produce
+            // one, so it must not write.
+            //
+            // That is the whole point of the two-door split arriving here as a
+            // dead end rather than as a convenience: a caller who reaches for the
+            // familiar door gets a loud, typed error instead of a write that
+            // skipped the one check `ValidatePodResize` will reject anyway.
             //
             // A typed error, never a `todo!()`/`unimplemented!()` (which would
             // abort the controller) and never a silent `Ok` (which would report a
             // carve that did not happen — the one outcome worse than an error).
-            // Wiring this arm is B2's job, and it does NOT belong here: a request
-            // write must go through `RequestActuator::resize_in_place`, which
-            // demands a `ClassPreserved` this generic SSA path cannot produce.
             LimitLayout::PodRequestResize { .. } => {
                 return Err(ProviderError::ApiPermanent(
-                    "request actuation is not wired (B1 ships the typed surface only); \
-                     a request write must go through RequestActuator::resize_in_place \
-                     with a ClassPreserved witness, never the generic SSA path"
+                    "a request write must go through RequestActuator::resize_in_place with a \
+                     ClassPreserved witness, never the generic SSA path (which cannot produce one)"
                         .into(),
                 ))
             }
@@ -850,13 +910,212 @@ impl Cluster for KubeCluster {
     }
 }
 
+/// Does a witness/patch pair actually describe the same change? Pure, so the
+/// agreement rule is testable without a cluster.
+///
+/// **Tier: only-mitigated, and deliberately kept anyway.** The strong guarantee
+/// is upstream — a plan's `InPlaceCarve` builds the witness and the patch from
+/// ONE narrowing chain, so they agree by construction and there is no reachable
+/// disagreement through the intended pipeline. This is the defense-in-depth
+/// layer for a HAND-assembled pair, where a caller could otherwise present a
+/// witness proving container `a`'s carve is class-safe while patching container
+/// `b`. It cannot be a type: `SsaPatch` is the fleet-wide payload for ten
+/// dimensions and must not grow a request-specific field.
+fn witness_matches_patch(preserved: &ClassPreserved, patch: &SsaPatch) -> Result<(), ProviderError> {
+    if preserved.to() != patch.value {
+        return Err(ProviderError::ApiPermanent(
+            "request actuation refused: the ClassPreserved witness authorizes a different value \
+             than the patch carries"
+                .into(),
+        ));
+    }
+    if preserved.resource().as_str() != patch.resource {
+        return Err(ProviderError::ApiPermanent(
+            "request actuation refused: the ClassPreserved witness authorizes a different resource \
+             than the patch carries"
+                .into(),
+        ));
+    }
+    let LimitLayout::PodRequestResize { container } = &patch.layout else {
+        return Err(ProviderError::ApiPermanent(
+            "request actuation refused: the patch does not carry the PodRequestResize layout \
+             (a request write must never travel a limit layout)"
+                .into(),
+        ));
+    };
+    // A layout with no container pinned resolves per-pod at write time and
+    // defers to the witness's own container, so only a PINNED mismatch is a
+    // refusal.
+    if container.as_deref().is_some_and(|c| c != preserved.container()) {
+        return Err(ProviderError::ApiPermanent(
+            "request actuation refused: the ClassPreserved witness authorizes a different \
+             container than the patch targets"
+                .into(),
+        ));
+    }
+    Ok(())
+}
+
+/// **DOOR 1, realized.** The in-place, within-class request carve.
+///
+/// Reuses [`KubeCluster::patch_pods_resize`] verbatim — the SAME pod listing,
+/// container resolution, field-manager scoping and subresource patch the limit
+/// carve uses — and supplies the one thing that differs: a `resources` block
+/// containing `requests` and nothing else.
+///
+/// # What this impl does NOT do, on purpose
+///
+/// It never writes `limits`, never reads `status.qosClass` to make a decision,
+/// and has no branch that could produce a class transition. It cannot: the trait
+/// has exactly one method, that method takes an [`SsaPatch`] (one scalar), and
+/// `ClassTransitionProposal` is a different type with no conversion to one. The
+/// class question was already answered by the [`ClassPreserved`] argument, whose
+/// only constructor recomputes the pod-level class over every container.
+#[async_trait]
+impl RequestActuator for KubeCluster {
+    async fn resize_in_place(
+        &self,
+        _live: &LiveWitness,
+        preserved: &ClassPreserved,
+        patch: &SsaPatch,
+    ) -> Result<AppliedReceipt, ProviderError> {
+        witness_matches_patch(preserved, patch)?;
+        self.patch_pods_resize(
+            &patch.target,
+            Some(preserved.container()),
+            &patch.field_manager,
+            |_pod_data, _cname| request_resources_block(&patch.resource, patch.value),
+        )
+        .await
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::resize_resources_block;
+    use super::{request_resources_block, resize_resources_block, witness_matches_patch};
+    use breathe_provider::request::{ClassPreserved, ContainerResources, PodResources, RequestResource};
+    use breathe_provider::{LimitLayout, SsaPatch, Target};
     use serde_json::json;
 
     const GI: u64 = 1 << 30;
     const MI: u64 = 1 << 20;
+
+    // ═══════════ the REQUEST block — requests only, never limits ════════════
+
+    /// **The omission IS the safety property.** A request carve writes
+    /// `requests` and nothing else, because `QoS` is a function of the
+    /// requests-vs-limits RELATION: touching the other side is exactly how a
+    /// within-class carve becomes an undeclared class transition.
+    #[test]
+    fn the_request_block_writes_requests_and_never_limits() {
+        let block = request_resources_block("memory", 2 * GI);
+        assert_eq!(block, json!({ "requests": { "memory": "2147483648" } }));
+        assert!(block.get("limits").is_none(), "a request carve must NEVER write a limit");
+    }
+
+    /// cpu renders with the `m` suffix — a bare `250` would be read by k8s as
+    /// 250 *cores*, a 1000× over-reservation that would never schedule.
+    #[test]
+    fn the_request_block_renders_cpu_in_millicores() {
+        assert_eq!(request_resources_block("cpu", 250), json!({ "requests": { "cpu": "250m" } }));
+    }
+
+    /// The two block builders are genuinely different shapes, and the LIMIT one
+    /// touches `requests` in both of its arms. Pinned so a future "unify these"
+    /// refactor has to come here and confront why they must stay apart.
+    #[test]
+    fn the_limit_block_and_the_request_block_are_not_interchangeable() {
+        let limit_side = resize_resources_block("Guaranteed", "memory", 2 * GI, Some("1Gi"));
+        let request_side = request_resources_block("memory", 2 * GI);
+        assert!(limit_side.get("limits").is_some(), "the limit builder writes limits");
+        assert!(request_side.get("limits").is_none(), "the request builder does not");
+        assert_ne!(limit_side, request_side);
+    }
+
+    // ═══════════ the witness↔patch agreement check (defense in depth) ════════
+
+    fn pod() -> PodResources {
+        PodResources::new(vec![
+            ContainerResources {
+                name: "db".into(),
+                cpu_request: Some(100),
+                cpu_limit: Some(500),
+                memory_request: Some(128 * MI),
+                memory_limit: Some(GI),
+            },
+            ContainerResources {
+                name: "sidecar".into(),
+                cpu_request: Some(10),
+                cpu_limit: Some(50),
+                memory_request: Some(32 * MI),
+                memory_limit: Some(64 * MI),
+            },
+        ])
+    }
+
+    fn patch_for(container: &str, resource: &str, value: u64) -> SsaPatch {
+        SsaPatch {
+            target: Target {
+                namespace: "camelot-build".into(),
+                name: "sui-cache-pg".into(),
+                kind: "StatefulSet".into(),
+                api_version: "apps/v1".into(),
+                container: Some(container.into()),
+                pod_selector: None,
+            },
+            field_manager: "breathe-request".into(),
+            layout: LimitLayout::PodRequestResize { container: Some(container.into()) },
+            resource: resource.into(),
+            value,
+        }
+    }
+
+    #[test]
+    fn an_agreeing_witness_and_patch_pass() {
+        let w = ClassPreserved::check(&pod(), "db", RequestResource::Memory, 512 * MI).unwrap();
+        assert!(witness_matches_patch(&w, &patch_for("db", "memory", 512 * MI)).is_ok());
+    }
+
+    /// The hole this closes: a witness proving container `db`'s carve is
+    /// class-safe, presented alongside a patch that targets `sidecar`.
+    #[test]
+    fn a_witness_for_a_different_container_is_refused() {
+        let w = ClassPreserved::check(&pod(), "db", RequestResource::Memory, 512 * MI).unwrap();
+        assert!(witness_matches_patch(&w, &patch_for("sidecar", "memory", 512 * MI)).is_err());
+    }
+
+    #[test]
+    fn a_witness_for_a_different_value_or_resource_is_refused() {
+        let w = ClassPreserved::check(&pod(), "db", RequestResource::Memory, 512 * MI).unwrap();
+        assert!(
+            witness_matches_patch(&w, &patch_for("db", "memory", 900 * MI)).is_err(),
+            "a witness proving 512Mi is class-safe does not authorize writing 900Mi"
+        );
+        assert!(
+            witness_matches_patch(&w, &patch_for("db", "cpu", 512 * MI)).is_err(),
+            "a memory witness does not authorize a cpu write"
+        );
+    }
+
+    /// A request write must never travel a LIMIT layout — that is the generic
+    /// SSA door, which carries no class proof at all.
+    #[test]
+    fn a_request_write_on_a_limit_layout_is_refused() {
+        let w = ClassPreserved::check(&pod(), "db", RequestResource::Memory, 512 * MI).unwrap();
+        let mut p = patch_for("db", "memory", 512 * MI);
+        p.layout = LimitLayout::PodResize { container: Some("db".into()) };
+        assert!(witness_matches_patch(&w, &p).is_err());
+    }
+
+    /// A layout with no container pinned resolves per-pod at write time, so the
+    /// witness's own container is what the actuator uses. Accepted, not refused.
+    #[test]
+    fn an_unpinned_container_layout_defers_to_the_witness() {
+        let w = ClassPreserved::check(&pod(), "db", RequestResource::Memory, 512 * MI).unwrap();
+        let mut p = patch_for("db", "memory", 512 * MI);
+        p.layout = LimitLayout::PodRequestResize { container: None };
+        assert!(witness_matches_patch(&w, &p).is_ok());
+    }
 
     #[test]
     fn guaranteed_pod_keeps_requests_equal_limits_on_grow_and_shrink() {

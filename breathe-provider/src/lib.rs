@@ -2020,6 +2020,8 @@ mod tests {
 /// testability seam. Records every SSA patch; programmable used/limit/owners.
 #[cfg(feature = "mock")]
 pub mod mock {
+    use super::gate::LiveWitness;
+    use super::request::{ClassPreserved, RequestActuator};
     use super::{
         AppliedReceipt, Cluster, FieldOwner, LimitLayout, MetricSource, ProviderError, Sample,
         SsaPatch, StorageCapability, Target,
@@ -2242,6 +2244,72 @@ pub mod mock {
             _layout: &LimitLayout,
         ) -> Result<Option<StorageCapability>, ProviderError> {
             Ok(self.storage_capability.clone())
+        }
+    }
+
+    /// A programmable in-memory [`RequestActuator`] — the REQUEST dimension's
+    /// half of the testability seam, sibling of [`MockCluster`].
+    ///
+    /// It records the `(witness, patch)` pair of every in-place carve, so a test
+    /// can assert not just *what* was written but *what proof authorized it* —
+    /// and, just as importantly, can assert that a shadow tick recorded
+    /// **nothing**.
+    ///
+    /// Note what it CANNOT record: a class transition. Not because it declines
+    /// to, but because [`RequestActuator`] has one method taking an [`SsaPatch`],
+    /// and a `ClassTransitionProposal` is a different type with no conversion. A
+    /// mock cannot observe a call that cannot be made.
+    #[derive(Default)]
+    pub struct MockRequestActuator {
+        /// When set, every carve fails with this error instead of recording.
+        pub fail_with: Option<ProviderError>,
+        carves: Mutex<Vec<(ClassPreserved, SsaPatch)>>,
+    }
+
+    impl MockRequestActuator {
+        #[must_use]
+        pub fn new() -> Self {
+            Self::default()
+        }
+
+        /// An actuator whose every carve fails — the typed-error path, so a test
+        /// can prove a failed write is distinguishable from a successful one and
+        /// records nothing.
+        #[must_use]
+        pub fn failing(e: ProviderError) -> Self {
+            Self { fail_with: Some(e), carves: Mutex::new(Vec::new()) }
+        }
+
+        /// Every recorded carve, in order.
+        #[must_use]
+        pub fn carves(&self) -> Vec<(ClassPreserved, SsaPatch)> {
+            self.carves.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone()
+        }
+
+        /// How many in-place writes actually happened. `0` is the assertion a
+        /// shadow-gated tick must satisfy.
+        #[must_use]
+        pub fn write_count(&self) -> usize {
+            self.carves.lock().unwrap_or_else(std::sync::PoisonError::into_inner).len()
+        }
+    }
+
+    #[async_trait]
+    impl RequestActuator for MockRequestActuator {
+        async fn resize_in_place(
+            &self,
+            _live: &LiveWitness,
+            preserved: &ClassPreserved,
+            patch: &SsaPatch,
+        ) -> Result<AppliedReceipt, ProviderError> {
+            if let Some(e) = &self.fail_with {
+                return Err(e.clone());
+            }
+            self.carves
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push((preserved.clone(), patch.clone()));
+            Ok(AppliedReceipt { source_hash: [0u8; 16] })
         }
     }
 }
