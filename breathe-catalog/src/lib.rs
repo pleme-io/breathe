@@ -269,18 +269,13 @@ pub const CATALOG: &[DimensionSpec] = &[
 ];
 
 /// All dimension ids the substrate knows (the partition the catalog must cover).
-pub const ALL_DIMENSIONS: [DimensionId; 10] = [
-    DimensionId::Memory,
-    DimensionId::Storage,
-    DimensionId::Cpu,
-    DimensionId::Replica,
-    DimensionId::Arc,
-    DimensionId::Cgroup,
-    DimensionId::CgroupCpu,
-    DimensionId::HostParam,
-    DimensionId::KubeParam,
-    DimensionId::AppParam,
-];
+///
+/// **Retired as an independent list, kept as the name.** It used to re-type the
+/// ten arms here, which made it a second place to forget a dimension; it is now
+/// exactly [`DimensionId::ALL`], whose totality the compiler guards via
+/// `DimensionId::index`. Callers keep the familiar spelling; there is only one
+/// list.
+pub const ALL_DIMENSIONS: [DimensionId; 10] = DimensionId::ALL;
 
 /// Look up a dimension's row.
 #[must_use]

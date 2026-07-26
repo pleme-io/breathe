@@ -192,8 +192,13 @@ breathe-core::reconcile_one(band: &Band, prov: &dyn ResourceProvider) -> TickRec
  4. DECIDE    let verdict = route(sev, band.remediation, decision);  // Viggy P0→P3 ladder
  5. ACT       if within_cooldown(band) { return TickReceipt::cooldown(); }
               match verdict {
-                  AutoCorrect(Grow{to}|Shrink{to}) if !band.dry_run => {
-                      let r = prov.assign(&band.target, to).await?;   // ONLY mutation, atomic-to-category
+                  // SHIPPED SHAPE (2026-07): the gate is `band.resolve_gate(now, frozen)`,
+                  // NOT `!band.dry_run`. `spec.dryRun` is inert on eight of the ten kinds
+                  // (since breathe@76924b0); authorization is `spec.writeIntent`. A Live gate
+                  // carries a `LiveWitness`, which `assign` REQUIRES — so carving a shadowed
+                  // band is a compile error, not a runtime check.
+                  AutoCorrect(Grow{to}|Shrink{to}) if let Live{witness} = gate => {
+                      let r = prov.assign(&witness, &band.target, to).await?; // ONLY mutation, atomic-to-category
                       attest(&r);                                     // 6. ATTEST (state-change only)
                   }
                   RequireApproval(act) => open_pr_or_alert(act),      // shadow → approval ladder
@@ -367,7 +372,10 @@ pub struct BandSpec {
     #[serde(default = "d_floor")]         pub floor: String,        // per-dim unit: "256Mi" | "100m" | "10Gi"
     #[serde(default = "d_ceiling")]       pub ceiling: String,
     #[serde(default = "d_cooldown")]      pub cooldown_seconds: u64,// 600
-    #[serde(default)]                     pub dry_run: bool,        // shadow mode
+    #[serde(default)]                     pub dry_run: bool,        // RETIRED 2026-06-19: read only by
+                                                                    // host-param/kube-param; kept, never deleted
+    #[serde(default)] pub write_intent: Option<WriteIntentSpec>,    // THE authorization gate on every kind:
+                                                                    // observe|calibrateThenWrite|write|frozen
     #[serde(default)]                     pub remediation: RemediationTier, // Alert(default) | RequireApproval | AutoCorrect
 }
 ```
@@ -672,7 +680,7 @@ where it lives.
 | 6 | **Reconcile-rate containment** | shigoto `BudgetTree.global = max_concurrent_reconciles`; `reconcile_workers` bounds parallelism; per-target `cooldown_seconds` damps carve frequency; `max_changes_per_minute` + a `reconcile-rate > 1/s` alert catch watch-loop regression. Per-target floor/ceiling soft-tenancy ⇒ one loud workload can't starve siblings. |
 | 7 | **Viggy seven-beat tick** | `breathe-core::reconcile_one` **composes** Observe(provider)→Diff(guard+band law)→Classify→Decide(RemediationPolicy)→Act(provider.assign)→Attest(OutcomeChain)→Tick(requeue). Author writes only the pure trio + the three I/O legs. **NOT inherited** from `TargetController` (which has no `tick()`). |
 | 8 | **OutcomeChain attestation** | Every `assign`/`release` appends a BLAKE3+Ed25519 entry over `{target, dimension, used, capacity, from, to, verdict, epoch}`; every Conflict/NoLimit/NoSafeShrink → AnomalyChain. `status.outcomeChainHead` surfaces the head. `kensa verify outcome-chain --target X --dimension memory` proves the band held over a window. **Attest state-changes + a periodic in-band heartbeat, not every Hold** — keeps signing load bounded (a flagged tradeoff, resolved toward bounded). |
-| 9 | **Graceful degradation** | `MetricsMissing`/`NoLimit`/`TargetNotFound` are typed Hold-equivalents that skip+surface, never crash. `dry_run`/`Alert` is the **default first-enroll tier** (shadow: observe+attest, no carve). Two-layer policy gate (`BreatheOperatorPolicy` global + per-dimension suspend) freezes reconciliation without losing CR state; finalizer plumbing + owner-refs handle clean teardown. |
+| 9 | **Graceful degradation** | `MetricsMissing`/`NoLimit`/`TargetNotFound` are typed Hold-equivalents that skip+surface, never crash. `writeIntent: {intent: observe}` (or `frozen`) is the **shadow tier** — observe+attest, no carve. **Not `dry_run`**, which this table used to name and which has had no effect on eight of the ten kinds since breathe@76924b0. Two-layer policy gate (`BreatheOperatorPolicy` global + per-dimension suspend) freezes reconciliation without losing CR state; finalizer plumbing + owner-refs handle clean teardown. |
 
 ---
 

@@ -27,8 +27,27 @@ pub use gate::{
     WriteIntent, WriteIntentSpec, CONFIRMED_ANNOTATION,
 };
 
-/// Typed category atom — keys the registry, equals the catalog `:name`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+/// Typed category atom — keys the registry, equals the catalog `:name`, and is
+/// the ONE band-kind vocabulary every surface speaks (MCP / REST / GraphQL /
+/// gRPC dispatch through [`DimensionId::ALL`], never a hand-written subset).
+///
+/// It carries `Serialize`/`Deserialize`/`JsonSchema` for exactly the reason
+/// `DisruptionPolicy` above does: it is a behavior atom that is ALSO a wire
+/// value (an MCP tool input, a REST path token, a GraphQL argument). The serde
+/// rename is `kebab-case`, which reproduces [`DimensionId::as_str`] verbatim for
+/// all ten arms — pinned by `serde_labels_match_as_str`, so the two spellings
+/// cannot drift.
+///
+/// **Why this type and not a per-surface enum.** `breathe-facade` used to own a
+/// closed five-arm `BandKind` while ten `Band` kinds shipped, so
+/// `CgroupCpuBand`/`HostParamBand`/`KubeParamBand`/`AppBand`/`ReplicaBand` were
+/// invisible to every operator surface — reachable by `kubectl`, unreachable by
+/// the MCP, the REST API, GraphQL and gRPC. Routing every surface through this
+/// one enum makes an eleventh kind a compile error (`E0004`) at each dispatch
+/// site rather than a silent hole.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize, schemars1::JsonSchema)]
+#[serde(rename_all = "kebab-case")]
+#[schemars(crate = "schemars1")]
 pub enum DimensionId {
     Memory,
     Storage,
@@ -62,6 +81,27 @@ pub enum DimensionId {
 }
 
 impl DimensionId {
+    /// **Every** dimension the substrate ships, in catalog order — the single
+    /// list every surface iterates instead of hand-writing a subset.
+    ///
+    /// Kept total by [`DimensionId::index`]: adding a variant without adding it
+    /// here is `E0004` there, and `all_is_total` proves the two agree. That is
+    /// a compile error for the "you forgot a kind" half and a test for the "you
+    /// put it in the wrong slot" half — stated separately because they are not
+    /// the same tier.
+    pub const ALL: [Self; 10] = [
+        Self::Memory,
+        Self::Storage,
+        Self::Cpu,
+        Self::Replica,
+        Self::Arc,
+        Self::Cgroup,
+        Self::CgroupCpu,
+        Self::HostParam,
+        Self::KubeParam,
+        Self::AppParam,
+    ];
+
     #[must_use]
     pub fn as_str(self) -> &'static str {
         match self {
@@ -78,11 +118,76 @@ impl DimensionId {
         }
     }
 
+    /// This variant's position in [`DimensionId::ALL`].
+    ///
+    /// Its real job is to be the **compile-time totality witness** for `ALL`:
+    /// the match is exhaustive, so a new variant cannot be added without
+    /// visiting this function, and the `all_is_total` test then pins the index
+    /// to the actual slot.
+    #[must_use]
+    pub fn index(self) -> usize {
+        match self {
+            Self::Memory => 0,
+            Self::Storage => 1,
+            Self::Cpu => 2,
+            Self::Replica => 3,
+            Self::Arc => 4,
+            Self::Cgroup => 5,
+            Self::CgroupCpu => 6,
+            Self::HostParam => 7,
+            Self::KubeParam => 8,
+            Self::AppParam => 9,
+        }
+    }
+
+    /// Parse a wire/path token (`/bands/{kind}`, an MCP argument) back into the
+    /// atom. Scans [`DimensionId::ALL`] rather than re-listing the arms, so it
+    /// inherits that list's totality instead of being a second place to forget
+    /// a kind.
+    #[must_use]
+    pub fn parse(s: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|d| d.as_str() == s)
+    }
+
     /// True for dimensions whose I/O boundary is the HOST (systemd/sysfs via
     /// `HostCluster`) rather than the Kubernetes API (`KubeCluster`).
     #[must_use]
     pub fn is_host(self) -> bool {
         matches!(self, Self::Arc | Self::Cgroup | Self::CgroupCpu | Self::HostParam)
+    }
+
+    /// **Does a band of this dimension actually read `spec.dryRun`?**
+    ///
+    /// Only `host-param` and `kube-param` do: their `Band::promotion_mode()`
+    /// overrides keep a pure two-state `dryRun ? Shadow : Effect` reading. For
+    /// the other eight, `spec.dryRun` has been inert since `breathe@76924b0`
+    /// (2026-06-19) — authorization is `spec.writeIntent`, resolved by
+    /// [`crate::gate::resolve_gate`].
+    ///
+    /// This exists so an operator surface can answer "will flipping `dryRun`
+    /// here do anything?" **per kind** instead of choosing between two lies: a
+    /// blanket "it works" (false for eight kinds — the bug this whole refactor
+    /// exists to close) or a blanket "it is retired" (false for these two).
+    ///
+    /// The claim is not free-standing prose: `breathe-crd`'s
+    /// `dry_run_is_honored_matches_every_band_kind` builds a real CR of every
+    /// one of the ten kinds and asserts the resolved gate agrees with this
+    /// function. Tier: **CI forcing-function**, not a type-level guarantee — a
+    /// kind could still change its `promotion_mode()` and this flag would be
+    /// wrong until that test ran.
+    #[must_use]
+    pub fn dry_run_is_honored(self) -> bool {
+        match self {
+            Self::HostParam | Self::KubeParam => true,
+            Self::Memory
+            | Self::Storage
+            | Self::Cpu
+            | Self::Replica
+            | Self::Arc
+            | Self::Cgroup
+            | Self::CgroupCpu
+            | Self::AppParam => false,
+        }
     }
 }
 
@@ -1564,8 +1669,59 @@ impl FormaDescriptor for NodeOnDemandDescriptor {
 
 #[cfg(test)]
 mod tests {
-    use super::{DisruptionClass, DisruptionPolicy, HostKnob, LimitLayout};
+    use super::{DimensionId, DisruptionClass, DisruptionPolicy, HostKnob, LimitLayout};
     use super::{forma_spec, Directionality, Forma, FormaDescriptor, FORMA_CATALOG};
+
+    /// `ALL` really is every variant, in the slot `index` names. The compiler
+    /// already refuses a new variant that skips `index` (`E0004`); this pins the
+    /// remaining half — that the slot it was given is the slot it occupies.
+    #[test]
+    fn all_is_total() {
+        for (slot, d) in DimensionId::ALL.into_iter().enumerate() {
+            assert_eq!(d.index(), slot, "{d} sits in ALL[{slot}] but index() says {}", d.index());
+        }
+        // Distinctness: ten arms, ten slots, no accidental repeat.
+        for d in DimensionId::ALL {
+            assert_eq!(DimensionId::ALL.iter().filter(|x| **x == d).count(), 1, "{d} appears twice in ALL");
+        }
+    }
+
+    /// The serde label and `as_str` are the same ten strings. Two spellings of a
+    /// wire value is how a REST path token and an MCP argument drift apart; the
+    /// `kebab-case` rename makes them identical by construction and this proves
+    /// it rather than trusting the rename rule to keep matching.
+    #[test]
+    fn serde_labels_match_as_str() {
+        for d in DimensionId::ALL {
+            let json = serde_json::to_value(d).unwrap();
+            assert_eq!(json.as_str(), Some(d.as_str()), "serde label != as_str for {d}");
+            let back: DimensionId = serde_json::from_value(json).unwrap();
+            assert_eq!(back, d);
+        }
+    }
+
+    /// `parse` accepts every `as_str` and nothing else.
+    #[test]
+    fn parse_round_trips_every_dimension() {
+        for d in DimensionId::ALL {
+            assert_eq!(DimensionId::parse(d.as_str()), Some(d));
+        }
+        assert_eq!(DimensionId::parse("bogus"), None);
+        // The five kinds the old five-arm `BandKind` could not name. This row is
+        // the regression guard for the coherence gap itself, not decoration.
+        for missing in ["cgroup-cpu", "host-param", "kube-param", "app-param", "replica"] {
+            assert!(DimensionId::parse(missing).is_some(), "{missing} must be addressable by every surface");
+        }
+    }
+
+    /// The two-kind `dryRun` carve-out is stated once here and re-proved against
+    /// real CRs in `breathe-crd`. This test only pins the partition's shape: it
+    /// is genuinely a minority carve-out, not "everything" or "nothing".
+    #[test]
+    fn dry_run_is_honored_by_exactly_the_two_param_kinds() {
+        let honored: Vec<_> = DimensionId::ALL.into_iter().filter(|d| d.dry_run_is_honored()).collect();
+        assert_eq!(honored, vec![DimensionId::HostParam, DimensionId::KubeParam]);
+    }
 
     #[test]
     fn forma_catalog_covers_the_whole_universe_with_no_duplicates() {

@@ -4,18 +4,26 @@ info:
   version: 0.1.0
   description: |
     The control surface for the breathe resource-homeostasis substrate. breathe
-    holds workloads at a utilization band by carving resource limits (memory/cpu/
-    storage in k8s; ZFS ARC + systemd-unit cgroup MemoryHigh on the host).
+    holds workloads at a utilization band by carving resource limits across TEN
+    dimensions: memory, cpu, storage and replica in k8s; ZFS ARC, systemd-unit
+    cgroup MemoryHigh and cgroup CPUQuota, and a generic sysctl/ZFS-param band on
+    the host; plus generic k8s-CR and application-knob bands.
 
     This OpenAPI spec is the SINGLE SOURCE OF TRUTH (the canonical pleme-io
     spec-first standard): forge-gen emits central types + SDKs + docs from it, and
     every surface (REST/axum, gRPC/tonic, GraphQL/async-graphql, MCP) shares the
     one BreatheStore facade. The handlers are kube-rs facade calls — breathe's
-    state IS its k8s CRDs (BreatheNodePool + the five *Band kinds), so the API is a
+    state IS its k8s CRDs (BreatheNodePool + the ten *Band kinds), so the API is a
     typed projection + mutation morphism, not a second store.
 
-    Shadow-first: a band's `dryRun` and a node's `writeEnabled` are the two safety
-    gates; host writes are always bounded by the nodepool's L2 ceiling.
+    AUTHORIZATION is `spec.writeIntent` (observe / calibrateThenWrite / write /
+    frozen); the resolved verdict, and the witness that granted a live band, are
+    published at `status.effectiveGate`. `spec.dryRun` is NOT a safety gate: it has
+    been inert on eight of the ten kinds since 2026-06-19 (breathe@76924b0) and is
+    read only by `host-param` and `kube-param`. A BreatheNodePool's `writeEnabled`
+    bounds HOST-plane writes for bands enrolled on that pool — it is not a
+    cluster-wide kill switch. Host writes are also bounded by the pool's L2
+    ceiling.
 servers:
   - url: /
 tags:
@@ -84,7 +92,11 @@ paths:
     patch:
       operationId: bandSetDryRun
       tags: [bands]
-      summary: Flip a band's dryRun (SHADOW ↔ LIVE) — one of the two safety gates.
+      summary: >-
+        RETIRED for most kinds. Writes spec.dryRun, which only host-param and
+        kube-param bands read; on the other eight it has had no effect since
+        2026-06-19 and this route returns 400 rather than reporting success.
+        Use bandSetWriteIntent.
       parameters:
         - { name: kind, in: path, required: true, schema: { $ref: "#/components/schemas/BandKind" } }
         - { name: namespace, in: path, required: true, schema: { type: string } }
@@ -92,6 +104,51 @@ paths:
       requestBody:
         required: true
         content: { application/json: { schema: { type: object, required: [dryRun], properties: { dryRun: { type: boolean } } } } }
+      responses:
+        "200": { description: patched band, content: { application/json: { schema: { $ref: "#/components/schemas/Band" } } } }
+
+  /api/v1/bands/{kind}/{namespace}/{name}/write-intent:
+    patch:
+      operationId: bandSetWriteIntent
+      tags: [bands]
+      summary: >-
+        Author spec.writeIntent — THE authorization gate on every band kind.
+        intent=write requires authorizedBy; an unattributed go-live is refused
+        with 400 rather than written as a CR the controller would shadow anyway.
+      parameters:
+        - { name: kind, in: path, required: true, schema: { $ref: "#/components/schemas/BandKind" } }
+        - { name: namespace, in: path, required: true, schema: { type: string } }
+        - { name: name, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [intent]
+              properties:
+                intent: { type: string, enum: [observe, calibrateThenWrite, write, frozen] }
+                confirmAfterSeconds: { type: integer, nullable: true }
+                authorizedBy: { type: string, nullable: true }
+      responses:
+        "200": { description: patched band, content: { application/json: { schema: { $ref: "#/components/schemas/Band" } } } }
+        "400": { description: intent=write with no authorizedBy — nothing was written }
+
+  /api/v1/bands/{kind}/{namespace}/{name}/confirm:
+    patch:
+      operationId: bandConfirm
+      tags: [bands]
+      summary: >-
+        Set or clear breathe.pleme.io/confirmed. true promotes a
+        calibrateThenWrite band to writing NOW instead of waiting out its confirm
+        window; false removes the annotation.
+      parameters:
+        - { name: kind, in: path, required: true, schema: { $ref: "#/components/schemas/BandKind" } }
+        - { name: namespace, in: path, required: true, schema: { type: string } }
+        - { name: name, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content: { application/json: { schema: { type: object, required: [confirmed], properties: { confirmed: { type: boolean } } } } }
       responses:
         "200": { description: patched band, content: { application/json: { schema: { $ref: "#/components/schemas/Band" } } } }
 
@@ -117,7 +174,10 @@ paths:
     patch:
       operationId: nodepoolSetWriteEnabled
       tags: [nodepools]
-      summary: Flip a node's writeEnabled master switch (whole-node SHADOW ↔ LIVE) — the node-level safety gate.
+      summary: >-
+        Flip a BreatheNodePool's writeEnabled master switch. Scope is the HOST
+        plane — it bounds host writes for bands enrolled on that pool, and is not
+        a cluster-wide kill switch for k8s-plane bands.
       parameters:
         - { name: name, in: path, required: true, schema: { type: string } }
       requestBody:
@@ -134,8 +194,15 @@ components:
   schemas:
     BandKind:
       type: string
-      enum: [memory, cpu, storage, arc, cgroup]
-      description: The dimension a band controls. memory/cpu/storage are k8s; arc/cgroup are host.
+      # ORDER MATCHES breathe_provider::DimensionId::ALL, pinned by
+      # `openapi_spec_band_kinds_match_the_code`. Not alphabetical, not arbitrary.
+      enum: [memory, storage, cpu, replica, arc, cgroup, cgroup-cpu, host-param, kube-param, app-param]
+      description: >-
+        The dimension a band controls. memory/cpu/storage/replica are k8s-plane;
+        arc/cgroup/cgroup-cpu/host-param are host-plane; kube-param and app-param
+        are generic CR / application-knob bands. Mirrors
+        breathe_provider::DimensionId, which is the one vocabulary every surface
+        dispatches on.
     TargetRef:
       type: object
       required: [kind, name]
@@ -164,7 +231,27 @@ components:
         ceiling: { type: string, nullable: true }
         cooldownSeconds: { type: integer, default: 600, nullable: true }
         maxStalenessSeconds: { type: integer, default: 120, nullable: true }
-        dryRun: { type: boolean, description: "true = SHADOW (decide + report, never carve)", nullable: true }
+        dryRun:
+          type: boolean
+          nullable: true
+          description: >-
+            RETIRED 2026-06-19 (breathe@76924b0). Read only by host-param and
+            kube-param bands, as a two-state shadow/effect switch. On the other
+            eight kinds it has NO effect — authorization is writeIntent. Kept so an
+            authored decision is not silently dropped.
+        writeIntent:
+          type: object
+          nullable: true
+          description: >-
+            THE authorization gate, on every band kind. `intent` is one of
+            observe / calibrateThenWrite / write / frozen; `authorizedBy` is
+            REQUIRED when intent=write (an unattributed go-live resolves to a
+            fail-safe shadow, never to an anonymous carve).
+          required: [intent]
+          properties:
+            intent: { type: string, enum: [observe, calibrateThenWrite, write, frozen] }
+            confirmAfterSeconds: { type: integer, nullable: true, description: "clean-observation seconds before calibrateThenWrite promotes itself (default 1800)" }
+            authorizedBy: { type: string, nullable: true, description: "who authorized going live; required for intent=write" }
         disruptionPolicy:
           type: string
           enum: [restartFreeOnly, allowConditional, allowRestart]
@@ -173,7 +260,7 @@ components:
         suspend:
           type: boolean
           nullable: true
-          description: "freeze the band — true = the controller skips observe/plan/act (phase Suspended), the limit is left as-is. Distinct from dryRun (which still observes). The k8s-native pause; resume with suspend:false."
+          description: "freeze the band — true = the controller skips observe/plan/act (phase Suspended), the limit is left as-is. Distinct from writeIntent:frozen, which keeps OBSERVING but never writes. The k8s-native pause; resume with suspend:false."
         forceLimit:
           type: string
           nullable: true
