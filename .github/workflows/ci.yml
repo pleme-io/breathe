@@ -17,14 +17,28 @@
 # are exactly the two commands verified locally before this file was written.
 #
 # NOT blocking here: clippy. `[workspace.lints.clippy] pedantic = "warn"` spans
-# 26 crates and the authoring toolchain is Nix-provided WITHOUT the clippy
-# component (`cargo clippy` → "no such command"), so the size of the pedantic
-# backlog is UNKNOWN to whoever wrote this file. Shipping `-D warnings` blind
-# would either (a) redden main immediately, or (b) — worse — be quietly removed
-# by the next person it inconveniences. It runs advisory-only until someone
-# with clippy available burns the backlog down and flips `continue-on-error`.
+# 26 crates. This header used to say the backlog size was UNKNOWN because the
+# Nix-provided toolchain ships no clippy component (`cargo clippy` → "no such
+# command"). **It is no longer unknown — it was measured on 2026-07-26: 901
+# warnings, 0 errors, across the whole workspace.**
+#
+# How to run it locally on a Nix box, since the missing component is what kept
+# this unmeasured for so long — clippy IS in the store, just not on PATH, and it
+# must MATCH the cargo in use (cargo 1.91.1 → clippy 0.1.91):
+#
+#     PATH=$(dirname $(ls -d /nix/store/*clippy-1.91.1/bin/cargo-clippy)):$PATH \
+#       cargo clippy --workspace --all-targets
+#
+# The composition of those 901: ~358 `doc_markdown` (missing backticks), ~140
+# numeric-cast lints, ~37 missing `# Errors` sections — i.e. it is a documentation
+# and cast-annotation backlog, not a correctness one. That is WHY flipping
+# `continue-on-error: false` is still not done here: `-D warnings` would redden
+# main on 901 pre-existing findings, and a gate that reddens main on its first
+# run is a gate that gets removed. Burning the backlog down is a separate,
+# sizeable piece of work, and it must land BEFORE the flip, not after.
+#
 # The org directive (`cargo clippy -- -D warnings`) is the destination; this is
-# a named interim, not a silent downgrade.
+# a named interim with a measured number attached, not a silent downgrade.
 #
 # Also NOT here: `cargo fmt --check` (no rustfmt.toml is committed, so there is
 # no agreed format to check against).
@@ -69,8 +83,10 @@ jobs:
       - name: test
         run: cargo test --workspace --locked
 
-  # Advisory until the pedantic backlog is measured — see the header. Flipping
-  # `continue-on-error: false` is the one-line change that makes it a real gate.
+  # Advisory. The backlog IS now measured (901 warnings, 0 errors — see the
+  # header); what blocks the flip is burning it down, not knowing its size.
+  # Flipping `continue-on-error: false` is still the one-line change that makes
+  # this a real gate — do it in the same PR that reaches zero, never before.
   clippy:
     name: cargo clippy (advisory — see ci.yml header)
     runs-on: ubuntu-latest
