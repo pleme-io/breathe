@@ -37,6 +37,7 @@
 //! topology axis — vs `breathe-invariant::isolation::WorkloadClass` — the
 //! criticality axis).
 
+use crate::{DemandSignalSpec, QosClassSpec, WorkloadClassSpec};
 use breathe_provider::DisruptionPolicy;
 use kube::CustomResource;
 use schemars::JsonSchema;
@@ -78,6 +79,49 @@ pub struct BreathePostureSpec {
     // Deliberately ABSENT: floor, ceiling, requestFloor, targetRef, dryRun,
     // mode. See the module doc — this is a type-level safety invariant, not
     // an omission.
+
+    // ── The REQUEST-POLICY axis (added with `RequestBand`, 2026-07-26) ──
+    //
+    // These three are `Option`, which visibly breaks the "a posture is a
+    // COMPLETE tuple by construction" rule stated above. That is a deliberate
+    // exception with two reasons, both stated rather than glossed:
+    //
+    //  1. **Live CRs.** Five `BreathePosture` objects exist on camelot-eks
+    //     (critical, critical-stateful, standard, batch, storage-volume).
+    //     Adding REQUIRED fields would make every one of them fail to
+    //     deserialize, i.e. a schema change that breaks the running controller
+    //     on the postures it is currently serving. A dimension about not
+    //     killing workloads must not ship by killing the controller.
+    //  2. **They are a different axis.** The 8 fields above are the BAND-LAW
+    //     tuple — one control loop's constants. These are ISOLATION policy, and
+    //     they are meaningless to the other ten kinds. `storage-volume` should
+    //     carry no request policy at all, and `None` says exactly that; a
+    //     required field would force it to invent one.
+    //
+    // The safety invariant is untouched: none of these is a capacity bound or a
+    // promotion flag, so a posture edit still cannot widen a ceiling or flip a
+    // band live. A posture CAN now change a referencing band's QoS *target* —
+    // but a target only ever produces a PROPOSAL for the durable door, never an
+    // in-place write, so the blast radius of that edit is a git diff somebody
+    // reviews, not N workloads mutated.
+    /// The criticality class bands referencing this posture inherit. `None` ⇒
+    /// this posture carries no request policy; a band falls through to its own
+    /// value, then to `standard`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workload_class: Option<WorkloadClassSpec>,
+    // "QoS" below is an English acronym, not a code item — same false positive
+    // the crate already allows on `PlacementIsolationKind`.
+    #[allow(clippy::doc_markdown)]
+    /// The desired QoS class. `None` ⇒ the resolved `workloadClass`'s default
+    /// (`critical → guaranteed`, `standard|noisy → burstable`, `batch →
+    /// best-effort`) — delegated to `WorkloadClass::default_qos` upstream, never
+    /// re-decided here.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub qos_target: Option<QosClassSpec>,
+    /// The demand statistic a reservation tracks. `None` ⇒ the compiled default
+    /// (p95 over 7d, +15%).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub demand: Option<DemandSignalSpec>,
 }
 
 /// `BreathePosture` status — deliberately NOT a maintained aggregate (no

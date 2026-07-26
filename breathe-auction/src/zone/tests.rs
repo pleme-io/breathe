@@ -60,7 +60,22 @@ fn dimensions_with_structural_dependencies_matches_the_real_catalog_today() {
     assert_eq!(map.get(&DimensionId::Memory), Some(&[DimensionId::Replica].as_slice()));
     assert_eq!(map.get(&DimensionId::Cpu), Some(&[DimensionId::Replica].as_slice()));
     assert_eq!(map.get(&DimensionId::Storage), None, "Storage has no depends_on edge today");
-    assert_eq!(map.len(), 2, "exactly 2 dimensions carry a structural dependency in the shipped catalog");
+    // The RESERVATION dimension carries TWO edges, and both are real:
+    //   Replica — a request's cluster-wide cost is per-pod × replicas, so the
+    //             allocatable-headroom admission cannot be computed without the
+    //             count (the same reason Memory/Cpu gate on Replica);
+    //   Memory  — the two write ADJACENT fields of one container and interact.
+    //             `breathe-core` overrides `BandConfig.request_floor_bytes` with
+    //             the live observed request whenever the live one is larger, so a
+    //             rising request raises the memory band's own floor. Declaring the
+    //             edge makes that coupling a scheduling fact (Request settles
+    //             after Memory in a wave) instead of a ratchet discovered live.
+    assert_eq!(
+        map.get(&DimensionId::Request),
+        Some(&[DimensionId::Replica, DimensionId::Memory].as_slice()),
+        "Request gates on Replica (headroom × replicas) AND Memory (the shared request_floor)"
+    );
+    assert_eq!(map.len(), 3, "exactly 3 dimensions carry a structural dependency in the shipped catalog");
 }
 
 // ── BreatheZone / zone_tick_dag — the cross-catalog Forma -> DimensionId bridge ──

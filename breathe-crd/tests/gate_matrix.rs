@@ -82,7 +82,7 @@
 //! | mislabel a fixture's `dim` | fixture-identity | `cgroup` probed 2× |
 
 use breathe_crd::{
-    AppBand, ArcBand, Band, BreatheCloudPool, BreatheConfig, BreatheNodePool, BreatheOverview, BreathePosture,
+    AppBand, ArcBand, Band, BreatheCloudPool, BreatheConfig, BreatheNodePool, BreatheOverview, BreathePosture, RequestBand,
     CgroupBand, CgroupCpuBand, CpuBand, Densa, HostParamBand, IsolationBand, KubeParamBand, MemoryBand, PodMemoryHigh,
     PromotionMode, QuinhaoPool, ReplicaBand, StorageBand,
 };
@@ -179,6 +179,13 @@ struct Kind {
 /// guarantee this array makes.
 const N_KINDS: usize = DimensionId::ALL.len();
 
+// This function IS a table: one literal row per shipped dimension, and it grows
+// by ~7 lines every time the substrate gains one. It crossed clippy's 100-line
+// threshold at the eleventh (`RequestBand`). Splitting a per-dimension table into
+// sub-functions to satisfy a line count would scatter the very list this file
+// exists to keep in one readable place — the array's own length is already the
+// forcing function that matters.
+#[allow(clippy::too_many_lines)]
 fn kinds() -> [Kind; N_KINDS] {
     // Each kind's non-gate required fields — the minimum that parses.
     fn none() -> Value {
@@ -207,6 +214,12 @@ fn kinds() -> [Kind; N_KINDS] {
     }
     fn replica() -> Value {
         json!({ "metric": { "prometheus": "rate(http_requests_total[1m])" } })
+    }
+    /// A `RequestBand`'s one non-gate required field: which resource's request it
+    /// carves. Required precisely because guessing between the OOM lever and the
+    /// scheduling lever is the ambiguity the dimension exists to remove.
+    fn request() -> Value {
+        json!({ "resource": "memory" })
     }
 
     [
@@ -279,6 +292,20 @@ fn kinds() -> [Kind; N_KINDS] {
             class: Class::Default,
             probe: |e, o, n, f| probe::<AppBand>("AppBand", app(), e, o, n, f),
             report_dim: || dim_of::<AppBand>("AppBand", app()),
+        },
+        // The RESERVATION band. `Chain`, deliberately and not by inheritance: it
+        // is hand-rolled (not `band_kind!`-stamped), so its class was a free
+        // choice, and it takes the full `writeIntent > mode > compiled
+        // shadowConfirmEffect` chain rather than the honest-but-weaker two-state
+        // reading. A band that can decide whether a workload survives OOM
+        // pressure must ride the same shadow→confirm→effect promotion every
+        // other carving band rides.
+        Kind {
+            dim: DimensionId::Request,
+            name: "RequestBand",
+            class: Class::Chain,
+            probe: |e, o, n, f| probe::<RequestBand>("RequestBand", request(), e, o, n, f),
+            report_dim: || dim_of::<RequestBand>("RequestBand", request()),
         },
     ]
 }
@@ -943,6 +970,7 @@ fn crd_descriptions_carry_the_canonical_claims() {
         ("HostParamBand", Class::TwoState, DimensionId::HostParam, serde_json::to_value(HostParamBand::crd()).unwrap()),
         ("KubeParamBand", Class::TwoState, DimensionId::KubeParam, serde_json::to_value(KubeParamBand::crd()).unwrap()),
         ("AppBand", Class::Default, DimensionId::AppParam, serde_json::to_value(AppBand::crd()).unwrap()),
+        ("RequestBand", Class::Chain, DimensionId::Request, serde_json::to_value(RequestBand::crd()).unwrap()),
     ];
     assert_eq!(crds.len(), N_KINDS, "every band kind must be doc-checked");
 
@@ -1096,6 +1124,13 @@ const WRITE_SURFACE_CENSUS: &[(&str, SurfaceRole)] = &[
     ("HostParamBand", SurfaceRole::WriteSurface),
     ("KubeParamBand", SurfaceRole::WriteSurface),
     ("AppBand", SurfaceRole::WriteSurface),
+    // A write surface by DECLARATION, not yet by behaviour: the request
+    // actuation is unwired (`KubeCluster::apply`'s `PodRequestResize` arm returns
+    // a typed permanent error, and no controller watches this kind). It is
+    // enrolled here anyway, because the census's job is to catch a kind that can
+    // write without declaring a verdict — and enrolling it now means the day the
+    // actuation lands, nothing has to remember to come back here.
+    ("RequestBand", SurfaceRole::WriteSurface),
     // …and the three that are NOT dimensions, which is the whole point.
     ("PodMemoryHigh", SurfaceRole::WriteSurface),
     ("BreatheCloudPool", SurfaceRole::WriteSurface),
@@ -1121,6 +1156,7 @@ fn all_crds() -> Vec<(String, Value)> {
         HostParamBand::crd(),
         KubeParamBand::crd(),
         AppBand::crd(),
+        RequestBand::crd(),
         BreatheNodePool::crd(),
         BreathePosture::crd(),
         PodMemoryHigh::crd(),

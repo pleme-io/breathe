@@ -56,7 +56,7 @@ use breathe_core::{reconcile_one, PredictiveInput, ReconcileInput};
 use breathe_crd::{
     AppBand, ArcBand, Band, BandSummary, BreatheCloudPool, BreatheConfig, BreatheConfigSpec, BreatheOverview,
     BreathePosture, CgroupBand, CgroupCpuBand, CpuBand, Densa, HostParamBand, IsolationBand, KubeParamBand,
-    MemoryBand, OverviewStatus, QuinhaoPool, ReplicaBand, StorageBand,
+    MemoryBand, OverviewStatus, QuinhaoPool, ReplicaBand, RequestBand, StorageBand,
 };
 use breathe_dimensions::{CpuDescriptor, MemoryDescriptor, StorageDescriptor};
 use breathe_kube::KubeCluster;
@@ -447,9 +447,23 @@ async fn read_env_context(client: &Client, namespace: &str) -> EnvContext {
 const fn reclaim_for(dim: breathe_provider::DimensionId) -> breathe_control::Reclaim {
     use breathe_provider::DimensionId as D;
     match dim {
-        // The hard plane holds; the reclaim is routed to `memory.high` (soft).
-        // Reported, never taken.
-        D::Memory => breathe_control::Reclaim::ObserveOnly,
+        // The two dimensions that REPORT their slack and never take it.
+        //
+        // `Memory`: the hard plane holds and the reclaim is routed to
+        // `memory.high` (soft) instead.
+        //
+        // `Request`: same verdict, stronger reason — a request has no soft plane
+        // at all, and lowering one directly worsens `oom_score_adj` on a workload
+        // demonstrably using the memory. `Decision::ReclaimWithheld` names the
+        // reclaimable amount every tick, so the monotonic reservation waste of a
+        // grow-only posture stays measured rather than invisible.
+        //
+        // For `Request` this is belt to the type system's braces:
+        // `request::RequestShrinkEvidence` has no constructor, so no shrink code
+        // path exists regardless of what this returns. Both are stated because
+        // they are different tiers — this one is a runtime policy, that one is an
+        // absence.
+        D::Memory | D::Request => breathe_control::Reclaim::ObserveOnly,
         // Every other dimension keeps its own directionality unchanged — cpu and
         // replica breathe both ways, storage is physically grow-only, and the host
         // knobs already carve soft/reclaim planes.
@@ -794,6 +808,13 @@ async fn reconcile_overview(obj: Arc<BreatheOverview>, ctx: Arc<Ctx>) -> Result<
     summarize::<HostParamBand>(&ctx.client, "HostParamBand", &mut bands).await;
     summarize::<KubeParamBand>(&ctx.client, "KubeParamBand", &mut bands).await;
     summarize::<AppBand>(&ctx.client, "AppBand", &mut bands).await;
+    // The RESERVATION band. Listed here — `summarize` is a read + a roll-up,
+    // never a write — so a declared RequestBand is VISIBLE in `kubectl get bov`
+    // from the moment the CRD exists. Its actuation is deliberately not wired
+    // (there is no `gen_controller!` entry below), so it will report no phase
+    // until the controller pass lands; an invisible band would be the worse
+    // failure, since the operator could not tell it had been declared at all.
+    summarize::<RequestBand>(&ctx.client, "RequestBand", &mut bands).await;
     bands.sort_by(|a, b| (&a.kind, &a.namespace, &a.name).cmp(&(&b.kind, &b.namespace, &b.name)));
 
     let count = |ps: &[&str]| bands.iter().filter(|b| b.phase.as_deref().is_some_and(|x| ps.contains(&x))).count() as i64;

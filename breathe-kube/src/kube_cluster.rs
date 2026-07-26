@@ -105,7 +105,13 @@ impl KubeCluster {
             }
             // PodResize reads from the live pods (handled in read_limit), not the
             // fetched owner object — so there is nothing to read here.
-            LimitLayout::PodResize { .. } => None,
+            //
+            // PodRequestResize is the same structural fact for the same reason:
+            // both address the LIVE pod via the resize subresource, so neither
+            // has anything to read out of the fetched owner. This arm is a
+            // statement about WHERE the value lives, not a stub for the unwired
+            // request actuation (that boundary is in `apply`, below).
+            LimitLayout::PodResize { .. } | LimitLayout::PodRequestResize { .. } => None,
             // No k8s object holds a host lever — handled (rejected) in read_limit.
             LimitLayout::Host(_) => None,
             // k8s-CR-path layouts (Step-6/8/12): read the scalar at the JSON-pointer
@@ -515,7 +521,11 @@ impl Cluster for KubeCluster {
         // documented v1 follow-on — for now breathe is the sole resizer. This MUST
         // short-circuit BEFORE get_owner: a label-selected pod group (ARC runners)
         // has no gettable owner object, so fetching one would 404/403.
-        if matches!(layout, LimitLayout::PodResize { .. }) {
+        // Both live-pod resize layouts short-circuit: a label-selected pod group
+        // has no gettable owner, and the managed-field competitor that WOULD
+        // matter for requests (a Deployment template owned by Flux) lives on the
+        // template, not on the pod these layouts write.
+        if matches!(layout, LimitLayout::PodResize { .. } | LimitLayout::PodRequestResize { .. }) {
             return Ok(Vec::new());
         }
         let obj = self.get_owner(target).await?;
@@ -532,7 +542,7 @@ impl Cluster for KubeCluster {
                 }
             }
             // Already handled above (kept for exhaustiveness; unreachable).
-            LimitLayout::PodResize { .. } => return Ok(Vec::new()),
+            LimitLayout::PodResize { .. } | LimitLayout::PodRequestResize { .. } => return Ok(Vec::new()),
             LimitLayout::Host(_) => {
                 return Err(ProviderError::ApiPermanent(
                     "host layout on KubeCluster (route host dimensions to HostCluster)".into(),
@@ -621,6 +631,30 @@ impl Cluster for KubeCluster {
             LimitLayout::PodResize { .. } => {
                 return Err(ProviderError::ApiPermanent(
                     "internal: PodResize must be handled by the in-place path".into(),
+                ))
+            }
+            // ── THE B1 BOUNDARY, stated as a typed error rather than a stub ──
+            //
+            // The REQUEST actuation is deliberately NOT wired. `breathe-provider`'s
+            // `request` module ships the full typed surface — the two disjoint
+            // doors, the `ClassPreserved` witness, the narrowing constructors —
+            // and NOTHING calls them. Reaching this arm means a `RequestBand` got
+            // as far as the generic write path, which cannot happen today (no
+            // descriptor, no controller watcher) and must fail LOUDLY the moment
+            // it can.
+            //
+            // A typed error, never a `todo!()`/`unimplemented!()` (which would
+            // abort the controller) and never a silent `Ok` (which would report a
+            // carve that did not happen — the one outcome worse than an error).
+            // Wiring this arm is B2's job, and it does NOT belong here: a request
+            // write must go through `RequestActuator::resize_in_place`, which
+            // demands a `ClassPreserved` this generic SSA path cannot produce.
+            LimitLayout::PodRequestResize { .. } => {
+                return Err(ProviderError::ApiPermanent(
+                    "request actuation is not wired (B1 ships the typed surface only); \
+                     a request write must go through RequestActuator::resize_in_place \
+                     with a ClassPreserved witness, never the generic SSA path"
+                        .into(),
                 ))
             }
             LimitLayout::Host(_) => {

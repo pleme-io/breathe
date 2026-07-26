@@ -21,6 +21,20 @@ pub use breathe_control::{
 // schemars derives already present, and both `breathe-crd` and `breathe-core`
 // already depend on this crate. Solve once, no new workspace member.
 pub mod gate;
+
+// The REQUEST / QoS dimension's typed surface. Lives here, beside `gate`, for
+// the same reason `gate` does: it is the authorization/legality algebra of an
+// I/O door, and both `breathe-crd` (the CRD shape) and `breathe-core` (the
+// carve) already depend on this crate. Solve once, no new workspace member.
+pub mod request;
+pub use request::{
+    AboveLimit, AdmittedRequest, AllocatableHeadroom, CarveDirection, ClassPreserved, ClassTransitionBlocked,
+    ClassTransitionProposal, ClassWouldChange, CommitReceipt, ContainerResources, ContentAddr, Durability,
+    ManifestWriter, MemoryResizePolicy, NullManifestWriter, PodResources, PreserveError, QosClass, QosGap,
+    RequestActuator, RequestResource, RequestShrinkEvidence, RequestTarget, ResizeLegality, WorkloadClass,
+    WouldNotSchedule, WriterError,
+};
+
 pub use gate::{
     authored_write_gate, legacy_two_state_gate, ConfirmVerdict, EffectiveGate, EffectiveGateReport, GateInputs,
     GateState, IntentError, IntentKind, LegacyDecision, LegacyPath, LegacyPathKind, LiveWitness, ShadowReason,
@@ -78,6 +92,40 @@ pub enum DimensionId {
     /// read from the k8s metrics plane (the actuators have no read path), the limit
     /// is carved on the app's own knob. A new such band is a CR.
     AppParam,
+    // "QoS"/"BestEffort"/"OOMKills" below are English, not code items.
+    #[allow(clippy::doc_markdown)]
+    /// K8S-PLANE: the RESERVATION — `resources.requests.<res>`, and the QoS class
+    /// it derives. The dimension that decides **survival**, where every arm above
+    /// decides **blast radius**.
+    ///
+    /// # Why this is its own dimension and not a mode of [`Self::Memory`]
+    ///
+    /// The kernel's `oom_score_adj` is computed from the REQUEST (and the QoS
+    /// class it implies), never from the limit. So a workload can be OOM-killed
+    /// repeatedly while its limit is never once binding — measured, not
+    /// theorised: `sui-cache-pg` took 34 OOMKills at a 202.8Mi high-water
+    /// against a 1Gi limit with cgroup `failcnt=0`. No `MemoryBand` setting
+    /// could have saved it, because `MemoryBand` carves the field that was not
+    /// the problem. Schedulability and bin-packing key on requests too.
+    ///
+    /// A BestEffort pod (no requests AND no limits) is *unbandable* by every
+    /// other kind — it reports `carve_failed` 422 — so the workloads in the most
+    /// danger were exactly the ones the substrate could not touch at all.
+    ///
+    /// # What it does NOT carve
+    ///
+    /// The QoS **class** is not a band. Kubernetes DERIVES it from (requests,
+    /// limits) across every resource of every container; it is a 3-valued
+    /// derived fact with no setpoint and no ordering to chase, so modelling it
+    /// as a `Decision { from: u64, to: u64 }` would invent an ordering k8s does
+    /// not have and give breathe a second source of truth for a value it does
+    /// not own. It is a derived STATUS plus a posture-declared TARGET; a gap
+    /// between the two emits a PROPOSAL, never an in-place write — because
+    /// `ValidatePodResize` refuses a class change unconditionally (k8s
+    /// release-1.33 `pkg/apis/core/validation/validation.go:5665`, verified
+    /// against the exact minor camelot-eks runs). See [`crate::request`] for why
+    /// that is a type and not a runtime branch.
+    Request,
 }
 
 impl DimensionId {
@@ -89,7 +137,7 @@ impl DimensionId {
     /// a compile error for the "you forgot a kind" half and a test for the "you
     /// put it in the wrong slot" half — stated separately because they are not
     /// the same tier.
-    pub const ALL: [Self; 10] = [
+    pub const ALL: [Self; 11] = [
         Self::Memory,
         Self::Storage,
         Self::Cpu,
@@ -100,6 +148,7 @@ impl DimensionId {
         Self::HostParam,
         Self::KubeParam,
         Self::AppParam,
+        Self::Request,
     ];
 
     #[must_use]
@@ -115,6 +164,7 @@ impl DimensionId {
             Self::HostParam => "host-param",
             Self::KubeParam => "kube-param",
             Self::AppParam => "app-param",
+            Self::Request => "request",
         }
     }
 
@@ -137,6 +187,7 @@ impl DimensionId {
             Self::HostParam => 7,
             Self::KubeParam => 8,
             Self::AppParam => 9,
+            Self::Request => 10,
         }
     }
 
@@ -151,9 +202,31 @@ impl DimensionId {
 
     /// True for dimensions whose I/O boundary is the HOST (systemd/sysfs via
     /// `HostCluster`) rather than the Kubernetes API (`KubeCluster`).
+    ///
+    /// **Written as an exhaustive `match`, not `matches!`, on purpose.** This was
+    /// the ONE hole in an otherwise-total kind seam: as a `matches!` it silently
+    /// answered `false` for any newly-added variant, with no `E0004` and no
+    /// warning — so an eleventh dimension routed to the k8s plane by DEFAULT
+    /// rather than by decision. A host dimension added that way would have had
+    /// its writes silently addressed to the wrong I/O boundary.
+    ///
+    /// `Request` genuinely IS `false` (it carves `resources.requests` through the
+    /// k8s API), so the old form would have happened to give the right answer
+    /// here — which is exactly why the shape had to be fixed while adding a
+    /// variant that did not need it. Being right by luck is not the same as being
+    /// caught, and the next variant may not be lucky.
     #[must_use]
     pub fn is_host(self) -> bool {
-        matches!(self, Self::Arc | Self::Cgroup | Self::CgroupCpu | Self::HostParam)
+        match self {
+            Self::Arc | Self::Cgroup | Self::CgroupCpu | Self::HostParam => true,
+            Self::Memory
+            | Self::Storage
+            | Self::Cpu
+            | Self::Replica
+            | Self::KubeParam
+            | Self::AppParam
+            | Self::Request => false,
+        }
     }
 
     /// **Does a band of this dimension actually read `spec.dryRun`?**
@@ -186,7 +259,15 @@ impl DimensionId {
             | Self::Arc
             | Self::Cgroup
             | Self::CgroupCpu
-            | Self::AppParam => false,
+            | Self::AppParam
+            // `Request` joins the eight, not the two: its authorization is
+            // `writeIntent` resolved by `gate::resolve_gate`, and `dryRun` is
+            // inert on it exactly as on `MemoryBand`. Stated as a deliberate
+            // choice rather than inherited by accident — a NEW kind could have
+            // been given the honest two-state reading, and this one is not,
+            // because a request carve must ride the same shadow→confirm→effect
+            // promotion every other carving band rides.
+            | Self::Request => false,
         }
     }
 }
@@ -257,8 +338,17 @@ impl std::fmt::Display for SuppressedDemand {
     }
 }
 
+// "Serialize-only" phrasing trips doc_markdown on a type name used as English.
+#[allow(clippy::doc_markdown)]
 /// A reconcile target — the owner object whose limit a band controls.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// `Serialize` (added 2026-07-26, `Serialize`-only and deliberately not
+/// `Deserialize`): a [`request::ClassTransitionProposal`] published in
+/// `status.pendingProposal` has to NAME the object it proposes an edit to, or
+/// the proposal is unauditable. Read-only projection out; no parse path in,
+/// because nothing should ever reconstruct a reconcile target from status.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Target {
     pub namespace: String,
     pub name: String,
@@ -535,6 +625,17 @@ pub enum LimitLayout {
     /// and gates scale-in until its `DisruptionPolicy` permits the shed. The
     /// horizontal peer of the vertical `PodResize`/`PodTemplate` limit layouts.
     Replica { kind: String },
+    /// **REQUESTS:** `resources.requests.<res>` on the live pods, via the same
+    /// `pods/{name}/resize` subresource as [`LimitLayout::PodResize`] — the
+    /// RESERVATION peer of that layout's LIMIT.
+    ///
+    /// It is a distinct arm rather than a flag on `PodResize` because the two
+    /// carve different fields with different failure modes: over-carving a
+    /// LIMIT wastes a ceiling nobody hits, while over-carving a REQUEST
+    /// consumes real node allocatable × replicas and can make the workload
+    /// permanently unschedulable. The k8s write is the same subresource; the
+    /// carve, the bound and the blast radius are not.
+    PodRequestResize { container: Option<String> },
 }
 
 /// **Step-9/12:** how a [`LimitLayout::ConfigFile`] value takes effect.
@@ -799,7 +900,11 @@ impl LimitLayout {
     pub fn disruption_class(&self) -> DisruptionClass {
         match self {
             Self::PvcRequest | Self::ClusterStorage | Self::Host(_) => DisruptionClass::RestartFree,
-            Self::PodResize { .. } => DisruptionClass::RestartConditional,
+            // Both resize layouts collapse to the same coarse worst case. The
+            // REQUEST layout is not gentler than the LIMIT one: k8s's
+            // `resizePolicy` governs restarts on the resize subresource
+            // regardless of which side of the pair moved.
+            Self::PodResize { .. } | Self::PodRequestResize { .. } => DisruptionClass::RestartConditional,
             Self::PodTemplate { .. } | Self::ClusterTopLevel => DisruptionClass::RestartRequiring,
             // App/k8s-plane layouts — restart cost is intrinsic to the mechanism.
             Self::ConfigFile { reload, .. } => reload.disruption_class(),
@@ -859,7 +964,12 @@ impl LimitLayout {
     pub fn action_class(&self, growing: bool, resource: &str) -> DisruptionClass {
         match self {
             Self::PvcRequest | Self::ClusterStorage | Self::Host(_) => DisruptionClass::RestartFree,
-            Self::PodResize { .. } => {
+            // REQUESTS carry the SAME per-direction shape as limits, and for the
+            // same underlying reason: it is the memory *decrease* the kubelet may
+            // have to restart a container to realize. A grow — the only direction
+            // the request dimension ships at M0 (`RequestShrinkEvidence` has no
+            // constructor) — is RestartFree, so the golden path stays golden.
+            Self::PodResize { .. } | Self::PodRequestResize { .. } => {
                 if resource == "cpu" || growing {
                     DisruptionClass::RestartFree
                 } else {

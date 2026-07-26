@@ -1,12 +1,32 @@
 # breathe-invariant — the BREATHABILITY variant/invariant CONTRACT.
 #
-# A standalone crate (its own [workspace] root) so it composes the breathe
-# substrate by REFERENCE without being coupled to the breathe workspace's
-# build or its in-flight band-crate churn — exactly as gen-pdc/gen-secattest
-# stay decoupled from the gen adapter crates. Follow-up: fold into the breathe
-# workspace members (or add its own auto-release.yml) once the concurrent
-# band-crate work lands, so the matrix runs in breathe CI + ships via
-# AUTO-RELEASE.
+# WAS a standalone crate (its own [workspace] root) so it composed the breathe
+# substrate by REFERENCE without coupling to the breathe workspace's in-flight
+# band-crate churn. Its own header named the follow-up: "fold into the breathe
+# workspace members ... once the concurrent band-crate work lands, so the matrix
+# runs in breathe CI". **FOLDED IN 2026-07-26 — this IS that band-crate work**
+# (the Request/QoS dimension), and the fold was its precondition, not a
+# side-quest:
+#
+#   * `breathe-provider` needs `isolation::{QosClass, WorkloadClass}` for the
+#     Request dimension, and cargo REFUSES a path dependency onto a nested
+#     directory that declares its own `[workspace]` ("multiple workspace roots
+#     found in the same workspace") — the exact error `crates/breathe-spread`'s
+#     header already recorded, and the reason `breathe-crd`'s own
+#     `PlacementIsolationKind` had to hand-mirror `isolation::PlacementIsolation`
+#     rather than reuse it. Duplicating `QosClass` instead would have been the
+#     third copy of an enum this crate already owns.
+#   * The isolation dimension is the one this crate's catalog CLAIMS
+#     (`DimensionId::Isolation` — "requests-floor / limits-ceiling / QoS-class")
+#     while the shipped `IsolationBand` CRD carves node placement ONLY. That is
+#     precisely the claimed-but-uncarved shape `no_dimension_claimed_but_uncarved`
+#     exists to catch — and it could not catch it, because the gate never ran in
+#     breathe CI. Now it does.
+#
+# What the isolation gained: the matrix + the seal run on every `cargo test
+# --workspace`. What it lost: nothing that was load-bearing — the crate still
+# depends on serde alone, so folding it in adds no edge into breathe's churn;
+# the isolation was one-directional all along.
 [package]
 name = "breathe-invariant"
 version = "0.1.0"
@@ -31,14 +51,9 @@ module_name_repetitions = "allow"
 missing_errors_doc = "allow"
 missing_panics_doc = "allow"
 
-[profile.release]
-codegen-units = 1
-lto = true
-opt-level = "z"
-strip = true
-
-# Own workspace root — NOT a member of the parent breathe workspace (whose
-# members are an explicit list under the repo root, not crates/*). Declaring
-# [workspace] here makes cargo treat this crate as its own root, so building it
-# never touches the parent's in-flight band crates.
-[workspace]
+# NOTE: no `[profile.release]` and no `[workspace]` here any more. Both were
+# removed by the 2026-07-26 fold (see the header): a workspace MEMBER's own
+# `[profile.*]` is ignored with a warning, and the `[workspace]` key was the
+# thing making the path dependency impossible. The release profile now comes
+# from the workspace root, which carries a byte-identical one
+# (codegen-units=1 / lto / opt-level="z" / strip).

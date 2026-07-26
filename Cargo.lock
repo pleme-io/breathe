@@ -1200,6 +1200,7 @@ dependencies = [
  "anyhow",
  "breathe-auction",
  "breathe-control",
+ "breathe-invariant",
  "breathe-provider",
  "chrono",
  "k8s-openapi",
@@ -1268,6 +1269,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "breathe-invariant"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "breathe-jmx"
 version = "0.1.0"
 dependencies = [
@@ -1313,11 +1322,14 @@ name = "breathe-provider"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "blake3",
  "breathe-control",
+ "breathe-invariant",
  "schemars 0.8.22",
  "schemars 1.2.1",
  "serde",
  "serde_json",
+ "tokio",
 ]
 
 [[package]]
