@@ -14,7 +14,7 @@
 //!
 //! **Tier-honest maturity (2026-07):** MemoryBand + CpuBand + ReplicaBand are
 //! SHIPPED (live CRD kinds + carve laws in the breathe substrate); StorageBand,
-//! IsolationBand, and DatabaseBand are LANDING (the typed contract ships +
+//! IsolationBand, DatabaseBand, and `RequestBand` are LANDING (the typed contract ships +
 //! CI-tested; the live in-cluster carve/actuator is the C2 destination).
 //! DatabaseBand promoted Gap→Landing when `breathe-invariant::database` landed
 //! the architecture-aware contract — the discovered `ReplicationTopology` +
@@ -52,7 +52,11 @@ const fn gap(clause: BreatheClause) -> ClauseStatus {
 const SP80: UtilizationSetpoint = UtilizationSetpoint::from_bps(8_000);
 
 /// MemoryBand — SHIPPED. `breathe-crd::MemoryBand` + `breathe-control`
-/// BandLaw + safety_clamp (never-OOM proven). The vertical pod-memory band.
+/// BandLaw + safety_clamp (never-CARVE-INTO-OOM proven — a bound on breathe's
+/// own writes, NOT OOM-immunity: whether the kernel picks this pod under node
+/// pressure runs off the REQUEST, which no limit carve touches. See
+/// [`DimensionId::Request`] / BREATHABILITY.md §II.8.1). The vertical
+/// pod-memory band.
 const MEMORY: BreatheDimension = BreatheDimension {
     id: DimensionId::Memory,
     band: "MemoryBand",
@@ -74,7 +78,7 @@ const MEMORY: BreatheDimension = BreatheDimension {
         cs(DiscoveryMolded, CeilingC2),
         cs(DualPurpose, CeilingC1),
     ],
-    note: "MemoryBand is the most-protected dimension — the safety_clamp gate proves never-OOM against every future law.",
+    note: "MemoryBand is the most-protected dimension — the safety_clamp gate proves the CARVE never drives a workload into OOM, against every future law. It does not make the workload OOM-safe: oom_score_adj derives from the request (DimensionId::Request), so a workload inside every memory band can still be first in line to die — the sui-cache-pg receipt.",
 };
 
 /// CpuBand — SHIPPED. `breathe-crd::CpuBand` (millicores) + BandLaw. The
@@ -240,11 +244,50 @@ const ISOLATION: BreatheDimension = BreatheDimension {
     note: "Isolation is BOTH carved (the posture) AND a CONSTRAINT on the other carves (the seal-floor lower-bounds mem/cpu). The per-workload seal is parse-time-rejected (IsolationPosture::try_seal); fleet coverage is the CeilingC1 critical_workload_must_be_sealed matrix gate; the live IsolationBand CRD reconcile is the destination.",
 };
 
+/// `RequestBand` — LANDING. The RESERVATION dimension: every band above carves a
+/// LIMIT, and this one carves `resources.requests.<res>` — the field
+/// `oom_score_adj`, the `QoS` class and schedulability all derive from. Its
+/// absence is the defect this catalog's own models-stay-current gate exists to
+/// catch and did not: §II.7's requests-floor was a lever the doctrine leaned on
+/// and nothing actuated. Typed contract + carve law + the two-door actuator
+/// algebra ship and are CI-tested (`breathe-provider::request`,
+/// `breathe-control::RequestLaw`, `breathe-crd::RequestBand`); **no controller
+/// watches the kind and no transport ships behind `ManifestWriter`**, so the
+/// live carve and the durable commit are the destination — hence Landing, the
+/// same shape as Database.
+const RESERVATION: BreatheDimension = BreatheDimension {
+    id: DimensionId::Request,
+    band: "RequestBand",
+    band_keyword: "defband-request",
+    setpoint: SP80,
+    carve_algorithm: CarveAlgorithm::HeadroomScaledReservation,
+    discovery: DiscoveryStrategy::KanchiDiscovered,
+    maturity: Maturity::Landing,
+    claimed_by_doctrine: true,
+    cost_effect: "reserve what the workload actually needs resident, not its peak — an over-sized request withholds node allocatable linearly in replica count, so right-sizing the RESERVATION is capacity handed back to the scheduler rather than billed idle",
+    resiliency_effect: "set the field that decides who the kernel kills — a reservation at the demonstrated demand lowers oom_score_adj and lifts the QoS class, which is the ONLY lever that saves a workload whose limit is never binding (the sui-cache-pg 34-OOMKill receipt: 202.8Mi peak under a 1Gi limit, cgroup failcnt=0)",
+    doctrine_ref: "BREATHABILITY.md §II.8 (the RESERVATION dimension) + §II.7.1 (the requests-floor lever it actuates)",
+    pending: None,
+    clauses: &[
+        // CRD kind + law + actuator algebra ship; no watcher runs → partial.
+        cs(CarvedByABand, OnlyMitigated),
+        cs(CarveToSetpoint, OnlyMitigated),
+        cs(DefaultOnFleetWide, OnlyMitigated),
+        // THIS catalog row + its matrix row ARE the forcing function.
+        cs(ModelsStayCurrent, CeilingC1),
+        // The demand percentile is read from PromQL, where the window already
+        // lives; the seam is typed, no live reader is wired.
+        cs(DiscoveryMolded, OnlyMitigated),
+        cs(DualPurpose, OnlyMitigated),
+    ],
+    note: "TWO actuators, and the split is a k8s API fact not a design taste: a QoS-class change through the pods/resize subresource is refused unconditionally (release-1.33 validation.go:5665, the exact minor camelot-eks runs), so a within-class request change is an in-place SsaPatch and a class transition is a template write — disjoint payload types, no conversion, so routing one through the other's door is a compile error. Direction is grow-only at M0 (RequestShrinkEvidence is an empty enum). QoS itself is NOT a band: it is a 3-valued class k8s derives, so banding it would invent an ordering k8s does not have.",
+};
+
 /// The full breathe dimension catalog. Order: strongest maturity first, then
 /// canonical. Adding a dimension = a `const` + one entry here + one matrix row
 /// (same commit; the matrix enforces it).
 pub const CATALOG: &[&BreatheDimension] =
-    &[&MEMORY, &CPU, &REPLICA, &STORAGE, &ISOLATION, &DATABASE];
+    &[&MEMORY, &CPU, &REPLICA, &STORAGE, &ISOLATION, &DATABASE, &RESERVATION];
 
 /// Look up a dimension by id.
 #[must_use]
@@ -323,11 +366,14 @@ mod tests {
         let (g, l, s) = maturity_histogram();
         assert_eq!(g + l + s, CATALOG.len(), "maturity histogram must sum to catalog size");
         // Tier-honest snapshot of the CURRENT fleet state (2026-07):
-        // memory/cpu/replica SHIPPED, storage+isolation+database LANDING, 0 GAP.
-        // DatabaseBand promoted Gap→Landing with breathe-invariant::database (the
-        // architecture-aware discovery + failover FSM + 5-engine matrix + lattice).
+        // memory/cpu/replica SHIPPED; storage+isolation+database+request LANDING;
+        // 0 GAP. DatabaseBand promoted Gap→Landing with breathe-invariant::database
+        // (the architecture-aware discovery + failover FSM + 5-engine matrix +
+        // lattice). RequestBand entered the catalog AT Landing 2026-07-26 — CRD kind
+        // + carve law + actuator algebra ship and are CI-tested, no controller
+        // watches the kind, nothing commits (BREATHABILITY.md §II.8.5).
         // Update deliberately when a dimension advances — this line IS the ledger.
-        assert_eq!((g, l, s), (0, 3, 3), "breathe dimension maturity ledger drifted — update deliberately, never round up");
+        assert_eq!((g, l, s), (0, 4, 3), "breathe dimension maturity ledger drifted — update deliberately, never round up");
     }
 
     #[test]
