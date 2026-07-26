@@ -1294,7 +1294,7 @@ mod tests {
         let provider = BandProvider::new(HostCluster::shadow(env, envelopes()), desc);
         let obs = provider.observe(&node_target()).await.unwrap();
         assert_eq!(obs.used, 180 * GI / 1024);
-        assert_eq!(obs.capacity, 200 * GI / 1024, "capacity = the live sysctl value");
+        assert_eq!(obs.capacity(), 200 * GI / 1024, "capacity = the live sysctl value");
         assert!(obs.owners.is_empty(), "host levers have no competing owner");
     }
 
@@ -1315,7 +1315,7 @@ mod tests {
         let provider = BandProvider::new(HostCluster::shadow(env, envelopes()), ArcDescriptor);
         let obs = provider.observe(&node_target()).await.unwrap();
         assert_eq!(obs.used, 5 * GI);
-        assert_eq!(obs.capacity, 6 * GI);
+        assert_eq!(obs.capacity(), 6 * GI);
         assert!(obs.owners.is_empty(), "host levers have no competing owner");
     }
 

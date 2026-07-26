@@ -400,6 +400,42 @@ async fn read_env_context(client: &Client, namespace: &str) -> EnvContext {
     EnvContext { env_id, cost_remaining_cents }
 }
 
+/// **The per-dimension RECLAIM policy** — may this dimension's band write
+/// DOWNWARD, and if not, does it report what it withheld?
+///
+/// This is the typed replacement for the untyped
+/// `hard_plane_grow_only: provider.id() == DimensionId::Memory` predicate. It is
+/// a per-DIMENSION fact, not a per-band knob, and deliberately so: a k8s
+/// `limits.memory` IS the cgroup `memory.max` kill ceiling, so "never lower it
+/// for efficiency" is a SAFETY INVARIANT of the memory plane, not a preference an
+/// operator should be able to author away. Making it a CRD field would let a
+/// single YAML edit re-open the carve-induced-OOM path the soft-plane routing
+/// exists to close.
+///
+/// (A per-band field that may only ever NARROW this — a critical workload opting
+/// its cpu band out of reclaim — is a coherent future addition. Widening memory
+/// is not, and would need the soft-plane routing to be provably live first.)
+const fn reclaim_for(dim: breathe_provider::DimensionId) -> breathe_control::Reclaim {
+    use breathe_provider::DimensionId as D;
+    match dim {
+        // The hard plane holds; the reclaim is routed to `memory.high` (soft).
+        // Reported, never taken.
+        D::Memory => breathe_control::Reclaim::ObserveOnly,
+        // Every other dimension keeps its own directionality unchanged — cpu and
+        // replica breathe both ways, storage is physically grow-only, and the host
+        // knobs already carve soft/reclaim planes.
+        D::Cpu
+        | D::Storage
+        | D::Replica
+        | D::Arc
+        | D::Cgroup
+        | D::CgroupCpu
+        | D::HostParam
+        | D::KubeParam
+        | D::AppParam => breathe_control::Reclaim::Enabled,
+    }
+}
+
 /// The one reconcile body for every dimension. `B` is the band kind, `D` its descriptor.
 async fn reconcile<B: Band, D: DimensionDescriptor + Default>(
     obj: Arc<B>,
@@ -504,10 +540,11 @@ async fn reconcile<B: Band, D: DimensionDescriptor + Default>(
         // The AUTHORIZATION VERDICT gates the carve — not the raw `dryRun`
         // field, which has been unread for this band kind since 76924b0.
         // `gate` is resolved ONCE per tick, above, and drives both the carve
-        // and the status, so the two can never tell different stories.
-        // (S2 replaces this bool with the typed `gate` itself, at which point
-        // the mutation door takes the `LiveWitness` it carries.)
-        dry_run: gate.is_shadow(),
+        // and the status, so the two can never tell different stories. Its
+        // `Live` arm carries the `LiveWitness` that is the only key to the
+        // mutation door; its `Shadow` arm carries none, so a held band cannot
+        // reach that door at all.
+        gate: gate.clone(),
         // per-band golden/ceiling gate (default RestartFreeOnly) — the band
         // declares its own policy; the fleet env is only a fallback default.
         // Posture-aware: falls through to the referenced BreathePosture's
@@ -517,12 +554,22 @@ async fn reconcile<B: Band, D: DimensionDescriptor + Default>(
         predictive,
         peak_used,
         observed_for_secs: Some(observed_for_secs),
-        // PART 1 (SOFT k8s carve): for the MEMORY dimension ONLY, pin the HARD plane
-        // (k8s limits.memory / memory.max) GROW-ONLY so an efficiency shrink can never
-        // lower the kill ceiling — the reclaim is routed to the SOFT memory.high plane
-        // by `reconcile_memory`'s per-pod PodMemoryHigh dispatch. cpu/storage have no
-        // breathe-carved soft cgroup plane, so they keep their own directionality.
-        hard_plane_grow_only: provider.id() == breathe_provider::DimensionId::Memory,
+        // PART 1 (SOFT k8s carve), now typed: for the MEMORY dimension ONLY, the HARD
+        // plane (k8s limits.memory / memory.max) never breathes DOWN — lowering a kill
+        // ceiling for efficiency is the carve-induced-OOM path; the reclaim is routed
+        // to the SOFT memory.high plane by `reconcile_memory`'s per-pod PodMemoryHigh
+        // dispatch. cpu/storage have no breathe-carved soft cgroup plane, so their own
+        // directionality stands.
+        //
+        // `ObserveOnly` rather than `Disabled`: the WRITES are identical (neither ever
+        // lowers the limit — see `Reclaim`), but the band now REPORTS the slack it
+        // declined to take, instead of the `AtFloor` it is nowhere near. That phase was
+        // wrong on 36 camelot-eks MemoryBands sitting at 4–25% utilization.
+        reclaim: reclaim_for(provider.id()),
+        // May this band cap a workload whose author declared no limit? Default
+        // `forbidden`; a band opts in per-CR (`spec.boundIntroduction: allowed`) for
+        // the ceded-field takeover.
+        bound_introduction: obj.bound_introduction(),
     };
 
     let outcome = reconcile_one(&input, &provider).await;
@@ -556,7 +603,7 @@ async fn reconcile<B: Band, D: DimensionDescriptor + Default>(
     apply_env_context(&mut status, &env_ctx);
     info!(dim = %provider.id(), band = %name, target = %target.name, phase = ?status.phase, health = ?status.health, "reconciled");
     emit_event(&ctx, obj.as_ref(), &outcome.receipt, status.phase.as_deref(), prior_phase.as_deref()).await;
-    emit_health_event(&ctx, obj.as_ref(), &status.conditions, prior_health.as_deref(), outcome.dry_run).await;
+    emit_health_event(&ctx, obj.as_ref(), &status.conditions, prior_health.as_deref(), outcome.dry_run()).await;
     metrics_for(
         &BandLabels { dim: provider.id().to_string(), namespace: ns.clone(), name: name.clone() },
         &outcome,
@@ -706,7 +753,10 @@ async fn reconcile_overview(obj: Arc<BreatheOverview>, ctx: Arc<Ctx>) -> Result<
 
     let count = |ps: &[&str]| bands.iter().filter(|b| b.phase.as_deref().is_some_and(|x| ps.contains(&x))).count() as i64;
     let total = bands.len() as i64;
-    let converged = count(&["Holding", "AtFloor", "AtCeiling", "Dormant"]);
+    // `ReclaimWithheld` is at REST (the band decided; the decision was "leave it"),
+    // so it counts as converged — otherwise every idle memory band would silently
+    // fall out of the fleet totals when the phase stopped being the `AtFloor` lie.
+    let converged = count(&["Holding", "AtFloor", "AtCeiling", "Dormant", "ReclaimWithheld"]);
     let carving = count(&["Growing", "Shrinking"]);
     let deferred = count(&["DeferredWouldRestart"]);
     let suspended = count(&["Suspended"]);

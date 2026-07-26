@@ -52,7 +52,7 @@ pub fn rfc3339_in_future(s: &str) -> bool {
 /// no denominator (capacity == 0 ⇒ no limit set).
 #[must_use]
 pub fn util_of(obs: &Observation) -> Option<f64> {
-    (obs.capacity > 0).then(|| obs.used as f64 / obs.capacity as f64)
+    (obs.capacity() > 0).then(|| obs.used as f64 / obs.capacity() as f64)
 }
 
 /// The DisruptionPolicy as its camelCase wire string (matches the CRD enum).
@@ -126,9 +126,15 @@ pub fn event_for(receipt: &TickReceipt) -> Option<(EventKind, &'static str, Stri
             "targetRef does not exist (namespace/name/kind) — held; will self-heal automatically once the object is created".to_string(),
         ),
         TickReceipt::Error { error } => (Warning, "ReconcileError", error.to_string()),
-        TickReceipt::DryRunWouldApply { from, to } => {
-            (Normal, "ShadowWouldApply", format!("shadow: would carve {from} -> {to} (dryRun — nothing written)"))
-        }
+        // The reason, not "dryRun". `spec.dryRun` has been unread for every k8s
+        // band kind since 76924b0, so rendering it as the cause taught the wrong
+        // model at the exact moment an operator was debugging — and it could not
+        // distinguish an authored hold from an accidental one.
+        TickReceipt::ShadowWouldApply { from, to, reason } => (
+            Normal,
+            "ShadowWouldApply",
+            format!("shadow: would carve {from} -> {to} — held: {}", shadow_reason_note(*reason)),
+        ),
         TickReceipt::Warmup { observed_for, warmup } => (
             Normal,
             "Warmup",
@@ -146,7 +152,17 @@ pub fn event_for(receipt: &TickReceipt) -> Option<(EventKind, &'static str, Stri
         TickReceipt::Observed { decision } => match decision {
             Decision::AtCeiling { current } => (Normal, "AtCeiling", format!("at ceiling {current} — would grow but capped")),
             Decision::NoSafeShrink { current } => (Normal, "AtFloor", format!("at floor {current} — no safe shrink")),
-            Decision::NoLimit => (Warning, "NoLimit", "no limit set — cannot reason on utilization".into()),
+            Decision::NoLimit => (
+                Warning,
+                "NoLimit",
+                "the target declares NO limit for this dimension and this band may not introduce one — set spec.boundIntroduction: allowed to let breathe seed a bound, or declare a limit upstream".into(),
+            ),
+            // NOT `AtFloor`: there IS slack, policy declined to take it.
+            Decision::ReclaimWithheld { current, reclaimable } => (
+                Normal,
+                "ReclaimWithheld",
+                format!("holding {current} — {reclaimable} reclaimable, withheld by the band's reclaim policy"),
+            ),
             Decision::Grow { from, to } | Decision::Shrink { from, to } => {
                 (Normal, "ObservedNoAct", format!("observed {from} -> {to} (directionality/observe-only — not applied)"))
             }
@@ -217,8 +233,14 @@ pub fn conditions_for(outcome: &TickOutcome, prior: &[Condition], generation: Op
     let supported = !matches!(r, TickReceipt::CapabilityMissing { .. });
     let converged = matches!(
         r,
-        TickReceipt::Observed { decision: Decision::Hold | Decision::AtCeiling { .. } | Decision::NoSafeShrink { .. } }
-            | TickReceipt::Dormant // an empty (scaled-to-zero) target is trivially at rest
+        TickReceipt::Observed {
+            decision: Decision::Hold
+                | Decision::AtCeiling { .. }
+                | Decision::NoSafeShrink { .. }
+                // withheld-by-policy is a RESTING state, not an unconverged one:
+                // the band has decided, and the decision is "leave it".
+                | Decision::ReclaimWithheld { .. }
+        } | TickReceipt::Dormant // an empty (scaled-to-zero) target is trivially at rest
     );
     let throttled = matches!(
         r,
@@ -476,7 +498,7 @@ pub fn status_for(
 
     // ── COMMON: the observed inputs + effective mode + edge tier (from the
     //    outcome, available on every non-pre-observe-error tick). ──────────────
-    s.effective_dry_run = Some(outcome.dry_run);
+    s.effective_dry_run = Some(outcome.dry_run());
     s.effective_policy = Some(policy_str(outcome.policy));
     s.edge_tier = Some(edge_tier_str(receipt.edge_tier()));
     if let Some(obs) = &outcome.observed {
@@ -485,7 +507,7 @@ pub fn status_for(
         // persisted so the next reconcile folds the current sample into it (the
         // cross-tick peak carry). `reconcile_one` guarantees `peak_used ≥ used`.
         s.observed_peak_used = Some(obs.peak_used as i64);
-        s.observed_capacity = Some(obs.capacity as i64);
+        s.observed_capacity = Some(obs.capacity() as i64);
         s.freshness_seconds = Some(obs.staleness_secs as i64);
         if let Some(u) = util_of(obs) {
             s.observed_util = Some(u);
@@ -551,10 +573,10 @@ pub fn status_for(
             s.last_action_class = Some(format!("{class:?}"));
             s.last_change_epoch = Some(now_secs());
         }
-        TickReceipt::DryRunWouldApply { from, to } => {
+        TickReceipt::ShadowWouldApply { from, to, reason } => {
             s.phase = Some("ShadowWouldApply".into());
             s.current_limit = Some(from.to_string()); // shadow mutates nothing — the UNCHANGED limit
-            s.last_decision = Some(format!("dry-run: {from} -> {to}"));
+            s.last_decision = Some(format!("shadow: {from} -> {to} — held: {}", shadow_reason_note(*reason)));
         }
         TickReceipt::DeferredWouldRestart { from, to, class } => {
             // the comfortable berth: breathe REFUSED a ceiling crossing — the
@@ -569,7 +591,18 @@ pub fn status_for(
                 Decision::Hold => ("Holding", "within band — held".to_string()),
                 Decision::AtCeiling { current } => ("AtCeiling", format!("at ceiling {current} — would grow")),
                 Decision::NoSafeShrink { current } => ("AtFloor", format!("at floor {current} — no safe shrink")),
-                Decision::NoLimit => ("NoLimit", "no limit set — cannot reason on utilization".to_string()),
+                Decision::NoLimit => (
+                    "NoLimit",
+                    "the target declares no limit for this dimension — breathe will not introduce one (set spec.boundIntroduction: allowed to permit it)".to_string(),
+                ),
+                // The honest phase for a band whose slack is real but withheld —
+                // the `AtFloor` this used to report was a lie (it is nowhere near
+                // a floor), and it made 36 idle camelot-eks MemoryBands look
+                // converged.
+                Decision::ReclaimWithheld { current, reclaimable } => (
+                    "ReclaimWithheld",
+                    format!("holding {current} — {reclaimable} reclaimable, withheld by policy"),
+                ),
                 Decision::Grow { from, to } | Decision::Shrink { from, to } => {
                     ("Observed", format!("observed {from} -> {to} (not applied)"))
                 }
@@ -612,7 +645,7 @@ pub fn status_for(
     // observed capacity) rather than a stale value; Applied set its own `to` above.
     if s.current_limit.is_none() {
         if let Some(obs) = &outcome.observed {
-            s.current_limit = Some(obs.capacity.to_string());
+            s.current_limit = Some(obs.capacity().to_string());
         }
     }
 
@@ -635,7 +668,7 @@ pub fn status_for(
     //    (no new tracked state; last_transition_time is already stable-while-held
     //    per condition). Same across all 5 band kinds for free.
     let now = now_rfc3339();
-    s.health = Some(health_verdict(&s.conditions, &now, STUCK_AFTER_SECS, outcome.dry_run).label().to_string());
+    s.health = Some(health_verdict(&s.conditions, &now, STUCK_AFTER_SECS, outcome.dry_run()).label().to_string());
 
     // ── B: per-band TREND (the over-time view as a k8s object, no Grafana) —
     //    append on a carve or a phase change, cap to the last N. A resting band's
@@ -695,6 +728,47 @@ pub fn warmup_state(prior: Option<&BandStatus>, observed_capacity: Option<u64>, 
     (observed_for, start)
 }
 
+/// Render WHY a band is held, for the status line and the k8s Event.
+///
+/// A typed [`Display`](std::fmt::Display)-shaped rendering of the reason rather
+/// than the flat string "dryRun", which every surface used to print. The
+/// distinction it restores is the one that matters operationally: an operator
+/// who WROTE `writeIntent: observe` versus a band that FELL into shadow because
+/// its metric went stale or another manager took the field.
+#[must_use]
+pub fn shadow_reason_note(reason: breathe_provider::ShadowReason) -> String {
+    use breathe_provider::ShadowReason as R;
+    match reason {
+        R::Frozen => "an external freeze (pool / fleet write switch) is engaged".into(),
+        R::ModeShadow => "authored hold (writeIntent: observe)".into(),
+        R::Suspended => "authored freeze (writeIntent: frozen)".into(),
+        R::NotReady => "NOT AUTHORED — the band is not Ready (no observable metric yet)".into(),
+        R::Stale => "NOT AUTHORED — the driving metric sample is too old to trust".into(),
+        R::Conflict => "NOT AUTHORED — another field manager owns the target".into(),
+        R::IntentMalformed => {
+            "writeIntent does not parse (an `intent: write` naming no author) — failing safe".into()
+        }
+        R::ConfirmPending { held_secs, need_secs } => {
+            format!("calibrating — {held_secs}s of {need_secs}s of clean observation held")
+        }
+    }
+}
+
+/// A LIVE gate for the test fixtures in this crate. Obtained the only way any
+/// caller can obtain one — through `resolve_gate`. There is deliberately no test
+/// back door: `LiveWitness` has no public constructor, so even fixtures go
+/// through the real resolver.
+#[cfg(test)]
+fn test_live_gate() -> breathe_provider::EffectiveGate {
+    use breathe_provider::gate::{resolve_gate, ConfirmVerdict, GateInputs, LegacyDecision, ShadowReason, WriteIntent};
+    resolve_gate(&GateInputs {
+        intent: Some(Ok(WriteIntent::Write { authorized_by: "breathe-runtime tests".into() })),
+        frozen: false,
+        confirm: ConfirmVerdict::NotEvaluated,
+        legacy: LegacyDecision::Shadow(ShadowReason::NotReady),
+    })
+}
+
 /// A short, stable tag for a receipt kind — the `decision_log` row's `receipt_kind`.
 fn receipt_kind_str(r: &TickReceipt) -> &'static str {
     match r {
@@ -704,7 +778,7 @@ fn receipt_kind_str(r: &TickReceipt) -> &'static str {
         TickReceipt::Stale { .. } => "Stale",
         TickReceipt::Cooldown => "Cooldown",
         TickReceipt::Applied { .. } => "Applied",
-        TickReceipt::DryRunWouldApply { .. } => "DryRunWouldApply",
+        TickReceipt::ShadowWouldApply { .. } => "ShadowWouldApply",
         TickReceipt::DeferredWouldRestart { .. } => "DeferredWouldRestart",
         TickReceipt::Observed { .. } => "Observed",
         TickReceipt::Warmup { .. } => "Warmup",
@@ -726,7 +800,7 @@ pub fn entry_for(outcome: &TickOutcome) -> DecisionEntry {
     let r = &outcome.receipt;
     let (from_limit, to_limit) = match r {
         TickReceipt::Applied { from, to, .. }
-        | TickReceipt::DryRunWouldApply { from, to }
+        | TickReceipt::ShadowWouldApply { from, to, .. }
         | TickReceipt::DeferredWouldRestart { from, to, .. } => (Some(*from), Some(*to)),
         _ => (None, None),
     };
@@ -743,7 +817,7 @@ pub fn entry_for(outcome: &TickOutcome) -> DecisionEntry {
         class,
         from_limit,
         to_limit,
-        dry_run: outcome.dry_run,
+        dry_run: outcome.dry_run(),
     }
 }
 
@@ -784,7 +858,7 @@ pub fn next_requeue(receipt: &TickReceipt, cooldowns: &ClassCooldowns) -> Durati
         // a shadow likewise looks fast (it is observing the live band). A dormant
         // (empty) target re-checks at the golden cadence too, so a pod that appears
         // (a runner starting a build) is picked up within one fast tick.
-        TickReceipt::Applied { .. } | TickReceipt::DryRunWouldApply { .. } | TickReceipt::Dormant => {
+        TickReceipt::Applied { .. } | TickReceipt::ShadowWouldApply { .. } | TickReceipt::Dormant => {
             cooldowns.restart_free
         }
         // a refused crossing: back off by exactly the blocked class.
@@ -837,13 +911,13 @@ pub fn metrics_for(l: &BandLabels, outcome: &TickOutcome, cfg: &BandConfig, cool
     gauge!("breathe_band_shrink_below_ratio", base()).set(cfg.shrink_below);
     gauge!("breathe_band_floor", base()).set(cfg.floor_bytes as f64);
     gauge!("breathe_band_ceiling", base()).set(cfg.ceiling_bytes as f64);
-    gauge!("breathe_band_dry_run", base()).set(f64::from(u8::from(outcome.dry_run)));
+    gauge!("breathe_band_dry_run", base()).set(f64::from(u8::from(outcome.dry_run())));
     gauge!("breathe_band_cooldown_remaining_seconds", base()).set(cooldown_remaining_s as f64);
 
     // observed gauges — the live signal driving the loop.
     if let Some(obs) = &outcome.observed {
         gauge!("breathe_band_used", base()).set(obs.used as f64);
-        gauge!("breathe_band_capacity", base()).set(obs.capacity as f64);
+        gauge!("breathe_band_capacity", base()).set(obs.capacity() as f64);
         gauge!("breathe_band_staleness_seconds", base()).set(obs.staleness_secs as f64);
         if let Some(u) = util_of(obs) {
             gauge!("breathe_band_util_ratio", base()).set(u);
@@ -853,8 +927,8 @@ pub fn metrics_for(l: &BandLabels, outcome: &TickOutcome, cfg: &BandConfig, cool
     // the carved limit, tracked over time.
     let limit = match &outcome.receipt {
         TickReceipt::Applied { to, .. } => Some(*to),
-        TickReceipt::DryRunWouldApply { from, .. } | TickReceipt::DeferredWouldRestart { from, .. } => Some(*from),
-        _ => outcome.observed.as_ref().map(|o| o.capacity),
+        TickReceipt::ShadowWouldApply { from, .. } | TickReceipt::DeferredWouldRestart { from, .. } => Some(*from),
+        _ => outcome.observed.as_ref().map(Observation::capacity),
     };
     if let Some(v) = limit {
         gauge!("breathe_band_current_limit", base()).set(v as f64);
@@ -1301,7 +1375,7 @@ mod tests {
     /// Wrap a bare receipt in a minimal TickOutcome (no observation; the status
     /// per-arm fields under test don't need one).
     fn out(receipt: TickReceipt) -> TickOutcome {
-        TickOutcome { receipt, observed: None, policy: DisruptionPolicy::RestartFreeOnly, dry_run: false }
+        TickOutcome { receipt, observed: None, policy: DisruptionPolicy::RestartFreeOnly, gate: test_live_gate() }
     }
 
     /// Build a status from an outcome with the counters the DecisionLog would
@@ -1311,6 +1385,56 @@ mod tests {
     /// consumes the count instead of computing it.
     fn status_of(o: &TickOutcome) -> BandStatus {
         status_for(o, None, 0, None, CumulativeCounters::ZERO.fold(&entry_for(o)))
+    }
+
+    /// **The shadow REASON reaches the operator, and "dryRun" never does.**
+    ///
+    /// Every surface used to render a shadowed tick as "dryRun — nothing written".
+    /// That string was false for every k8s band kind after `76924b0` retired the
+    /// field, and it could not distinguish an operator's authored hold from a band
+    /// that FELL into shadow — the exact confusion that left six camelot-eks bands
+    /// looking deliberately parked when they were actually broken.
+    #[test]
+    fn a_shadowed_status_names_why_and_never_says_dry_run() {
+        use breathe_provider::ShadowReason as R;
+        for (reason, must_contain) in [
+            (R::ModeShadow, "authored"),
+            (R::NotReady, "NOT AUTHORED"),
+            (R::Stale, "NOT AUTHORED"),
+            (R::Conflict, "NOT AUTHORED"),
+            (R::ConfirmPending { held_secs: 400, need_secs: 1800 }, "400s of 1800s"),
+            (R::Frozen, "freeze"),
+            (R::IntentMalformed, "naming no author"),
+        ] {
+            let s = status_of(&out(TickReceipt::ShadowWouldApply { from: 100, to: 250, reason }));
+            assert_eq!(s.phase.as_deref(), Some("ShadowWouldApply"));
+            assert_eq!(s.current_limit.as_deref(), Some("100"), "shadow mutates nothing");
+            let note = s.last_decision.unwrap_or_default();
+            assert!(note.contains(must_contain), "{reason:?} must explain itself, got {note:?}");
+            assert!(!note.contains("dryRun") && !note.contains("dry-run"), "the retired field is never the reason");
+
+            let (_, ev_reason, msg) = event_for(&TickReceipt::ShadowWouldApply { from: 100, to: 250, reason }).unwrap();
+            assert_eq!(ev_reason, "ShadowWouldApply");
+            assert!(msg.contains(must_contain), "the k8s Event carries the same reason");
+        }
+    }
+
+    /// An idle band whose reclaim is withheld by policy reports `ReclaimWithheld`
+    /// with the slack it declined — NOT the `AtFloor` it is nowhere near — and is
+    /// still counted as CONVERGED (it decided; the decision was "leave it").
+    #[test]
+    fn withheld_reclaim_is_reported_honestly_and_counts_as_converged() {
+        let o = out(TickReceipt::Observed { decision: Decision::ReclaimWithheld { current: 2048, reclaimable: 512 } });
+        let s = status_of(&o);
+        assert_eq!(s.phase.as_deref(), Some("ReclaimWithheld"));
+        let note = s.last_decision.unwrap_or_default();
+        assert!(note.contains("512"), "the amount NOT taken is named, got {note:?}");
+        assert!(!note.contains("floor"), "and it is not dressed up as a floor");
+        let converged = conditions_for(&o, &[], None)
+            .into_iter()
+            .find(|c| c.type_ == "Converged")
+            .expect("Converged condition");
+        assert_eq!(converged.status, "True", "a withheld reclaim is a RESTING state");
     }
 
     #[test]
@@ -1346,7 +1470,7 @@ mod tests {
 
     #[test]
     fn shadow_reports_what_would_have_happened_without_changing_the_limit() {
-        let s = status_of(&out(TickReceipt::DryRunWouldApply { from: 100, to: 250 }));
+        let s = status_of(&out(TickReceipt::ShadowWouldApply { from: 100, to: 250, reason: breathe_provider::ShadowReason::ModeShadow }));
         assert_eq!(s.phase.as_deref(), Some("ShadowWouldApply"));
         // the reported current limit is the UNCHANGED value — shadow mutates nothing.
         assert_eq!(s.current_limit.as_deref(), Some("100"));
@@ -1841,7 +1965,7 @@ mod health_tests {
             receipt: TickReceipt::Conflict { manager: "someone-else".into() },
             observed: None,
             policy: DisruptionPolicy::RestartFreeOnly,
-            dry_run: false,
+            gate: test_live_gate(),
         };
         let s = status_for(&outcome, None, 0, None, CumulativeCounters::ZERO.fold(&entry_for(&outcome)));
         // fresh band, first tick — under the stuck threshold, so Healthy despite Conflict.

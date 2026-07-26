@@ -99,9 +99,19 @@ pub async fn reconcile_replica_band(obj: Arc<ReplicaBand>, ctx: Arc<Ctx>) -> Res
     let metric_ratio = cfg.signal.metric_ratio(env.current(), env.signal(), cfg.target);
     let staleness = env.staleness_secs();
     let prior = obj.status();
-    // The effective (lifecycle-gated) dry-run for this tick — the SAME confirm gate the
-    // vertical bands use. Computed once; the plan's gate and the status share it.
-    let dry_run = obj.effective_dry_run(now);
+    // The tick's AUTHORIZATION VERDICT — the same `writeIntent` > `mode` > default
+    // resolution the vertical bands use, resolved once and shared by the plan gate
+    // and the status. `dry_run` is derived from it, never stored beside it.
+    //
+    // NOTE (tier-honest): the horizontal plane actuates through its own
+    // `plan_replica_tick`/`ReplicaEnvironment` path, NOT through
+    // `breathe_core::reconcile_one`, so its refusal to write is a RUNTIME bool
+    // here — only-mitigated — where the vertical planes' is a compile error (a
+    // shadowed gate has no `LiveWitness` to hand the mutation door). The VERDICT is
+    // identical; the enforcement tier is not. Threading the witness through
+    // `ReplicaEnvironment::scale` is the named follow-on.
+    let gate = obj.resolve_gate(now, false);
+    let dry_run = gate.is_shadow();
 
     // NEVER SCALE ON A STALE SAMPLE → held, reported Stale (no plan, no write).
     let receipt = if staleness > obj.max_staleness_seconds() {
@@ -170,7 +180,7 @@ pub async fn reconcile_replica_band(obj: Arc<ReplicaBand>, ctx: Arc<Ctx>) -> Res
         }
     };
 
-    let status = replica_status_for(
+    let mut status = replica_status_for(
         &receipt,
         metric_ratio,
         staleness,
@@ -181,6 +191,10 @@ pub async fn reconcile_replica_band(obj: Arc<ReplicaBand>, ctx: Arc<Ctx>) -> Res
         obj.generation(),
         counters,
     );
+    // Dual-write the typed verdict alongside the legacy bool, from the ONE `gate`
+    // that drove the tick — so `kubectl get rband` can finally answer "is this band
+    // writing to my cluster, and why", exactly like the vertical kinds.
+    breathe_runtime::set_effective_gate(&mut status, &gate);
     metrics::gauge!("breathe_replica_current_replicas", "namespace" => ns.clone(), "name" => name.clone())
         .set(f64::from(env.current()));
     info!(dim = "replica", band = %name, target = %target.name, phase = ?status.phase, ratio = metric_ratio, "replica reconciled");

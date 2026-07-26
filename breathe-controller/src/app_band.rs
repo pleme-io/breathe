@@ -10,6 +10,7 @@
 use std::sync::Arc;
 
 use breathe_actuator::{ActuatorBackend, ActuatorCluster};
+use breathe_control::{BoundIntroduction, Reclaim};
 use breathe_core::{reconcile_one, ReconcileInput};
 use breathe_crd::{AppActuatorKind, AppBand, Band};
 use breathe_kube::KubeCluster;
@@ -133,15 +134,23 @@ pub async fn reconcile_app_band(obj: Arc<AppBand>, ctx: Arc<Ctx>) -> Result<Acti
         cfg: &cfg,
         max_staleness_secs: obj.max_staleness_seconds(),
         in_cooldown,
-        dry_run: obj.effective_dry_run(now_secs()),
+        // The typed authorization verdict — see `breathe_core::ReconcileInput::gate`.
+        // A shadowed gate carries no `LiveWitness`, so this band physically cannot
+        // reach the mutation door.
+        gate: obj.resolve_gate(now_secs(), false),
         policy: obj.disruption_policy(),
         force,
         predictive: None,
         peak_used,
         // app-plane bands carve a bare integer knob — no pod restart ⇒ warmup N/A.
         observed_for_secs: None,
-        // app-plane bands carve their own knob directly — no soft/hard-plane split.
-        hard_plane_grow_only: false,
+        // app-plane bands carve their own knob directly — no soft/hard-plane split,
+        // so reclaim is unrestricted (byte-identical to the prior `false` pin).
+        reclaim: Reclaim::Enabled,
+        // An app knob (Redis maxmemory, a pool size) always HAS a value; its layout
+        // reports `absence_is_unconstrained() == false`, so this is inert here — it
+        // is set explicitly rather than defaulted so the choice is visible.
+        bound_introduction: BoundIntroduction::Forbidden,
     };
 
     let outcome = reconcile_one(&input, &provider).await;
