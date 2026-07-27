@@ -3776,7 +3776,8 @@ dependencies = [
 [[package]]
 name = "outorga"
 version = "0.1.1"
-source = "git+https://github.com/pleme-io/formigueiro?rev=88b91e58292450e7a2884683f711c3009595d425#88b91e58292450e7a2884683f711c3009595d425"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "68ebba129536d4cd134d1d895993c30ad516e8da6e0cde8648a26f2427fc8e34"
 dependencies = [
  "serde",
 ]
