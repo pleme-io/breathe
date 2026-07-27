@@ -70,7 +70,25 @@ jobs:
       imageName: pleme-io/breathe-controller
       tag: amd64-${{ startsWith(github.ref_name, 'camelot/') && 'camelot-' || '' }}r${{ github.run_number }}-${{ github.sha }}
       additionalTags: ${{ startsWith(github.ref_name, 'camelot/') && 'amd64-camelot-latest' || 'amd64-latest' }}
-      runner: ${{ inputs.runnerOverride || vars.CAMELOT_IMAGE_RUNNER || 'camelot-builder-pleme' }}
+      # NO explicit runner (2026-07-27). Left EMPTY so substrate's
+      # image-push.yml routes through runner-resolve's VISIBILITY-AWARE
+      # default: private-repo callers land on Camelot's self-hosted pool,
+      # public-repo callers keep free GitHub-hosted minutes.
+      #
+      # WHY THIS LINE HAD TO GO. breathe is a PUBLIC repo, and this line
+      # forced `vars.CAMELOT_IMAGE_RUNNER` = camelot-builder-pleme-eks --
+      # a SELF-HOSTED label. GitHub does not assign public-repository jobs
+      # to self-hosted runners (a fork PR could otherwise execute arbitrary
+      # code on our cluster), so every build queued FOREVER: 4 runs stuck
+      # since 07-27T01:03, none failed, nothing alerted.
+      #
+      # Every layer downstream read healthy while the chain was dead --
+      # the job said `queued` (not failed), the ARC listener honestly
+      # reported `assigned job: 0` and scaled to zero, ImageRepository and
+      # ImagePolicy both Ready=True correctly finding the newest MATCHING
+      # tag. There just had been no amd64-r<n> tag since r174, so camelot's
+      # controller sat 21 commits behind with nothing anywhere saying why.
+      # `runnerOverride` (workflow_dispatch) still works for a one-off.
       extraSubstituters: ${{ vars.CAMELOT_SUI_SUBSTITUTER }}
       requireSigs: ${{ vars.CAMELOT_SUI_REQUIRE_SIGS }}
     secrets: inherit
@@ -82,7 +100,25 @@ jobs:
       imageName: pleme-io/breathe-host-agent
       tag: amd64-${{ startsWith(github.ref_name, 'camelot/') && 'camelot-' || '' }}r${{ github.run_number }}-${{ github.sha }}
       additionalTags: ${{ startsWith(github.ref_name, 'camelot/') && 'amd64-camelot-latest' || 'amd64-latest' }}
-      runner: ${{ inputs.runnerOverride || vars.CAMELOT_IMAGE_RUNNER || 'camelot-builder-pleme' }}
+      # NO explicit runner (2026-07-27). Left EMPTY so substrate's
+      # image-push.yml routes through runner-resolve's VISIBILITY-AWARE
+      # default: private-repo callers land on Camelot's self-hosted pool,
+      # public-repo callers keep free GitHub-hosted minutes.
+      #
+      # WHY THIS LINE HAD TO GO. breathe is a PUBLIC repo, and this line
+      # forced `vars.CAMELOT_IMAGE_RUNNER` = camelot-builder-pleme-eks --
+      # a SELF-HOSTED label. GitHub does not assign public-repository jobs
+      # to self-hosted runners (a fork PR could otherwise execute arbitrary
+      # code on our cluster), so every build queued FOREVER: 4 runs stuck
+      # since 07-27T01:03, none failed, nothing alerted.
+      #
+      # Every layer downstream read healthy while the chain was dead --
+      # the job said `queued` (not failed), the ARC listener honestly
+      # reported `assigned job: 0` and scaled to zero, ImageRepository and
+      # ImagePolicy both Ready=True correctly finding the newest MATCHING
+      # tag. There just had been no amd64-r<n> tag since r174, so camelot's
+      # controller sat 21 commits behind with nothing anywhere saying why.
+      # `runnerOverride` (workflow_dispatch) still works for a one-off.
       extraSubstituters: ${{ vars.CAMELOT_SUI_SUBSTITUTER }}
       requireSigs: ${{ vars.CAMELOT_SUI_REQUIRE_SIGS }}
     secrets: inherit
@@ -94,7 +130,25 @@ jobs:
       imageName: pleme-io/breathe-api-server
       tag: amd64-${{ startsWith(github.ref_name, 'camelot/') && 'camelot-' || '' }}r${{ github.run_number }}-${{ github.sha }}
       additionalTags: ${{ startsWith(github.ref_name, 'camelot/') && 'amd64-camelot-latest' || 'amd64-latest' }}
-      runner: ${{ inputs.runnerOverride || vars.CAMELOT_IMAGE_RUNNER || 'camelot-builder-pleme' }}
+      # NO explicit runner (2026-07-27). Left EMPTY so substrate's
+      # image-push.yml routes through runner-resolve's VISIBILITY-AWARE
+      # default: private-repo callers land on Camelot's self-hosted pool,
+      # public-repo callers keep free GitHub-hosted minutes.
+      #
+      # WHY THIS LINE HAD TO GO. breathe is a PUBLIC repo, and this line
+      # forced `vars.CAMELOT_IMAGE_RUNNER` = camelot-builder-pleme-eks --
+      # a SELF-HOSTED label. GitHub does not assign public-repository jobs
+      # to self-hosted runners (a fork PR could otherwise execute arbitrary
+      # code on our cluster), so every build queued FOREVER: 4 runs stuck
+      # since 07-27T01:03, none failed, nothing alerted.
+      #
+      # Every layer downstream read healthy while the chain was dead --
+      # the job said `queued` (not failed), the ARC listener honestly
+      # reported `assigned job: 0` and scaled to zero, ImageRepository and
+      # ImagePolicy both Ready=True correctly finding the newest MATCHING
+      # tag. There just had been no amd64-r<n> tag since r174, so camelot's
+      # controller sat 21 commits behind with nothing anywhere saying why.
+      # `runnerOverride` (workflow_dispatch) still works for a one-off.
       extraSubstituters: ${{ vars.CAMELOT_SUI_SUBSTITUTER }}
       requireSigs: ${{ vars.CAMELOT_SUI_REQUIRE_SIGS }}
     secrets: inherit
