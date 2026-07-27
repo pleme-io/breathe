@@ -83,6 +83,63 @@ jobs:
       - name: test
         run: cargo test --workspace --locked
 
+  # BLOCKING. A PUBLIC repo must be buildable by the PUBLIC.
+  #
+  # Until 2026-07-27 breathe (public) depended on `outorga` by git rev from
+  # pleme-io/formigueiro (PRIVATE). A credential-less builder — every outside
+  # contributor, every fresh clone, every cache-cold runner — could not resolve
+  # it:
+  #     revision 88b91e58… not found
+  #     failed to authenticate when downloading repository
+  #
+  # It read GREEN for weeks because `Swatinem/rust-cache` carried a warm
+  # ~/.cargo/git between runs, so `cargo test --workspace` passed on a CACHE
+  # ARTIFACT rather than on a resolvable dependency. It surfaced only when the
+  # crd-drift job below ran for the first time with a cold cache.
+  #
+  # TWO THINGS MAKE THIS GATE NON-VACUOUS, and both are load-bearing:
+  #   1. NO rust-cache step. A cached ~/.cargo/git would let this pass exactly
+  #      the way the test job already does — the gate would inherit the very
+  #      blindness it exists to remove.
+  #   2. Credentials are actively STRIPPED (no `token` in the git config, no
+  #      GITHUB_TOKEN in env). Inheriting the checkout token would let a
+  #      private dep resolve here and fail for everyone else.
+  #
+  # Verified by a RED RUN against the pre-fix commit (UNREP §II.3 standing
+  # rule): with `outorga` still on the git rev this job fails with the exact
+  # authentication error above; with the registry dep it passes.
+  #
+  # SCOPE, honestly: this proves every dependency RESOLVES without credentials.
+  # It does not prove they are pinned or reproducible — `shikumi` and `kanchi`
+  # remain UNPINNED git deps on public repos (breathe-config/Cargo.toml). Those
+  # resolve fine here, so this gate is silent on them by design; converting
+  # them to registry deps is a separate migration (the lockfile sits at
+  # shikumi 0.1.73 vs 0.1.345 published — 272 versions, not a one-liner).
+  public-buildable:
+    name: public repo builds without credentials
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      # DELIBERATELY NO Swatinem/rust-cache — see note 1 above.
+      - name: fetch every dependency with no credentials
+        env:
+          GITHUB_TOKEN: ""
+          CARGO_NET_GIT_FETCH_WITH_CLI: "false"
+        run: |
+          git config --global --unset-all url."https://x-access-token:".insteadOf 2>/dev/null || true
+          if ! cargo fetch --locked; then
+            echo "::error::A dependency could not be resolved WITHOUT credentials."
+            echo "::error::breathe is a PUBLIC repo — every dep must be reachable by the public."
+            echo "::error::A git dep on a PRIVATE repo also makes crates.io publishing impossible."
+            echo "::error::Fix: depend on the published crate version, not a git rev."
+            exit 1
+          fi
+          echo "all dependencies resolve without credentials"
+
   # BLOCKING. The chart's CRD manifest is crdgen OUTPUT, and until 2026-07-27
   # nothing checked that it still matched the Rust types it is generated from.
   #
