@@ -1,0 +1,22 @@
+-- breathe-store — drop the redundant `decision_log_band_seq_idx`.
+--
+-- `0002_decision_log.sql` declares BOTH:
+--   CONSTRAINT decision_log_band_seq_uniq UNIQUE (band_ref, seq)   -- line 29
+--   CREATE INDEX decision_log_band_seq_idx ON … (band_ref, seq)    -- lines 32-33
+--
+-- A UNIQUE constraint in Postgres is IMPLEMENTED by a unique btree index on
+-- exactly those columns in exactly that order, so the second index is a pure
+-- duplicate: it serves no query the constraint's index does not already serve
+-- (identical columns, identical order, and `verify_chain`'s
+-- `WHERE band_ref = $1 ORDER BY seq ASC` is a textbook match for it), while
+-- costing an extra index entry per insert and its own on-disk footprint on the
+-- highest-write table in the schema. On the append-only decision log — one row
+-- per material band decision, forever — that is the wrong duplicate to keep.
+--
+-- Per the 0001 header's add-only discipline ("applied migrations are never
+-- edited — shinka checksum reconciliation"), 0002 is left byte-identical and
+-- this drop lands as its own migration. On a fresh database that means 0002
+-- creates the index and 0003 immediately drops it; that is the correct cost of
+-- never mutating an applied migration's checksum. Idempotent (IF EXISTS).
+
+DROP INDEX IF EXISTS breathe.decision_log_band_seq_idx;
