@@ -426,10 +426,108 @@ for window W," reconciled by composing the per-dimension `BandStatus`es
 operator- and regulator-facing object `kensa verify` targets. Pure
 composition — the controller still reconciles individual bands.
 
-**Audit story.** `kubectl get mband,sband,cband -A` is the complete,
-auditable answer to "what is breathing, in which category, at what
-utilization." Nothing implicit is ever managed — enrollment is one typed
-CR. `status.outcomeChainHead` links each band to its signed history.
+**Audit story.** `kubectl get mband,sband,cband -A` is the complete answer to
+**what is enrolled** — nothing implicit is ever managed, enrollment is one
+typed CR, and that half is exact. It is **not** the auditable answer to "at
+what utilization, having carved what." **CR `status` is a lossy,
+eventually-consistent projection** — best-effort patched so `kubectl wait`
+and Grafana keep working, rebuilt from the store, and diff-gated (§8 row 3)
+so unchanged fields are deliberately not re-patched. The **durable authority
+for every execution/decision fact** (counters, decision chain, forecaster
+window, cooldown clock, cost integral, node ledger) is the **store**;
+`status.outcomeChainHead` is a *pointer* into that signed history, not the
+history. Read `kubectl` to learn what is enrolled; read the store (or
+`kensa verify outcome-chain`) to learn what actually happened.
+
+> **Corrected 2026-07-26.** This paragraph previously called `kubectl get
+> …band` "the complete, auditable answer," directly contradicting
+> [`BREATHE-MICROSERVICE.md`](./BREATHE-MICROSERVICE.md) §1, which names CR
+> status "a lossy, eventually-consistent projection." Same object, opposite
+> adjectives. **Recency did not settle it:** this doc is the fresher commit
+> and was the wrong one — the source-of-truth law is resolved *in code* (the
+> counter accumulator lives in the `DecisionLog::append` writer, not in
+> `status_for`), and the code implements *lossy*. The freshness of a claim is
+> not evidence for it; the shipped code is.
+
+**Enrollment is not governance — see [§4.1](#41-coverage-means-governing-not-existing).**
+
+---
+
+### 4.1 Coverage means governing, not existing
+
+**A band that exists is not a band that governs.** The enrollment surface
+answers "is there a CR?", and that question is *not* the question an operator
+is actually asking when they read a coverage number. The load-bearing
+question is **"is this CR's decision loop reading, and carving, the pods I
+think it is?"** — and every mechanism below can answer *yes* to the first
+while answering *no* to the second, silently, for weeks.
+
+This is the breathe-side instance of the general pattern that **a gate never
+observed to fail may be checking nothing.** `TargetFound` has never gone
+`False` on this cluster. That is not evidence it is working.
+
+**The two failure modes are opposite and both live** (measured on
+`camelot-eks`, 2026-07-26):
+
+| | **Under-match (governs nothing)** | **Over-match (governs a stranger)** |
+|---|---|---|
+| Cause | an over-specified conjunctive `podSelector` | `podSelector: null` ⇒ fallback to a **name-prefix** match |
+| Mechanism | `MetricSource::PodMetricsMax { selector }` — every label must match | `pod_prefix = target.name`; throttle path is literally `pod=~"{name}.*"` (`breathe-dimensions/src/lib.rs`) |
+| Symptom | `Dormant` / phantom capacity, forever | carves sized off a **sibling workload's** metrics |
+| `TargetFound` | **`True`** | **`True`** |
+
+**Under-match, measured.** `camelot-ci/builders-amd64-cpu` carries
+`podSelector: pleme.io/breathe-class=builders, pleme.io/workload=nix-build,
+actions.github.com/scale-set-name=camelot-builder-pleme-eks` — a **three-label
+conjunction**. The live runner pod
+(`camelot-builder-pleme-eks-qn22f-runner-tj4nk`) carries the first and third
+labels and **does not carry `pleme.io/workload` at all**. Two of three match;
+the conjunction selects **zero pods** while the scale set is actively running
+a build. Its `targetRef.name`, `camelot-ci-arc-builders-amd64`, resolves to
+**no object** (`EphemeralRunner … not found`). Yet after **152 carves** its
+condition reads `TargetFound=True`, reason `Resolved`, message *"targetRef
+resolves to a live object."* **Both** halves of that sentence are false and
+the condition is `True` — the purest available example of a gate that has
+never failed because it is not checking.
+
+**Over-match, measured.** Eight bands (four target names × two dimensions)
+omit `podSelector` and fall through to the name-prefix scan, each colliding
+with a *different* workload that has **its own band**:
+
+| Band | carves | prefix over-matches |
+|---|---|---|
+| `keda/keda-operator-cpu` | **321** | `keda-operator-metrics-apiserver-*` (owned by `keda-operator-metrics-apiserver-cpu`) |
+| `camelot-ci-secrets/external-secrets-cpu` | **195** | `external-secrets-cert-controller-*`, `external-secrets-webhook-*` (both separately banded) |
+| `camelot-build/sui-cpu` | **122** | `sui-cache-pg-*`, `sui-cache-redis-*` (both separately banded) |
+| `camelot/rustfs-cpu` | **22** | `rustfs-bootstrap-buckets-v2-*` (a Job pod) |
+
+Because the metric is a **max** across the matched set, the larger sibling
+dominates: `keda-operator-cpu` has been sizing itself off a pod that a second
+band is independently trying to size. The memory twins of all four match the
+same strangers and have simply not carved yet (0 carves) — the defect is in
+the selector, not the dimension.
+
+**The rules this imposes.**
+
+1. **A coverage claim names governed pods, not CR count.** "N bands enrolled"
+   is not a coverage metric. `N pods matched, M carves applied against them`
+   is.
+2. **`TargetFound` must mean *the metric set is non-empty*, not *a name
+   parsed*.** Until it does, treat it as decoration. (Tier-honest: this is a
+   **known-wrong condition**, not a fixed one — the code change is not in this
+   commit.)
+3. **`podSelector: null` is not "default" — it is "prefix-scan".** An omitted
+   selector silently opts the band into matching every pod in the namespace
+   whose name it prefixes. Any target whose name is a prefix of a sibling's
+   **must** carry an explicit selector.
+4. **Every label in a conjunctive selector is a chance to match nothing.**
+   Prefer the fewest labels that uniquely identify the group, and verify
+   against live pods — a selector is only correct against the labels that are
+   actually *on* the pod, never against the labels a chart was believed to set.
+5. **Verify a gate by breaking the thing it guards.** Point a band at a
+   deliberately non-existent target and watch for the failure that does not
+   come. A gate whose red path has never been exercised is unproven,
+   regardless of how long it has been green.
 
 ---
 
