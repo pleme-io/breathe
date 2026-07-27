@@ -83,6 +83,43 @@ jobs:
       - name: test
         run: cargo test --workspace --locked
 
+  # BLOCKING. The chart's CRD manifest is crdgen OUTPUT, and until 2026-07-27
+  # nothing checked that it still matched the Rust types it is generated from.
+  #
+  # Found by walking into it: adding `IsolationBandSpec.targetNodeSelector`
+  # required hand-copying crdgen's output into charts/pleme-breathe/crds/
+  # bands.yaml. Forgetting that step is silent AND severe — the apiserver
+  # prunes fields absent from a CRD schema, so a band authored with a
+  # `targetNodeSelector` would apply cleanly, report no error, silently drop
+  # the selector, resolve zero selected nodes, and fall back to hostname-only
+  # behaviour. The operator would see a green `Protecting` band protecting
+  # nothing. That is precisely the false-green class the field itself was
+  # added to eliminate, reintroduced one layer down in the packaging.
+  #
+  # This is blocking from its first run rather than advisory because the file
+  # was brought into sync in the same commit that added this job — so it
+  # cannot redden main on a pre-existing backlog, which is the failure mode
+  # the clippy job below is still waiting out.
+  crd-drift:
+    name: chart CRDs match crdgen output
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: regenerate and diff
+        run: |
+          cargo run -q -p breathe-crd --bin crdgen --locked > /tmp/crds.yaml
+          if ! diff -u charts/pleme-breathe/crds/bands.yaml /tmp/crds.yaml; then
+            echo "::error::charts/pleme-breathe/crds/bands.yaml is STALE vs the Rust CRD types."
+            echo "::error::A field present in Rust but absent from the chart CRD is PRUNED by the"
+            echo "::error::apiserver — the CR applies cleanly and the field silently vanishes."
+            echo "::error::Regenerate: cargo run -p breathe-crd --bin crdgen > charts/pleme-breathe/crds/bands.yaml"
+            exit 1
+          fi
+          echo "chart CRDs are in sync with crdgen"
+
   # Advisory. The backlog IS now measured (901 warnings, 0 errors — see the
   # header); what blocks the flip is burning it down, not knowing its size.
   # Flipping `continue-on-error: false` is still the one-line change that makes
