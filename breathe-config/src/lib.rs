@@ -98,6 +98,23 @@ pub struct ScaleConfig {
     /// Predictive sample-window depth (the `LinearTrendPrevisor` window).
     #[serde(default = "default_window")]
     pub window: u32,
+    /// How often a band that keeps deciding the SAME thing still writes an
+    /// in-band heartbeat row to the decision log, in seconds.
+    ///
+    /// The decision log appends on a material change (a different
+    /// `DecisionEntry`, or any decision that advances a counter) **plus** this
+    /// heartbeat — `docs/BREATHE.md` § 8 row 8: "attest state-changes + a
+    /// periodic in-band heartbeat, not every Hold". Without it a Holding band
+    /// wrote one row per reconcile forever (~576k rows/day across ~100
+    /// camelot-eks bands on the 15s cooldown path; ~31k/day gated).
+    ///
+    /// The heartbeat is what keeps the chain a LIVENESS signal: a gap longer
+    /// than this is real evidence the controller stopped, not merely that
+    /// nothing changed. Lower it to attest more finely (more rows); `0`
+    /// disables the gate entirely — every tick writes, the pre-gate behavior,
+    /// kept as an explicit escape hatch rather than a hidden fallback.
+    #[serde(default = "default_decision_heartbeat_seconds")]
+    pub decision_heartbeat_seconds: u64,
     /// Reconcile-concurrency self-protection bound; `0` = the kube-runtime
     /// default. Typed at M1, enforced at M4.
     #[serde(default)]
@@ -111,6 +128,16 @@ pub struct ScaleConfig {
 
 fn default_window() -> u32 {
     6
+}
+
+/// 15 minutes — bounded enough that an absent heartbeat is a prompt liveness
+/// signal, long enough that the ~100-band steady-state fleet writes ~4 rows per
+/// band per hour instead of ~240. Authored here, never compiled into the gate:
+/// this repo already carries three frozen safety-critical constants
+/// (`warmupSeconds` / `peakDecay` / `confirmAfterSeconds`) that were never given
+/// a config surface, and a fourth would repeat that defect.
+fn default_decision_heartbeat_seconds() -> u64 {
+    900
 }
 
 impl ScaleConfig {
@@ -127,6 +154,7 @@ impl Default for ScaleConfig {
             cache: CacheConfig::None,
             coordination: CoordinationConfig::SingleReplica,
             window: default_window(),
+            decision_heartbeat_seconds: default_decision_heartbeat_seconds(),
             reconcile_workers: 0,
             dimensions: Vec::new(),
         }
@@ -353,6 +381,10 @@ mod tests {
         assert_eq!(cfg.scale.cache, CacheConfig::None);
         assert_eq!(cfg.scale.coordination, CoordinationConfig::SingleReplica);
         assert_eq!(cfg.scale.window, 6, "window matches today's hardcoded LinearTrendPrevisor(6)");
+        assert_eq!(
+            cfg.scale.decision_heartbeat_seconds, 900,
+            "the decision-log heartbeat is AUTHORED, not a compiled-in constant"
+        );
         assert_eq!(cfg.scale.reconcile_workers, 0, "0 = kube-runtime default");
         assert!(cfg.scale.dimensions.is_empty(), "empty = all dimensions (today)");
     }
@@ -391,6 +423,7 @@ mod tests {
                     hash: HashStrategy::Rendezvous,
                 }),
                 window: 12,
+                decision_heartbeat_seconds: 60,
                 reconcile_workers: 8,
                 dimensions: vec!["memory".into(), "cpu".into()],
             },
@@ -420,6 +453,20 @@ mod tests {
             }
             StoreConfig::InMemory => panic!("expected Postgres"),
         }
+    }
+
+    #[test]
+    fn decision_heartbeat_is_operator_authorable_including_the_gate_off_escape_hatch() {
+        // The knob exists in YAML (not compiled in) and round-trips.
+        let cfg: ScaleConfig = serde_yaml::from_str("decisionHeartbeatSeconds: 120\n").unwrap();
+        assert_eq!(cfg.decision_heartbeat_seconds, 120);
+        // 0 = the explicit escape hatch (write every tick — the pre-gate behavior).
+        let off: ScaleConfig = serde_yaml::from_str("decisionHeartbeatSeconds: 0\n").unwrap();
+        assert_eq!(off.decision_heartbeat_seconds, 0);
+        // Unspecified takes the prescribed default, so an existing ConfigMap
+        // (written before this field existed) still loads.
+        let unset: ScaleConfig = serde_yaml::from_str("window: 9\n").unwrap();
+        assert_eq!(unset.decision_heartbeat_seconds, default_decision_heartbeat_seconds());
     }
 
     // ── deny_unknown_fields (typo rejection) ──────────────────────────────

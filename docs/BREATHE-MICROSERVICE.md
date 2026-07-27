@@ -323,6 +323,17 @@ the `:runtime`-slot gap.
   test (identical observations → identical decisions, InMem vs testcontainers Pg — the golden
   equivalence is proven in-memory today via `fold_matches_old_inline_logic_over_a_sequence` +
   `inmem_decision_log_reproduces_the_status_backed_sequence`; the testcontainers arm is the gap).
+  **Write-volume gate landed 2026-07-26 (pre-requisite for switching the tier ON):** `append` was
+  called unconditionally on every reconcile while its sibling `patch_status_if_changed` had been
+  diff-gated since #220. At the live camelot-eks shape (~100 bands on the 15s restart-free cooldown
+  path, ~95 in an `Observed`-family phase) that is ≈576k rows/day ≈242 MB/day ≈88 GB/yr; gated it is
+  ≈31k rows/day ≈13 MB/day ≈4.8 GB/yr. `breathe_store::GatedDecisionLog` (a decorator over any tier,
+  `scale.decisionHeartbeatSeconds`, default 900, `0` = gate off) implements `BREATHE.md` § 8 row 8's
+  already-specified "attest state-changes + a periodic in-band heartbeat, not every Hold". Also
+  dropped the duplicate `decision_log_band_seq_idx` — `UNIQUE(band_ref, seq)` already provides that
+  exact btree (migration `0003`, add-only: `0002` is left byte-identical). **The tier is still OFF**
+  (`scale.store` defaults to `inMemory`; the chart renders no Postgres config) — this changes write
+  VOLUME when it is enabled, it does not enable anything.
 
 - **M3 — Redis cache + leader-election** (the cheapest scale step → warm-standby HA). Run `replicas>1`
   safely without splitting a cache; drop `replicaCount:1+Recreate`; render replicas/strategy/backend-env

@@ -19,6 +19,13 @@
 //! controller holds `Arc<dyn DecisionLog>` / `Arc<dyn SampleCache>` and swaps
 //! `InMem` ↔ `PgRedis` by shikumi config with zero change to the band law or loop.
 //!
+//! [`GatedDecisionLog`] (see [`gate`]) decorates ANY [`DecisionLog`] with the
+//! state-change gate the architecture-of-record specifies — "attest
+//! state-changes + a periodic in-band heartbeat, not every Hold"
+//! (`docs/BREATHE.md` § 8 row 8). It is a decorator, not a call-site patch, so
+//! both controller append paths (`fold_counters` and the replica reconcile) get
+//! ONE definition of "changed".
+//!
 //! The traits use `#[async_trait]` for `&dyn` object-safety — the exact mechanism
 //! `breathe_provider::Cluster` / `ResourceProvider` use. breathe-store depends on
 //! NO other breathe crate: the classification of a `TickOutcome` into a
@@ -252,6 +259,9 @@ fn push_opt_u64(data: &mut Vec<u8>, v: Option<u64>) {
         None => data.push(0),
     }
 }
+
+mod gate;
+pub use gate::{Clock, GatedDecisionLog, SystemClock};
 
 #[cfg(feature = "postgres")]
 mod pg;

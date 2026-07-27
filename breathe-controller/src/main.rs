@@ -67,7 +67,9 @@ use breathe_runtime::{
     should_emit_health_event, health_event_for, status_for, suspended_status, STUCK_AFTER_SECS,
     BandLabels, CumulativeCounters, EnvContext, EventKind,
 };
-use breathe_store::{BandRef, DecisionLog, InMemDecisionLog, InMemSampleCache, Sample, SampleCache};
+use breathe_store::{
+    BandRef, DecisionLog, GatedDecisionLog, InMemDecisionLog, InMemSampleCache, Sample, SampleCache,
+};
 use breathe_config::{CacheConfig, CoordinationConfig, ScaleConfig, StoreConfig};
 use k8s_openapi::api::core::v1::Namespace;
 use futures::StreamExt;
@@ -186,6 +188,19 @@ impl Ctx {
 /// param) so the counter math lives in exactly one place. On the (in-memory:
 /// impossible) store error, falls back to the status-backed fold so the count is
 /// never worse than the pre-store behavior.
+///
+/// **This call is STATE-CHANGE-GATED**, not once-per-tick: `ctx.decisions` is a
+/// `breathe_store::GatedDecisionLog` (`build_stores`), so a tick whose
+/// `DecisionEntry` is identical to the band's last recorded one is withheld
+/// until the entry changes or the `scale.decisionHeartbeatSeconds` heartbeat
+/// falls due. A decision that advances a counter is NEVER withheld, so the
+/// returned counters are exact.
+///
+/// ★ What that means for a verifier reading the chain: a *gap* no longer says
+/// "the controller did not tick", it says "the band re-decided the same thing".
+/// Absence beyond one heartbeat interval is the liveness signal; absence within
+/// one is a held decision. See `breathe_store::gate`'s module doc for the full
+/// statement.
 pub(crate) async fn fold_counters(
     ctx: &Ctx,
     band_ref: &BandRef,
@@ -894,10 +909,14 @@ enum StartupError {
 /// replica) are byte-identical to today; `store=Postgres` (M2) connects the
 /// durable `PgDecisionLog`. Every still-unimplemented arm is a typed fail-fast
 /// naming the milestone that ships it — never a silent downgrade to in-memory.
+///
+/// Whichever backend is selected is then wrapped in the `GatedDecisionLog`
+/// state-change gate (`scale.decisionHeartbeatSeconds`) — the tier decides WHERE
+/// a decision lands, the gate decides WHETHER this tick is one worth landing.
 async fn build_stores(
     scale: &ScaleConfig,
 ) -> Result<(Arc<dyn DecisionLog>, Arc<dyn SampleCache>), Box<dyn std::error::Error>> {
-    let decisions: Arc<dyn DecisionLog> = match &scale.store {
+    let backend: Arc<dyn DecisionLog> = match &scale.store {
         StoreConfig::InMemory => Arc::new(InMemDecisionLog::new()),
         StoreConfig::Postgres(pg) => {
             // The DSN is read here (the one place the secret is exposed) to
@@ -908,6 +927,16 @@ async fn build_stores(
             )
         }
     };
+    // The state-change gate (docs/BREATHE.md § 8 row 8: "attest state-changes +
+    // a periodic in-band heartbeat, not every Hold"). `append` was called
+    // unconditionally on every reconcile while its sibling
+    // `patch_status_if_changed` has been diff-gated since #220 — the asymmetry
+    // this closes. Applied to BOTH tiers deliberately: the in-memory ring wastes
+    // its 64-entry depth on identical Holds otherwise, and gating before the
+    // Postgres tier is switched on is what keeps the first month from being
+    // ~7 GB of near-identical Holding rows.
+    let decisions: Arc<dyn DecisionLog> =
+        Arc::new(GatedDecisionLog::new(backend, scale.decision_heartbeat_seconds));
     let samples: Arc<dyn SampleCache> = match &scale.cache {
         CacheConfig::None => Arc::new(InMemSampleCache::new()),
         CacheConfig::Redis(_) => {
@@ -1021,7 +1050,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let scale = breathe_config::load(&config_path)?.get().scale.clone();
     info!(
         store = ?scale.store, cache = ?scale.cache, coordination = ?scale.coordination,
-        window = scale.window, "breathe scale tier resolved"
+        window = scale.window, decision_heartbeat_secs = scale.decision_heartbeat_seconds,
+        "breathe scale tier resolved"
     );
     let (decisions, samples) = build_stores(&scale).await?;
 
