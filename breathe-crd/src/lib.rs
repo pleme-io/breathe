@@ -3550,9 +3550,47 @@ pub const ORIGIN_TAINT_KEY: &str = "breathe.pleme.io/origin-reserved";
 )]
 #[serde(rename_all = "camelCase")]
 pub struct IsolationBandSpec {
-    /// The node(s) this band protects. Origin-guard declares exactly one
-    /// hostname — this list IS "declare a node as origin".
+    /// The node(s) this band protects, BY HOSTNAME. Origin-guard declares
+    /// exactly one hostname — this list IS "declare a node as origin".
+    ///
+    /// A hostname list can only name nodes that already exist and keep
+    /// existing. On an autoscaled pool (Karpenter, an ASG) node names are
+    /// ephemeral — a node is `ip-10-0-3-71...` today and gone tomorrow — so
+    /// this field alone can protect a PET, never a POOL. `targetNodeSelector`
+    /// below is the pool-scoped peer; see its doc for why that gap mattered.
+    #[serde(default)]
     pub target_nodes: Vec<String>,
+    /// The node(s) this band protects, BY LABEL — resolved fresh every tick.
+    /// The pool-scoped peer of `targetNodes`, and the field that lets ONE
+    /// band express "this whole pool is reserved for X" on infrastructure
+    /// whose node identities churn.
+    ///
+    /// WHY THIS EXISTS (a real, measured gap — 2026-07-27): the placement
+    /// pathology "workload W is running on pool P, which is not for W" had
+    /// NO detector at the scope the pathology lives at. `IsolationBand`
+    /// shipped and was registered, but its only node-naming surface was a
+    /// static hostname list, so on Camelot's Karpenter-managed builder pools
+    /// there was no way to *say* "this pool". The pathology was therefore
+    /// only ever found by a human reading a cost report — the exact
+    /// audit-detected-instead-of-self-detected shape the taxonomy exists to
+    /// eliminate. One selector field converts this CRD from a pet-protector
+    /// into the pool-scoped tenancy detector the taxonomy already assumed.
+    ///
+    /// Semantics: an equality-based label selector (the `nodeSelector`
+    /// convention — ALL pairs must match), e.g.
+    /// `{"karpenter.sh/nodepool": "camelot-builder-amd64"}`. Resolved
+    /// against live Nodes each reconcile and UNIONed with `targetNodes`
+    /// (see `origin_guard::merge_target_nodes`), so a band may use either
+    /// surface or both.
+    ///
+    /// TIER-HONEST: this is still OBSERVATION + a taint, never admission
+    /// enforcement — same C2 ceiling `unauthorizedPods` already names for
+    /// itself. A pod carrying a wildcard toleration still lands on a
+    /// selector-matched node exactly as it does on a hostname-matched one;
+    /// this field widens WHAT CAN BE WATCHED, it does not change what a
+    /// taint can enforce.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_node_selector: Option<BTreeMap<String, String>>,
     /// The placement-isolation posture these nodes carry. `dedicated` (the
     /// default) is the only posture origin-guard actuates on today; the other
     /// arms are named for the future multi-node placement engine this CRD
@@ -3630,6 +3668,26 @@ pub struct IsolationBandStatus {
     pub effective_gate: Option<EffectiveGateReport>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub effective_dry_run: Option<bool>,
+    /// How many live Nodes `spec.targetNodeSelector` matched this tick, or
+    /// `None` when no selector is declared (a pure `targetNodes` band).
+    ///
+    /// THIS FIELD EXISTS TO MAKE A SPECIFIC FALSE-GREEN IMPOSSIBLE TO READ AS
+    /// HEALTHY. A selector that matches nothing — because the label was
+    /// renamed, the pool was deleted, or it was mistyped at authoring time —
+    /// produces zero nodes to taint and therefore zero unauthorized pods,
+    /// which under the original two-phase logic reported the SAME
+    /// `Protecting` as a band genuinely guarding a clean pool. That is the
+    /// recurring defect this whole session kept finding in other systems (a
+    /// scanner that scans nothing and prints a pass, a join that reuses a
+    /// stale ref and succeeds); it is not acceptable to ship it here.
+    ///
+    /// So a declared-but-empty selector reports `Degraded`, never
+    /// `Protecting` — see `origin_guard::isolation_band_status`. Zero nodes
+    /// matched is a claim about the WORLD (the pool is absent), not a proof
+    /// about the WORKLOAD (nothing unauthorized is running), and the two must
+    /// never be collapsed into one green word.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selector_resolved: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_seen_epoch: Option<i64>,
 }
@@ -4568,11 +4626,27 @@ mod tests {
             // path, since this kind carries no `spec.writeIntent` yet.
             effective_gate: Some(breathe_provider::legacy_two_state_gate(false, false).report()),
             effective_dry_run: Some(false),
+            selector_resolved: Some(2),
             last_seen_epoch: Some(1_000),
         };
         let js = serde_json::to_string(&found).unwrap();
         let back: IsolationBandStatus = serde_json::from_str(&js).unwrap();
         assert_eq!(found, back);
+
+        // `selectorResolved` must survive the wire as a DISTINCT value from
+        // absent: `Some(0)` is what the `Degraded` phase keys on, so a
+        // round-trip that quietly folded it into `None` would silently
+        // restore the very false-green this field was added to prevent.
+        let zero = IsolationBandStatus { selector_resolved: Some(0), ..Default::default() };
+        let js = serde_json::to_string(&zero).unwrap();
+        assert!(js.contains("selectorResolved"), "Some(0) must serialize — it is a real finding, not an absence");
+        let back: IsolationBandStatus = serde_json::from_str(&js).unwrap();
+        assert_eq!(back.selector_resolved, Some(0));
+        assert_eq!(
+            IsolationBandStatus::default().selector_resolved,
+            None,
+            "and a band with no selector stays None, never 0"
+        );
     }
 
     #[test]
