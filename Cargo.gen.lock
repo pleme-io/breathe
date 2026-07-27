@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "cargo_lock_sha256": "2d75445c1eb142568d8706c6f95212544b1ca7cdda09749dbc97fbb75bcb4dc4",
+  "cargo_lock_sha256": "f12de8d4cd66f65f3aab0f302f895df53ab8cac65028f51b07f6a5bf857568b7",
   "target_resolves": {
     "base": {
       "Inflector-0.11.4": {
@@ -5517,6 +5517,16 @@
             "tree": "target"
           },
           {
+            "name": "breathe_provider",
+            "package_key": "breathe-provider-0.1.0",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
             "name": "pbjson",
             "package_key": "pbjson-0.7.0",
             "kind": "normal",
@@ -6345,6 +6355,16 @@
             "tree": "target"
           },
           {
+            "name": "breathe_invariant",
+            "package_key": "breathe-invariant-0.1.0",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
             "name": "breathe_provider",
             "package_key": "breathe-provider-0.1.0",
             "kind": "normal",
@@ -6487,6 +6507,16 @@
           {
             "name": "breathe_crd",
             "package_key": "breathe-crd-0.1.0",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "breathe_provider",
+            "package_key": "breathe-provider-0.1.0",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -6797,6 +6827,34 @@
         "build_dependencies": [],
         "features": []
       },
+      "breathe-invariant-0.1.0": {
+        "runtime_dependencies": [
+          {
+            "name": "serde",
+            "package_key": "serde-1.0.228",
+            "kind": "normal",
+            "features": [
+              "derive"
+            ],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "serde_json",
+            "package_key": "serde_json-1.0.150",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          }
+        ],
+        "build_dependencies": [],
+        "features": []
+      },
       "breathe-jmx-0.1.0": {
         "runtime_dependencies": [
           {
@@ -6952,6 +7010,16 @@
             "tree": "target"
           },
           {
+            "name": "breathe_provider",
+            "package_key": "breathe-provider-0.1.0",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
             "name": "rmcp",
             "package_key": "rmcp-0.15.0",
             "kind": "normal",
@@ -7050,8 +7118,28 @@
             "tree": "host"
           },
           {
+            "name": "blake3",
+            "package_key": "blake3-1.8.5",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
             "name": "breathe_control",
             "package_key": "breathe-control-0.1.0",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "breathe_invariant",
+            "package_key": "breathe-invariant-0.1.0",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -7070,12 +7158,32 @@
             "tree": "target"
           },
           {
+            "name": "schemars1",
+            "package_key": "schemars-1.2.1",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
             "name": "serde",
             "package_key": "serde-1.0.228",
             "kind": "normal",
             "features": [
               "derive"
             ],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "serde_json",
+            "package_key": "serde_json-1.0.150",
+            "kind": "normal",
+            "features": [],
             "uses_default_features": true,
             "optional": false,
             "target": null,
@@ -32948,6 +33056,13 @@
           "path": "src/main.rs"
         }
       ]
+    },
+    "breathe-invariant-0.1.0": {
+      "edition": "2024",
+      "lib_target": {
+        "name": "breathe_invariant",
+        "path": "src/lib.rs"
+      }
     },
     "breathe-jmx-0.1.0": {
       "edition": "2024",
