@@ -187,23 +187,104 @@ async fn unauthorized_pods_on(client: &Client, node_name: &str, allowed: &[Workl
         .collect()
 }
 
+/// PURE (tested): merge the two node-naming surfaces into ONE deterministic
+/// target list — `spec.targetNodes` (hostnames) UNION the live nodes
+/// `spec.targetNodeSelector` matched this tick.
+///
+/// Deduplicated and sorted, so a band naming a node both ways taints it once
+/// and the reconcile order never depends on apiserver list order. Determinism
+/// is not cosmetic here: `nodesTainted` is a status number an operator reads
+/// tick over tick, and an unstable iteration order would make an unchanged
+/// cluster look like it was churning.
+#[must_use]
+pub(crate) fn merge_target_nodes(named: &[String], selected: &[String]) -> Vec<String> {
+    let mut all: Vec<String> = named.iter().chain(selected.iter()).cloned().collect();
+    all.sort();
+    all.dedup();
+    all
+}
+
+/// PURE (tested): does this band's SELECTOR resolve to nothing?
+///
+/// Split out as its own named predicate rather than inlined into the phase
+/// expression, because it is the precise question the `Degraded` arm turns on
+/// and it deserves to be independently testable. `None` (no selector declared)
+/// is NOT empty — a pure `targetNodes` band with zero unauthorized pods is
+/// legitimately `Protecting`.
+#[must_use]
+pub(crate) fn selector_matched_nothing(selector_resolved: Option<i64>) -> bool {
+    matches!(selector_resolved, Some(0))
+}
+
 /// PURE (tested): map this tick's per-node outcomes onto the typed
 /// `IsolationBandStatus`. The origin-guard peer of `node_forma::cloud_pool_status`.
+///
+/// THREE phases, not two. `Violated` (something unauthorized is running) and
+/// `Protecting` (nothing is) were the original pair; `Degraded` was added
+/// 2026-07-27 with `targetNodeSelector`, and it takes PRECEDENCE over
+/// `Protecting` for a reason worth stating plainly:
+///
+/// a selector that matches no nodes yields no nodes to inspect, hence no
+/// unauthorized pods, hence — under the original two-phase logic — the exact
+/// same `Protecting` a genuinely-clean pool reports. That is a check that
+/// passes because it checked NOTHING, which is the single most repeated
+/// defect shape in this codebase's recent history. A band whose selector
+/// resolves to zero is reporting on an empty world, and says so.
+///
+/// `Violated` still wins over `Degraded`: if a stale selector somehow still
+/// matched a node with an unauthorized pod on it, the live violation is the
+/// more urgent truth.
 #[must_use]
 pub(crate) fn isolation_band_status(
     nodes_tainted: i64,
     unauthorized: &[String],
+    selector_resolved: Option<i64>,
     gate: &breathe_provider::EffectiveGate,
 ) -> IsolationBandStatus {
+    let phase = if !unauthorized.is_empty() {
+        "Violated"
+    } else if selector_matched_nothing(selector_resolved) {
+        "Degraded"
+    } else {
+        "Protecting"
+    };
     IsolationBandStatus {
-        phase: Some(if unauthorized.is_empty() { "Protecting".into() } else { "Violated".into() }),
+        phase: Some(phase.into()),
         nodes_tainted: Some(nodes_tainted),
         unauthorized_pods: unauthorized.to_vec(),
         unauthorized_count: Some(unauthorized.len() as i64),
+        selector_resolved,
         // BOTH surfaces, from ONE value (see `node_forma::cloud_pool_status`).
         effective_gate: Some(gate.report()),
         effective_dry_run: Some(gate.is_shadow()),
         last_seen_epoch: Some(breathe_runtime::now_secs()),
+    }
+}
+
+/// Resolve `spec.targetNodeSelector` against live Nodes — the ONE impure half
+/// of the pool-scoped path, kept as thin as possible so everything that
+/// decides anything stays in the pure functions above.
+///
+/// Returns `None` when no selector is declared (distinct from `Some(vec![])`,
+/// "a selector was declared and matched nothing" — the distinction the
+/// `Degraded` phase turns on). A list error is reported as an empty match
+/// rather than a panic: an apiserver hiccup then reads as `Degraded`, which
+/// is the honest direction to fail (claim less protection than you have,
+/// never more).
+async fn resolve_selector_nodes(
+    client: &Client,
+    selector: Option<&std::collections::BTreeMap<String, String>>,
+) -> Option<Vec<String>> {
+    let selector = selector?;
+    // Equality-based `nodeSelector` convention: ALL pairs must match.
+    let expr = selector.iter().map(|(k, v)| format!("{k}={v}")).collect::<Vec<_>>().join(",");
+    let lp = ListParams::default().labels(&expr);
+    match Api::<Node>::all(client.clone()).list(&lp).await {
+        Ok(list) => Some(list.items.iter().map(ResourceExt::name_any).collect()),
+        Err(e) => {
+            warn!(selector = %expr, error = %e, "IsolationBand: node selector list failed — treating as zero matches (reports Degraded, never a false Protecting)");
+            Some(Vec::new())
+        }
     }
 }
 
@@ -225,9 +306,22 @@ pub async fn reconcile_isolation_band(cr: Arc<IsolationBand>, ctx: Arc<Ctx>) -> 
         debug!(band = %name, reason = ?reason, "IsolationBand: held in shadow");
     }
 
+    // Resolve the pool-scoped surface FIRST, then merge — so one loop below
+    // handles both naming surfaces identically and there is no second code
+    // path for a selector-named node to drift away from.
+    let selected = resolve_selector_nodes(&ctx.client, cr.spec.target_node_selector.as_ref()).await;
+    let selector_resolved = selected.as_ref().map(|v| v.len() as i64);
+    let targets = merge_target_nodes(&cr.spec.target_nodes, selected.as_deref().unwrap_or(&[]));
+    if selector_matched_nothing(selector_resolved) {
+        warn!(
+            band = %name, selector = ?cr.spec.target_node_selector,
+            "IsolationBand: targetNodeSelector matched ZERO nodes — reporting Degraded, not Protecting (an empty world proves nothing about workloads)"
+        );
+    }
+
     let mut nodes_tainted: i64 = 0;
     let mut unauthorized: Vec<String> = Vec::new();
-    for node_name in &cr.spec.target_nodes {
+    for node_name in &targets {
         let outcome = ensure_taint(&ctx.client, node_name, &cr.spec.taint, dry_run).await;
         counter!(
             "breathe_isolation_taint_total",
@@ -244,7 +338,7 @@ pub async fn reconcile_isolation_band(cr: Arc<IsolationBand>, ctx: Arc<Ctx>) -> 
     gauge!("breathe_isolation_nodes_tainted", "band" => name.clone()).set(nodes_tainted as f64);
     gauge!("breathe_isolation_unauthorized_pods", "band" => name.clone()).set(unauthorized.len() as f64);
 
-    let status = isolation_band_status(nodes_tainted, &unauthorized, &gate);
+    let status = isolation_band_status(nodes_tainted, &unauthorized, selector_resolved, &gate);
     info!(
         band = %name, nodes_tainted, unauthorized = unauthorized.len(), dry_run,
         "IsolationBand reconciled"
@@ -380,22 +474,113 @@ mod tests {
 
     #[test]
     fn status_is_protecting_when_no_unauthorized_pods() {
-        let s = isolation_band_status(1, &[], &breathe_provider::legacy_two_state_gate(true, false));
+        let s = isolation_band_status(1, &[], None, &breathe_provider::legacy_two_state_gate(true, false));
         assert_eq!(s.phase.as_deref(), Some("Protecting"));
         assert_eq!(s.nodes_tainted, Some(1));
         assert_eq!(s.unauthorized_count, Some(0));
         assert!(s.unauthorized_pods.is_empty());
         assert_eq!(s.effective_dry_run, Some(true));
+        assert_eq!(s.selector_resolved, None, "no selector declared ⇒ the field stays absent, not 0");
     }
 
     #[test]
     fn status_is_violated_when_unauthorized_pods_are_found() {
         let found = vec!["default/stray-pod".to_string()];
-        let s = isolation_band_status(1, &found, &breathe_provider::legacy_two_state_gate(false, false));
+        let s = isolation_band_status(1, &found, None, &breathe_provider::legacy_two_state_gate(false, false));
         assert_eq!(s.phase.as_deref(), Some("Violated"));
         assert_eq!(s.unauthorized_count, Some(1));
         assert_eq!(s.unauthorized_pods, found);
         assert_eq!(s.effective_dry_run, Some(false));
+    }
+
+    // ── the false-green this increment exists to make unreadable ───────────
+    //
+    // THIS IS THE LOAD-BEARING TEST. Everything else here checks that the
+    // code does what it says; this one checks that a specific WRONG answer
+    // can no longer be produced.
+    //
+    // Before `targetNodeSelector`, the ONLY inputs to the phase decision were
+    // `nodes_tainted` and `unauthorized`. A band whose selector matched
+    // nothing produced (0, []) — numerically identical to a band guarding a
+    // genuinely clean pool, which reported `Protecting`. So a mistyped label,
+    // a renamed pool, or a deleted node group would have shown a green phase
+    // forever while protecting and observing precisely nothing.
+    //
+    // That is not hypothetical: it is the same shape as the scanner that
+    // scanned nothing and printed a pass, and the manifest join that reused a
+    // stale ref and succeeded — both found live in this same effort. A
+    // detector added to close an audit gap must not itself be capable of a
+    // silent vacuous pass.
+    #[test]
+    fn a_selector_that_matches_nothing_is_degraded_never_protecting() {
+        let s = isolation_band_status(0, &[], Some(0), &breathe_provider::legacy_two_state_gate(false, false));
+        assert_eq!(
+            s.phase.as_deref(),
+            Some("Degraded"),
+            "a selector matching ZERO nodes must never read as Protecting — zero nodes to inspect \
+             yields zero findings, which is an empty world, not a clean one"
+        );
+        assert_eq!(s.selector_resolved, Some(0), "the count is surfaced so the operator sees WHY it degraded");
+        assert!(s.unauthorized_pods.is_empty(), "and it is genuinely empty — that is exactly the trap");
+    }
+
+    #[test]
+    fn a_selector_that_matches_nodes_and_finds_nothing_is_protecting() {
+        // The contrast case that proves `Degraded` keys on the EMPTY WORLD and
+        // not merely on "a selector was declared" — otherwise every healthy
+        // pool-scoped band would sit permanently yellow and be ignored.
+        let s = isolation_band_status(3, &[], Some(3), &breathe_provider::legacy_two_state_gate(false, false));
+        assert_eq!(s.phase.as_deref(), Some("Protecting"));
+        assert_eq!(s.selector_resolved, Some(3));
+    }
+
+    #[test]
+    fn violation_outranks_degraded() {
+        // A stale selector that still matches one node with a stray pod on it:
+        // the live violation is the more urgent truth, so it wins.
+        let found = vec!["default/stray-pod".to_string()];
+        let s = isolation_band_status(0, &found, Some(0), &breathe_provider::legacy_two_state_gate(false, false));
+        assert_eq!(s.phase.as_deref(), Some("Violated"));
+    }
+
+    #[test]
+    fn no_selector_declared_is_not_the_same_as_an_empty_selector() {
+        // `None` vs `Some(0)` is the whole distinction the Degraded arm rests
+        // on; collapsing them would make every legacy hostname-only band
+        // (including the live origin-guard one) report Degraded forever.
+        assert!(!super::selector_matched_nothing(None));
+        assert!(super::selector_matched_nothing(Some(0)));
+        assert!(!super::selector_matched_nothing(Some(1)));
+    }
+
+    // ── merge_target_nodes ────────────────────────────────────────────────
+
+    #[test]
+    fn merge_dedupes_a_node_named_both_ways() {
+        let named = vec!["ip-10-0-1-5".to_string()];
+        let selected = vec!["ip-10-0-1-5".to_string(), "ip-10-0-2-9".to_string()];
+        assert_eq!(
+            super::merge_target_nodes(&named, &selected),
+            vec!["ip-10-0-1-5".to_string(), "ip-10-0-2-9".to_string()],
+            "a node named by hostname AND matched by selector is tainted once, not twice"
+        );
+    }
+
+    #[test]
+    fn merge_is_order_independent() {
+        // `nodesTainted` is a number an operator watches tick over tick;
+        // apiserver list order must never make a static cluster look churny.
+        let a = super::merge_target_nodes(&["b".into(), "a".into()], &["c".into()]);
+        let b = super::merge_target_nodes(&["a".into()], &["c".into(), "b".into()]);
+        assert_eq!(a, b);
+        assert_eq!(a, vec!["a".to_string(), "b".to_string(), "c".to_string()]);
+    }
+
+    #[test]
+    fn merge_handles_either_surface_being_empty() {
+        assert_eq!(super::merge_target_nodes(&["a".into()], &[]), vec!["a".to_string()]);
+        assert_eq!(super::merge_target_nodes(&[], &["a".into()]), vec!["a".to_string()]);
+        assert!(super::merge_target_nodes(&[], &[]).is_empty());
     }
 
     // ── taint_outcome_label ────────────────────────────────────────────────
