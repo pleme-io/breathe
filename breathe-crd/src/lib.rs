@@ -147,6 +147,44 @@ pub struct BandStatus {
     /// a recently-demonstrated spike holds the floor up for a meaningful window.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub observed_peak_used: Option<i64>,
+    /// Epoch of the FIRST tick on which this band ever observed a live pod —
+    /// `None` means it never has, in its entire lifetime. STICKY: once set it
+    /// is carried forward across every subsequent tick, including ticks that
+    /// observe nothing.
+    ///
+    /// WHY THIS EXISTS. `TickReceipt::Dormant` (the label-selected pod group is
+    /// empty) is documented as benign, and for a genuinely scale-to-zero target
+    /// — an ephemeral runner between builds, a Job — it IS benign, and it is
+    /// counted at-rest/converged in the fleet overview. But it is produced by a
+    /// pure emptiness check (`breathe-kube`: `selector.is_some() &&
+    /// list.items.is_empty()`), so it cannot distinguish:
+    ///
+    ///   (a) empty because the workload is resting  -> genuinely converged
+    ///   (b) empty because the selector matches nothing that exists, or ever
+    ///       will — a typo'd label, a renamed workload, a deleted Deployment
+    ///       -> the band governs NOTHING, silently, forever
+    ///
+    /// Both report `Dormant`, both count as converged, so a fleet where a third
+    /// of the bands have stale selectors still reports 100% converged. That is
+    /// the vacuous-guard class (`UNREPRESENTABILITY.md` §II.3): a mechanism
+    /// reporting success having evaluated zero subjects.
+    ///
+    /// THIS FIELD IS THE THRESHOLD-FREE DISCRIMINATOR. Deliberately not a
+    /// grace window or an idle timeout — inventing a "suspicious after N
+    /// seconds" constant would be exactly the re-frozen static value
+    /// `BREATHABILITY.md` §II forbids, and it would need re-tuning every time a
+    /// workload's cadence changed. `None` is a crisp, tuning-free predicate:
+    /// a band that has NEVER, not once, seen a pod is unproven. The instant it
+    /// sees one, it is proven for the rest of its life and every later empty
+    /// tick is legitimately at rest.
+    ///
+    /// DISTINCT FROM the `TargetFound` condition, which asks whether the
+    /// *targetRef object* resolves. A Deployment scaled to zero resolves fine,
+    /// and a raw label selector has no targetRef to resolve at all — so
+    /// `TargetFound` is vacuously true in exactly case (b). This asks the
+    /// different question: has this band ever actually governed anything.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub first_observed_epoch: Option<i64>,
     /// The observed `capacity` (the current limit the util is measured against).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub observed_capacity: Option<i64>,
@@ -3741,6 +3779,20 @@ pub struct BandSummary {
     pub policy: Option<String>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub dry_run: bool,
+    /// Has this band EVER observed a live pod? Projection of
+    /// `BandStatus::first_observed_epoch.is_some()` (see that field's doc).
+    ///
+    /// Surfaced on the row, not just in the totals, so `kubectl get bov -o yaml`
+    /// names WHICH bands are unproven. A count alone tells an operator that
+    /// something governs nothing without telling them what — which is the same
+    /// unactionable-signal problem one level up.
+    ///
+    /// Defaults FALSE and, unlike the sibling booleans here, is serialized even
+    /// when false: an absent field would be indistinguishable from a band that
+    /// pre-dates this field, and silently reading old-and-unknown as
+    /// proven-and-fine is the exact false-green being closed.
+    #[serde(default)]
+    pub ever_governed: bool,
 }
 
 /// The aggregated fleet status — totals + the per-band roll-up.
@@ -3759,6 +3811,23 @@ pub struct OverviewStatus {
     pub suspended: i64,
     #[serde(default)]
     pub shadow: i64,
+    /// Bands that are `Dormant` and have NEVER observed a pod — i.e. they may be
+    /// governing nothing at all, and nobody would know.
+    ///
+    /// SPLIT OUT OF `converged` DELIBERATELY. `Dormant` was previously folded
+    /// into the converged total on the reasoning that an empty pod group is a
+    /// benign resting state, which is true for a scale-to-zero workload and
+    /// false for a stale selector — and the two were indistinguishable. A fleet
+    /// where a third of the bands pointed at renamed labels still reported 100%
+    /// converged, because the metric counted declarations rather than
+    /// governance.
+    ///
+    /// A band that has ever seen a pod stays in `converged` when it later rests;
+    /// only the never-proven ones land here. So this number is normally 0, and a
+    /// non-zero value means precisely "this many bands have never governed
+    /// anything in their lifetime" — actionable rather than merely alarming.
+    #[serde(default)]
+    pub unproven: i64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_updated: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]

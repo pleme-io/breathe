@@ -788,6 +788,11 @@ async fn summarize<B: Band>(client: &Client, kind: &str, out: &mut Vec<BandSumma
                     policy: st.and_then(|s| s.effective_policy.clone()),
                     // the EFFECTIVE (lifecycle-gated) dry-run — what's actually happening
                     dry_run: b.effective_dry_run(now_secs()),
+                    // Has this band ever governed anything? A band with no status
+                    // at all reads FALSE — it has demonstrably never observed a
+                    // pod, which is exactly what this asks. Defaulting an unknown
+                    // to "proven" would reinstate the false-green.
+                    ever_governed: st.and_then(|s| s.first_observed_epoch).is_some(),
                 });
             }
         }
@@ -837,7 +842,24 @@ async fn reconcile_overview(obj: Arc<BreatheOverview>, ctx: Arc<Ctx>) -> Result<
     // `ReclaimWithheld` is at REST (the band decided; the decision was "leave it"),
     // so it counts as converged — otherwise every idle memory band would silently
     // fall out of the fleet totals when the phase stopped being the `AtFloor` lie.
-    let converged = count(&["Holding", "AtFloor", "AtCeiling", "Dormant", "ReclaimWithheld"]);
+    // UNPROVEN: Dormant AND never once observed a pod. Counted separately from
+    // `converged`, because "empty pod group" alone cannot tell a scale-to-zero
+    // workload at rest from a selector that matches nothing and never will (a
+    // typo'd label, a renamed workload, a deleted Deployment). Both produce
+    // Dormant; folding both into `converged` meant a fleet with a third of its
+    // bands pointing at stale selectors still reported 100% converged — the
+    // metric counted DECLARATIONS, not GOVERNANCE.
+    //
+    // The discriminator is a latch, not a timeout (see
+    // BandStatus::first_observed_epoch): a band that has ever seen a pod is
+    // proven for life and keeps counting as converged when it later rests. Only
+    // the never-proven land here. No threshold to tune, nothing to re-tune when
+    // a workload's cadence changes.
+    let unproven = bands
+        .iter()
+        .filter(|b| b.phase.as_deref() == Some("Dormant") && !b.ever_governed)
+        .count() as i64;
+    let converged = count(&["Holding", "AtFloor", "AtCeiling", "Dormant", "ReclaimWithheld"]) - unproven;
     let carving = count(&["Growing", "Shrinking"]);
     let deferred = count(&["DeferredWouldRestart"]);
     let suspended = count(&["Suspended"]);
@@ -855,6 +877,7 @@ async fn reconcile_overview(obj: Arc<BreatheOverview>, ctx: Arc<Ctx>) -> Result<
             && s.deferred == deferred
             && s.suspended == suspended
             && s.shadow == shadow
+            && s.unproven == unproven
             && s.bands == bands
     });
     if unchanged {
@@ -868,6 +891,7 @@ async fn reconcile_overview(obj: Arc<BreatheOverview>, ctx: Arc<Ctx>) -> Result<
         deferred,
         suspended,
         shadow,
+        unproven,
         last_updated: Some(now_rfc3339()),
         bands,
     };

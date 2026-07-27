@@ -532,6 +532,25 @@ pub fn status_for(
     s.effective_dry_run = Some(outcome.dry_run());
     s.effective_policy = Some(policy_str(outcome.policy));
     s.edge_tier = Some(edge_tier_str(receipt.edge_tier()));
+
+    // ── EVER-GOVERNED (sticky). Carried on EVERY path, including the error and
+    //    Dormant arms below, because `s` starts from `BandStatus::default()` —
+    //    anything not explicitly carried is silently dropped each tick, and a
+    //    latch that resets is not a latch.
+    //
+    //    Set on the first tick that observes a live pod; never cleared. This is
+    //    what separates a band resting at zero (proven: it governed something
+    //    once, so an empty tick is genuinely at-rest) from a band whose selector
+    //    has never matched anything (unproven: it may be governing nothing,
+    //    forever, while reporting Dormant + converged). See the field's own doc
+    //    on `BandStatus` for why this is a latch and not a timeout.
+    let prior_first_observed = prior.and_then(|p| p.first_observed_epoch);
+    s.first_observed_epoch = if outcome.observed.is_some() {
+        prior_first_observed.or_else(|| Some(now_secs()))
+    } else {
+        prior_first_observed
+    };
+
     if let Some(obs) = &outcome.observed {
         s.observed_used = Some(obs.used as i64);
         // The trailing-window peak that drove this tick's never-OOM shrink floor —
@@ -2051,6 +2070,109 @@ mod health_tests {
         assert!(should_emit_health_event(&stuck, Some("Healthy")), "transition into Stuck emits");
         assert!(!should_emit_health_event(&stuck, Some("Stuck")), "unchanged label does not re-emit every tick");
         assert!(should_emit_health_event(&HealthVerdict::Healthy, Some("Stuck")), "recovering out of Stuck is a transition too");
+    }
+
+    // ── the ever-governed latch (task #50) ────────────────────────────────
+    //
+    // A band matching zero pods reports `Dormant`, and `Dormant` was counted as
+    // converged. That is correct for a scale-to-zero workload and WRONG for a
+    // selector that matches nothing and never will — and the two were
+    // indistinguishable, so a fleet with stale selectors reported 100%
+    // converged. `first_observed_epoch` is the threshold-free discriminator.
+
+    fn obs(used: u64) -> breathe_control::Observation {
+        breathe_control::Observation {
+            used,
+            peak_used: used,
+            bound: breathe_control::Capacity::Declared(used * 2),
+            owners: vec![],
+            staleness_secs: 0,
+            observed_for_secs: 0,
+            memory_shrink_restart_free: false,
+            request_floor: 0,
+            throttle_signal: 0,
+            restarting: false,
+            storage_capability: None,
+        }
+    }
+
+    fn out_observed(receipt: TickReceipt, observed: Option<breathe_control::Observation>) -> TickOutcome {
+        TickOutcome { receipt, observed, policy: DisruptionPolicy::RestartFreeOnly, gate: test_live_gate() }
+    }
+
+    #[test]
+    fn a_band_that_has_never_seen_a_pod_has_no_first_observed_epoch() {
+        // The pathology: Dormant on the very first tick, nothing ever observed.
+        let o = out_observed(TickReceipt::Dormant, None);
+        let s = status_for(&o, None, 0, None, CumulativeCounters::ZERO.fold(&entry_for(&o)));
+        assert_eq!(s.phase.as_deref(), Some("Dormant"));
+        assert_eq!(
+            s.first_observed_epoch, None,
+            "a band that has never observed a pod must carry NO first-observed epoch — \
+             that absence is the whole signal separating 'resting' from 'governing nothing'"
+        );
+    }
+
+    #[test]
+    fn the_first_observation_sets_the_latch() {
+        let o = out_observed(TickReceipt::Observed { decision: Decision::Hold }, Some(obs(100)));
+        let s = status_for(&o, None, 0, None, CumulativeCounters::ZERO.fold(&entry_for(&o)));
+        assert!(s.first_observed_epoch.is_some(), "observing a pod proves the band governs something");
+    }
+
+    #[test]
+    fn the_latch_survives_a_later_dormant_tick() {
+        // THE CASE THAT MAKES `Dormant` LEGITIMATE: a real workload that scaled to
+        // zero. It observed pods before, so its later empty ticks are genuinely
+        // at-rest and must keep counting as converged.
+        let first = out_observed(TickReceipt::Observed { decision: Decision::Hold }, Some(obs(100)));
+        let proven = status_for(&first, None, 0, None, CumulativeCounters::ZERO.fold(&entry_for(&first)));
+        let stamped = proven.first_observed_epoch.expect("set by the first observation");
+
+        let later = out_observed(TickReceipt::Dormant, None);
+        let s = status_for(&later, Some(&proven), 0, None, CumulativeCounters::ZERO.fold(&entry_for(&later)));
+        assert_eq!(s.phase.as_deref(), Some("Dormant"));
+        assert_eq!(
+            s.first_observed_epoch,
+            Some(stamped),
+            "the latch must be STICKY and keep its ORIGINAL timestamp — `s` starts from \
+             BandStatus::default() each tick, so a latch that is not explicitly carried is \
+             silently dropped, and a latch that resets is not a latch"
+        );
+    }
+
+    #[test]
+    fn the_latch_does_not_move_on_a_second_observation() {
+        // It records the FIRST proof, not the most recent one — otherwise it would
+        // drift into being a last-seen timestamp, which is a different (and
+        // threshold-requiring) signal.
+        let a = out_observed(TickReceipt::Observed { decision: Decision::Hold }, Some(obs(100)));
+        let s1 = status_for(&a, None, 0, None, CumulativeCounters::ZERO.fold(&entry_for(&a)));
+        let b = out_observed(TickReceipt::Observed { decision: Decision::Hold }, Some(obs(200)));
+        let s2 = status_for(&b, Some(&s1), 0, None, CumulativeCounters::ZERO.fold(&entry_for(&b)));
+        // NON-VACUITY GUARD, and it is not decoration: the red run proved this
+        // test PASSES with the latch deleted, because `None == None` holds. It
+        // would have sat green forever while testing nothing — the exact class
+        // this whole change closes, found in its own test suite. Pin that both
+        // sides are real before comparing them.
+        assert!(s1.first_observed_epoch.is_some(), "precondition: the latch must actually be set");
+        assert_eq!(s1.first_observed_epoch, s2.first_observed_epoch);
+    }
+
+    #[test]
+    fn the_latch_is_carried_across_an_error_tick_too() {
+        // Carried in the COMMON section, before the per-receipt match, so a
+        // transient provider error cannot un-prove a band that has genuinely
+        // governed pods. Regression guard for the "carry it in one arm only"
+        // mistake this shape invites.
+        let first = out_observed(TickReceipt::Observed { decision: Decision::Hold }, Some(obs(100)));
+        let proven = status_for(&first, None, 0, None, CumulativeCounters::ZERO.fold(&entry_for(&first)));
+        let err = out_observed(TickReceipt::Error { error: ProviderError::MetricsMissing }, None);
+        let s = status_for(&err, Some(&proven), 0, None, CumulativeCounters::ZERO.fold(&entry_for(&err)));
+        // Same non-vacuity guard as the sibling above — without it this passes on
+        // `None == None` when the latch is absent (proven by the red run).
+        assert!(proven.first_observed_epoch.is_some(), "precondition: the band was genuinely proven first");
+        assert_eq!(s.first_observed_epoch, proven.first_observed_epoch, "an error tick must not un-prove the band");
     }
 
     #[test]
