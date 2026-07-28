@@ -88,7 +88,15 @@ jobs:
       # ImagePolicy both Ready=True correctly finding the newest MATCHING
       # tag. There just had been no amd64-r<n> tag since r174, so camelot's
       # controller sat 21 commits behind with nothing anywhere saying why.
-      # `runnerOverride` (workflow_dispatch) still works for a one-off.
+      # NOTE (corrected 2026-07-28): `runnerOverride` is now INERT. Removing
+      # the `runner:` line severed its ONLY consumer -- the input is still
+      # declared (line ~46) but nothing reads it, so a dispatch with
+      # runnerOverride set does nothing. An earlier revision of this comment
+      # asserted the opposite in all three jobs; that was wrong. Re-wiring it
+      # means passing `runner: ${{ inputs.runnerOverride }}` ONLY when the
+      # input is non-empty, so the visibility-aware default still applies by
+      # default -- not restoring the unconditional pin that caused the
+      # public-repo queue-forever bug.
       extraSubstituters: ${{ vars.CAMELOT_SUI_SUBSTITUTER }}
       requireSigs: ${{ vars.CAMELOT_SUI_REQUIRE_SIGS }}
     secrets: inherit
@@ -118,7 +126,15 @@ jobs:
       # ImagePolicy both Ready=True correctly finding the newest MATCHING
       # tag. There just had been no amd64-r<n> tag since r174, so camelot's
       # controller sat 21 commits behind with nothing anywhere saying why.
-      # `runnerOverride` (workflow_dispatch) still works for a one-off.
+      # NOTE (corrected 2026-07-28): `runnerOverride` is now INERT. Removing
+      # the `runner:` line severed its ONLY consumer -- the input is still
+      # declared (line ~46) but nothing reads it, so a dispatch with
+      # runnerOverride set does nothing. An earlier revision of this comment
+      # asserted the opposite in all three jobs; that was wrong. Re-wiring it
+      # means passing `runner: ${{ inputs.runnerOverride }}` ONLY when the
+      # input is non-empty, so the visibility-aware default still applies by
+      # default -- not restoring the unconditional pin that caused the
+      # public-repo queue-forever bug.
       extraSubstituters: ${{ vars.CAMELOT_SUI_SUBSTITUTER }}
       requireSigs: ${{ vars.CAMELOT_SUI_REQUIRE_SIGS }}
     secrets: inherit
@@ -148,7 +164,15 @@ jobs:
       # ImagePolicy both Ready=True correctly finding the newest MATCHING
       # tag. There just had been no amd64-r<n> tag since r174, so camelot's
       # controller sat 21 commits behind with nothing anywhere saying why.
-      # `runnerOverride` (workflow_dispatch) still works for a one-off.
+      # NOTE (corrected 2026-07-28): `runnerOverride` is now INERT. Removing
+      # the `runner:` line severed its ONLY consumer -- the input is still
+      # declared (line ~46) but nothing reads it, so a dispatch with
+      # runnerOverride set does nothing. An earlier revision of this comment
+      # asserted the opposite in all three jobs; that was wrong. Re-wiring it
+      # means passing `runner: ${{ inputs.runnerOverride }}` ONLY when the
+      # input is non-empty, so the visibility-aware default still applies by
+      # default -- not restoring the unconditional pin that caused the
+      # public-repo queue-forever bug.
       extraSubstituters: ${{ vars.CAMELOT_SUI_SUBSTITUTER }}
       requireSigs: ${{ vars.CAMELOT_SUI_REQUIRE_SIGS }}
     secrets: inherit

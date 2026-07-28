@@ -2103,13 +2103,37 @@ mod health_tests {
     #[test]
     fn a_band_that_has_never_seen_a_pod_has_no_first_observed_epoch() {
         // The pathology: Dormant on the very first tick, nothing ever observed.
-        let o = out_observed(TickReceipt::Dormant, None);
-        let s = status_for(&o, None, 0, None, CumulativeCounters::ZERO.fold(&entry_for(&o)));
-        assert_eq!(s.phase.as_deref(), Some("Dormant"));
-        assert_eq!(
-            s.first_observed_epoch, None,
-            "a band that has never observed a pod must carry NO first-observed epoch — \
-             that absence is the whole signal separating 'resting' from 'governing nothing'"
+        //
+        // THIS TEST WAS STRUCTURALLY VACUOUS UNTIL 2026-07-28. It asserted
+        // `first_observed_epoch == None` on a field whose Default is already
+        // None, so it passed with the latch deleted — it could not fail. The
+        // red-run audit that "verified all four in both directions" counted
+        // four tests and never noticed there were five. That is the same
+        // vacuous-guard class this whole feature exists to close, found for the
+        // THIRD time in my own work on it, and it is why the standing rule is
+        // "make it fail" rather than "read it carefully".
+        //
+        // Now non-vacuous: it pins the DISCRIMINATION (unproven Dormant vs
+        // proven Dormant), which no other test covers and which cannot hold
+        // without the latch.
+        let never = out_observed(TickReceipt::Dormant, None);
+        let s_never = status_for(&never, None, 0, None, CumulativeCounters::ZERO.fold(&entry_for(&never)));
+        assert_eq!(s_never.phase.as_deref(), Some("Dormant"));
+        assert_eq!(s_never.first_observed_epoch, None, "never-observed band carries no epoch");
+
+        // The contrast that gives the assertion teeth: a band that DID observe,
+        // then went Dormant, must be distinguishable from the one above.
+        let first = out_observed(TickReceipt::Observed { decision: Decision::Hold }, Some(obs(100)));
+        let proven = status_for(&first, None, 0, None, CumulativeCounters::ZERO.fold(&entry_for(&first)));
+        let later = out_observed(TickReceipt::Dormant, None);
+        let s_proven = status_for(&later, Some(&proven), 0, None, CumulativeCounters::ZERO.fold(&entry_for(&later)));
+
+        assert_eq!(s_proven.phase.as_deref(), Some("Dormant"), "both are Dormant — phase alone cannot tell them apart");
+        assert!(s_proven.first_observed_epoch.is_some(), "the proven one MUST carry an epoch");
+        assert_ne!(
+            s_never.first_observed_epoch, s_proven.first_observed_epoch,
+            "two Dormant bands, one proven and one never-proven, MUST be distinguishable — \
+             this inequality is the entire point of the field and fails without the latch"
         );
     }
 

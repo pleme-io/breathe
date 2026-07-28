@@ -83,7 +83,15 @@ jobs:
       - name: test
         run: cargo test --workspace --locked
 
-  # BLOCKING. A PUBLIC repo must be buildable by the PUBLIC.
+  # FAILS THE RUN (not a merge gate). A PUBLIC repo must be resolvable by the
+  # PUBLIC.
+  #
+  # CORRECTED 2026-07-28: an earlier revision called this and crd-drift
+  # "BLOCKING". They are not. `main` has NO branch protection (verified:
+  # GET /branches/main/protection -> 404 "Branch not protected"), and pleme-io
+  # policy is direct-to-main. These jobs turn the run RED; they block nothing
+  # from landing. That is still worth having -- red-on-main is a real signal --
+  # but calling it a gate overstates it.
   #
   # Until 2026-07-27 breathe (public) depended on `outorga` by git rev from
   # pleme-io/formigueiro (PRIVATE). A credential-less builder — every outside
@@ -101,22 +109,30 @@ jobs:
   #   1. NO rust-cache step. A cached ~/.cargo/git would let this pass exactly
   #      the way the test job already does — the gate would inherit the very
   #      blindness it exists to remove.
-  #   2. Credentials are actively STRIPPED (no `token` in the git config, no
-  #      GITHUB_TOKEN in env). Inheriting the checkout token would let a
-  #      private dep resolve here and fail for everyone else.
+  #   2. Credentials are actively STRIPPED via `persist-credentials: false`,
+  #      which is the ONE mechanism here that does real work: it stops
+  #      actions/checkout writing a token into .git/config and an
+  #      `insteadOf` rewrite that cargo would otherwise inherit.
+  #      CORRECTED 2026-07-28 -- an earlier revision credited three mechanisms.
+  #      The other two are belt-and-braces, not load-bearing: `GITHUB_TOKEN: ""`
+  #      is inert (neither cargo nor libgit2 reads it), and the `git config
+  #      --unset-all` line is a no-op once persist-credentials is false. Kept
+  #      because they cost nothing, but do not count them as protection.
+  #
+  # SCOPE, honestly: this runs `cargo fetch`, so it proves every dependency
+  # RESOLVES without credentials. It does NOT prove the workspace COMPILES --
+  # add `cargo check --locked` if that guarantee is wanted.
   #
   # Verified by a RED RUN against the pre-fix commit (UNREP §II.3 standing
   # rule): with `outorga` still on the git rev this job fails with the exact
   # authentication error above; with the registry dep it passes.
   #
-  # SCOPE, honestly: this proves every dependency RESOLVES without credentials.
-  # It does not prove they are pinned or reproducible — `shikumi` and `kanchi`
-  # remain UNPINNED git deps on public repos (breathe-config/Cargo.toml). Those
-  # resolve fine here, so this gate is silent on them by design; converting
-  # them to registry deps is a separate migration (the lockfile sits at
-  # shikumi 0.1.73 vs 0.1.345 published — 272 versions, not a one-liner).
+  # NOT COVERED, by design: `shikumi` and `kanchi` remain UNPINNED git deps on
+  # PUBLIC repos (breathe-config/Cargo.toml). They resolve without credentials,
+  # so this gate is correctly silent on them; pinning them is a separate
+  # migration (lockfile at shikumi 0.1.73 vs 0.1.345 published).
   public-buildable:
-    name: public repo builds without credentials
+    name: public repo RESOLVES every dep without credentials
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -140,7 +156,8 @@ jobs:
           fi
           echo "all dependencies resolve without credentials"
 
-  # BLOCKING. The chart's CRD manifest is crdgen OUTPUT, and until 2026-07-27
+  # FAILS THE RUN (not a merge gate -- see the note on public-buildable
+  # above: main has no branch protection). The chart's CRD manifest is crdgen OUTPUT, and until 2026-07-27
   # nothing checked that it still matched the Rust types it is generated from.
   #
   # Found by walking into it: adding `IsolationBandSpec.targetNodeSelector`
