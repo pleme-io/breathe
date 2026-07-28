@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "cargo_lock_sha256": "f12de8d4cd66f65f3aab0f302f895df53ab8cac65028f51b07f6a5bf857568b7",
+  "cargo_lock_sha256": "03aa051d092d647fe2301216a5486b784781118b5f448e775bb3d5a9a25b0fac",
   "target_resolves": {
     "base": {
       "Inflector-0.11.4": {
@@ -6412,7 +6412,7 @@
           },
           {
             "name": "outorga",
-            "package_key": "outorga-0.1.1-88b91e58292450e7a2884683f711c3009595d425",
+            "package_key": "outorga-0.1.1",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -15182,7 +15182,7 @@
           "std"
         ]
       },
-      "outorga-0.1.1-88b91e58292450e7a2884683f711c3009595d425": {
+      "outorga-0.1.1": {
         "runtime_dependencies": [
           {
             "name": "serde",
@@ -33851,7 +33851,7 @@
     "ordered-float-2.10.1": {
       "edition": "2018"
     },
-    "outorga-0.1.1-88b91e58292450e7a2884683f711c3009595d425": {
+    "outorga-0.1.1": {
       "edition": "2024"
     },
     "outref-0.5.2": {
@@ -34704,7 +34704,6 @@
     "gen-platform-0.1.11-2c6668f4ab1023559ce5daad775978b178f074d1": "sha256-cUuCYi88FJUEfqCitZDivze4zY9hXhpGUgxqvQbwbkE=",
     "gen-types-0.1.11-2c6668f4ab1023559ce5daad775978b178f074d1": "sha256-cUuCYi88FJUEfqCitZDivze4zY9hXhpGUgxqvQbwbkE=",
     "kanchi-0.1.0-837f57e6c9b52e3d8781a56a46523627765362a0": "sha256-kxa3GKByEottN8fR/gQF4KGd/lu54j8DRGbwdrOjFhM=",
-    "outorga-0.1.1-88b91e58292450e7a2884683f711c3009595d425": "sha256-OEp6qJpTdqNJPacZNfqwqUboouCbT4CD028oQW3d9QQ=",
     "shikumi-0.1.73-272f5f2e8748d5463563a16c3576d785d10df0c0": "sha256-tRFRW6ZNK3v3o3nq9fJbpQAcYCLLBmvC7oJhHFssDzw="
   },
   "flake_metadata": {
