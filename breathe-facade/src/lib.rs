@@ -27,6 +27,19 @@ use kube::{
 };
 use serde_json::{json, Value};
 
+/// The typed, bounded projection every surface hands back instead of the raw CR.
+///
+/// Lives here rather than in one surface because every surface reads this same
+/// store and would otherwise grow its own copy — the identical reason the
+/// [`BreatheStore`] trait itself lives here. A `breathe_band_list` over 52
+/// `MemoryBand`s returned 428,850 bytes of mostly-`managedFields` before this
+/// module existed; see [`project`]'s own docs for the measured composition.
+pub mod project;
+pub use project::{
+    project_band, project_band_list, project_object, project_object_list, strip_bookkeeping, BandView, ObjectView,
+    ProjectionView, DEFAULT_HISTORY_LIMIT,
+};
+
 pub use breathe_provider::DimensionId;
 
 /// The former five-arm facade enum, now the canonical ten-arm

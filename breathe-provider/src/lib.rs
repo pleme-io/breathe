@@ -62,7 +62,7 @@ pub use gate::{
 /// `DisruptionPolicy` above does: it is a behavior atom that is ALSO a wire
 /// value (an MCP tool input, a REST path token, a GraphQL argument). The serde
 /// rename is `kebab-case`, which reproduces [`DimensionId::as_str`] verbatim for
-/// all ten arms — pinned by `serde_labels_match_as_str`, so the two spellings
+/// all eleven arms — pinned by `serde_labels_match_as_str`, so the two spellings
 /// cannot drift.
 ///
 /// **Why this type and not a per-surface enum.** `breathe-facade` used to own a
@@ -70,33 +70,63 @@ pub use gate::{
 /// `CgroupCpuBand`/`HostParamBand`/`KubeParamBand`/`AppBand`/`ReplicaBand` were
 /// invisible to every operator surface — reachable by `kubectl`, unreachable by
 /// the MCP, the REST API, GraphQL and gRPC. Routing every surface through this
-/// one enum makes an eleventh kind a compile error (`E0004`) at each dispatch
+/// one enum makes a twelfth kind a compile error (`E0004`) at each dispatch
 /// site rather than a silent hole.
+///
+/// # Why every arm carries an explicit `#[schemars(description)]`
+///
+/// schemars inlines a Rust doc comment into the wire schema **verbatim**, and
+/// this type is an input to six MCP tools across three server registrations — so
+/// the `Request` arm's (correct, valuable, human-facing) essay on `oom_score_adj`
+/// was being paid for eighteen times per session. The explicit short forms below
+/// override the doc comments for the wire; the long prose stays exactly where a
+/// human reads it. `dimension_id_schema_stays_small` is the gate that keeps it
+/// that way when the twelfth arm lands.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize, schemars1::JsonSchema)]
 #[serde(rename_all = "kebab-case")]
 #[schemars(crate = "schemars1")]
+#[schemars(
+    description = "The band dimension. memory/storage/cpu/replica/request carve the Kubernetes plane; \
+                   arc/cgroup/cgroup-cpu/host-param carve the host plane; kube-param/app-param carve a \
+                   generic CR field or an application's own knob."
+)]
 pub enum DimensionId {
+    #[schemars(description = "A container's memory limit.")]
     Memory,
+    #[schemars(description = "A volume's provisioned size. Grow-only: it provisions minimal and grows on demand.")]
     Storage,
+    #[schemars(description = "A container's CPU limit.")]
     Cpu,
+    #[schemars(description = "A workload's replica count (the horizontal band).")]
     Replica,
     /// HOST: ZFS ARC max (`/sys/module/zfs/parameters/zfs_arc_max`).
+    #[schemars(description = "HOST: the ZFS ARC maximum size.")]
     Arc,
     /// HOST: a systemd unit's transient cgroup memory high-water (`MemoryHigh`).
+    #[schemars(description = "HOST: a systemd unit's cgroup memory high-water mark (MemoryHigh).")]
     Cgroup,
     /// HOST: a systemd unit's transient cgroup cpu bandwidth cap (`CPUQuota`) —
     /// the host-plane peer of `pod-cpu-resize`, carved live with zero restart.
+    #[schemars(description = "HOST: a systemd unit's cgroup CPU bandwidth cap (CPUQuota), carved live.")]
     CgroupCpu,
     /// HOST: a GENERIC sysctl / ZFS-parameter band (PR-2). One id for the whole
     /// family — the specific knob (`vm.dirty_bytes`, `zfs_arc_min`, …) + metric +
     /// directionality are carried as DATA on the descriptor, so a new sysctl/ZFS
     /// band is a catalog row + a CR, not a new dimension id. RestartFree.
+    #[schemars(
+        description = "HOST: any sysctl or ZFS parameter. One id for the whole family — the specific knob is \
+                       data on the CR, so a new sysctl band is a CR, not a new dimension."
+    )]
     HostParam,
     /// K8S-PLANE: a GENERIC k8s-CR / app-protocol band (Step-6/8/12). One id for
     /// the whole family — the layout (`CrField`/`DestinationRuleField`/
     /// `NamespaceEnvelope`/`ControllerSetpoint`/`ConfigFile`/`ApiCall`) + metric +
     /// directionality are DATA on the descriptor, reconciled via `KubeCluster`'s
     /// generic CR-path SSA (or a routed actuator). A new such band is a CR.
+    #[schemars(
+        description = "Any numeric field on any Kubernetes CR (a controller setpoint, a DestinationRule limit, \
+                       a namespace envelope). One id for the whole family — the field path is data on the CR."
+    )]
     KubeParam,
     /// APP-PLANE: a GENERIC application-actuator band (Step-9/13). One id for the
     /// whole family — the layout (`ConfigFile`/`ApiCall`) + which actuator services
@@ -104,6 +134,11 @@ pub enum DimensionId {
     /// CR (`AppLayoutSpec`), dispatched by the `ActuatorCluster` sum type. `used` is
     /// read from the k8s metrics plane (the actuators have no read path), the limit
     /// is carved on the app's own knob. A new such band is a CR.
+    #[schemars(
+        description = "An application's own knob, driven through one of four actuators (config-file reload, \
+                       Redis CONFIG SET, a JVM MBean over Jolokia, an app admin RPC). `used` is still read \
+                       from the Kubernetes metrics plane."
+    )]
     AppParam,
     // "QoS"/"BestEffort"/"OOMKills" below are English, not code items.
     #[allow(clippy::doc_markdown)]
@@ -138,6 +173,13 @@ pub enum DimensionId {
     /// release-1.33 `pkg/apis/core/validation/validation.go:5665`, verified
     /// against the exact minor camelot-eks runs). See [`crate::request`] for why
     /// that is a type and not a runtime branch.
+    #[schemars(
+        description = "A container's resources.requests — the RESERVATION, and the QoS class Kubernetes \
+                       derives from it. The dimension that decides survival (the kernel's oom_score_adj \
+                       keys on the request, never the limit), where every other kind decides blast radius. \
+                       It never writes the QoS class: a class change emits a proposal, because Kubernetes \
+                       refuses an in-place resize that would change it."
+    )]
     Request,
 }
 
@@ -1845,14 +1887,58 @@ mod tests {
         for (slot, d) in DimensionId::ALL.into_iter().enumerate() {
             assert_eq!(d.index(), slot, "{d} sits in ALL[{slot}] but index() says {}", d.index());
         }
-        // Distinctness: ten arms, ten slots, no accidental repeat.
+        // Distinctness: every arm gets its own slot, no accidental repeat.
         for d in DimensionId::ALL {
             assert_eq!(DimensionId::ALL.iter().filter(|x| **x == d).count(), 1, "{d} appears twice in ALL");
         }
     }
 
-    /// The serde label and `as_str` are the same ten strings. Two spellings of a
-    /// wire value is how a REST path token and an MCP argument drift apart; the
+    /// **The wire schema is a budget, not a dumping ground.**
+    ///
+    /// schemars inlines a variant's Rust doc comment into the generated JSON
+    /// schema verbatim. `DimensionId` is an input to six MCP tools, and the MCP
+    /// schema is re-sent per tool per registration — so on 2026-07-27 the
+    /// `Request` arm's (entirely correct, human-valuable) essay on `oom_score_adj`
+    /// and its citation of `pkg/apis/core/validation/validation.go` was costing
+    /// **4,711 bytes per copy**, ~28 KB of a 38 KB tool manifest, three times over.
+    ///
+    /// No compiler diagnostic exists for "you made the wire schema large", and the
+    /// cost lands on a caller who never reads this file — so the only thing that
+    /// catches it is a number. Adding a variant with a long doc comment and no
+    /// `#[schemars(description = "…")]` short form fails HERE.
+    ///
+    /// The cap is deliberately slack enough for a twelfth arm's short form
+    /// (~150 B) and tight enough that a re-inlined essay cannot fit.
+    #[test]
+    fn dimension_id_schema_stays_small() {
+        const BUDGET: usize = 2_200;
+        let mut generator = schemars1::SchemaGenerator::default();
+        let schema = <DimensionId as schemars1::JsonSchema>::json_schema(&mut generator);
+        let bytes = serde_json::to_string(&schema).unwrap().len();
+        println!("DIMENSION_ID_SCHEMA {bytes} bytes (budget {BUDGET}; was 4711 with doc comments inlined)");
+        assert!(
+            bytes <= BUDGET,
+            "the DimensionId wire schema is {bytes} bytes, over the {BUDGET}-byte budget.\n\
+             A Rust doc comment on a variant is inlined into this schema verbatim and paid for by every \
+             caller of every tool that takes a DimensionId. Add #[schemars(description = \"one sentence\")] \
+             to the new arm — the long prose stays in the doc comment for humans."
+        );
+        // …and the short forms are actually THERE: a schema that shrank because
+        // someone deleted the descriptions outright would pass the cap while
+        // leaving an agent unable to tell `cgroup` from `cgroup-cpu`.
+        let text = serde_json::to_string(&schema).unwrap();
+        for d in DimensionId::ALL {
+            assert!(text.contains(d.as_str()), "{d} missing from its own wire schema");
+        }
+        assert_eq!(
+            text.matches("\"description\"").count(),
+            DimensionId::ALL.len() + 1,
+            "every arm plus the enum itself must carry exactly one description"
+        );
+    }
+
+    /// The serde label and `as_str` are the same eleven strings. Two spellings of
+    /// a wire value is how a REST path token and an MCP argument drift apart; the
     /// `kebab-case` rename makes them identical by construction and this proves
     /// it rather than trusting the rename rule to keep matching.
     #[test]
