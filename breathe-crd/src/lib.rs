@@ -225,6 +225,7 @@ pub struct BandStatus {
     /// The typed gap between `qosObserved` and the resolved `qosTarget` —
     /// `held` | `promotionProposed` | `blocked(<why>)`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(schema_with = "open_json_schema")]
     pub qos_gap: Option<serde_json::Value>,
     /// A converged value that has **not yet reached git**: the content address
     /// of the durable write this band would make, plus where it would land.
@@ -236,6 +237,7 @@ pub struct BandStatus {
     /// the right value" and "git carries it" is *visible in status*, not buried
     /// in a controller log.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(schema_with = "open_json_schema")]
     pub pending_proposal: Option<serde_json::Value>,
     /// The DisruptionPolicy in effect for this band (`restartFreeOnly` / …).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -6526,5 +6528,162 @@ spec:
             LimitLayout::PodRequestResize { container } => assert_eq!(container.as_deref(), Some("app")),
             other => panic!("a RequestBand must carve PodRequestResize, got {other:?}"),
         }
+    }
+}
+
+/// Schema for an open JSON value that Kubernetes will actually ACCEPT.
+///
+/// `Option<serde_json::Value>` makes schemars emit an EMPTY schema — no `type`
+/// keyword at all, since the value may be anything. Kubernetes' STRUCTURAL
+/// SCHEMA rules reject that outright:
+///
+/// ```text
+/// CustomResourceDefinition "requestbands.breathe.pleme.io" is invalid:
+///   status.properties[pendingProposal].type: Required value:
+///     must not be empty for specified object fields
+/// ```
+///
+/// Every property must carry a `type` UNLESS it is explicitly marked as
+/// preserving unknown fields. This helper emits both, so the field stays open
+/// while the CRD stays appliable.
+///
+/// COST OF NOT HAVING THIS, measured 2026-07-28: chart 0.1.32 published and was
+/// completely unappliable — helm-controller never got past the CRD stage, so a
+/// bump intended to restore `writeIntent`/`effectiveGate` applied NOTHING, and
+/// the failure looked like the 7th in an unrelated upgrade-flakiness streak.
+/// ALL ELEVEN band kinds carry these same two fields, so this was never a
+/// RequestBand bug — fixing only the kind that surfaced it would have moved the
+/// failure, not removed it.
+///
+/// DESTINATION, not the end state: both fields' own doc comments describe a
+/// KNOWN shape (`qosGap` is documented as `held | promotionProposed |
+/// blocked(<why>)`). An open value is the honest M0 form while nothing
+/// populates them — verified: no assignment to either field exists anywhere in
+/// this workspace. Typing them properly is the real fix and is deliberately not
+/// done here, because the surrounding comment in this file records that a second
+/// status type would ripple through breathe-runtime's status mapping, the facade
+/// and the gate matrix. Revisit when something first writes one.
+fn open_json_schema(_: &mut schemars::r#gen::SchemaGenerator) -> schemars::schema::Schema {
+    serde_json::from_value(serde_json::json!({
+        "type": "object",
+        "x-kubernetes-preserve-unknown-fields": true,
+    }))
+    .expect("static open-JSON schema is well-formed")
+}
+
+#[cfg(test)]
+mod structural_schema_tests {
+    //! Kubernetes STRUCTURAL SCHEMA validity, checked without a cluster.
+    //!
+    //! WHY THIS EXISTS. chart 0.1.32 was published and was completely
+    //! unappliable: `status.pendingProposal` and `status.qosGap` carried no
+    //! `type`, which the apiserver rejects, so helm-controller never got past
+    //! the CRD stage and a bump meant to restore `writeIntent`/`effectiveGate`
+    //! applied NOTHING.
+    //!
+    //! The existing `crd-drift` CI job could not catch it, and that is the
+    //! important part: it compares crdgen output against the committed chart
+    //! YAML, so BOTH SIDES AGREED AND BOTH WERE WRONG. A gate that compares two
+    //! renderings of the same defect is not a gate. This asserts a property of
+    //! the schema itself instead.
+    //!
+    //! Deliberately a unit test, not a CI apiserver: it needs no cluster, no
+    //! kind/k3d spin-up and no network, so it runs in the ordinary suite on
+    //! every push — the cheapest place a seal can live is the place that always
+    //! runs.
+
+    use super::*;
+
+    /// Walk a schema and collect every property path lacking a `type`, unless
+    /// it is explicitly open (`x-kubernetes-preserve-unknown-fields`) or a
+    /// `$ref`. Mirrors the apiserver rule that actually fired.
+    fn untyped_properties(node: &serde_json::Value, path: &str, out: &mut Vec<String>) {
+        if let Some(props) = node.get("properties").and_then(|p| p.as_object()) {
+            for (k, v) in props {
+                let p2 = [path, k].join(".");
+                let typed = v.get("type").is_some();
+                let open = v
+                    .get("x-kubernetes-preserve-unknown-fields")
+                    .and_then(serde_json::Value::as_bool)
+                    == Some(true);
+                let is_ref = v.get("$ref").is_some();
+                if !typed && !open && !is_ref {
+                    out.push(p2.clone());
+                }
+                untyped_properties(v, &p2, out);
+            }
+        }
+        if let Some(items) = node.get("items") {
+            untyped_properties(items, &[path, "[]"].concat(), out);
+        }
+    }
+
+    #[test]
+    fn every_generated_crd_is_structurally_valid() {
+        use kube::CustomResourceExt;
+        // Every CRD crdgen emits. Kept in step with src/bin/crdgen.rs; a kind
+        // added there and forgotten here is a gap, so the count is asserted
+        // below rather than left implicit.
+        let crds: Vec<(&str, _)> = vec![
+            ("MemoryBand", MemoryBand::crd()),
+            ("CpuBand", CpuBand::crd()),
+            ("StorageBand", StorageBand::crd()),
+            ("ReplicaBand", ReplicaBand::crd()),
+            ("ArcBand", ArcBand::crd()),
+            ("CgroupBand", CgroupBand::crd()),
+            ("CgroupCpuBand", CgroupCpuBand::crd()),
+            ("HostParamBand", HostParamBand::crd()),
+            ("KubeParamBand", KubeParamBand::crd()),
+            ("AppBand", AppBand::crd()),
+            ("RequestBand", RequestBand::crd()),
+        ];
+        assert_eq!(
+            crds.len(), 11,
+            "all 11 band kinds must be covered -- every one of them carries the \
+             pendingProposal/qosGap pair, so a kind omitted here is a kind whose \
+             schema is unchecked"
+        );
+        let mut offenders = Vec::new();
+        for (kind, crd) in &crds {
+            let v = serde_json::to_value(crd).expect("CRD serializes");
+            for ver in v["spec"]["versions"].as_array().into_iter().flatten() {
+                let name = ver["name"].as_str().unwrap_or("?");
+                let mut bad = Vec::new();
+                untyped_properties(&ver["schema"]["openAPIV3Schema"], "", &mut bad);
+                offenders.extend(bad.into_iter().map(|p| [*kind, " ", name, p.as_str()].concat()));
+            }
+        }
+        assert!(
+            offenders.is_empty(),
+            "{} propert(ies) have no `type` and are not marked \
+             x-kubernetes-preserve-unknown-fields. The apiserver REJECTS the whole \
+             CRD for this -- it is what made chart 0.1.32 unappliable. Fix the Rust \
+             type (an Option<serde_json::Value> needs #[schemars(schema_with = \
+             \"open_json_schema\")]), never the generated YAML, which crdgen \
+             overwrites:\n  - {}",
+            offenders.len(),
+            offenders.join("\n  - ")
+        );
+    }
+
+    #[test]
+    fn the_check_actually_detects_an_untyped_property() {
+        // RED RUN, welded in. A gate never observed failing may be checking
+        // nothing -- so prove the detector fires on the exact shape that got
+        // through: a property with neither `type` nor preserve-unknown-fields.
+        let schema = serde_json::json!({
+            "properties": {
+                "status": { "type": "object", "properties": {
+                    "fine":   { "type": "string" },
+                    "broken": { "description": "no type, not open -- the 0.1.32 defect" },
+                    "open":   { "type": "object", "x-kubernetes-preserve-unknown-fields": true }
+                }}
+            }
+        });
+        let mut bad = Vec::new();
+        untyped_properties(&schema, "", &mut bad);
+        assert_eq!(bad, vec![".status.broken".to_string()],
+            "the detector must flag exactly the untyped property, and must NOT \
+             flag a typed one or an explicitly-open one");
     }
 }

@@ -487,13 +487,15 @@ spec:
                   A converged value that has **not yet reached git**: the content address of the durable write this band would make, plus where it would land.
 
                   This field is the honest face of the M0 boundary. While no `ManifestWriter` transport is injected, a `durability: committed` band publishes a real, content-addressed, byte-identical-to-what-would-commit proposal here and commits nothing — so the gap between "breathe knows the right value" and "git carries it" is *visible in status*, not buried in a controller log.
-                nullable: true
+                type: object
+                x-kubernetes-preserve-unknown-fields: true
               phase:
                 nullable: true
                 type: string
               qosGap:
                 description: The typed gap between `qosObserved` and the resolved `qosTarget` — `held` | `promotionProposed` | `blocked(<why>)`.
-                nullable: true
+                type: object
+                x-kubernetes-preserve-unknown-fields: true
               qosObserved:
                 description: The quality-of-service class breathe **observed**, derived from the live pod. breathe never declares this — k8s computes it from (requests, limits) across every resource of every container, and a second source of truth for a derived value is exactly the drift this dimension exists to end.
                 nullable: true
@@ -1001,13 +1003,15 @@ spec:
                   A converged value that has **not yet reached git**: the content address of the durable write this band would make, plus where it would land.
 
                   This field is the honest face of the M0 boundary. While no `ManifestWriter` transport is injected, a `durability: committed` band publishes a real, content-addressed, byte-identical-to-what-would-commit proposal here and commits nothing — so the gap between "breathe knows the right value" and "git carries it" is *visible in status*, not buried in a controller log.
-                nullable: true
+                type: object
+                x-kubernetes-preserve-unknown-fields: true
               phase:
                 nullable: true
                 type: string
               qosGap:
                 description: The typed gap between `qosObserved` and the resolved `qosTarget` — `held` | `promotionProposed` | `blocked(<why>)`.
-                nullable: true
+                type: object
+                x-kubernetes-preserve-unknown-fields: true
               qosObserved:
                 description: The quality-of-service class breathe **observed**, derived from the live pod. breathe never declares this — k8s computes it from (requests, limits) across every resource of every container, and a second source of truth for a derived value is exactly the drift this dimension exists to end.
                 nullable: true
@@ -1515,13 +1519,15 @@ spec:
                   A converged value that has **not yet reached git**: the content address of the durable write this band would make, plus where it would land.
 
                   This field is the honest face of the M0 boundary. While no `ManifestWriter` transport is injected, a `durability: committed` band publishes a real, content-addressed, byte-identical-to-what-would-commit proposal here and commits nothing — so the gap between "breathe knows the right value" and "git carries it" is *visible in status*, not buried in a controller log.
-                nullable: true
+                type: object
+                x-kubernetes-preserve-unknown-fields: true
               phase:
                 nullable: true
                 type: string
               qosGap:
                 description: The typed gap between `qosObserved` and the resolved `qosTarget` — `held` | `promotionProposed` | `blocked(<why>)`.
-                nullable: true
+                type: object
+                x-kubernetes-preserve-unknown-fields: true
               qosObserved:
                 description: The quality-of-service class breathe **observed**, derived from the live pod. breathe never declares this — k8s computes it from (requests, limits) across every resource of every container, and a second source of truth for a derived value is exactly the drift this dimension exists to end.
                 nullable: true
@@ -2039,13 +2045,15 @@ spec:
                   A converged value that has **not yet reached git**: the content address of the durable write this band would make, plus where it would land.
 
                   This field is the honest face of the M0 boundary. While no `ManifestWriter` transport is injected, a `durability: committed` band publishes a real, content-addressed, byte-identical-to-what-would-commit proposal here and commits nothing — so the gap between "breathe knows the right value" and "git carries it" is *visible in status*, not buried in a controller log.
-                nullable: true
+                type: object
+                x-kubernetes-preserve-unknown-fields: true
               phase:
                 nullable: true
                 type: string
               qosGap:
                 description: The typed gap between `qosObserved` and the resolved `qosTarget` — `held` | `promotionProposed` | `blocked(<why>)`.
-                nullable: true
+                type: object
+                x-kubernetes-preserve-unknown-fields: true
               qosObserved:
                 description: The quality-of-service class breathe **observed**, derived from the live pod. breathe never declares this — k8s computes it from (requests, limits) across every resource of every container, and a second source of truth for a derived value is exactly the drift this dimension exists to end.
                 nullable: true
@@ -2553,13 +2561,15 @@ spec:
                   A converged value that has **not yet reached git**: the content address of the durable write this band would make, plus where it would land.
 
                   This field is the honest face of the M0 boundary. While no `ManifestWriter` transport is injected, a `durability: committed` band publishes a real, content-addressed, byte-identical-to-what-would-commit proposal here and commits nothing — so the gap between "breathe knows the right value" and "git carries it" is *visible in status*, not buried in a controller log.
-                nullable: true
+                type: object
+                x-kubernetes-preserve-unknown-fields: true
               phase:
                 nullable: true
                 type: string
               qosGap:
                 description: The typed gap between `qosObserved` and the resolved `qosTarget` — `held` | `promotionProposed` | `blocked(<why>)`.
-                nullable: true
+                type: object
+                x-kubernetes-preserve-unknown-fields: true
               qosObserved:
                 description: The quality-of-service class breathe **observed**, derived from the live pod. breathe never declares this — k8s computes it from (requests, limits) across every resource of every container, and a second source of truth for a derived value is exactly the drift this dimension exists to end.
                 nullable: true
@@ -3067,13 +3077,15 @@ spec:
                   A converged value that has **not yet reached git**: the content address of the durable write this band would make, plus where it would land.
 
                   This field is the honest face of the M0 boundary. While no `ManifestWriter` transport is injected, a `durability: committed` band publishes a real, content-addressed, byte-identical-to-what-would-commit proposal here and commits nothing — so the gap between "breathe knows the right value" and "git carries it" is *visible in status*, not buried in a controller log.
-                nullable: true
+                type: object
+                x-kubernetes-preserve-unknown-fields: true
               phase:
                 nullable: true
                 type: string
               qosGap:
                 description: The typed gap between `qosObserved` and the resolved `qosTarget` — `held` | `promotionProposed` | `blocked(<why>)`.
-                nullable: true
+                type: object
+                x-kubernetes-preserve-unknown-fields: true
               qosObserved:
                 description: The quality-of-service class breathe **observed**, derived from the live pod. breathe never declares this — k8s computes it from (requests, limits) across every resource of every container, and a second source of truth for a derived value is exactly the drift this dimension exists to end.
                 nullable: true
@@ -3581,13 +3593,15 @@ spec:
                   A converged value that has **not yet reached git**: the content address of the durable write this band would make, plus where it would land.
 
                   This field is the honest face of the M0 boundary. While no `ManifestWriter` transport is injected, a `durability: committed` band publishes a real, content-addressed, byte-identical-to-what-would-commit proposal here and commits nothing — so the gap between "breathe knows the right value" and "git carries it" is *visible in status*, not buried in a controller log.
-                nullable: true
+                type: object
+                x-kubernetes-preserve-unknown-fields: true
               phase:
                 nullable: true
                 type: string
               qosGap:
                 description: The typed gap between `qosObserved` and the resolved `qosTarget` — `held` | `promotionProposed` | `blocked(<why>)`.
-                nullable: true
+                type: object
+                x-kubernetes-preserve-unknown-fields: true
               qosObserved:
                 description: The quality-of-service class breathe **observed**, derived from the live pod. breathe never declares this — k8s computes it from (requests, limits) across every resource of every container, and a second source of truth for a derived value is exactly the drift this dimension exists to end.
                 nullable: true
@@ -4137,13 +4151,15 @@ spec:
                   A converged value that has **not yet reached git**: the content address of the durable write this band would make, plus where it would land.
 
                   This field is the honest face of the M0 boundary. While no `ManifestWriter` transport is injected, a `durability: committed` band publishes a real, content-addressed, byte-identical-to-what-would-commit proposal here and commits nothing — so the gap between "breathe knows the right value" and "git carries it" is *visible in status*, not buried in a controller log.
-                nullable: true
+                type: object
+                x-kubernetes-preserve-unknown-fields: true
               phase:
                 nullable: true
                 type: string
               qosGap:
                 description: The typed gap between `qosObserved` and the resolved `qosTarget` — `held` | `promotionProposed` | `blocked(<why>)`.
-                nullable: true
+                type: object
+                x-kubernetes-preserve-unknown-fields: true
               qosObserved:
                 description: The quality-of-service class breathe **observed**, derived from the live pod. breathe never declares this — k8s computes it from (requests, limits) across every resource of every container, and a second source of truth for a derived value is exactly the drift this dimension exists to end.
                 nullable: true
@@ -4664,13 +4680,15 @@ spec:
                   A converged value that has **not yet reached git**: the content address of the durable write this band would make, plus where it would land.
 
                   This field is the honest face of the M0 boundary. While no `ManifestWriter` transport is injected, a `durability: committed` band publishes a real, content-addressed, byte-identical-to-what-would-commit proposal here and commits nothing — so the gap between "breathe knows the right value" and "git carries it" is *visible in status*, not buried in a controller log.
-                nullable: true
+                type: object
+                x-kubernetes-preserve-unknown-fields: true
               phase:
                 nullable: true
                 type: string
               qosGap:
                 description: The typed gap between `qosObserved` and the resolved `qosTarget` — `held` | `promotionProposed` | `blocked(<why>)`.
-                nullable: true
+                type: object
+                x-kubernetes-preserve-unknown-fields: true
               qosObserved:
                 description: The quality-of-service class breathe **observed**, derived from the live pod. breathe never declares this — k8s computes it from (requests, limits) across every resource of every container, and a second source of truth for a derived value is exactly the drift this dimension exists to end.
                 nullable: true
@@ -5180,13 +5198,15 @@ spec:
                   A converged value that has **not yet reached git**: the content address of the durable write this band would make, plus where it would land.
 
                   This field is the honest face of the M0 boundary. While no `ManifestWriter` transport is injected, a `durability: committed` band publishes a real, content-addressed, byte-identical-to-what-would-commit proposal here and commits nothing — so the gap between "breathe knows the right value" and "git carries it" is *visible in status*, not buried in a controller log.
-                nullable: true
+                type: object
+                x-kubernetes-preserve-unknown-fields: true
               phase:
                 nullable: true
                 type: string
               qosGap:
                 description: The typed gap between `qosObserved` and the resolved `qosTarget` — `held` | `promotionProposed` | `blocked(<why>)`.
-                nullable: true
+                type: object
+                x-kubernetes-preserve-unknown-fields: true
               qosObserved:
                 description: The quality-of-service class breathe **observed**, derived from the live pod. breathe never declares this — k8s computes it from (requests, limits) across every resource of every container, and a second source of truth for a derived value is exactly the drift this dimension exists to end.
                 nullable: true
@@ -5758,13 +5778,15 @@ spec:
                   A converged value that has **not yet reached git**: the content address of the durable write this band would make, plus where it would land.
 
                   This field is the honest face of the M0 boundary. While no `ManifestWriter` transport is injected, a `durability: committed` band publishes a real, content-addressed, byte-identical-to-what-would-commit proposal here and commits nothing — so the gap between "breathe knows the right value" and "git carries it" is *visible in status*, not buried in a controller log.
-                nullable: true
+                type: object
+                x-kubernetes-preserve-unknown-fields: true
               phase:
                 nullable: true
                 type: string
               qosGap:
                 description: The typed gap between `qosObserved` and the resolved `qosTarget` — `held` | `promotionProposed` | `blocked(<why>)`.
-                nullable: true
+                type: object
+                x-kubernetes-preserve-unknown-fields: true
               qosObserved:
                 description: The quality-of-service class breathe **observed**, derived from the live pod. breathe never declares this — k8s computes it from (requests, limits) across every resource of every container, and a second source of truth for a derived value is exactly the drift this dimension exists to end.
                 nullable: true
