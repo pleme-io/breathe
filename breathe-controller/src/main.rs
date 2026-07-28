@@ -532,7 +532,7 @@ async fn reconcile<B: Band, D: DimensionDescriptor + Default>(
     let cfg = match obj.band_config_with_posture(posture_spec) {
         Ok(c) => c,
         Err(e) => {
-            patch_status::<B>(&ctx.client, &ns, &name, &error_status(e.to_string())).await?;
+            patch_status::<B>(&ctx.client, &ns, &name, &error_status(obj.status(), e.to_string())).await?;
             return Ok(Action::requeue(ctx.requeue));
         }
     };

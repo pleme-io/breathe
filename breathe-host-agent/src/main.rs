@@ -157,7 +157,7 @@ async fn reconcile_host_with<B: Band, D: DimensionDescriptor>(
     // The enrollment charter carries the L2 ceilings + the master write switch.
     // No charter for this node ⇒ refuse to manage anything (never write blind).
     let Some(pool) = node_pool(&ctx).await? else {
-        let s = error_status(format!("no BreatheNodePool enrolls node {}", ctx.node_name));
+        let s = error_status(obj.status(), format!("no BreatheNodePool enrolls node {}", ctx.node_name));
         patch_status::<B>(&ctx.client, &ns, &name, &s).await?;
         warn!(node = %ctx.node_name, band = %name, "unenrolled node — holding");
         return Ok(Action::requeue(ctx.requeue));
@@ -167,7 +167,7 @@ async fn reconcile_host_with<B: Band, D: DimensionDescriptor>(
     let envelopes = match envelopes_from(&pool) {
         Ok(e) => e,
         Err(reason) => {
-            let s = error_status(format!("invalid BreatheNodePool envelopes: {reason}"));
+            let s = error_status(obj.status(), format!("invalid BreatheNodePool envelopes: {reason}"));
             patch_status::<B>(&ctx.client, &ns, &name, &s).await?;
             warn!(node = %ctx.node_name, band = %name, %reason, "bad envelopes — holding");
             return Ok(Action::requeue(ctx.requeue));
@@ -190,7 +190,7 @@ async fn reconcile_host_with<B: Band, D: DimensionDescriptor>(
     let cfg = match obj.band_config() {
         Ok(c) => c,
         Err(e) => {
-            patch_status::<B>(&ctx.client, &ns, &name, &error_status(e.to_string())).await?;
+            patch_status::<B>(&ctx.client, &ns, &name, &error_status(obj.status(), e.to_string())).await?;
             return Ok(Action::requeue(ctx.requeue));
         }
     };

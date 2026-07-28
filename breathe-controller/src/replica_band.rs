@@ -72,7 +72,7 @@ pub async fn reconcile_replica_band(obj: Arc<ReplicaBand>, ctx: Arc<Ctx>) -> Res
     // ordinal-drain + never-scale-the-primary-away invariants can't hold).
     let cfg = obj.spec.replica_band_config();
     if let Err(e) = cfg.validate_for_target(&tr.kind) {
-        patch_status::<ReplicaBand>(&ctx.client, &ns, &name, &error_status(e.to_string())).await?;
+        patch_status::<ReplicaBand>(&ctx.client, &ns, &name, &error_status(obj.status(), e.to_string())).await?;
         return Ok(Action::requeue(ctx.requeue));
     }
 
@@ -90,7 +90,7 @@ pub async fn reconcile_replica_band(obj: Arc<ReplicaBand>, ctx: Arc<Ctx>) -> Res
                 ProviderError::TargetNotFound => format!("target {}/{} not found", target.kind, target.name),
                 other => other.to_string(),
             };
-            patch_status::<ReplicaBand>(&ctx.client, &ns, &name, &error_status(msg)).await?;
+            patch_status::<ReplicaBand>(&ctx.client, &ns, &name, &error_status(obj.status(), msg)).await?;
             return Ok(Action::requeue(ctx.requeue));
         }
     };
@@ -135,7 +135,7 @@ pub async fn reconcile_replica_band(obj: Arc<ReplicaBand>, ctx: Arc<Ctx>) -> Res
         let plan = match plan_replica_tick(&cfg, &env, gate) {
             Ok(p) => p,
             Err(e) => {
-                patch_status::<ReplicaBand>(&ctx.client, &ns, &name, &error_status(e.to_string())).await?;
+                patch_status::<ReplicaBand>(&ctx.client, &ns, &name, &error_status(obj.status(), e.to_string())).await?;
                 return Ok(Action::requeue(ctx.requeue));
             }
         };
@@ -170,7 +170,7 @@ pub async fn reconcile_replica_band(obj: Arc<ReplicaBand>, ctx: Arc<Ctx>) -> Res
                         (false, true)
                     }
                     Err(e) => {
-                        patch_status::<ReplicaBand>(&ctx.client, &ns, &name, &error_status(e.to_string())).await?;
+                        patch_status::<ReplicaBand>(&ctx.client, &ns, &name, &error_status(obj.status(), e.to_string())).await?;
                         return Ok(Action::requeue(ctx.requeue));
                     }
                 }
