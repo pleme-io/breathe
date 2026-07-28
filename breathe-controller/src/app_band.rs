@@ -91,7 +91,7 @@ pub async fn reconcile_app_band(obj: Arc<AppBand>, ctx: Arc<Ctx>) -> Result<Acti
     let cfg = match obj.band_config() {
         Ok(c) => c,
         Err(e) => {
-            patch_status::<AppBand>(&ctx.client, &ns, &name, &error_status(e.to_string())).await?;
+            patch_status::<AppBand>(&ctx.client, &ns, &name, &error_status(obj.status(), e.to_string())).await?;
             return Ok(Action::requeue(ctx.requeue));
         }
     };

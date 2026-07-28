@@ -89,7 +89,7 @@ pub async fn reconcile_kube_param(obj: Arc<KubeParamBand>, ctx: Arc<Ctx>) -> Res
     let cfg = match obj.band_config() {
         Ok(c) => c,
         Err(e) => {
-            patch_status::<KubeParamBand>(&ctx.client, &ns, &name, &error_status(e.to_string())).await?;
+            patch_status::<KubeParamBand>(&ctx.client, &ns, &name, &error_status(obj.status(), e.to_string())).await?;
             return Ok(Action::requeue(ctx.requeue));
         }
     };

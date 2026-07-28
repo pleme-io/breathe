@@ -1048,6 +1048,10 @@ pub fn suspended_status(prior: Option<&BandStatus>) -> BandStatus {
         .and_then(|p| p.conditions.iter().find(|c| c.type_ == "Ready" && c.status == "False"))
         .map_or_else(now_rfc3339, |c| c.last_transition_time.clone());
     let mut s = BandStatus::default();
+    // The ever-governed latch survives suspension: suspending a band does not
+    // un-prove that it once governed pods. `prior` is already in hand here for
+    // last_transition_time, so this costs nothing.
+    carry_latch(&mut s, prior);
     s.phase = Some("Suspended".into());
     s.last_decision = Some("suspended — set spec.suspend:false to resume".into());
     s.conditions = vec![Condition {
@@ -1063,11 +1067,42 @@ pub fn suspended_status(prior: Option<&BandStatus>) -> BandStatus {
 
 /// A short typed error status (band-config parse failures, enrollment gaps).
 #[must_use]
-pub fn error_status(decision: impl Into<String>) -> BandStatus {
+/// `prior` exists ONLY to carry the sticky `first_observed_epoch` latch across
+/// an error tick. See `carry_latch` — an error must never un-prove a band that
+/// has genuinely governed pods.
+pub fn error_status(prior: Option<&BandStatus>, decision: impl Into<String>) -> BandStatus {
     let mut s = BandStatus::default();
     s.phase = Some("Error".into());
     s.last_decision = Some(decision.into());
+    carry_latch(&mut s, prior);
     s
+}
+
+/// Carry the sticky ever-governed latch from the prior status onto a freshly
+/// built one.
+///
+/// WHY THIS IS EXPLICIT RATHER THAN LEFT TO THE PATCH. Every status producer
+/// starts from `BandStatus::default()`, so `first_observed_epoch` is `None`
+/// unless something copies it. Until 2026-07-28 `error_status` and
+/// `suspended_status` did not, and the latch survived those ticks only by
+/// ACCIDENT: the field carries `skip_serializing_if = "Option::is_none"`, so a
+/// `None` is omitted from the JSON entirely and `Patch::Merge` leaves the
+/// stored value alone.
+///
+/// That accident holds today and is three unrelated edits away from breaking:
+/// dropping the serde attribute, switching any caller to Apply/Replace, or a
+/// new producer building the status a different way. None of those would fail
+/// a test, because no test covered it.
+///
+/// TIER-HONEST about the blast radius, so this is not oversold: if it DID
+/// break, a proven band would read as never-proven after an error or suspend
+/// tick and be counted `unproven` — a FALSE ALARM, not a false green. The safe
+/// direction. This is correctness-of-mechanism, not a live safety hole; it is
+/// fixed because a guarantee that rests on an omission is not a guarantee.
+pub fn carry_latch(s: &mut BandStatus, prior: Option<&BandStatus>) {
+    if s.first_observed_epoch.is_none() {
+        s.first_observed_epoch = prior.and_then(|p| p.first_observed_epoch);
+    }
 }
 
 /// Patch a band CR's `status` subresource (merge — only the fields we set).
@@ -2197,6 +2232,38 @@ mod health_tests {
         // `None == None` when the latch is absent (proven by the red run).
         assert!(proven.first_observed_epoch.is_some(), "precondition: the band was genuinely proven first");
         assert_eq!(s.first_observed_epoch, proven.first_observed_epoch, "an error tick must not un-prove the band");
+    }
+
+    #[test]
+    fn the_latch_survives_error_status_and_suspended_status() {
+        // THE GAP AN ADVERSARIAL PASS FOUND (2026-07-28). `status_for` carried
+        // the latch; its two SIBLING producers did not. It survived them only
+        // because `skip_serializing_if = "Option::is_none"` omits a None from
+        // the JSON and `Patch::Merge` then leaves the stored value alone —
+        // three unrelated edits away from breaking, and covered by nothing.
+        //
+        // These assertions are on the STRUCT, deliberately, not through a
+        // patch: the whole point is that the guarantee no longer depends on
+        // serde behaviour or on the patch strategy staying Merge.
+        let first = out_observed(TickReceipt::Observed { decision: Decision::Hold }, Some(obs(100)));
+        let proven = status_for(&first, None, 0, None, CumulativeCounters::ZERO.fold(&entry_for(&first)));
+        let stamped = proven.first_observed_epoch.expect("precondition: the band is proven");
+
+        assert_eq!(
+            super::error_status(Some(&proven), "boom").first_observed_epoch,
+            Some(stamped),
+            "an error tick must not un-prove a band that has governed pods"
+        );
+        assert_eq!(
+            super::suspended_status(Some(&proven)).first_observed_epoch,
+            Some(stamped),
+            "suspending a band does not un-prove that it once governed pods"
+        );
+
+        // The honest negative: with no prior there is nothing to carry, so both
+        // correctly report unproven rather than inventing an epoch.
+        assert_eq!(super::error_status(None, "boom").first_observed_epoch, None);
+        assert_eq!(super::suspended_status(None).first_observed_epoch, None);
     }
 
     #[test]
