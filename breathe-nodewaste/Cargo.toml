@@ -1,0 +1,14 @@
+[package]
+name = "breathe-nodewaste"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Decides whether a node is earning its cost. The node-level signal breathe never had: every band dimension carves WITHIN a host, so nothing ever answered whether the host itself should exist."
+
+[dependencies]
+
+[lints]
+workspace = true
