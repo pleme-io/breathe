@@ -195,6 +195,44 @@ jobs:
           image-ref: ghcr.io/pleme-io/breathe-controller:amd64-${{ startsWith(github.ref_name, 'camelot/') && 'camelot-' || '' }}r${{ github.run_number }}-${{ github.sha }}
           fail-on-severity: HIGH
 
+  host-agent-arm64:
+    name: breathe-host-agent image (arm64) → ghcr.io
+    uses: pleme-io/substrate/.github/workflows/image-push.yml@main
+    with:
+      imageAttr: agent-image
+      imageName: pleme-io/breathe-host-agent
+      tag: arm64-${{ startsWith(github.ref_name, 'camelot/') && 'camelot-' || '' }}r${{ github.run_number }}-${{ github.sha }}
+      additionalTags: ${{ startsWith(github.ref_name, 'camelot/') && 'arm64-camelot-latest' || 'arm64-latest' }}
+      # ADDED 2026-08-02. Until now this image published amd64 tags ONLY, and the
+      # consequence was measured the first time the DaemonSet rolled on
+      # camelot-eks: 22 pods came up Running and one CrashLoopBackOff'd on an
+      # arm64 c6g.large with
+      #   exec /nix/store/...-x86_64-unknown-linux-musl/bin/breathe-host-agent:
+      #   exec format error
+      # The workaround shipped there is a `kubernetes.io/arch: amd64`
+      # nodeSelector, which keeps the agent healthy but leaves every arm64 node
+      # UNWATCHED -- including camelot's builder-arm64 pool, which runs
+      # m7g.2xlarge ON-DEMAND and is exactly the idle-prone shape the agent's
+      # node-waste reporter exists to catch. This job is what lets that
+      # nodeSelector be dropped.
+      #
+      # EXPLICIT runner, and it must be a GITHUB-HOSTED arm64 one. The obvious
+      # move -- point this at Camelot's scale-to-zero ARC arm64 pool
+      # (camelot-builder-pleme-eks-arm64, minRunners 0) -- CANNOT work: breathe
+      # is a PUBLIC repo, and GitHub never assigns public-repository jobs to
+      # self-hosted runners, because a fork PR could otherwise execute arbitrary
+      # code on the cluster. That was already tried on the amd64 job and it did
+      # not fail loudly; it queued FOREVER, 4 runs stuck since 07-27T01:03 with
+      # nothing alerting. See the amd64 job's own comment above.
+      #
+      # Native-arch, not cross-compiled, per image-push.yml's own header: an
+      # off-target build mislabels the arch and exec-format-errors at runtime,
+      # which is the failure this job exists to end.
+      runner: ubuntu-24.04-arm
+      extraSubstituters: ${{ vars.CAMELOT_SUI_SUBSTITUTER }}
+      requireSigs: ${{ vars.CAMELOT_SUI_REQUIRE_SIGS }}
+    secrets: inherit
+
   cve-scan-host-agent:
     name: zero-tolerance CVE scan — breathe-host-agent
     needs: host-agent
