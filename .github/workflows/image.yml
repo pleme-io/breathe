@@ -233,6 +233,34 @@ jobs:
       requireSigs: ${{ vars.CAMELOT_SUI_REQUIRE_SIGS }}
     secrets: inherit
 
+  host-agent-manifest:
+    name: breathe-host-agent multi-arch index → ghcr.io
+    needs: [host-agent, host-agent-arm64]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      # The two arch legs above push SEPARATE images under amd64-<tag> and
+      # arm64-<tag>. A Kubernetes DaemonSet has ONE image field, so per-arch tags
+      # cannot cover a mixed-arch cluster: whichever tag is chosen, the other
+      # architecture exec-format-errors. That is not hypothetical -- it is what
+      # happened on camelot-eks the first time this DaemonSet rolled, and the
+      # workaround was an arch nodeSelector that left every arm64 node unwatched.
+      #
+      # This composes both legs into ONE multi-arch OCI index, so a single tag
+      # resolves per-node and the nodeSelector can be dropped.
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: pleme-io/actions/manifest-list-join@main
+        with:
+          repo: ghcr.io/pleme-io/breathe-host-agent
+          tag: ${{ startsWith(github.ref_name, 'camelot/') && 'camelot-' || '' }}r${{ github.run_number }}-${{ github.sha }}
+          arch-refs: amd64=ghcr.io/pleme-io/breathe-host-agent:amd64-${{ startsWith(github.ref_name, 'camelot/') && 'camelot-' || '' }}r${{ github.run_number }}-${{ github.sha }},arm64=ghcr.io/pleme-io/breathe-host-agent:arm64-${{ startsWith(github.ref_name, 'camelot/') && 'camelot-' || '' }}r${{ github.run_number }}-${{ github.sha }}
+
   cve-scan-host-agent:
     name: zero-tolerance CVE scan — breathe-host-agent
     needs: host-agent
