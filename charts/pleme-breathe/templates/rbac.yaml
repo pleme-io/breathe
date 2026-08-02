@@ -226,6 +226,20 @@ rules:
       - "cgroupcpubands/status"
       - "breathenodepools"
       - "breathenodepools/status"
+      # ADDED 2026-08-02, found by a real 403 the moment the DaemonSet first ran
+      # on camelot-eks:
+      #   hostparambands.breathe.pleme.io is forbidden: User
+      #   "system:serviceaccount:breathe-system:breathe-host-agent" cannot list
+      #   resource "hostparambands" ... at the cluster scope
+      # breathe-host-agent/src/main.rs watches HostParamBand alongside ArcBand and
+      # the cgroup bands, so without this the agent starts, reports healthy, and
+      # silently reconciles nothing for that whole dimension — it re-lists on a
+      # loop and every list is refused. Same drift class this file's own header
+      # documents twice already (breathepostures in 0.1.28, and the six
+      # hand-patched grants before that): the agent's watch set grew and the
+      # chart's grant list did not follow.
+      - "hostparambands"
+      - "hostparambands/status"
       # Part 1 (SOFT k8s carve): the agent reconciles the controller's PodMemoryHigh
       # dispatch — writes the pod's memory.high cgroup file + owns the status.
       - "podmemoryhighs"
