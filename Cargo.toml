@@ -17,6 +17,7 @@ members = [
   "breathe-crd",       # the MemoryBand CRD (typed enrollment contract)
   "breathe-controller", # the controller binary (watch MemoryBand → reconcile_one)
   "breathe-dimensions", # the concrete DimensionDescriptors (memory/storage/cpu)
+  "breathe-nodewaste", # is a NODE earning its cost — the host-level verdict every dimension is blind to
   "breathe-apprpc",    # the AppRpcCluster impl (app admin endpoint — GOMEMLIMIT/prefetch/concurrency)
   "breathe-configreload", # the ConfigReloadCluster impl (config-file edit + SIGHUP/RELOAD — pgbouncer/nginx/PG)
   "breathe-apicall",   # the ApiCallCluster impl (protocol CONFIG SET — Redis/Kafka/NATS)
