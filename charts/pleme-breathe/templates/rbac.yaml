@@ -245,6 +245,27 @@ rules:
       - "podmemoryhighs"
       - "podmemoryhighs/status"
     verbs: ["get", "list", "watch", "patch", "update"]
+  # ADDED 2026-08-02 for the node-waste reporter, and immediately after the
+  # hostparambands grant above -- which is the point. That commit said the
+  # recurring defect is "the agent's watch set grows and the chart's grant list
+  # does not follow", and then the very next change to the agent grew the watch
+  # set and did not follow. The reporter came up, logged healthy, and emitted
+  # NOTHING: 26 consecutive "listing this node's pods failed; skipping tick".
+  #
+  # Read-only, and the list is field-selected to spec.nodeName=<this node> in
+  # breathe-host-agent/src/nodewaste.rs. That matters at fleet scale: a DaemonSet
+  # that LISTs every pod in the cluster each tick multiplies apiserver load by
+  # the node count, which is its own kind of waste.
+  #
+  # `nodes` is get-only, for the node's creationTimestamp -- the idle grace
+  # period is measured against node age, so without it a freshly-booted node
+  # cannot be distinguished from one that has idled for hours.
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list"]
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["get"]
   - apiGroups: ["", "events.k8s.io"]   # core + the events.k8s.io/v1 API kube 0.96 Recorder uses
     resources: ["events"]
     verbs: ["create", "patch"]
