@@ -1,8 +1,8 @@
 {
   "schema_version": 2,
-  "cargo_lock_sha256": "03aa051d092d647fe2301216a5486b784781118b5f448e775bb3d5a9a25b0fac",
+  "cargo_lock_sha256": "18af692a17146c106345d903bfbfba6e3b78470be5fe02084261ed9ebf712f75",
   "manifest_sha256": {
-    "Cargo.toml": "f47a66eba3397b986b157a9f98fbbdd45d9205b459faa24c3e2dc9cbe70288d6",
+    "Cargo.toml": "1a04091568fb900fba5b49c36a0a0899d679d3174d1ce746b4f6aceb775462fa",
     "breathe-actuator/Cargo.toml": "f437a6ee9e1e0e3b430733be4869bce4b7a8a740e484673145bbb43f04a8e705",
     "breathe-admission/Cargo.toml": "43aa5df1749fca71085c3fd27bedf7d5d13b367fb5d4cb8f6e4d2c2c21cc5774",
     "breathe-api-server/Cargo.toml": "12563265bd7f2a1deb12edae79e72877782127b40250d223efa3705dbed7a782",
@@ -18,11 +18,12 @@
     "breathe-crd/Cargo.toml": "034ae9ef380b372527b7f0e000af34451699cb18f61942b1710b38a705df9d5b",
     "breathe-dimensions/Cargo.toml": "d418bdc2add278d5267a230b9783d564561235099e3ca834761e6bbe5a6b4bf2",
     "breathe-facade/Cargo.toml": "761d539fa356f67891eb62ce42131b48824fcdfa16e3b882eb321ea80faa6287",
-    "breathe-host-agent/Cargo.toml": "0d1c98fb502b98dea51a87f9374db60f93667bf314c67e7418f2ce949a2d9974",
+    "breathe-host-agent/Cargo.toml": "354966d0ed6b40abbb4339b812f56b9abd67881693cd6db94138023c74eb34ac",
     "breathe-host/Cargo.toml": "0fa543c2c21b45daea08c7a7e238b3a75f1ab04f5297a0523effd17059d71b96",
     "breathe-jmx/Cargo.toml": "a76059319fd9e240165b49f281089cbedd25792c3c3fa05405663032c64b70b5",
     "breathe-kube/Cargo.toml": "9c162f2f46302ed2d8362da47e9939c33f0b13d16854c87b1890f73cc2e3b295",
     "breathe-mcp/Cargo.toml": "39bf4b12fcdd34bc9e275da0098a27153c5ec397a6b6fc4f33dc4558830a5e1e",
+    "breathe-nodewaste/Cargo.toml": "87f38caf05b4a949c1e6f44886482a5543a0c4e89d7b82bb0653593e9b848d41",
     "breathe-provider/Cargo.toml": "c4dd367a079e5ae0b9089bfe99955ce34937b5ca84cefa4cde17529eef708115",
     "breathe-provision/Cargo.toml": "a45d465477197a802cbb814d080ce8729db6e34df5ccbbd40de68ccab92c36c3",
     "breathe-retirada-ci/Cargo.toml": "9c84916243fdd511016d5cd1c4237f77b9ee3163e09b5f9a7a9d343933ad1a38",
@@ -6706,6 +6707,16 @@
             "tree": "target"
           },
           {
+            "name": "breathe_nodewaste",
+            "package_key": "breathe-nodewaste-0.1.0",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
             "name": "breathe_provider",
             "package_key": "breathe-provider-0.1.0",
             "kind": "normal",
@@ -7132,6 +7143,11 @@
             "tree": "target"
           }
         ],
+        "build_dependencies": [],
+        "features": []
+      },
+      "breathe-nodewaste-0.1.0": {
+        "runtime_dependencies": [],
         "build_dependencies": [],
         "features": []
       },
@@ -33120,6 +33136,13 @@
           "path": "src/main.rs"
         }
       ]
+    },
+    "breathe-nodewaste-0.1.0": {
+      "edition": "2024",
+      "lib_target": {
+        "name": "breathe_nodewaste",
+        "path": "src/lib.rs"
+      }
     },
     "breathe-provider-0.1.0": {
       "edition": "2024",
