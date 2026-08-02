@@ -27,6 +27,8 @@
 
 use std::{sync::Arc, time::Duration};
 
+mod nodewaste;
+
 use breathe_control::{BoundIntroduction, Reclaim};
 use breathe_core::{reconcile_one, ReconcileInput};
 use breathe_crd::{
@@ -507,6 +509,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         error!(error = %e, "failed to install /metrics exporter — continuing without metrics");
     }
     metrics::gauge!("breathe_build_info", "binary" => "breathe-host-agent", "version" => env!("CARGO_PKG_VERSION")).set(1.0);
+
+    // The node-waste reporter. Every band below carves WITHIN this host; none of
+    // them can say whether the host should exist at all. Read-only: it emits
+    // gauges and never cordons, drains or patches.
+    nodewaste::spawn(client.clone(), node_name.clone(), requeue);
 
     let reporter = Reporter {
         controller: "breathe-host-agent".into(),
