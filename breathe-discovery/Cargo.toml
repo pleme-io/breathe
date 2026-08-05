@@ -1,0 +1,14 @@
+[package]
+name = "breathe-discovery"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Which bands SHOULD exist, derived from observed workload shape. The answer to hand-authored enrollment: a total function from shape to dimension set, so a dimension nobody thought of is a compile error rather than a silent zero."
+
+[dependencies]
+
+[lints]
+workspace = true
