@@ -6687,3 +6687,181 @@ mod structural_schema_tests {
              flag a typed one or an explicitly-open one");
     }
 }
+
+// ---------------------------------------------------------------------------
+// BreathePolicy — selector-based band auto-enrollment.
+//
+// The destination named in `k8s/clusters/rio/.../generate-bands.rb`'s own header
+// ("a selector-based auto-enroll ... that materializes a band per matching
+// workload and auto-extends to every new one") and never built. The interim
+// generator ossified for months, and the measurement on camelot-eks 2026-08-05
+// is what it cost: 115 bands across 2 of 11 dimensions, `requestbands: 0` while
+// 10.9 vCPU (17% of the cluster) sat reserved-and-unused, and 23% of bands
+// pointed at workloads that no longer exist.
+//
+// The decision logic deliberately does NOT live here. `breathe-discovery` owns
+// `WorkloadShape -> {BandDimension}` as a pure total function, so the whole
+// decision table is unit-tested without a cluster; this CRD is the operator's
+// declaration of WHERE to apply it, and the controller is the I/O between them.
+// ---------------------------------------------------------------------------
+
+/// Which workloads a [`BreathePolicy`] enrolls.
+///
+/// A **selector, never a list.** A list is what the generator emitted, and a list
+/// can only ever encode what its author knew on the day they ran it — that is the
+/// root cause of every defect above, so it is the one shape this type refuses to
+/// offer.
+#[derive(Serialize, Deserialize, Clone, Debug, JsonSchema, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct EnrollmentSelector {
+    /// Namespaces to enroll. Empty ⇒ every namespace the controller can read.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub namespaces: Vec<String>,
+    /// Namespaces to exclude even when matched above.
+    ///
+    /// Present because the useful policy is nearly always "everything except the
+    /// few places carving is unsafe", and expressing that as an allow-list
+    /// reintroduces the hand-list this type exists to eliminate.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub exclude_namespaces: Vec<String>,
+    /// Workload label selector (`k=v,k2=v2`). Empty ⇒ all workloads.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub match_labels: Option<String>,
+}
+
+/// How a policy arms the bands it materializes.
+#[derive(Serialize, Deserialize, Clone, Debug, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct EnrollmentArming {
+    /// The `writeIntent` stamped on newly materialized bands.
+    ///
+    /// Defaults to `calibrateThenWrite`, NOT `observe`, and the difference is the
+    /// entire point. Observe never promotes itself: camelot ran 115 bands at
+    /// `mode: shadow` with `writeIntent: None` indefinitely, deciding correctly
+    /// every tick and applying none of it, while the cluster sat at 30% requested
+    /// and 13% used. Safety comes from the calibration gate — a band still
+    /// refuses to write until its own observation window is clean — not from
+    /// never arming at all.
+    #[serde(default = "default_initial_intent")]
+    pub initial_intent: String,
+    /// Seconds of clean observation before a calibrating band promotes itself.
+    #[serde(default = "default_confirm_after")]
+    pub confirm_after_seconds: u32,
+    /// Who authorized writing. Required when `initialIntent` is `write`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub authorized_by: Option<String>,
+    /// Dimensions this policy refuses to arm, by `BandDimension` name
+    /// (`RequestCpu`, `Memory`, …). Materialized frozen, so they observe and
+    /// report but never write.
+    ///
+    /// Data rather than a code path, so a refusal is visible in the policy an
+    /// operator reads instead of buried in a controller special case.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub never_arm: Vec<String>,
+}
+
+fn default_initial_intent() -> String {
+    "calibrateThenWrite".to_owned()
+}
+const fn default_confirm_after() -> u32 {
+    3600
+}
+
+impl Default for EnrollmentArming {
+    fn default() -> Self {
+        Self {
+            initial_intent: default_initial_intent(),
+            confirm_after_seconds: default_confirm_after(),
+            authorized_by: None,
+            never_arm: Vec::new(),
+        }
+    }
+}
+
+#[derive(CustomResource, Serialize, Deserialize, Clone, Debug, JsonSchema)]
+#[kube(
+    group = "breathe.pleme.io",
+    version = "v1",
+    kind = "BreathePolicy",
+    status = "BreathePolicyStatus",
+    shortname = "bpol",
+    category = "breathe",
+    printcolumn = r#"{"name":"Matched","type":"integer","jsonPath":".status.workloadsMatched"}"#,
+    printcolumn = r#"{"name":"Desired","type":"integer","jsonPath":".status.bandsDesired"}"#,
+    printcolumn = r#"{"name":"Created","type":"integer","jsonPath":".status.bandsCreated"}"#,
+    printcolumn = r#"{"name":"Adopted","type":"integer","jsonPath":".status.bandsAdopted"}"#,
+    printcolumn = r#"{"name":"Retired","type":"integer","jsonPath":".status.bandsRetired"}"#,
+    printcolumn = r#"{"name":"Phase","type":"string","jsonPath":".status.phase"}"#
+)]
+#[serde(rename_all = "camelCase")]
+pub struct BreathePolicySpec {
+    /// Which workloads to enroll.
+    #[serde(default)]
+    pub selector: EnrollmentSelector,
+    /// How to arm what gets materialized.
+    #[serde(default)]
+    pub arming: EnrollmentArming,
+    /// The `BreathePosture` supplying materialized bands' unset behavioural fields.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub posture_ref: Option<String>,
+    /// Plan and report, but materialize nothing.
+    ///
+    /// The honest first rung for a new policy: an operator sees exactly which
+    /// bands WOULD be created, on which dimensions, before any object is written.
+    /// Distinct from a band's own shadow mode — this gates *enrollment*, that
+    /// gates *carving*.
+    #[serde(default)]
+    pub plan_only: bool,
+    /// Stop reconciling entirely, leaving existing bands untouched.
+    ///
+    /// Suspension must never cascade into mass retirement: the bands this policy
+    /// created stay, keep their observation history, and keep deciding. MODULARIZE,
+    /// DON'T DELETE, at the policy level.
+    #[serde(default)]
+    pub suspend: bool,
+}
+
+/// What the last reconcile of a [`BreathePolicy`] did.
+#[derive(Serialize, Deserialize, Clone, Debug, JsonSchema, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct BreathePolicyStatus {
+    /// Coarse state: `Reconciled`, `PlanOnly`, `Suspended`, `Error`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub phase: Option<String>,
+    /// Workloads the selector matched.
+    #[serde(default)]
+    pub workloads_matched: u32,
+    /// Bands the derivation says should exist.
+    #[serde(default)]
+    pub bands_desired: u32,
+    /// Bands created this reconcile.
+    #[serde(default)]
+    pub bands_created: u32,
+    /// Pre-existing bands adopted (owner reference attached).
+    #[serde(default)]
+    pub bands_adopted: u32,
+    /// Bands retired because their dimension is no longer warranted.
+    #[serde(default)]
+    pub bands_retired: u32,
+    /// Workloads skipped because no UID could be observed, so no collectable
+    /// owner reference could be built.
+    ///
+    /// Reported rather than silently dropped: a nonzero value here means the
+    /// enrolled set is smaller than the selector implies, which is exactly the
+    /// kind of quiet shortfall that reads as "working" from the outside.
+    #[serde(default)]
+    pub workloads_unobservable: u32,
+    /// Distinct dimensions in play, as `BandDimension` names.
+    ///
+    /// CATALOG REFLECTION: the surface self-describes, so an operator counts
+    /// dimensions from the status rather than from a directory listing — the
+    /// habit that let `requestbands: 0` go unnoticed.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub dimensions: Vec<String>,
+    /// RFC3339 timestamp of the last successful reconcile.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_reconciled: Option<String>,
+    /// Standard conditions.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub conditions: Vec<Condition>,
+}

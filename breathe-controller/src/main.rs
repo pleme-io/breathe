@@ -21,6 +21,7 @@ mod origin_guard;
 mod kube_param;
 mod quinhao;
 mod pod_memory_high;
+mod policy_controller;
 mod replica_band;
 
 /// The two Tier-B authorization verdicts this crate's tests actuate under,
@@ -56,8 +57,7 @@ use breathe_core::{reconcile_one, PredictiveInput, ReconcileInput};
 use breathe_crd::{
     AppBand, ArcBand, Band, BandSummary, BreatheCloudPool, BreatheConfig, BreatheConfigSpec, BreatheOverview,
     BreathePosture, CgroupBand, CgroupCpuBand, CpuBand, Densa, HostParamBand, IsolationBand, KubeParamBand,
-    MemoryBand, OverviewStatus, QuinhaoPool, ReplicaBand, RequestBand, StorageBand,
-};
+    MemoryBand, OverviewStatus, QuinhaoPool, ReplicaBand, RequestBand, StorageBand, BreathePolicy};
 use breathe_dimensions::{CpuDescriptor, MemoryDescriptor, StorageDescriptor};
 use breathe_kube::KubeCluster;
 use breathe_provider::{BandProvider, ClassCooldowns, DimensionDescriptor, ResourceProvider, Target};
@@ -1282,7 +1282,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .run(replica_band::reconcile_replica_band, replica_band::error_policy_replica_band, ctx.clone())
         .for_each(|_| async {});
 
-    tokio::join!(mem, cpu, sto, overview, cloud_pools, isolation_bands, kube_params, quinhao_pools, app_bands, replica_bands);
+    // BreathePolicy — selector-based band auto-enrollment. Owns no carve of its
+    // own: it materializes the bands the other controllers above then drive, so
+    // enrollment stops being a hand-authored list that rots against the cluster.
+    let policy_ctx = std::sync::Arc::new(policy_controller::PolicyCtx {
+        client: client.clone(),
+        requeue,
+    });
+    let policies = gen_controller!(Api::<BreathePolicy>::all(client.clone()))
+        .run(
+            policy_controller::reconcile_policy,
+            policy_controller::error_policy_policy,
+            policy_ctx,
+        )
+        .for_each(|_| async {});
+
+    tokio::join!(mem, cpu, sto, overview, cloud_pools, isolation_bands, kube_params, quinhao_pools, app_bands, replica_bands, policies);
     Ok(())
 }
 
