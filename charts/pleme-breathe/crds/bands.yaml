@@ -6039,6 +6039,223 @@ spec:
 apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
+  name: breathepolicies.breathe.pleme.io
+spec:
+  group: breathe.pleme.io
+  names:
+    categories:
+    - breathe
+    kind: BreathePolicy
+    plural: breathepolicies
+    shortNames:
+    - bpol
+    singular: breathepolicy
+  scope: Cluster
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .status.workloadsMatched
+      name: Matched
+      type: integer
+    - jsonPath: .status.bandsDesired
+      name: Desired
+      type: integer
+    - jsonPath: .status.bandsCreated
+      name: Created
+      type: integer
+    - jsonPath: .status.bandsAdopted
+      name: Adopted
+      type: integer
+    - jsonPath: .status.bandsRetired
+      name: Retired
+      type: integer
+    - jsonPath: .status.phase
+      name: Phase
+      type: string
+    name: v1
+    schema:
+      openAPIV3Schema:
+        description: Auto-generated derived type for BreathePolicySpec via `CustomResource`
+        properties:
+          spec:
+            properties:
+              arming:
+                default:
+                  confirmAfterSeconds: 3600
+                  initialIntent: calibrateThenWrite
+                description: How to arm what gets materialized.
+                properties:
+                  authorizedBy:
+                    description: Who authorized writing. Required when `initialIntent` is `write`.
+                    nullable: true
+                    type: string
+                  confirmAfterSeconds:
+                    default: 3600
+                    description: Seconds of clean observation before a calibrating band promotes itself.
+                    format: uint32
+                    minimum: 0.0
+                    type: integer
+                  initialIntent:
+                    default: calibrateThenWrite
+                    description: |-
+                      The `writeIntent` stamped on newly materialized bands.
+
+                      Defaults to `calibrateThenWrite`, NOT `observe`, and the difference is the entire point. Observe never promotes itself: camelot ran 115 bands at `mode: shadow` with `writeIntent: None` indefinitely, deciding correctly every tick and applying none of it, while the cluster sat at 30% requested and 13% used. Safety comes from the calibration gate — a band still refuses to write until its own observation window is clean — not from never arming at all.
+                    type: string
+                  neverArm:
+                    description: |-
+                      Dimensions this policy refuses to arm, by `BandDimension` name (`RequestCpu`, `Memory`, …). Materialized frozen, so they observe and report but never write.
+
+                      Data rather than a code path, so a refusal is visible in the policy an operator reads instead of buried in a controller special case.
+                    items:
+                      type: string
+                    type: array
+                type: object
+              planOnly:
+                default: false
+                description: |-
+                  Plan and report, but materialize nothing.
+
+                  The honest first rung for a new policy: an operator sees exactly which bands WOULD be created, on which dimensions, before any object is written. Distinct from a band's own shadow mode — this gates *enrollment*, that gates *carving*.
+                type: boolean
+              postureRef:
+                description: The `BreathePosture` supplying materialized bands' unset behavioural fields.
+                nullable: true
+                type: string
+              selector:
+                default: {}
+                description: Which workloads to enroll.
+                properties:
+                  excludeNamespaces:
+                    description: |-
+                      Namespaces to exclude even when matched above.
+
+                      Present because the useful policy is nearly always "everything except the few places carving is unsafe", and expressing that as an allow-list reintroduces the hand-list this type exists to eliminate.
+                    items:
+                      type: string
+                    type: array
+                  matchLabels:
+                    description: Workload label selector (`k=v,k2=v2`). Empty ⇒ all workloads.
+                    nullable: true
+                    type: string
+                  namespaces:
+                    description: Namespaces to enroll. Empty ⇒ every namespace the controller can read.
+                    items:
+                      type: string
+                    type: array
+                type: object
+              suspend:
+                default: false
+                description: |-
+                  Stop reconciling entirely, leaving existing bands untouched.
+
+                  Suspension must never cascade into mass retirement: the bands this policy created stay, keep their observation history, and keep deciding. MODULARIZE, DON'T DELETE, at the policy level.
+                type: boolean
+            type: object
+          status:
+            description: What the last reconcile of a [`BreathePolicy`] did.
+            nullable: true
+            properties:
+              bandsAdopted:
+                default: 0
+                description: Pre-existing bands adopted (owner reference attached).
+                format: uint32
+                minimum: 0.0
+                type: integer
+              bandsCreated:
+                default: 0
+                description: Bands created this reconcile.
+                format: uint32
+                minimum: 0.0
+                type: integer
+              bandsDesired:
+                default: 0
+                description: Bands the derivation says should exist.
+                format: uint32
+                minimum: 0.0
+                type: integer
+              bandsRetired:
+                default: 0
+                description: Bands retired because their dimension is no longer warranted.
+                format: uint32
+                minimum: 0.0
+                type: integer
+              conditions:
+                description: Standard conditions.
+                items:
+                  description: A standard k8s `metav1.Condition` (schemars-derivable — k8s_openapi's own `Condition` is not `JsonSchema`). Enables `kubectl wait --for=condition=…` and Flux/Argo health assessment off breathe bands.
+                  properties:
+                    lastTransitionTime:
+                      description: RFC3339 time the condition last flipped status (stable while status holds).
+                      type: string
+                    message:
+                      description: Human-readable message.
+                      type: string
+                    observedGeneration:
+                      description: The `metadata.generation` the controller observed when setting this.
+                      format: int64
+                      nullable: true
+                      type: integer
+                    reason:
+                      description: Machine-readable PascalCase reason.
+                      type: string
+                    status:
+                      description: '`True` | `False` | `Unknown`.'
+                      type: string
+                    type:
+                      description: Condition type, e.g. `Ready` / `Converged` / `Throttled` / `Stale` / `Conflict`.
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+              dimensions:
+                description: |-
+                  Distinct dimensions in play, as `BandDimension` names.
+
+                  CATALOG REFLECTION: the surface self-describes, so an operator counts dimensions from the status rather than from a directory listing — the habit that let `requestbands: 0` go unnoticed.
+                items:
+                  type: string
+                type: array
+              lastReconciled:
+                description: RFC3339 timestamp of the last successful reconcile.
+                nullable: true
+                type: string
+              phase:
+                description: 'Coarse state: `Reconciled`, `PlanOnly`, `Suspended`, `Error`.'
+                nullable: true
+                type: string
+              workloadsMatched:
+                default: 0
+                description: Workloads the selector matched.
+                format: uint32
+                minimum: 0.0
+                type: integer
+              workloadsUnobservable:
+                default: 0
+                description: |-
+                  Workloads skipped because no UID could be observed, so no collectable owner reference could be built.
+
+                  Reported rather than silently dropped: a nonzero value here means the enrolled set is smaller than the selector implies, which is exactly the kind of quiet shortfall that reads as "working" from the outside.
+                format: uint32
+                minimum: 0.0
+                type: integer
+            type: object
+        required:
+        - spec
+        title: BreathePolicy
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
   name: podmemoryhighs.breathe.pleme.io
 spec:
   group: breathe.pleme.io
