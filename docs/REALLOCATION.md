@@ -186,9 +186,45 @@ makes this a plan rather than a wish.
 
 Ordered by blast radius, smallest first. Each is independently revertible:
 
-1. **`builder` → spot.** One requirement change, restores the documented CI
-   posture, and CI is the canonical interruptible workload. Biggest ratio of
-   saving to risk in the whole plan.
+1. **Route short CI to spot; leave long Nix builds on on-demand.**
+
+   An earlier revision of this document recommended flipping the whole
+   `builder` pool to spot and called it the best saving-to-risk ratio in the
+   plan. **That was wrong, and the repo already said so.** The pool's own
+   comment records a CI-observed correction from 2026-07-23: a *running*
+   40-minute non-checkpointable Nix build on a spot node dies on reclaim, and
+   "the hardened-images vector build reclaimed twice at ~40min mid-compile,
+   losing the whole build each time." Flipping the pool would reintroduce a
+   failure that was already measured twice, on the very build this repo runs.
+
+   The same comment states the intended design: *"Short/restartable builds keep
+   spot (the controllers pool above)."* **That intent is not realized.** All
+   four ARC runner scale sets — `camelot-builder-eks`,
+   `camelot-builder-pleme-eks` (max 18), `-arm64`, `camelot-pace-ramdisk` —
+   select `pleme.io/workload: nix-build`, which is the on-demand builder pool.
+   There is no spot-backed runner scale set, so **every** CI job lands on
+   on-demand regardless of class.
+
+   Measured job durations, which is what makes this a routing bug rather than a
+   capacity-type bug:
+
+   ```
+   vendor-mirror.yml             29 jobs   median  2.5m   max   4.0m
+   image-release.yml            209 jobs   median  0.0m   max  92.0m   (bimodal)
+   sql-apply-image-release.yml    6 jobs   median  0.1m   max   8.0m
+   breathe-band-lint.yml          2 jobs   median  0.2m   max   0.2m
+   ```
+
+   The distribution is overwhelmingly short, with a thin tail of genuine
+   long builds. A 2.5-minute mirror job currently provisions an 8-vCPU
+   on-demand node that lives at least 7.5 minutes (`consolidateAfter: 5m`);
+   fifteen of them at once is the 14-node burst in §1.
+
+   So the change is a **spot-backed runner scale set for short, restartable,
+   idempotent jobs**, with `runs-on:` routing per workflow — and the on-demand
+   builder pool left exactly as it is, protecting the long-build case the
+   incident was about.
+
 2. **Shorten `consolidateAfter` on `builder`** to match real job duration.
 3. **Right-size or scale-to-zero `camelot-eks-nixbuild`.** 6 always-on nodes for
    19 pods is the standing bleed. Managed nodegroups need an explicit desired
