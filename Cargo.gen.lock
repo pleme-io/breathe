@@ -1,6 +1,6 @@
 {
   "schema_version": 2,
-  "cargo_lock_sha256": "34cc77128de6d251c7defc9a7da346f5d541538480b896bf9e19b3dd3229cc00",
+  "cargo_lock_sha256": "ad64c37ceae9a8f0ff6099e09df3ab14246d453929d94c6fcc9c774486fb1624",
   "manifest_sha256": {
     "Cargo.toml": "fb522df56773295398f811768dd9448dc735de3ea66771a671198aa666ef08c1",
     "breathe-actuator/Cargo.toml": "f437a6ee9e1e0e3b430733be4869bce4b7a8a740e484673145bbb43f04a8e705",
@@ -13,7 +13,7 @@
     "breathe-config/Cargo.toml": "4174c7c738b4825455797b8cf866dbafd98f664bed9e83ed2369c996562c901b",
     "breathe-configreload/Cargo.toml": "2182b577acc7a5f8681827717a75a2cac34d9cc9a94fcc5a3220d62166a5ab05",
     "breathe-control/Cargo.toml": "2ef93e28082d1a941f2b0ed1d583cf8672acd1489fcbf8f3401d8775f27aa4af",
-    "breathe-controller/Cargo.toml": "0225df8daaa147caf1560afaabbb297dc162c305e24c89ab2470ecfa4dc08203",
+    "breathe-controller/Cargo.toml": "f9e53e5310714056b20cd15438860d3552abce46b51d34fda6a9ecb690f70a74",
     "breathe-core/Cargo.toml": "7d292d767d47ee86d4e9d5d763c8efcdbea051003266c399ff6c375ac17ec3d7",
     "breathe-crd/Cargo.toml": "034ae9ef380b372527b7f0e000af34451699cb18f61942b1710b38a705df9d5b",
     "breathe-dimensions/Cargo.toml": "d418bdc2add278d5267a230b9783d564561235099e3ca834761e6bbe5a6b4bf2",
@@ -6127,6 +6127,16 @@
           {
             "name": "breathe_dimensions",
             "package_key": "breathe-dimensions-0.1.0",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "breathe_discovery",
+            "package_key": "breathe-discovery-0.1.0",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
