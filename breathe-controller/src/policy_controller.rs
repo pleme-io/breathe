@@ -338,13 +338,17 @@ pub async fn reconcile_policy(
                 name,
                 reason,
             } => {
-                if plan_only {
-                    retired += 1;
-                    continue;
-                }
                 // Retire only bands this controller owns. A hand-authored band
                 // that predates the policy is left alone — deleting an operator's
                 // object because a derivation disagrees is not this loop's call.
+                //
+                // This guard is evaluated BEFORE the planOnly branch on purpose.
+                // With it after, a plan counts every retire candidate while a real
+                // run skips the unowned ones, so the plan overstates deletions —
+                // measured on camelot's first plan as retired=36 where a real
+                // first pass would retire 0, since nothing is owned until this
+                // loop has adopted it. A plan that does not predict the run is
+                // worse than no plan: it is read as a forecast.
                 let Some(existing) = actual
                     .iter()
                     .find(|b| b.namespace == namespace && b.name == name)
@@ -352,6 +356,10 @@ pub async fn reconcile_policy(
                     continue;
                 };
                 if !existing.owned {
+                    continue;
+                }
+                if plan_only {
+                    retired += 1;
                     continue;
                 }
                 let ar = ApiResource::from_gvk(&band_gvk(existing.dimension));
