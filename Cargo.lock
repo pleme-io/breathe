@@ -1164,6 +1164,7 @@ dependencies = [
  "breathe-core",
  "breathe-crd",
  "breathe-dimensions",
+ "breathe-discovery",
  "breathe-kube",
  "breathe-provider",
  "breathe-provision",
@@ -1218,6 +1219,10 @@ version = "0.1.0"
 dependencies = [
  "breathe-provider",
 ]
+
+[[package]]
+name = "breathe-discovery"
+version = "0.1.0"
 
 [[package]]
 name = "breathe-facade"
