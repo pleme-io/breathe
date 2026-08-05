@@ -137,6 +137,37 @@ rules:
   - apiGroups: ["storage.k8s.io"]
     resources: ["storageclasses"]
     verbs: ["get", "list", "watch"]
+  # ---- BreathePolicy: selector-based band auto-enrollment ------------------
+  # The policy loop MATERIALIZES bands rather than only reading them, so it
+  # needs create/patch on every band kind and delete for the retire arm. Note
+  # the delete verb is scoped to breathe's own CRDs: the controller only ever
+  # removes bands it owns (it checks the ownerReference first), never a
+  # workload or an operator's hand-authored object.
+  - apiGroups: ["breathe.pleme.io"]
+    resources:
+      - "memorybands"
+      - "cpubands"
+      - "storagebands"
+      - "requestbands"
+      - "replicabands"
+      - "arcbands"
+      - "cgroupbands"
+      - "cgroupcpubands"
+      - "hostparambands"
+      - "kubeparambands"
+      - "appbands"
+      - "isolationbands"
+    verbs: ["get", "list", "watch", "create", "patch", "update", "delete"]
+  - apiGroups: ["breathe.pleme.io"]
+    resources: ["breathepolicies", "breathepolicies/status"]
+    verbs: ["get", "list", "watch", "patch", "update"]
+  # An HPA already owning a workload's replica count suppresses the ReplicaBand
+  # for it — two writers on one field is the Conflict class, refused at
+  # derivation. Without this read every HPA is invisible and the derivation
+  # would happily plan the conflicting band.
+  - apiGroups: ["autoscaling"]
+    resources: ["horizontalpodautoscalers"]
+    verbs: ["get", "list", "watch"]
   # Read pods for owner→pod resolution (metric label scoping); the
   # pods/resize subresource + patch verb close the same class of live-but-
   # uncommitted drift as the block above — in-place pod vertical resize

@@ -2,7 +2,7 @@
 //! hand-authoring. `cargo run -p breathe-crd --bin crdgen > crds/bands.yaml`.
 
 use breathe_crd::{
-    AppBand, ArcBand, BreatheCloudPool, BreatheConfig, BreatheNodePool, BreatheOverview, BreathePosture, CgroupBand,
+    AppBand, ArcBand, BreatheCloudPool, BreatheConfig, BreatheNodePool, BreatheOverview, BreathePolicy, BreathePosture, CgroupBand,
     CgroupCpuBand, CpuBand, Densa, HostParamBand, IsolationBand, KubeParamBand, MemoryBand, PodMemoryHigh,
     QuinhaoPool, ReplicaBand, RequestBand, StorageBand,
 };
@@ -34,6 +34,7 @@ fn main() {
         // ArcBand/CgroupBand/CgroupCpuBand) can opt into via `spec.postureRef`,
         // instead of each hand-duplicating the same 7-value tuple.
         BreathePosture::crd(),
+        BreathePolicy::crd(),
         // Part 1 — the SOFT-k8s-carve controller→host-agent dispatch (pod memory.high)
         PodMemoryHigh::crd(),
         // BU2 — the node-count Forma enrollment (Forma ⇄ Densa envelope)
