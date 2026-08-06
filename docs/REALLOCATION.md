@@ -249,6 +249,18 @@ Ordered by blast radius, smallest first. Each is independently revertible:
    registry-to-registry — with **no docker anywhere**, so the short scale set
    does not need `containerMode: dind` either.
 
+   **Routing short work to spot is only half the change, and shipping the half
+   alone is a defect.** The other half is
+   [`BREATHABILITY-NODE.md` §2.5](../../theory/BREATHABILITY-NODE.md) — attempt-scoped
+   escalation. A reclaimed CI job fails, GitHub retries it, and the retry re-enters
+   the same spot-preferring routing; nothing bounds that loop, and the node tier
+   reports healthy throughout because §2.4 restored capacity every time. So the
+   short scale set ships with: the attempt identified, its death **attributed to a
+   reclaim from the capacity side** (never from exit status — measured on camelot,
+   an on-demand job died with exit 130 and a shutdown signal, which reads exactly
+   like a reclaim and was not one), and the escalated retry pinned to the
+   on-demand builder set. Cheap first attempt, guaranteed landing.
+
 2. **Shorten `consolidateAfter` on `builder`** to match real job duration.
 3. **Right-size or scale-to-zero `camelot-eks-nixbuild`.** 6 always-on nodes for
    19 pods is the standing bleed. Managed nodegroups need an explicit desired
