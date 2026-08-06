@@ -7,8 +7,23 @@ held — per category — inside a typed utilization band (default **80% used /
 signed entry in a verifiable attestation chain.
 
 > Architecture of record: [`theory/BREATHE.md`](https://github.com/pleme-io/theory/blob/main/BREATHE.md).
-> `breathe` is **private** while it integrates with akeyless ephemeral-environment
-> generation / instantiation / long-term-existence control.
+> `breathe` is **public**. It integrates with akeyless ephemeral-environment
+> generation / instantiation / long-term-existence control, and that
+> integration is not a reason to keep the repo closed — nothing here carries
+> akeyless-side identifiers or credentials.
+>
+> Corrected 2026-08-06: this line read "**private**" and was stale. Visibility
+> is not a matter of intent here, it is observable — and it was observed the
+> expensive way. `.github/workflows/image.yml` records that pinning a job to
+> the self-hosted `camelot-builder-pleme-eks` label left **4 runs queued
+> forever from 2026-07-27**, because GitHub never assigns a PUBLIC
+> repository's jobs to a self-hosted runner (a fork PR could otherwise execute
+> arbitrary code on the cluster). A private repo would simply have run them.
+>
+> That matters beyond a doc fix: repo visibility silently decides runner
+> routing, whether org-level `vars.*` resolve, and whether GitHub-hosted
+> minutes are free or metered. A README asserting the wrong one sends the next
+> reader — human or agent — down the wrong branch of all three.
 
 ## The crates
 
