@@ -33,7 +33,7 @@
     };
   };
 
-  outputs = { substrate, nixpkgs, forge, ... }:
+  outputs = { self, substrate, nixpkgs, forge, ... }:
     let
       version = "0.1.2";
       allSystems = [ "aarch64-darwin" "x86_64-darwin" "x86_64-linux" "aarch64-linux" ];
@@ -197,5 +197,78 @@
       packages = lib.genAttrs allSystems packagesFor;
       apps = lib.genAttrs allSystems appsFor;
       devShells = lib.genAttrs allSystems (system: controllerFlake.devShells.${system} or { });
-    };
+
+      # Regression coverage for the module trio + multi-arch release wiring.
+      # Pure flake wiring is exactly what rots unnoticed: it evaluates fine
+      # until an accessor changes, and then fails as a daemon silently running
+      # on prescribed defaults, or as `exec format error` on an arm node.
+      checks = lib.genAttrs allSystems (system: let
+        pkgs = import nixpkgs { inherit system; };
+      in (controllerFlake.checks.${system} or { }) // {
+        host-agent-module =
+          import ./nix/tests/host-agent-module-test.nix { inherit pkgs; inherit self; };
+      });
+
+      # ── ★ THE MODULE TRIO ───────────────────────────────────────────
+      # Top-level, NOT per-system: a module is evaluated against the
+      # CONSUMER's pkgs, so it is system-agnostic by definition.
+      #
+      # WHY IT EXISTS: breathe shipped the host agent as a package and an OCI
+      # image and nothing else, so a consumer wanting to run it on a HOST — the
+      # entire L1 layer pleme-io/nix `node-budget.nix` documents riding within
+      # its static envelopes — had no module to enable. The layer was named in
+      # prose and absent in fact, which is why that fleet's static memory
+      # budget sat three months stale and inverted against measured use: no
+      # live controller existed to correct it, and no supported way to run one.
+      #
+      # `withShikumiConfig` is what makes breathe-host-agent/src/config.rs
+      # reachable from a host: the NixOS/Darwin arms render the typed YAML to
+      # /etc and put BREATHE_HOST_AGENT_CONFIG on the daemon unit, which is
+      # exactly the `Custom(path)` tier `HostAgentConfig::load()` resolves.
+      # That system-scope render landed in substrate 7cde12c — before it, the
+      # flag was home-manager-only and a system daemon got no config at all.
+    } // (
+      let
+        trio = (import "${substrate}/lib/module-trio.nix" {
+          inherit (nixpkgs) lib;
+        }).mkModuleTrio {
+          name = "breathe-host-agent";
+          description = "breathe host agent — the hands (host-dimension reconcile)";
+          binaryName = "breathe-host-agent";
+          packageAttr = "breathe-host-agent";
+
+          # A privileged host daemon: it writes /sys and drives systemd. The HM
+          # arm still exists (the trio emits all three) but the DAEMON is
+          # system-scope only — a user-scope agent could not write the things
+          # it exists to write, so offering the option would be offering a
+          # no-op.
+          withSystemDaemon = true;
+          withUserDaemon = false;
+          # The binary serves with NO subcommand — main goes straight into the
+          # reconcile loop. "" yields ZERO argv entries; a literal "" would
+          # reach clap on Darwin as an unexpected argument.
+          daemonSubcommand = "";
+
+          withShikumiConfig = true;
+          # Mirrors HostAgentConfig::prescribed_default(). Minimal on purpose:
+          # `#[serde(default)]` on the Rust side means anything omitted still
+          # resolves to the prescribed value rather than to a zero, so this
+          # carries only what an operator is likely to touch.
+          shikumiDefaults = {
+            reconcile = { requeue-seconds = 30; controller-name = "breathe-host-agent"; };
+            # 9101, never 9100 — 9100 is the host node-exporter.
+            metrics = { enabled = true; address = "0.0.0.0"; port = 9101; };
+            logging = { filter = "info,breathe_host_agent=info"; format = "json"; };
+            dimensions = { arc = true; cgroup-memory = true; cgroup-cpu = true; };
+          };
+        };
+      in {
+        nixosModules.default = trio.nixosModule;
+        nixosModules.breathe-host-agent = trio.nixosModule;
+        darwinModules.default = trio.darwinModule;
+        darwinModules.breathe-host-agent = trio.darwinModule;
+        homeManagerModules.default = trio.homeManagerModule;
+        homeManagerModules.breathe-host-agent = trio.homeManagerModule;
+      }
+    );
 }
