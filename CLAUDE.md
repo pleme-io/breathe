@@ -1,11 +1,35 @@
 # breathe — resource-homeostasis substrate
 
-> skip-auto-release: internal-only — breathe is **PRIVATE** during the
+> skip-auto-release: **the stated reason for this waiver is VOID — the repo is
+> PUBLIC.** Corrected 2026-08-06. This read "breathe is **PRIVATE** during the
 > akeyless ephemeral-environment integration. Its crates must NOT publish to
-> public crates.io (that would leak private code) and its controller image is
-> a **private** ghcr package. There is intentionally no `auto-release.yml`.
-> When breathe goes public, drop this waiver, add the 3-line auto-release shim,
-> and publish the `pleme-breathe` chart to public helmworks.
+> public crates.io (that would leak private code)". The premise is false, so
+> the conclusion does not follow: there is no private code here to leak.
+>
+> Visibility is observable, and it was observed the expensive way.
+> `.github/workflows/image.yml` records **4 runs queued forever from
+> 2026-07-27** after a job was pinned to the self-hosted
+> `camelot-builder-pleme-eks` label — GitHub never assigns a PUBLIC
+> repository's jobs to a self-hosted runner. A private repo would have run
+> them. `README.md` carried the same stale claim and is corrected in the same
+> commit.
+>
+> ★ THIS WAIVER'S OWN TRIGGER HAS ALREADY FIRED. It says "when breathe goes
+> public, drop this waiver, add the 3-line auto-release shim, and publish the
+> `pleme-breathe` chart to public helmworks." That condition is met today.
+>
+> The waiver is left STANDING rather than dropped, deliberately, because
+> executing it is IRREVERSIBLE: a version published to crates.io cannot be
+> withdrawn, only yanked, and "the doc was wrong about visibility" is not by
+> itself a decision to start publishing **27 workspace crates** under
+> permanent names. That is an operator call, not a doc correction.
+>
+> To act on it: add the canonical shim (the `pleme-io/shikumi` shape) over
+> `substrate/.github/workflows/cargo-publish-each-member-auto-release.yml` —
+> this is a workspace, so the single-crate `cargo-auto-release.yml` is the
+> wrong target — and delete this waiver in the same commit. Note the
+> controller image is a separate question: it already ships multi-arch via
+> `image.yml` and is unaffected either way.
 
 > skip-format-ban: young repo, not yet wired to the substrate `with-format-ban`
 > clippy.toml. New code still obeys ★★ TYPED EMISSION by hand: limit values
