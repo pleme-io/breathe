@@ -80,8 +80,28 @@ docker** — so it also does not need `containerMode: dind`.
 **Deliverable:** `runner-scale-set-pleme-short.yaml`, a sibling HelmRelease
 (`gha-runner-scale-set` 0.12.1, the existing one is 85 non-comment lines), with
 `minRunners: 0`, small requests, no dind, and a nodeSelector/toleration onto a
-spot pool. **Sizing is measured, not guessed** — take peak RSS and CPU of the
-short jobs from the metric spine before setting the numbers.
+spot pool.
+
+**Sizing is measured, not guessed — done 2026-08-05** against the metric spine
+(`max_over_time`, 24h, `namespace="camelot-ci", container="runner"`):
+
+```
+camelot-builder-pleme-eks-…-tg58x     0.80 Gi     1.15 cores
+camelot-builder-pleme-eks-…-s8hlp     0.35 Gi
+camelot-builder-eks-…-4f5d2           0.59 Gi     0.96 cores
+camelot-builder-eks-…-b8xsz           5.58 Gi     2.44 cores   ← long-build set
+```
+
+The pleme short-job runners peak at **0.28–0.80 Gi**. Against a **24 Gi**
+request that is **30–80x oversized**, and even the heaviest observed runner
+(5.58 Gi, on the akeylesslabs long-build set) sits 4x under it. CPU peaks
+0.96–2.53 cores against a 3-core request, so CPU is roughly right and **memory
+is the entire mis-sizing**.
+
+Proposed short-job shape: **request `memory: 2Gi`** (>2x headroom over the
+observed 0.80 Gi peak) and **`cpu: 1`** with a higher limit for burst. Packing
+effect: memory stops being the binding constraint and CPU takes over at roughly
+**7 runners per 8-vCPU node**, so a 15-job burst becomes 2–3 nodes instead of 14.
 
 ## 3. The escalation half
 
@@ -108,10 +128,21 @@ It was on an **on-demand** node, where reclaim is impossible. An exit-status
 heuristic would have escalated both, spent on-demand money on work that was never
 reclaimed, and buried the real cause.
 
-**To verify before building:** which identity fields ARC's `EphemeralRunner`
-status actually exposes (run id / job request id / workflow ref). The join needs a
-stable key to GitHub's job, and if the CR does not carry one the fallback is the
-listener's own log correlation — a weaker link that must be proven, not assumed.
+**Verified 2026-08-05 — the join key exists and the weak fallback is not needed.**
+`EphemeralRunner.status` (`actions.github.com/v1alpha1`) exposes:
+
+```
+workflowRunId      integer     ← the GitHub run_id, the re-dispatch key
+jobRequestId       integer
+jobRepositoryName  string      ← owner/repo
+jobWorkflowRef     string
+jobDisplayName     string
+runnerId, runnerName
+```
+
+So the final link resolves directly: the evicted pod's `EphemeralRunner` yields
+`jobRepositoryName` + `workflowRunId`, which is exactly the pair
+`rerun-failed-jobs` takes. No listener-log correlation, no heuristic matching.
 
 ### 3.2 Escalation — re-dispatch to stable
 
