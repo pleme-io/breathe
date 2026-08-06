@@ -220,10 +220,34 @@ Ordered by blast radius, smallest first. Each is independently revertible:
    on-demand node that lives at least 7.5 minutes (`consolidateAfter: 5m`);
    fifteen of them at once is the 14-node burst in §1.
 
-   So the change is a **spot-backed runner scale set for short, restartable,
-   idempotent jobs**, with `runs-on:` routing per workflow — and the on-demand
-   builder pool left exactly as it is, protecting the long-build case the
-   incident was about.
+   **The mechanism, found in recon and worth stating precisely, because it is
+   L1 not L4.** The runner pod itself declares:
+
+   ```yaml
+   requests: { cpu: "3", memory: "24Gi", ephemeral-storage: "50Gi" }
+   limits:   { cpu: "7", memory: "24Gi", ephemeral-storage: "50Gi" }
+   ```
+
+   An `m6a.2xlarge` has ~30Gi allocatable. Two 24Gi runners do not fit, so
+   **exactly one runner lands per node, by memory**. That is the whole
+   explanation for "15 jobs produced 14 nodes" — Karpenter is sizing correctly
+   for what it was told. The 24Gi/50Gi shape is right for a 40-90 minute Nix
+   build and absurd for a 2.5-minute registry mirror, and today both get it.
+
+   This is the plan's own L1 lever appearing at the CI layer: the request is
+   wrong, so the packing is wrong, so the node count is wrong. Fixing capacity
+   type alone would have made the same 14 nodes cheaper instead of making them
+   two nodes.
+
+   So the change is a **second runner scale set, spot-backed and right-sized**,
+   for short restartable idempotent jobs, with `runs-on:` routing per workflow —
+   and the on-demand builder pool and its 24Gi runner left exactly as they are,
+   protecting the long-build case the incident was about.
+
+   Recon confirms the short path needs far less than the build path: the mirror
+   flow runs `zot-pull-scan`, `oci-image-push` and `doca` — Rust,
+   registry-to-registry — with **no docker anywhere**, so the short scale set
+   does not need `containerMode: dind` either.
 
 2. **Shorten `consolidateAfter` on `builder`** to match real job duration.
 3. **Right-size or scale-to-zero `camelot-eks-nixbuild`.** 6 always-on nodes for
