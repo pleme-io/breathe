@@ -21,12 +21,23 @@
 //! bypassed the confirm-gate/auto-promote lifecycle the k8s-plane controller
 //! already gave the SAME CRD kinds — see `effective_dry_run_frozen`'s doc.)
 //!
-//! Config via env:
-//!   NODE_NAME               — the node this agent runs on (downward API spec.nodeName)
-//!   BREATHE_REQUEUE_SECONDS — refresh interval (default 30; host metrics are live)
+//! ### Config
+//! Typed and tiered through [`shikumi::TieredConfig`] — see [`config`]. One call
+//! at startup (`HostAgentConfig::load()`), driven by `BREATHE_HOST_AGENT_CONFIG`
+//! (a tier name, or a path to a YAML overlay).
+//!
+//! `NODE_NAME` and `POD_NAME` are still read, but as tier-1 *discovery* — they
+//! come from the Kubernetes downward API, not from an operator, and they
+//! override any value a shipped config file carries so one rendered file can
+//! serve a whole DaemonSet.
+//!
+//! There is deliberately NO local write-enable knob: the shadow-first gate
+//! above is cluster-authoritative, and a host must not be able to opt itself
+//! out of it. See [`config`]'s module docs.
 
 use std::{sync::Arc, time::Duration};
 
+mod config;
 mod nodewaste;
 
 use breathe_control::{BoundIntroduction, Reclaim};
@@ -484,29 +495,50 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .install_default()
         .expect("install_default() should only be called once, at startup");
 
-    tracing_subscriber::fmt()
-        .json()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "info,breathe_host_agent=info".into()),
-        )
-        .init();
+    // ONE call — tier resolution, YAML overlay and downward-API discovery all
+    // happen inside. Read before logging is initialised because it decides the
+    // encoder; `load()` itself must therefore never log.
+    let cfg = config::HostAgentConfig::load();
 
-    let node_name = std::env::var("NODE_NAME").unwrap_or_default();
+    // RUST_LOG still wins over the config file. An operator debugging a live
+    // node reaches for the env var, and a file that silently beat it would be
+    // a trap — so the config supplies the FALLBACK, exactly as the literal
+    // string used to.
+    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| cfg.logging.filter.clone().into());
+    match cfg.logging.format {
+        config::LogFormat::Json => {
+            tracing_subscriber::fmt().json().with_env_filter(filter).init();
+        }
+        config::LogFormat::Pretty => {
+            tracing_subscriber::fmt().pretty().with_env_filter(filter).init();
+        }
+        config::LogFormat::Compact => {
+            tracing_subscriber::fmt().compact().with_env_filter(filter).init();
+        }
+    }
+
+    let node_name = cfg.node.name.clone();
     if node_name.is_empty() {
         warn!("NODE_NAME is empty — set it via the downward API (spec.nodeName); the agent will not match any BreatheNodePool");
     }
-    let requeue = Duration::from_secs(
-        std::env::var("BREATHE_REQUEUE_SECONDS").ok().and_then(|s| s.parse().ok()).unwrap_or(30),
-    );
+    // Watching nothing is legal (a metrics-only node) but is far more often a
+    // typo'd YAML key, so it is never silent.
+    if cfg.dimensions.none_enabled() {
+        warn!("every host dimension is disabled — this agent will watch nothing; check the `dimensions` block of your config");
+    }
+    let requeue = Duration::from_secs(cfg.reconcile.requeue_seconds);
     let client = Client::try_default().await?;
-    // Prometheus /metrics on :9101 (9100 is host node-exporter) — scraped via a
-    // VMPodScrape on the DaemonSet. Non-fatal install.
-    if let Err(e) = metrics_exporter_prometheus::PrometheusBuilder::new()
-        .with_http_listener(([0, 0, 0, 0], 9101))
-        .install()
-    {
-        error!(error = %e, "failed to install /metrics exporter — continuing without metrics");
+    // Prometheus /metrics, default :9101 (9100 is host node-exporter) — scraped
+    // via a VMPodScrape on the DaemonSet. Non-fatal install, so `enabled` means
+    // "try", never "guaranteed".
+    if cfg.metrics.enabled {
+        if let Err(e) = metrics_exporter_prometheus::PrometheusBuilder::new()
+            .with_http_listener(cfg.metrics.socket_addr())
+            .install()
+        {
+            error!(error = %e, addr = %cfg.metrics.socket_addr(), "failed to install /metrics exporter — continuing without metrics");
+        }
     }
     metrics::gauge!("breathe_build_info", "binary" => "breathe-host-agent", "version" => env!("CARGO_PKG_VERSION")).set(1.0);
 
@@ -516,8 +548,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     nodewaste::spawn(client.clone(), node_name.clone(), requeue);
 
     let reporter = Reporter {
-        controller: "breathe-host-agent".into(),
-        instance: std::env::var("POD_NAME").ok().or_else(|| (!node_name.is_empty()).then(|| node_name.clone())),
+        controller: cfg.reconcile.controller_name.clone(),
+        instance: cfg.reporter_instance(),
     };
     let ctx = Arc::new(Ctx {
         client: client.clone(),
