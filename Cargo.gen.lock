@@ -1,6 +1,6 @@
 {
   "schema_version": 2,
-  "cargo_lock_sha256": "8610b33b779c1eafdfa5fa3bc1ab47fc6fcbd45aa9946ca3278bb05c483b1c77",
+  "cargo_lock_sha256": "59eab73ee7f54da5ce3c72a4679e8612be993c179ce7242594c008c3715c7cf9",
   "manifest_sha256": {
     "Cargo.toml": "fb522df56773295398f811768dd9448dc735de3ea66771a671198aa666ef08c1",
     "breathe-actuator/Cargo.toml": "f437a6ee9e1e0e3b430733be4869bce4b7a8a740e484673145bbb43f04a8e705",
@@ -10,7 +10,7 @@
     "breathe-apprpc/Cargo.toml": "4368fc8ed561e2bc27165e9d2eab51e96f7c7d7555e2ad25c18ceff9efb34467",
     "breathe-auction/Cargo.toml": "df1aa233056d57b2f9ff86e239befbeb7340b9d293156786711b96b96e7a87d1",
     "breathe-catalog/Cargo.toml": "dfc0aa8cb244033557ca84f1d1e1389ccb166679999c3da38297d3df4136907c",
-    "breathe-config/Cargo.toml": "4174c7c738b4825455797b8cf866dbafd98f664bed9e83ed2369c996562c901b",
+    "breathe-config/Cargo.toml": "e63c9f52b07e24462101ab52253e1a4db5b1c08d62565e1bdbb0acbc3450d065",
     "breathe-configreload/Cargo.toml": "2182b577acc7a5f8681827717a75a2cac34d9cc9a94fcc5a3220d62166a5ab05",
     "breathe-control/Cargo.toml": "2ef93e28082d1a941f2b0ed1d583cf8672acd1489fcbf8f3401d8775f27aa4af",
     "breathe-controller/Cargo.toml": "f9e53e5310714056b20cd15438860d3552abce46b51d34fda6a9ecb690f70a74",
@@ -5905,7 +5905,7 @@
         "runtime_dependencies": [
           {
             "name": "kanchi",
-            "package_key": "kanchi-0.1.0-837f57e6c9b52e3d8781a56a46523627765362a0",
+            "package_key": "kanchi-0.1.3",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -5927,7 +5927,7 @@
           },
           {
             "name": "shikumi",
-            "package_key": "shikumi-0.1.73-272f5f2e8748d5463563a16c3576d785d10df0c0",
+            "package_key": "shikumi-0.1.486",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -9800,45 +9800,6 @@
           "std"
         ]
       },
-      "gen-macros-0.1.11-2c6668f4ab1023559ce5daad775978b178f074d1": {
-        "runtime_dependencies": [
-          {
-            "name": "proc_macro2",
-            "package_key": "proc-macro2-1.0.106",
-            "kind": "normal",
-            "features": [],
-            "uses_default_features": true,
-            "optional": false,
-            "target": null,
-            "tree": "target"
-          },
-          {
-            "name": "quote",
-            "package_key": "quote-1.0.45",
-            "kind": "normal",
-            "features": [],
-            "uses_default_features": true,
-            "optional": false,
-            "target": null,
-            "tree": "target"
-          },
-          {
-            "name": "syn",
-            "package_key": "syn-2.0.117",
-            "kind": "normal",
-            "features": [
-              "extra-traits",
-              "full"
-            ],
-            "uses_default_features": true,
-            "optional": false,
-            "target": null,
-            "tree": "target"
-          }
-        ],
-        "build_dependencies": [],
-        "features": []
-      },
       "gen-macros-0.1.20": {
         "runtime_dependencies": [
           {
@@ -9878,74 +9839,6 @@
         "build_dependencies": [],
         "features": []
       },
-      "gen-platform-0.1.11-2c6668f4ab1023559ce5daad775978b178f074d1": {
-        "runtime_dependencies": [
-          {
-            "name": "gen_macros",
-            "package_key": "gen-macros-0.1.11-2c6668f4ab1023559ce5daad775978b178f074d1",
-            "kind": "normal",
-            "features": [],
-            "uses_default_features": true,
-            "optional": false,
-            "target": null,
-            "tree": "host"
-          },
-          {
-            "name": "gen_types",
-            "package_key": "gen-types-0.1.11-2c6668f4ab1023559ce5daad775978b178f074d1",
-            "kind": "normal",
-            "features": [],
-            "uses_default_features": true,
-            "optional": false,
-            "target": null,
-            "tree": "target"
-          },
-          {
-            "name": "inventory",
-            "package_key": "inventory-0.3.24",
-            "kind": "normal",
-            "features": [],
-            "uses_default_features": true,
-            "optional": false,
-            "target": null,
-            "tree": "target"
-          },
-          {
-            "name": "serde",
-            "package_key": "serde-1.0.228",
-            "kind": "normal",
-            "features": [
-              "derive"
-            ],
-            "uses_default_features": true,
-            "optional": false,
-            "target": null,
-            "tree": "target"
-          },
-          {
-            "name": "serde_json",
-            "package_key": "serde_json-1.0.150",
-            "kind": "normal",
-            "features": [],
-            "uses_default_features": true,
-            "optional": false,
-            "target": null,
-            "tree": "target"
-          },
-          {
-            "name": "thiserror",
-            "package_key": "thiserror-2.0.18",
-            "kind": "normal",
-            "features": [],
-            "uses_default_features": true,
-            "optional": false,
-            "target": null,
-            "tree": "target"
-          }
-        ],
-        "build_dependencies": [],
-        "features": []
-      },
       "gen-platform-0.1.20": {
         "runtime_dependencies": [
           {
@@ -9963,88 +9856,6 @@
             "package_key": "gen-types-0.1.20",
             "kind": "normal",
             "features": [],
-            "uses_default_features": true,
-            "optional": false,
-            "target": null,
-            "tree": "target"
-          },
-          {
-            "name": "inventory",
-            "package_key": "inventory-0.3.24",
-            "kind": "normal",
-            "features": [],
-            "uses_default_features": true,
-            "optional": false,
-            "target": null,
-            "tree": "target"
-          },
-          {
-            "name": "serde",
-            "package_key": "serde-1.0.228",
-            "kind": "normal",
-            "features": [
-              "derive"
-            ],
-            "uses_default_features": true,
-            "optional": false,
-            "target": null,
-            "tree": "target"
-          },
-          {
-            "name": "serde_json",
-            "package_key": "serde_json-1.0.150",
-            "kind": "normal",
-            "features": [],
-            "uses_default_features": true,
-            "optional": false,
-            "target": null,
-            "tree": "target"
-          },
-          {
-            "name": "thiserror",
-            "package_key": "thiserror-2.0.18",
-            "kind": "normal",
-            "features": [],
-            "uses_default_features": true,
-            "optional": false,
-            "target": null,
-            "tree": "target"
-          }
-        ],
-        "build_dependencies": [],
-        "features": []
-      },
-      "gen-types-0.1.11-2c6668f4ab1023559ce5daad775978b178f074d1": {
-        "runtime_dependencies": [
-          {
-            "name": "blake3",
-            "package_key": "blake3-1.8.5",
-            "kind": "normal",
-            "features": [],
-            "uses_default_features": true,
-            "optional": false,
-            "target": null,
-            "tree": "target"
-          },
-          {
-            "name": "chrono",
-            "package_key": "chrono-0.4.44",
-            "kind": "normal",
-            "features": [
-              "serde"
-            ],
-            "uses_default_features": true,
-            "optional": false,
-            "target": null,
-            "tree": "target"
-          },
-          {
-            "name": "indexmap",
-            "package_key": "indexmap-2.14.0",
-            "kind": "normal",
-            "features": [
-              "serde"
-            ],
             "uses_default_features": true,
             "optional": false,
             "target": null,
@@ -19890,142 +19701,6 @@
           "default"
         ]
       },
-      "shikumi-0.1.73-272f5f2e8748d5463563a16c3576d785d10df0c0": {
-        "runtime_dependencies": [
-          {
-            "name": "arc_swap",
-            "package_key": "arc-swap-1.9.1",
-            "kind": "normal",
-            "features": [],
-            "uses_default_features": true,
-            "optional": false,
-            "target": null,
-            "tree": "target"
-          },
-          {
-            "name": "async_trait",
-            "package_key": "async-trait-0.1.89",
-            "kind": "normal",
-            "features": [],
-            "uses_default_features": true,
-            "optional": false,
-            "target": null,
-            "tree": "host"
-          },
-          {
-            "name": "figment",
-            "package_key": "figment-0.10.19",
-            "kind": "normal",
-            "features": [
-              "env",
-              "toml",
-              "yaml"
-            ],
-            "uses_default_features": true,
-            "optional": false,
-            "target": null,
-            "tree": "target"
-          },
-          {
-            "name": "gen_platform",
-            "package_key": "gen-platform-0.1.11-2c6668f4ab1023559ce5daad775978b178f074d1",
-            "kind": "normal",
-            "features": [],
-            "uses_default_features": true,
-            "optional": false,
-            "target": null,
-            "tree": "target"
-          },
-          {
-            "name": "gen_types",
-            "package_key": "gen-types-0.1.11-2c6668f4ab1023559ce5daad775978b178f074d1",
-            "kind": "normal",
-            "features": [],
-            "uses_default_features": true,
-            "optional": false,
-            "target": null,
-            "tree": "target"
-          },
-          {
-            "name": "notify",
-            "package_key": "notify-8.2.0",
-            "kind": "normal",
-            "features": [],
-            "uses_default_features": false,
-            "optional": false,
-            "target": null,
-            "tree": "target"
-          },
-          {
-            "name": "notify",
-            "package_key": "notify-8.2.0",
-            "kind": "normal",
-            "features": [
-              "macos_kqueue"
-            ],
-            "uses_default_features": false,
-            "optional": false,
-            "target": "cfg(target_os = \"macos\")",
-            "tree": "target"
-          },
-          {
-            "name": "serde",
-            "package_key": "serde-1.0.228",
-            "kind": "normal",
-            "features": [
-              "derive"
-            ],
-            "uses_default_features": true,
-            "optional": false,
-            "target": null,
-            "tree": "target"
-          },
-          {
-            "name": "serde_json",
-            "package_key": "serde_json-1.0.150",
-            "kind": "normal",
-            "features": [],
-            "uses_default_features": true,
-            "optional": false,
-            "target": null,
-            "tree": "target"
-          },
-          {
-            "name": "serde_yaml",
-            "package_key": "serde_yaml-0.9.34+deprecated",
-            "kind": "normal",
-            "features": [],
-            "uses_default_features": true,
-            "optional": false,
-            "target": null,
-            "tree": "target"
-          },
-          {
-            "name": "thiserror",
-            "package_key": "thiserror-2.0.18",
-            "kind": "normal",
-            "features": [],
-            "uses_default_features": true,
-            "optional": false,
-            "target": null,
-            "tree": "target"
-          },
-          {
-            "name": "tracing",
-            "package_key": "tracing-0.1.44",
-            "kind": "normal",
-            "features": [],
-            "uses_default_features": true,
-            "optional": false,
-            "target": null,
-            "tree": "target"
-          }
-        ],
-        "build_dependencies": [],
-        "features": [
-          "default"
-        ]
-      },
       "shlex-2.0.1": {
         "runtime_dependencies": [],
         "build_dependencies": [],
@@ -25568,7 +25243,7 @@
               "fallback"
             ]
           },
-          "kanchi-0.1.0-837f57e6c9b52e3d8781a56a46523627765362a0": {
+          "kanchi-0.1.3": {
             "runtime_dependencies": [
               {
                 "name": "libc",
@@ -25604,6 +25279,31 @@
                 "tree": "target"
               },
               {
+                "name": "objc2_core_foundation",
+                "package_key": "objc2-core-foundation-0.3.2",
+                "kind": "normal",
+                "features": [
+                  "CFArray",
+                  "CFBase"
+                ],
+                "uses_default_features": true,
+                "optional": false,
+                "target": "cfg(target_os = \"macos\")",
+                "tree": "target"
+              },
+              {
+                "name": "objc2_core_graphics",
+                "package_key": "objc2-core-graphics-0.3.2",
+                "kind": "normal",
+                "features": [
+                  "CGDirectDisplay"
+                ],
+                "uses_default_features": true,
+                "optional": false,
+                "target": "cfg(target_os = \"macos\")",
+                "tree": "target"
+              },
+              {
                 "name": "objc2_foundation",
                 "package_key": "objc2-foundation-0.3.2",
                 "kind": "normal",
@@ -25625,58 +25325,6 @@
                 "optional": false,
                 "target": null,
                 "tree": "host"
-              }
-            ],
-            "build_dependencies": [],
-            "features": []
-          },
-          "kqueue-1.2.0": {
-            "runtime_dependencies": [
-              {
-                "name": "kqueue_sys",
-                "package_key": "kqueue-sys-1.1.2",
-                "kind": "normal",
-                "features": [],
-                "uses_default_features": true,
-                "optional": false,
-                "target": null,
-                "tree": "target"
-              },
-              {
-                "name": "libc",
-                "package_key": "libc-0.2.186",
-                "kind": "normal",
-                "features": [],
-                "uses_default_features": true,
-                "optional": false,
-                "target": null,
-                "tree": "target"
-              }
-            ],
-            "build_dependencies": [],
-            "features": []
-          },
-          "kqueue-sys-1.1.2": {
-            "runtime_dependencies": [
-              {
-                "name": "bitflags",
-                "package_key": "bitflags-2.12.1",
-                "kind": "normal",
-                "features": [],
-                "uses_default_features": false,
-                "optional": false,
-                "target": null,
-                "tree": "target"
-              },
-              {
-                "name": "libc",
-                "package_key": "libc-0.2.186",
-                "kind": "normal",
-                "features": [],
-                "uses_default_features": true,
-                "optional": false,
-                "target": null,
-                "tree": "target"
               }
             ],
             "build_dependencies": [],
@@ -25705,26 +25353,6 @@
                 "tree": "target"
               },
               {
-                "name": "kqueue",
-                "package_key": "kqueue-1.2.0",
-                "kind": "normal",
-                "features": [],
-                "uses_default_features": true,
-                "optional": false,
-                "target": "cfg(any(target_os = \"freebsd\", target_os = \"openbsd\", target_os = \"netbsd\", target_os = \"dragonflybsd\", target_os = \"ios\"))",
-                "tree": "target"
-              },
-              {
-                "name": "kqueue",
-                "package_key": "kqueue-1.2.0",
-                "kind": "normal",
-                "features": [],
-                "uses_default_features": true,
-                "optional": true,
-                "target": "cfg(target_os = \"macos\")",
-                "tree": "target"
-              },
-              {
                 "name": "libc",
                 "package_key": "libc-0.2.186",
                 "kind": "normal",
@@ -25742,42 +25370,6 @@
                 "uses_default_features": true,
                 "optional": false,
                 "target": null,
-                "tree": "target"
-              },
-              {
-                "name": "mio",
-                "package_key": "mio-1.2.1",
-                "kind": "normal",
-                "features": [
-                  "os-ext"
-                ],
-                "uses_default_features": true,
-                "optional": false,
-                "target": "cfg(any(target_os = \"freebsd\", target_os = \"openbsd\", target_os = \"netbsd\", target_os = \"dragonflybsd\", target_os = \"ios\"))",
-                "tree": "target"
-              },
-              {
-                "name": "mio",
-                "package_key": "mio-1.2.1",
-                "kind": "normal",
-                "features": [
-                  "os-ext"
-                ],
-                "uses_default_features": true,
-                "optional": false,
-                "target": "cfg(any(target_os = \"linux\", target_os = \"android\"))",
-                "tree": "target"
-              },
-              {
-                "name": "mio",
-                "package_key": "mio-1.2.1",
-                "kind": "normal",
-                "features": [
-                  "os-ext"
-                ],
-                "uses_default_features": true,
-                "optional": true,
-                "target": "cfg(target_os = \"macos\")",
                 "tree": "target"
               },
               {
@@ -25804,10 +25396,7 @@
             "build_dependencies": [],
             "features": [
               "fsevent-sys",
-              "kqueue",
-              "macos_fsevent",
-              "macos_kqueue",
-              "mio"
+              "macos_fsevent"
             ]
           },
           "objc2-0.6.4": {
@@ -26443,6 +26032,40 @@
                 "tree": "target"
               },
               {
+                "name": "block2",
+                "package_key": "block2-0.6.2",
+                "kind": "normal",
+                "features": [
+                  "alloc"
+                ],
+                "uses_default_features": false,
+                "optional": true,
+                "target": null,
+                "tree": "target"
+              },
+              {
+                "name": "dispatch2",
+                "package_key": "dispatch2-0.3.1",
+                "kind": "normal",
+                "features": [
+                  "alloc"
+                ],
+                "uses_default_features": false,
+                "optional": true,
+                "target": null,
+                "tree": "target"
+              },
+              {
+                "name": "libc",
+                "package_key": "libc-0.2.186",
+                "kind": "normal",
+                "features": [],
+                "uses_default_features": false,
+                "optional": true,
+                "target": null,
+                "tree": "target"
+              },
+              {
                 "name": "objc2",
                 "package_key": "objc2-0.6.4",
                 "kind": "normal",
@@ -26459,25 +26082,58 @@
             "features": [
               "CFArray",
               "CFAttributedString",
+              "CFAvailability",
+              "CFBag",
+              "CFBase",
+              "CFBinaryHeap",
+              "CFBitVector",
+              "CFBundle",
+              "CFByteOrder",
               "CFCGTypes",
               "CFCalendar",
               "CFCharacterSet",
               "CFData",
               "CFDate",
+              "CFDateFormatter",
               "CFDictionary",
               "CFError",
+              "CFFileDescriptor",
               "CFFileSecurity",
               "CFLocale",
               "CFMachPort",
               "CFMessagePort",
+              "CFNotificationCenter",
               "CFNumber",
+              "CFNumberFormatter",
+              "CFPlugIn",
+              "CFPlugInCOM",
+              "CFPreferences",
+              "CFPropertyList",
               "CFRunLoop",
               "CFSet",
+              "CFSocket",
               "CFStream",
               "CFString",
+              "CFStringEncodingExt",
+              "CFStringTokenizer",
+              "CFTimeZone",
+              "CFTree",
               "CFURL",
+              "CFURLAccess",
+              "CFURLEnumerator",
+              "CFUUID",
+              "CFUserNotification",
+              "CFUtilities",
+              "CFXMLNode",
+              "CFXMLParser",
+              "alloc",
               "bitflags",
-              "objc2"
+              "block2",
+              "default",
+              "dispatch2",
+              "libc",
+              "objc2",
+              "std"
             ]
           },
           "objc2-core-graphics-0.3.2": {
@@ -26489,6 +26145,40 @@
                 "features": [
                   "std"
                 ],
+                "uses_default_features": false,
+                "optional": true,
+                "target": null,
+                "tree": "target"
+              },
+              {
+                "name": "block2",
+                "package_key": "block2-0.6.2",
+                "kind": "normal",
+                "features": [
+                  "alloc"
+                ],
+                "uses_default_features": false,
+                "optional": true,
+                "target": null,
+                "tree": "target"
+              },
+              {
+                "name": "dispatch2",
+                "package_key": "dispatch2-0.3.1",
+                "kind": "normal",
+                "features": [
+                  "alloc"
+                ],
+                "uses_default_features": false,
+                "optional": true,
+                "target": null,
+                "tree": "target"
+              },
+              {
+                "name": "libc",
+                "package_key": "libc-0.2.186",
+                "kind": "normal",
+                "features": [],
                 "uses_default_features": false,
                 "optional": true,
                 "target": null,
@@ -26515,20 +26205,80 @@
                 "optional": false,
                 "target": null,
                 "tree": "target"
+              },
+              {
+                "name": "objc2_metal",
+                "package_key": "objc2-metal-0.3.2",
+                "kind": "normal",
+                "features": [
+                  "MTLDevice"
+                ],
+                "uses_default_features": false,
+                "optional": true,
+                "target": "cfg(not(target_os = \"watchos\"))",
+                "tree": "target"
               }
             ],
             "build_dependencies": [],
             "features": [
+              "CGAffineTransform",
+              "CGBase",
+              "CGBitmapContext",
               "CGColor",
+              "CGColorConversionInfo",
               "CGColorSpace",
               "CGContext",
+              "CGConvertColorDataWithFormat",
+              "CGDataConsumer",
+              "CGDataProvider",
               "CGDirectDisplay",
+              "CGDirectDisplayMetal",
+              "CGDirectPalette",
+              "CGDisplayConfiguration",
+              "CGDisplayFade",
+              "CGDisplayStream",
+              "CGEXRToneMappingGamma",
+              "CGError",
+              "CGEvent",
+              "CGEventSource",
               "CGEventTypes",
               "CGFont",
+              "CGFunction",
+              "CGGeometry",
+              "CGGradient",
+              "CGITUToneMapping",
               "CGImage",
+              "CGLayer",
+              "CGPDFArray",
+              "CGPDFContentStream",
+              "CGPDFContext",
+              "CGPDFDictionary",
+              "CGPDFDocument",
+              "CGPDFObject",
+              "CGPDFOperatorTable",
+              "CGPDFPage",
+              "CGPDFScanner",
+              "CGPDFStream",
+              "CGPDFString",
+              "CGPSConverter",
               "CGPath",
+              "CGPattern",
+              "CGRemoteOperation",
+              "CGRenderingBufferProvider",
+              "CGSession",
+              "CGShading",
+              "CGToneMapping",
+              "CGWindow",
+              "CGWindowLevel",
+              "alloc",
               "bitflags",
-              "objc2"
+              "block2",
+              "default",
+              "dispatch2",
+              "libc",
+              "objc2",
+              "objc2-metal",
+              "std"
             ]
           },
           "objc2-core-image-0.3.2": {
@@ -26956,6 +26706,54 @@
               "IOSurfaceRef",
               "bitflags",
               "objc2"
+            ]
+          },
+          "objc2-metal-0.3.2": {
+            "runtime_dependencies": [
+              {
+                "name": "bitflags",
+                "package_key": "bitflags-2.12.1",
+                "kind": "normal",
+                "features": [
+                  "std"
+                ],
+                "uses_default_features": false,
+                "optional": true,
+                "target": null,
+                "tree": "target"
+              },
+              {
+                "name": "objc2",
+                "package_key": "objc2-0.6.4",
+                "kind": "normal",
+                "features": [
+                  "std"
+                ],
+                "uses_default_features": false,
+                "optional": false,
+                "target": null,
+                "tree": "target"
+              },
+              {
+                "name": "objc2_foundation",
+                "package_key": "objc2-foundation-0.3.2",
+                "kind": "normal",
+                "features": [
+                  "alloc"
+                ],
+                "uses_default_features": false,
+                "optional": false,
+                "target": null,
+                "tree": "target"
+              }
+            ],
+            "build_dependencies": [],
+            "features": [
+              "MTLDevice",
+              "MTLGPUAddress",
+              "MTLLibrary",
+              "MTLResource",
+              "bitflags"
             ]
           },
           "objc2-quartz-core-0.3.2": {
@@ -27745,7 +27543,7 @@
             "build_dependencies": [],
             "features": []
           },
-          "kanchi-0.1.0-837f57e6c9b52e3d8781a56a46523627765362a0": {
+          "kanchi-0.1.3": {
             "runtime_dependencies": [
               {
                 "name": "libc",
@@ -27856,18 +27654,6 @@
                 "tree": "target"
               },
               {
-                "name": "mio",
-                "package_key": "mio-1.2.1",
-                "kind": "normal",
-                "features": [
-                  "os-ext"
-                ],
-                "uses_default_features": true,
-                "optional": true,
-                "target": "cfg(target_os = \"macos\")",
-                "tree": "target"
-              },
-              {
                 "name": "notify_types",
                 "package_key": "notify-types-2.1.0",
                 "kind": "normal",
@@ -27891,10 +27677,7 @@
             "build_dependencies": [],
             "features": [
               "fsevent-sys",
-              "kqueue",
-              "macos_fsevent",
-              "macos_kqueue",
-              "mio"
+              "macos_fsevent"
             ]
           },
           "openssl-probe-0.1.6": {
@@ -28552,7 +28335,7 @@
             "build_dependencies": [],
             "features": []
           },
-          "kanchi-0.1.0-837f57e6c9b52e3d8781a56a46523627765362a0": {
+          "kanchi-0.1.3": {
             "runtime_dependencies": [
               {
                 "name": "libc",
@@ -28663,18 +28446,6 @@
                 "tree": "target"
               },
               {
-                "name": "mio",
-                "package_key": "mio-1.2.1",
-                "kind": "normal",
-                "features": [
-                  "os-ext"
-                ],
-                "uses_default_features": true,
-                "optional": true,
-                "target": "cfg(target_os = \"macos\")",
-                "tree": "target"
-              },
-              {
                 "name": "notify_types",
                 "package_key": "notify-types-2.1.0",
                 "kind": "normal",
@@ -28698,10 +28469,7 @@
             "build_dependencies": [],
             "features": [
               "fsevent-sys",
-              "kqueue",
-              "macos_fsevent",
-              "macos_kqueue",
-              "mio"
+              "macos_fsevent"
             ]
           },
           "openssl-probe-0.1.6": {
@@ -29439,7 +29207,7 @@
               "fallback"
             ]
           },
-          "kanchi-0.1.0-837f57e6c9b52e3d8781a56a46523627765362a0": {
+          "kanchi-0.1.3": {
             "runtime_dependencies": [
               {
                 "name": "libc",
@@ -29475,6 +29243,31 @@
                 "tree": "target"
               },
               {
+                "name": "objc2_core_foundation",
+                "package_key": "objc2-core-foundation-0.3.2",
+                "kind": "normal",
+                "features": [
+                  "CFArray",
+                  "CFBase"
+                ],
+                "uses_default_features": true,
+                "optional": false,
+                "target": "cfg(target_os = \"macos\")",
+                "tree": "target"
+              },
+              {
+                "name": "objc2_core_graphics",
+                "package_key": "objc2-core-graphics-0.3.2",
+                "kind": "normal",
+                "features": [
+                  "CGDirectDisplay"
+                ],
+                "uses_default_features": true,
+                "optional": false,
+                "target": "cfg(target_os = \"macos\")",
+                "tree": "target"
+              },
+              {
                 "name": "objc2_foundation",
                 "package_key": "objc2-foundation-0.3.2",
                 "kind": "normal",
@@ -29496,58 +29289,6 @@
                 "optional": false,
                 "target": null,
                 "tree": "host"
-              }
-            ],
-            "build_dependencies": [],
-            "features": []
-          },
-          "kqueue-1.2.0": {
-            "runtime_dependencies": [
-              {
-                "name": "kqueue_sys",
-                "package_key": "kqueue-sys-1.1.2",
-                "kind": "normal",
-                "features": [],
-                "uses_default_features": true,
-                "optional": false,
-                "target": null,
-                "tree": "target"
-              },
-              {
-                "name": "libc",
-                "package_key": "libc-0.2.186",
-                "kind": "normal",
-                "features": [],
-                "uses_default_features": true,
-                "optional": false,
-                "target": null,
-                "tree": "target"
-              }
-            ],
-            "build_dependencies": [],
-            "features": []
-          },
-          "kqueue-sys-1.1.2": {
-            "runtime_dependencies": [
-              {
-                "name": "bitflags",
-                "package_key": "bitflags-2.12.1",
-                "kind": "normal",
-                "features": [],
-                "uses_default_features": false,
-                "optional": false,
-                "target": null,
-                "tree": "target"
-              },
-              {
-                "name": "libc",
-                "package_key": "libc-0.2.186",
-                "kind": "normal",
-                "features": [],
-                "uses_default_features": true,
-                "optional": false,
-                "target": null,
-                "tree": "target"
               }
             ],
             "build_dependencies": [],
@@ -29576,26 +29317,6 @@
                 "tree": "target"
               },
               {
-                "name": "kqueue",
-                "package_key": "kqueue-1.2.0",
-                "kind": "normal",
-                "features": [],
-                "uses_default_features": true,
-                "optional": false,
-                "target": "cfg(any(target_os = \"freebsd\", target_os = \"openbsd\", target_os = \"netbsd\", target_os = \"dragonflybsd\", target_os = \"ios\"))",
-                "tree": "target"
-              },
-              {
-                "name": "kqueue",
-                "package_key": "kqueue-1.2.0",
-                "kind": "normal",
-                "features": [],
-                "uses_default_features": true,
-                "optional": true,
-                "target": "cfg(target_os = \"macos\")",
-                "tree": "target"
-              },
-              {
                 "name": "libc",
                 "package_key": "libc-0.2.186",
                 "kind": "normal",
@@ -29613,42 +29334,6 @@
                 "uses_default_features": true,
                 "optional": false,
                 "target": null,
-                "tree": "target"
-              },
-              {
-                "name": "mio",
-                "package_key": "mio-1.2.1",
-                "kind": "normal",
-                "features": [
-                  "os-ext"
-                ],
-                "uses_default_features": true,
-                "optional": false,
-                "target": "cfg(any(target_os = \"freebsd\", target_os = \"openbsd\", target_os = \"netbsd\", target_os = \"dragonflybsd\", target_os = \"ios\"))",
-                "tree": "target"
-              },
-              {
-                "name": "mio",
-                "package_key": "mio-1.2.1",
-                "kind": "normal",
-                "features": [
-                  "os-ext"
-                ],
-                "uses_default_features": true,
-                "optional": false,
-                "target": "cfg(any(target_os = \"linux\", target_os = \"android\"))",
-                "tree": "target"
-              },
-              {
-                "name": "mio",
-                "package_key": "mio-1.2.1",
-                "kind": "normal",
-                "features": [
-                  "os-ext"
-                ],
-                "uses_default_features": true,
-                "optional": true,
-                "target": "cfg(target_os = \"macos\")",
                 "tree": "target"
               },
               {
@@ -29675,10 +29360,7 @@
             "build_dependencies": [],
             "features": [
               "fsevent-sys",
-              "kqueue",
-              "macos_fsevent",
-              "macos_kqueue",
-              "mio"
+              "macos_fsevent"
             ]
           },
           "objc2-0.6.4": {
@@ -30314,6 +29996,40 @@
                 "tree": "target"
               },
               {
+                "name": "block2",
+                "package_key": "block2-0.6.2",
+                "kind": "normal",
+                "features": [
+                  "alloc"
+                ],
+                "uses_default_features": false,
+                "optional": true,
+                "target": null,
+                "tree": "target"
+              },
+              {
+                "name": "dispatch2",
+                "package_key": "dispatch2-0.3.1",
+                "kind": "normal",
+                "features": [
+                  "alloc"
+                ],
+                "uses_default_features": false,
+                "optional": true,
+                "target": null,
+                "tree": "target"
+              },
+              {
+                "name": "libc",
+                "package_key": "libc-0.2.186",
+                "kind": "normal",
+                "features": [],
+                "uses_default_features": false,
+                "optional": true,
+                "target": null,
+                "tree": "target"
+              },
+              {
                 "name": "objc2",
                 "package_key": "objc2-0.6.4",
                 "kind": "normal",
@@ -30330,25 +30046,58 @@
             "features": [
               "CFArray",
               "CFAttributedString",
+              "CFAvailability",
+              "CFBag",
+              "CFBase",
+              "CFBinaryHeap",
+              "CFBitVector",
+              "CFBundle",
+              "CFByteOrder",
               "CFCGTypes",
               "CFCalendar",
               "CFCharacterSet",
               "CFData",
               "CFDate",
+              "CFDateFormatter",
               "CFDictionary",
               "CFError",
+              "CFFileDescriptor",
               "CFFileSecurity",
               "CFLocale",
               "CFMachPort",
               "CFMessagePort",
+              "CFNotificationCenter",
               "CFNumber",
+              "CFNumberFormatter",
+              "CFPlugIn",
+              "CFPlugInCOM",
+              "CFPreferences",
+              "CFPropertyList",
               "CFRunLoop",
               "CFSet",
+              "CFSocket",
               "CFStream",
               "CFString",
+              "CFStringEncodingExt",
+              "CFStringTokenizer",
+              "CFTimeZone",
+              "CFTree",
               "CFURL",
+              "CFURLAccess",
+              "CFURLEnumerator",
+              "CFUUID",
+              "CFUserNotification",
+              "CFUtilities",
+              "CFXMLNode",
+              "CFXMLParser",
+              "alloc",
               "bitflags",
-              "objc2"
+              "block2",
+              "default",
+              "dispatch2",
+              "libc",
+              "objc2",
+              "std"
             ]
           },
           "objc2-core-graphics-0.3.2": {
@@ -30360,6 +30109,40 @@
                 "features": [
                   "std"
                 ],
+                "uses_default_features": false,
+                "optional": true,
+                "target": null,
+                "tree": "target"
+              },
+              {
+                "name": "block2",
+                "package_key": "block2-0.6.2",
+                "kind": "normal",
+                "features": [
+                  "alloc"
+                ],
+                "uses_default_features": false,
+                "optional": true,
+                "target": null,
+                "tree": "target"
+              },
+              {
+                "name": "dispatch2",
+                "package_key": "dispatch2-0.3.1",
+                "kind": "normal",
+                "features": [
+                  "alloc"
+                ],
+                "uses_default_features": false,
+                "optional": true,
+                "target": null,
+                "tree": "target"
+              },
+              {
+                "name": "libc",
+                "package_key": "libc-0.2.186",
+                "kind": "normal",
+                "features": [],
                 "uses_default_features": false,
                 "optional": true,
                 "target": null,
@@ -30386,20 +30169,80 @@
                 "optional": false,
                 "target": null,
                 "tree": "target"
+              },
+              {
+                "name": "objc2_metal",
+                "package_key": "objc2-metal-0.3.2",
+                "kind": "normal",
+                "features": [
+                  "MTLDevice"
+                ],
+                "uses_default_features": false,
+                "optional": true,
+                "target": "cfg(not(target_os = \"watchos\"))",
+                "tree": "target"
               }
             ],
             "build_dependencies": [],
             "features": [
+              "CGAffineTransform",
+              "CGBase",
+              "CGBitmapContext",
               "CGColor",
+              "CGColorConversionInfo",
               "CGColorSpace",
               "CGContext",
+              "CGConvertColorDataWithFormat",
+              "CGDataConsumer",
+              "CGDataProvider",
               "CGDirectDisplay",
+              "CGDirectDisplayMetal",
+              "CGDirectPalette",
+              "CGDisplayConfiguration",
+              "CGDisplayFade",
+              "CGDisplayStream",
+              "CGEXRToneMappingGamma",
+              "CGError",
+              "CGEvent",
+              "CGEventSource",
               "CGEventTypes",
               "CGFont",
+              "CGFunction",
+              "CGGeometry",
+              "CGGradient",
+              "CGITUToneMapping",
               "CGImage",
+              "CGLayer",
+              "CGPDFArray",
+              "CGPDFContentStream",
+              "CGPDFContext",
+              "CGPDFDictionary",
+              "CGPDFDocument",
+              "CGPDFObject",
+              "CGPDFOperatorTable",
+              "CGPDFPage",
+              "CGPDFScanner",
+              "CGPDFStream",
+              "CGPDFString",
+              "CGPSConverter",
               "CGPath",
+              "CGPattern",
+              "CGRemoteOperation",
+              "CGRenderingBufferProvider",
+              "CGSession",
+              "CGShading",
+              "CGToneMapping",
+              "CGWindow",
+              "CGWindowLevel",
+              "alloc",
               "bitflags",
-              "objc2"
+              "block2",
+              "default",
+              "dispatch2",
+              "libc",
+              "objc2",
+              "objc2-metal",
+              "std"
             ]
           },
           "objc2-core-image-0.3.2": {
@@ -30827,6 +30670,54 @@
               "IOSurfaceRef",
               "bitflags",
               "objc2"
+            ]
+          },
+          "objc2-metal-0.3.2": {
+            "runtime_dependencies": [
+              {
+                "name": "bitflags",
+                "package_key": "bitflags-2.12.1",
+                "kind": "normal",
+                "features": [
+                  "std"
+                ],
+                "uses_default_features": false,
+                "optional": true,
+                "target": null,
+                "tree": "target"
+              },
+              {
+                "name": "objc2",
+                "package_key": "objc2-0.6.4",
+                "kind": "normal",
+                "features": [
+                  "std"
+                ],
+                "uses_default_features": false,
+                "optional": false,
+                "target": null,
+                "tree": "target"
+              },
+              {
+                "name": "objc2_foundation",
+                "package_key": "objc2-foundation-0.3.2",
+                "kind": "normal",
+                "features": [
+                  "alloc"
+                ],
+                "uses_default_features": false,
+                "optional": false,
+                "target": null,
+                "tree": "target"
+              }
+            ],
+            "build_dependencies": [],
+            "features": [
+              "MTLDevice",
+              "MTLGPUAddress",
+              "MTLLibrary",
+              "MTLResource",
+              "bitflags"
             ]
           },
           "objc2-quartz-core-0.3.2": {
@@ -31618,7 +31509,7 @@
             "build_dependencies": [],
             "features": []
           },
-          "kanchi-0.1.0-837f57e6c9b52e3d8781a56a46523627765362a0": {
+          "kanchi-0.1.3": {
             "runtime_dependencies": [
               {
                 "name": "libc",
@@ -31729,18 +31620,6 @@
                 "tree": "target"
               },
               {
-                "name": "mio",
-                "package_key": "mio-1.2.1",
-                "kind": "normal",
-                "features": [
-                  "os-ext"
-                ],
-                "uses_default_features": true,
-                "optional": true,
-                "target": "cfg(target_os = \"macos\")",
-                "tree": "target"
-              },
-              {
                 "name": "notify_types",
                 "package_key": "notify-types-2.1.0",
                 "kind": "normal",
@@ -31764,10 +31643,7 @@
             "build_dependencies": [],
             "features": [
               "fsevent-sys",
-              "kqueue",
-              "macos_fsevent",
-              "macos_kqueue",
-              "mio"
+              "macos_fsevent"
             ]
           },
           "openssl-probe-0.1.6": {
@@ -32427,7 +32303,7 @@
             "build_dependencies": [],
             "features": []
           },
-          "kanchi-0.1.0-837f57e6c9b52e3d8781a56a46523627765362a0": {
+          "kanchi-0.1.3": {
             "runtime_dependencies": [
               {
                 "name": "libc",
@@ -32538,18 +32414,6 @@
                 "tree": "target"
               },
               {
-                "name": "mio",
-                "package_key": "mio-1.2.1",
-                "kind": "normal",
-                "features": [
-                  "os-ext"
-                ],
-                "uses_default_features": true,
-                "optional": true,
-                "target": "cfg(target_os = \"macos\")",
-                "tree": "target"
-              },
-              {
                 "name": "notify_types",
                 "package_key": "notify-types-2.1.0",
                 "kind": "normal",
@@ -32573,10 +32437,7 @@
             "build_dependencies": [],
             "features": [
               "fsevent-sys",
-              "kqueue",
-              "macos_fsevent",
-              "macos_kqueue",
-              "mio"
+              "macos_fsevent"
             ]
           },
           "openssl-probe-0.1.6": {
@@ -33739,21 +33600,11 @@
     "futures-util-0.3.32": {
       "edition": "2018"
     },
-    "gen-macros-0.1.11-2c6668f4ab1023559ce5daad775978b178f074d1": {
-      "edition": "2024",
-      "proc_macro": true
-    },
     "gen-macros-0.1.20": {
       "edition": "2024",
       "proc_macro": true
     },
-    "gen-platform-0.1.11-2c6668f4ab1023559ce5daad775978b178f074d1": {
-      "edition": "2024"
-    },
     "gen-platform-0.1.20": {
-      "edition": "2024"
-    },
-    "gen-types-0.1.11-2c6668f4ab1023559ce5daad775978b178f074d1": {
       "edition": "2024"
     },
     "gen-types-0.1.20": {
@@ -33960,14 +33811,8 @@
       "build_script": "build.rs",
       "links": "k8s-openapi-0.23.0"
     },
-    "kanchi-0.1.0-837f57e6c9b52e3d8781a56a46523627765362a0": {
+    "kanchi-0.1.3": {
       "edition": "2024"
-    },
-    "kqueue-1.2.0": {
-      "edition": "2021"
-    },
-    "kqueue-sys-1.1.2": {
-      "edition": "2021"
     },
     "kube-0.96.0": {
       "edition": "2021"
@@ -34142,6 +33987,9 @@
       "edition": "2021"
     },
     "objc2-io-surface-0.3.2": {
+      "edition": "2021"
+    },
+    "objc2-metal-0.3.2": {
       "edition": "2021"
     },
     "objc2-quartz-core-0.3.2": {
@@ -34618,9 +34466,6 @@
     "shikumi-0.1.486": {
       "edition": "2024"
     },
-    "shikumi-0.1.73-272f5f2e8748d5463563a16c3576d785d10df0c0": {
-      "edition": "2024"
-    },
     "shlex-2.0.1": {
       "edition": "2018"
     },
@@ -35013,13 +34858,7 @@
       "build_script": "build.rs"
     }
   },
-  "git_nar_sha256": {
-    "gen-macros-0.1.11-2c6668f4ab1023559ce5daad775978b178f074d1": "sha256-cUuCYi88FJUEfqCitZDivze4zY9hXhpGUgxqvQbwbkE=",
-    "gen-platform-0.1.11-2c6668f4ab1023559ce5daad775978b178f074d1": "sha256-cUuCYi88FJUEfqCitZDivze4zY9hXhpGUgxqvQbwbkE=",
-    "gen-types-0.1.11-2c6668f4ab1023559ce5daad775978b178f074d1": "sha256-cUuCYi88FJUEfqCitZDivze4zY9hXhpGUgxqvQbwbkE=",
-    "kanchi-0.1.0-837f57e6c9b52e3d8781a56a46523627765362a0": "sha256-kxa3GKByEottN8fR/gQF4KGd/lu54j8DRGbwdrOjFhM=",
-    "shikumi-0.1.73-272f5f2e8748d5463563a16c3576d785d10df0c0": "sha256-tRFRW6ZNK3v3o3nq9fJbpQAcYCLLBmvC7oJhHFssDzw="
-  },
+  "git_nar_sha256": {},
   "flake_metadata": {
     "breathe-retirada-ci": {
       "module_trio": {
