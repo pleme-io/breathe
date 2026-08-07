@@ -784,7 +784,19 @@ impl<B: Band> outorga::Observation for BandObservation<'_, B> {
     }
     fn ready_since(&self) -> Option<i64> {
         let st = self.0.status()?;
-        let cond = st.conditions.iter().find(|c| c.type_ == "Ready")?;
+        // `Observable`, NOT `Ready` — and the distinction is load-bearing here.
+        // This feeds `outorga`'s calibrateThenWrite promotion gate, whose whole
+        // premise is "shadow until a CLEAN-OBSERVATION window has passed". When
+        // `Ready` still meant observability the two were the same condition; since
+        // the 2026-08-07 split `Ready` means ACCEPTED (enrolled, targetRef
+        // resolved), which a band with no metric at all satisfies. Keying the gate
+        // on `Ready` would therefore let a blind band clock up its calibration
+        // window and promote itself to writing having never once observed cleanly.
+        //
+        // Fail-safe on absence: a band whose status predates the split carries no
+        // `Observable` condition, so this returns `None` and the gate HOLDS in
+        // shadow for one more reconcile rather than promoting on a missing field.
+        let cond = st.conditions.iter().find(|c| c.type_ == "Observable")?;
         if cond.status != "True" {
             return None;
         }
@@ -4971,11 +4983,23 @@ mod tests {
         serde_json::from_value(obj).unwrap()
     }
 
-    /// `Ready=True` since `ts`, with `extra` conditions appended.
+    /// `Ready=True` AND `Observable=True` since `ts`, with `extra` appended.
+    ///
+    /// Both, since the 2026-08-07 Ready/Observable split: these rows exercise the
+    /// calibrateThenWrite promotion gate, whose premise is a clean-OBSERVATION
+    /// window, so a fixture carrying only `Ready` would describe a band that was
+    /// accepted but never observed anything — which the gate now (correctly)
+    /// refuses to promote. `Observable` is what this helper always meant by
+    /// "ready"; before the split there was only one condition to say it with.
     fn ready_status(ts: &str, extra: serde_json::Value) -> serde_json::Value {
-        let mut conds = vec![serde_json::json!(
-            { "type": "Ready", "status": "True", "reason": "R", "message": "m", "lastTransitionTime": ts }
-        )];
+        let mut conds = vec![
+            serde_json::json!(
+                { "type": "Ready", "status": "True", "reason": "Accepted", "message": "m", "lastTransitionTime": ts }
+            ),
+            serde_json::json!(
+                { "type": "Observable", "status": "True", "reason": "MetricObservable", "message": "m", "lastTransitionTime": ts }
+            ),
+        ];
         conds.extend(extra.as_array().unwrap().clone());
         serde_json::json!({ "conditions": conds })
     }
