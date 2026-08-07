@@ -219,7 +219,7 @@ fn upsert_condition(
 pub fn conditions_for(outcome: &TickOutcome, prior: &[Condition], generation: Option<i64>) -> Vec<Condition> {
     let now = chrono::Utc::now().to_rfc3339();
     let r = &outcome.receipt;
-    // READY = "enrolled, config parses, metric observable". `NoLimit` is
+    // OBSERVABLE = "there is a metric/limit to reason on THIS TICK". `NoLimit` is
     // DELIBERATELY NOT in this exclusion set (it was, until 2026-07-26): the
     // bound-introduction guard only fires AFTER a clean observe — breathe read the
     // target, read its usage, and found no declared bound. That is an OBSERVATION,
@@ -229,6 +229,26 @@ pub fn conditions_for(outcome: &TickOutcome, prior: &[Condition], generation: Op
     // camelot-eks: no cpu limit in their manifests, which is exactly the case the
     // guard exists to respect). `NoLimit` is carried by `Supported=False` below —
     // the condition purpose-built for "correct, permanent, needs operator action".
+    //
+    // ── This used to BE `Ready`, and that was the bug. ────────────────────────
+    // The 2026-07-26 fix above pulled ONE arm (`NoLimit`) out of `Ready` for
+    // exactly the reason that applies to the whole set: an absent INPUT is not a
+    // failed RECONCILE. `Error { MetricsMissing }` is the arm it did not reach, and
+    // on 2026-08-07 that cost a live release. `Ready` is what kstatus reads, so
+    // helm-controller/Flux/Argo treat it as "did this object come up?" — with
+    // `Ready = observable`, a metrics-server outage made every band report
+    // NOT-CAME-UP. Measured on camelot-eks: 115/115 bands `Ready=False` while
+    // `TargetFound`/`Supported`/`Conflict` were all green, i.e. every band was
+    // ACCEPTED and merely blind. A forced `helm upgrade` of `camelot-build/sui`
+    // then blocked the full 5m timeout and Flux's `remediation.strategy:
+    // uninstall` DELETED AND REINSTALLED the release (history reset to `.v1`).
+    // The reinstall took 6s, because freshly-created bands have no status yet —
+    // which is why this only ever bites on UPGRADE, never on install.
+    //
+    // So: an observability declaration must never be able to become an
+    // availability precondition. `Ready` answers "have I accepted and taken
+    // ownership of this spec?"; `Observable` answers "do I have data right now?".
+    // Two facts, two conditions — never one bit.
     let observable = !matches!(
         r,
         TickReceipt::Error { .. } | TickReceipt::MetricUnrepresentable { .. } | TickReceipt::CapabilityMissing { .. }
@@ -279,11 +299,26 @@ pub fn conditions_for(outcome: &TickOutcome, prior: &[Condition], generation: Op
     // self-healing (re-derived fresh every tick; the moment the real object
     // appears this flips back to `true` with no accumulated state).
     let target_found = !matches!(r, TickReceipt::Error { error: ProviderError::TargetNotFound });
+    // READY = ACCEPTANCE, never achievement — see the `observable` note above.
+    // The band is enrolled, its config parses, and its targetRef resolves to a
+    // live object, so the controller has taken ownership and is running its loop.
+    // Deliberately NOT gated on:
+    //   * `observable` — an absent input is `Observable=False`, not a failed
+    //     reconcile (the whole point of this split);
+    //   * `supported`  — `Supported=False` already means "correct, permanent,
+    //     needs operator action", and the 2026-07-26 `NoLimit` fix established
+    //     that such a band stays Ready. Gating here would re-break it;
+    //   * `conflict`   — carried by `Conflict` below, and unchanged from before.
+    // `TargetFound=False` is the one honest not-ready: there is no object to own.
+    let ready = target_found;
 
-    let mut out = Vec::with_capacity(7);
-    upsert_condition(&mut out, prior, &now, "Ready", observable,
-        if observable { "Reconciling" } else { "NotObservable" },
-        if observable { "enrolled, config parses, metric observable" } else { "no metric/limit to reason on" }, generation);
+    let mut out = Vec::with_capacity(8);
+    upsert_condition(&mut out, prior, &now, "Ready", ready,
+        if ready { "Accepted" } else { "TargetMissing" },
+        if ready { "enrolled, config parses, targetRef resolved — the controller owns this band" } else { "targetRef does not resolve — nothing to take ownership of" }, generation);
+    upsert_condition(&mut out, prior, &now, "Observable", observable,
+        if observable { "MetricObservable" } else { "NotObservable" },
+        if observable { "a metric/limit is available to reason on" } else { "no metric/limit to reason on — the band is accepted and idle, NOT failed" }, generation);
     upsert_condition(&mut out, prior, &now, "Converged", converged,
         if converged { "WithinBand" } else { "Adjusting" },
         if converged { "utilization is within the deadband" } else { "carving/waiting toward the setpoint" }, generation);
@@ -335,6 +370,18 @@ pub enum HealthVerdict {
     /// real object appears, and is surfaced immediately rather than waiting
     /// [`STUCK_AFTER_SECS`] behind the generic Ready/Converged timer.
     TargetNotFound { since_secs: i64 },
+    /// `Observable=False` — the band is ACCEPTED and owned, but has no metric to
+    /// reason on (the metrics API is down, or this target's usage is unreadable).
+    /// Distinct from `Stuck` in the same way `TargetNotFound` is: nothing is
+    /// wedged, an INPUT is absent, and it self-heals the instant the metric
+    /// returns — so it must not sit behind the generic [`STUCK_AFTER_SECS`] timer.
+    ///
+    /// Checked BEFORE the `Converged` timer on purpose. A blind band can never be
+    /// converged either, so without this arm the metrics outage would simply
+    /// reappear as `Stuck { condition: "Converged" }` — the same false alarm one
+    /// condition to the left. Receipt: 115/115 camelot-eks bands sat in exactly
+    /// this state on 2026-08-07 while metrics-server was floored at 0.
+    Unobservable { since_secs: i64 },
     /// A permanently-shadowed band (`dryRun:true`) whose target sits outside the
     /// deadband: `Converged=False` has held past [`STUCK_AFTER_SECS`], but a
     /// shadow band computes what it WOULD do and never actually resizes, so it
@@ -355,6 +402,7 @@ impl HealthVerdict {
             Self::Healthy => "Healthy",
             Self::Unsupported { .. } => "Unsupported",
             Self::TargetNotFound { .. } => "TargetNotFound",
+            Self::Unobservable { .. } => "Unobservable",
             Self::ShadowPending { .. } => "ShadowPending",
             Self::Stuck { .. } => "Stuck",
         }
@@ -399,6 +447,17 @@ pub fn health_verdict(conditions: &[Condition], now: &str, stuck_after_secs: i64
         if c.status != "True" {
             let since_secs = seconds_since(now, &c.last_transition_time).unwrap_or(0);
             return HealthVerdict::TargetNotFound { since_secs };
+        }
+    }
+    // UNOBSERVABLE: the same family as `TargetFound` above — an absent INPUT, not a
+    // wedged band — so it is surfaced immediately and honestly rather than behind
+    // the generic timer. Placed before `Converged` deliberately: a blind band is
+    // never converged either, so leaving it to fall through would just re-emit the
+    // identical false alarm as `Stuck { condition: "Converged" }`.
+    if let Some(c) = find_condition(conditions, "Observable") {
+        if c.status != "True" {
+            let since_secs = seconds_since(now, &c.last_transition_time).unwrap_or(0);
+            return HealthVerdict::Unobservable { since_secs };
         }
     }
     // Throttled=True covers warmup / cooldown / deferred-crossing / stale-metric —
@@ -461,6 +520,17 @@ pub fn health_event_for(verdict: &HealthVerdict) -> Option<(EventKind, &'static 
             EventKind::Warning,
             "TargetNotFound",
             format!("targetRef has not resolved for {since_secs}s — will self-heal automatically once the object is created; verify the targetRef name/kind/namespace if this persists"),
+        )),
+        // Warning, but explicitly NOT a band fault: the band is accepted and owned,
+        // its input is gone. The note points at the metrics pipeline because that is
+        // where the fix is — chasing the band itself is the wrong hunt (2026-08-07:
+        // 115 bands read as broken when metrics-server was simply floored at 0).
+        HealthVerdict::Unobservable { since_secs } => Some((
+            EventKind::Warning,
+            "BandUnobservable",
+            format!(
+                "no metric to reason on for {since_secs}s — the band is ACCEPTED and idle, not failed; check the metrics pipeline (metrics-server / the metric source), not this band"
+            ),
         )),
         // non-alarming by design: a permanently-shadowed band that never converges
         // is working exactly as configured, not wedged — Normal, not Warning.
@@ -685,6 +755,22 @@ pub fn status_for(
             s.last_decision =
                 Some("targetRef does not exist — held; will self-heal automatically once the object is created".into());
         }
+        TickReceipt::Error {
+            error: ProviderError::MetricsMissing,
+        } => {
+            // Same honest-arm treatment as `TargetNotFound` above, for the same
+            // reason: the generic "Error" reads as a breathe-side fault, and this
+            // is not one — the band is accepted and owned, its metric source is
+            // simply not answering. Self-heals the instant the metric returns.
+            // Receipt (2026-08-07): every band on camelot-eks sat in phase `Error`
+            // with a null message because metrics-server was floored at 0, which
+            // made `Error` the RESTING state and therefore worth nothing as a
+            // signal — a real fault would have been indistinguishable from it.
+            s.phase = Some("Unobservable".into());
+            s.last_decision = Some(
+                "no metric to reason on — held; check the metrics pipeline, not this band".into(),
+            );
+        }
         TickReceipt::Error { error } => {
             s.phase = Some("Error".into());
             s.last_decision = Some(error.to_string());
@@ -792,7 +878,12 @@ pub fn shadow_reason_note(reason: breathe_provider::ShadowReason) -> String {
         R::Frozen => "an external freeze (pool / fleet write switch) is engaged".into(),
         R::ModeShadow => "authored hold (writeIntent: observe)".into(),
         R::Suspended => "authored freeze (writeIntent: frozen)".into(),
-        R::NotReady => "NOT AUTHORED — the band is not Ready (no observable metric yet)".into(),
+        // The gate's own name predates the Ready/Observable split and is now the
+        // narrower of the two facts: the write was withheld because there was no
+        // metric, which is `Observable=False`. The band itself stays Ready
+        // (accepted + owned). Worded from the condition an operator will actually
+        // see, not from the enum variant.
+        R::NotReady => "NOT AUTHORED — no observable metric yet (Observable=False; the band itself is accepted)".into(),
         R::Stale => "NOT AUTHORED — the driving metric sample is too old to trust".into(),
         R::Conflict => "NOT AUTHORED — another field manager owns the target".into(),
         R::IntentMalformed => {
@@ -1351,8 +1442,14 @@ pub fn replica_status_for(
     //    `kubectl wait` behave identically). ────────────────────────────────────
     let now = now_rfc3339();
     let prior_conds = prior.map_or(&[][..], |p| p.conditions.as_slice());
-    let mut conds = Vec::with_capacity(5);
-    upsert_condition(&mut conds, prior_conds, &now, "Ready", true, "Reconciling", "enrolled, config parses, signal observable", generation);
+    let mut conds = Vec::with_capacity(6);
+    // Ready/Observable carry the SAME split as the vertical path (`conditions_for`)
+    // — both `true` here because the replica path only reaches this point after a
+    // clean observe. Emitting `Observable` unconditionally matters anyway: a band
+    // whose condition array LACKS it would be read as "not unobservable" by
+    // `health_verdict`, so an absent condition must never be the quiet default.
+    upsert_condition(&mut conds, prior_conds, &now, "Ready", true, "Accepted", "enrolled, config parses, targetRef resolved — the controller owns this band", generation);
+    upsert_condition(&mut conds, prior_conds, &now, "Observable", true, "MetricObservable", "a metric/limit is available to reason on", generation);
     upsert_condition(&mut conds, prior_conds, &now, "Converged", converged,
         if converged { "WithinBand" } else { "Adjusting" },
         if converged { "replica count is within the deadband" } else { "scaling/waiting toward the setpoint" }, generation);
@@ -1581,8 +1678,15 @@ mod tests {
         assert_eq!(supported.status, "False");
         assert_eq!(supported.reason, "StorageClassUnsupported");
         assert!(supported.message.contains("StorageClass"));
-        // …and this arm keeps Ready=False (there is genuinely nothing to reason on).
-        assert_eq!(conds.iter().find(|c| c.type_ == "Ready").expect("Ready").status, "False");
+        // …and this arm keeps "there is genuinely nothing to reason on" — which is
+        // `Observable=False`. It asserted that on `Ready` until 2026-08-07, because
+        // `Ready` WAS observability; the comment was already describing the right
+        // fact, the condition was just the wrong one to carry it.
+        assert_eq!(conds.iter().find(|c| c.type_ == "Observable").expect("Observable").status, "False");
+        // Ready stays TRUE: the band is accepted and owned, and "can never converge
+        // without operator action" is `Supported`'s job — exactly as the 2026-07-26
+        // `NoLimit` fix established. Those two arms disagreed on Ready until now.
+        assert_eq!(conds.iter().find(|c| c.type_ == "Ready").expect("Ready").status, "True");
     }
 
     #[test]
@@ -1649,9 +1753,17 @@ mod tests {
         let supported = s.conditions.iter().find(|c| c.type_ == "Supported").expect("Supported condition present");
         assert_eq!(supported.status, "False");
         assert_eq!(supported.reason, "StorageClassUnsupported");
-        // not observable either — there is nothing further to reason on.
+        // not observable either — there is nothing further to reason on. (Asserted
+        // on `Ready` until 2026-08-07, when Ready/Observable split; the comment
+        // already named the right fact.)
+        let observable = s
+            .conditions
+            .iter()
+            .find(|c| c.type_ == "Observable")
+            .unwrap();
+        assert_eq!(observable.status, "False");
         let ready = s.conditions.iter().find(|c| c.type_ == "Ready").unwrap();
-        assert_eq!(ready.status, "False");
+        assert_eq!(ready.status, "True");
     }
 
     #[test]
@@ -1683,15 +1795,131 @@ mod tests {
     }
 
     #[test]
-    fn a_genuine_metrics_outage_keeps_the_generic_error_phase_and_a_true_target_found() {
-        // contrast: a real MetricsMissing (pods exist, usage unreadable) is still
-        // the generic "Error" phase, and TargetFound stays True — only the
-        // specific TargetNotFound provider error gets the distinct treatment.
+    fn a_metrics_outage_gets_its_own_honest_phase_not_the_generic_error() {
+        // ⚠️ THIS REVERSES A DELIBERATE EARLIER DECISION, and says so on purpose.
+        // Until 2026-08-07 this test was named `..._keeps_the_generic_error_phase_...`
+        // and pinned MetricsMissing to phase "Error", reasoning that "only the
+        // specific TargetNotFound provider error gets the distinct treatment".
+        //
+        // What that missed: `Error` then became the RESTING state. Measured on
+        // camelot-eks 2026-08-07 — 115 of 115 bands in phase `Error` with a null
+        // message, because metrics-server was floored at 0 by the park layer. A
+        // phase every band is always in carries no signal at all, so a genuinely
+        // broken band would have been indistinguishable from the resting fleet.
+        // That is the same "failure mode identical to the success mode" defect the
+        // TargetNotFound arm was itself introduced to fix.
         use breathe_provider::ProviderError;
         let s = status_of(&out(TickReceipt::Error { error: ProviderError::MetricsMissing }));
-        assert_eq!(s.phase.as_deref(), Some("Error"));
+        assert_eq!(s.phase.as_deref(), Some("Unobservable"));
+        assert!(s.last_decision.as_deref().unwrap().contains("metrics pipeline"));
+        // The contrast this test was originally written to hold STILL holds, and is
+        // why the arm is distinct from TargetNotFound rather than merged with it:
+        // the pods exist, the targetRef resolved, only the usage is unreadable.
         let target_found = s.conditions.iter().find(|c| c.type_ == "TargetFound").expect("TargetFound condition present");
         assert_eq!(target_found.status, "True");
+        // And the generic arm is NOT hollowed out — a real API fault still says Error.
+        let api = status_of(&out(TickReceipt::Error { error: ProviderError::ApiPermanent("boom".into()) }));
+        assert_eq!(api.phase.as_deref(), Some("Error"));
+    }
+
+    /// ★ THE regression test for the 2026-08-07 defect. Goes red the instant
+    /// `Ready` is re-derived from observability.
+    ///
+    /// Why this one assertion is worth a named test: `Ready` is the condition
+    /// kstatus reads, so it is what decides whether helm-controller / Flux / Argo
+    /// consider the object to have come up. With `Ready = observable`, a
+    /// metrics-server outage made every band report NOT-CAME-UP, a forced
+    /// `helm upgrade` of `camelot-build/sui` blocked its full 5m timeout, and
+    /// Flux's `remediation.strategy: uninstall` deleted and reinstalled the
+    /// release. An observability declaration must never be able to become an
+    /// availability precondition.
+    #[test]
+    fn a_blind_band_is_accepted_not_failed() {
+        use breathe_provider::ProviderError;
+        let o = out(TickReceipt::Error { error: ProviderError::MetricsMissing });
+        let conds = conditions_for(&o, &[], None);
+        let find = |t: &str| conds.iter().find(|c| c.type_ == t).expect("condition").clone();
+
+        assert_eq!(find("Ready").status, "True", "a band with no metric is ACCEPTED, not failed");
+        assert_eq!(find("Ready").reason, "Accepted");
+        // …and the real fact is carried losslessly by the condition built for it.
+        assert_eq!(find("Observable").status, "False");
+        assert_eq!(find("Observable").reason, "NotObservable");
+        // the three acceptance proofs that JUSTIFY Ready=True are all green — this
+        // is what makes "accepted" a derivation rather than an assertion.
+        assert_eq!(find("TargetFound").status, "True");
+        assert_eq!(find("Supported").status, "True");
+        assert_eq!(find("Conflict").status, "False");
+    }
+
+    /// A blind band, far past the stuck window, is `Unobservable` — and crucially
+    /// NOT `Stuck { condition: "Converged" }` either.
+    ///
+    /// That second half is the subtle one, and the reason `Unobservable` is an
+    /// early return rather than a label swap: a band with no metric can never be
+    /// converged, so a fix that only cleared `Ready` would have the identical
+    /// false alarm reappear one condition to the left, 1800s later.
+    #[test]
+    fn a_blind_band_never_reads_as_stuck_by_either_route() {
+        use breathe_provider::ProviderError;
+        let o = out(TickReceipt::Error { error: ProviderError::MetricsMissing });
+        let conds = conditions_for(&o, &[], None);
+        assert_eq!(
+            conds.iter().find(|c| c.type_ == "Converged").expect("Converged").status,
+            "False",
+            "precondition: a blind band really is un-converged — which is exactly why the \
+             Converged fall-through needs guarding, and why this test is not redundant"
+        );
+        let far_future = "2999-01-01T00:00:00Z";
+        for dry_run in [true, false] {
+            match health_verdict(&conds, far_future, STUCK_AFTER_SECS, dry_run) {
+                HealthVerdict::Unobservable { since_secs } => assert!(since_secs > 0),
+                other => panic!("dry_run={dry_run}: expected Unobservable, got {other:?}"),
+            }
+        }
+        // and the operator-facing event names the metrics pipeline, not the band —
+        // sending the hunt to the right place is the whole point of the arm.
+        let (kind, reason, note) =
+            health_event_for(&HealthVerdict::Unobservable { since_secs: 9000 }).expect("event");
+        assert_eq!(kind, EventKind::Warning);
+        assert_eq!(reason, "BandUnobservable");
+        assert_ne!(reason, "BandStuck");
+        assert!(note.contains("metrics pipeline"), "note: {note:?}");
+    }
+
+    /// `TargetFound=False` is the ONE arm that legitimately clears `Ready`: there
+    /// is no object to take ownership of, so "accepted" would be a lie. This is
+    /// the positive control for the test above — proof that `Ready` can still go
+    /// False, i.e. that the fix did not simply nail it to `True`.
+    #[test]
+    fn target_not_found_is_the_only_arm_that_clears_ready() {
+        use breathe_provider::ProviderError;
+        let conds = conditions_for(&out(TickReceipt::Error { error: ProviderError::TargetNotFound }), &[], None);
+        let find = |t: &str| conds.iter().find(|c| c.type_ == t).expect("condition").clone();
+        assert_eq!(find("Ready").status, "False");
+        assert_eq!(find("Ready").reason, "TargetMissing");
+
+        // Every other non-observable receipt keeps Ready=True. If this loop ever
+        // goes red, someone has re-coupled acceptance to achievement.
+        for (label, r) in [
+            ("MetricsMissing", TickReceipt::Error { error: ProviderError::MetricsMissing }),
+            ("ApiTransient", TickReceipt::Error { error: ProviderError::ApiTransient("x".into()) }),
+            ("ApiPermanent", TickReceipt::Error { error: ProviderError::ApiPermanent("x".into()) }),
+            ("MetricUnrepresentable", TickReceipt::MetricUnrepresentable { used: 9, capacity: 1 }),
+            (
+                "CapabilityMissing",
+                TickReceipt::CapabilityMissing {
+                    volume_expansion: false,
+                    per_volume_metrics: false,
+                    provisioner: "p".into(),
+                },
+            ),
+            ("NoLimit", TickReceipt::Observed { decision: Decision::NoLimit }),
+        ] {
+            let c = conditions_for(&out(r), &[], None);
+            let ready = c.iter().find(|c| c.type_ == "Ready").expect("Ready");
+            assert_eq!(ready.status, "True", "{label} must stay Ready — it is accepted, merely blind or unsupported");
+        }
     }
 
     #[test]

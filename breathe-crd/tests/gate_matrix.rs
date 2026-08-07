@@ -339,11 +339,25 @@ impl Obs {
         if self.no_status {
             return None;
         }
-        let mut conds = vec![json!({
-            "type": "Ready",
-            "status": if self.ready { "True" } else { "False" },
-            "reason": "R", "message": "m", "lastTransitionTime": READY_AT,
-        })];
+        // The `ready` axis of this matrix has always meant "is the band cleanly
+        // OBSERVING" — that is the fact the confirm gate consumes. Since the
+        // 2026-08-07 Ready/Observable split it is carried by `Observable`, so the
+        // axis drives that condition and `Ready` (ACCEPTED: enrolled + targetRef
+        // resolved) stays True across every row: each of these fixtures describes a
+        // band the controller has taken ownership of, including `NOT_READY`, whose
+        // point is a band that is owned but has nothing to reason on yet.
+        let mut conds = vec![
+            json!({
+                "type": "Ready",
+                "status": "True",
+                "reason": "Accepted", "message": "m", "lastTransitionTime": READY_AT,
+            }),
+            json!({
+                "type": "Observable",
+                "status": if self.ready { "True" } else { "False" },
+                "reason": "R", "message": "m", "lastTransitionTime": READY_AT,
+            }),
+        ];
         if self.stale {
             conds.push(json!({ "type": "Stale", "status": "True", "reason": "R", "message": "m", "lastTransitionTime": READY_AT }));
         }
