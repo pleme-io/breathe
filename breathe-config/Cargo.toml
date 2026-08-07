@@ -9,8 +9,8 @@ repository.workspace = true
 description = "Shikumi-backed service configuration for breathe — the BreatheServiceConfig root whose typed `scale` section (store/cache/coordination + bounded knobs) selects the elasticity tier BY CONFIG, never a hidden fallback. prescribed_default is the VERY-SMALL tier (in-memory, no cache, single replica), byte-identical to today; the EXTREME tier (Postgres/Redis/sharding) is the same root with different enum arms (M2/M3/M4). M1 of the Urdume-microservice refactor; see docs/BREATHE-MICROSERVICE.md."
 
 [dependencies]
-shikumi = { git = "https://github.com/pleme-io/shikumi" }
-kanchi = { git = "https://github.com/pleme-io/kanchi" }
+shikumi = "0.1"
+kanchi = "0.1"
 serde = { version = "1", features = ["derive"] }
 thiserror = "2"
 
