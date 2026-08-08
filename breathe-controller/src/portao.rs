@@ -244,6 +244,11 @@ pub enum ResultadoPortao {
     /// A gate rejected, or the defer budget ran out. The taint STAYS ON, so
     /// nothing schedules onto a node being handed back.
     Devolvido,
+    /// The gate PASSED and the write failed. Distinct from every other arm on
+    /// purpose: the node is gated for a reason that has nothing to do with its
+    /// readiness, and conflating it with `Retido` would hide a broken actuator
+    /// behind a normal-looking deferral.
+    FalhouAoLiberar,
 }
 
 impl ResultadoPortao {
@@ -258,6 +263,7 @@ impl ResultadoPortao {
             Self::Retido { preso: false } => "held",
             Self::Retido { preso: true } => "stuck",
             Self::Devolvido => "handed_back",
+            Self::FalhouAoLiberar => "release_failed",
         }
     }
 }
@@ -647,18 +653,35 @@ pub async fn reconcile_portao(
         ));
 
         let r = resultado_para_no(carries, action, cfg.shadow, node_age(n, now), cfg.stuck_after);
+        // A write that FAILS must not look like a node that was held. It gets
+        // its own outcome, its own metric label, and ERROR not WARN — because
+        // the first live test of this loop failed exactly here (force+Merge is
+        // rejected by kube-rs at request-build time) and the node simply stayed
+        // gated. Nothing else reports a wedged node: an un-Initialized node is
+        // exempt from Karpenter consolidation AND drift.
+        let mut r = r;
         if r == ResultadoPortao::Liberado
             && let Some(patch) = release_patch(action, &taints)
         {
-            {
-                Api::<Node>::all(client.clone())
+                // PatchParams::default() + Patch::Merge — the shape every other
+                // taint write in this crate uses (node_forma.rs:764,
+                // origin_guard.rs:112). Do not reintroduce `.force()`: it is
+                // server-side-apply only.
+                if let Err(e) = Api::<Node>::all(client.clone())
                     .patch(
                         &name,
-                        &PatchParams::apply("breathe-portao").force(),
+                        &PatchParams::default(),
                         &Patch::Merge(serde_json::json!({ "spec": { "taints": patch } })),
                     )
-                    .await?;
-            }
+                    .await
+                {
+                    tracing::error!(
+                        node = %name, error = %e,
+                        "portao: gate PASSED but the taint write failed — the node stays \
+                         unschedulable and nothing else will report it"
+                    );
+                    r = ResultadoPortao::FalhouAoLiberar;
+                }
         }
         if let ResultadoPortao::Retido { preso: true } = r {
             tracing::warn!(
@@ -776,6 +799,7 @@ mod outcome_tests {
             ResultadoPortao::Retido { preso: false },
             ResultadoPortao::Retido { preso: true },
             ResultadoPortao::Devolvido,
+            ResultadoPortao::FalhouAoLiberar,
         ];
         let mut seen: Vec<&str> = all.iter().map(|r| r.as_str()).collect();
         seen.sort_unstable();
