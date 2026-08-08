@@ -701,17 +701,53 @@ impl ComponenteExigido {
 /// same: *absent* is a node still coming up, *indeterminate* is a broken
 /// observation. Collapsing them is how "can't tell" becomes "fine" — Gate-0
 /// illegal state 5. As a closed enum every arm must be answered at the match.
+/// **The two evidence arms have OPPOSITE polarity. Do not merge them.**
+///
+/// This enum shipped on 2026-08-08 with `Present` folded into `Reporting`, and
+/// the bug that produced is the reason the split is load-bearing. `ready_for`
+/// (how long a pod has *been* Ready — bigger is healthier) was fed into
+/// `last_report_age` (how *stale* a heartbeat is — smaller is healthier) and
+/// compared against a 90 s ceiling. The host-agent DaemonSet has no
+/// readinessProbe, so `Ready` never re-transitions: measured on camelot, every
+/// healthy agent read 6 004–20 959 s and would have **deferred to `Expirado`,
+/// releasing no node at all**, while a *freshly restarted* agent passed. The
+/// suite could not catch it because every case used `ready_for(5)`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EstadoComponente {
-    /// Present AND reporting, with the age of its most recent report.
+    /// Observed on the node and continuously Ready for `ready_for`.
     ///
-    /// Age is carried rather than a `fresh: bool` so the freshness *bound* lives
-    /// with the gate that decides policy, not with the observer that cannot.
+    /// **Bigger is better** — this is a *stability* measure, bounded from BELOW
+    /// by `min_stable`. It proves the container is up and has stayed up. It
+    /// does **not** prove the component's own loop is turning; nothing kubelet
+    /// reports can. That is what `Reporting` is for.
+    Present { ready_for: core::time::Duration },
+    /// The component wrote its own heartbeat `last_report_age` ago.
+    ///
+    /// **Smaller is better** — bounded from ABOVE by `max_report_age`. Only a
+    /// self-written signal can carry this, so it is stronger evidence than
+    /// `Present`: it survives the "registered at boot, died an hour ago" case
+    /// that `Present` cannot see.
     Reporting { last_report_age: core::time::Duration },
     /// Definitively not on the node yet.
     Absent,
     /// The observation itself failed. Never a pass — see the impl.
     Indeterminate,
+}
+
+/// How strong the evidence for a component must be.
+///
+/// Typed data rather than a branch in the gate, so raising a component's bar
+/// once its heartbeat exists is a one-field change — not a refactor of the
+/// checking logic, which is where the polarity bug lived.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProvaExigida {
+    /// `Present` (stable for long enough) or `Reporting` both satisfy it.
+    /// Honest M0 for anything with no heartbeat of its own — CNI and CSI
+    /// publish no per-node liveness we can read.
+    PresenteOuMelhor,
+    /// Only a self-written heartbeat satisfies it. `Present` is **rejected**,
+    /// however stable, because stability is not liveness.
+    ApenasReportando,
 }
 
 /// What `ConformanceBinding` inspects on the candidate's inner handle.
@@ -720,26 +756,44 @@ pub trait Conformant {
     fn component_state(&self, c: ComponenteExigido) -> EstadoComponente;
 }
 
-/// Real: proves the node carries every required pleme-io component and that each
-/// is *reporting recently*, before any workload may be scheduled onto it.
+/// Real: proves the node carries every required pleme-io component with
+/// sufficient evidence, before any workload may be scheduled onto it.
 ///
-/// **Presence is not enough, which is why `max_report_age` exists.** A host agent
-/// that registered at boot and died an hour ago leaves exactly the ungoverned
-/// node this gate is meant to forbid, and it looks identical to a healthy one if
-/// you only ask "is it there?" (Gate-0 illegal state 3).
+/// Each component carries its own [`ProvaExigida`], so the bar rises per
+/// component as real heartbeats appear rather than all-or-nothing.
 pub struct ConformanceBinding {
-    /// Components that must be `Reporting`. Empty is rejected as vacuous.
-    pub required: Vec<ComponenteExigido>,
-    /// How stale a component's last report may be and still count.
+    /// Each required component and how strong its evidence must be. Empty is
+    /// rejected as vacuous.
+    pub required: Vec<(ComponenteExigido, ProvaExigida)>,
+    /// Minimum continuous readiness for `Present` to count. Bounds from BELOW.
+    pub min_stable: core::time::Duration,
+    /// Maximum heartbeat staleness for `Reporting` to count. Bounds from ABOVE.
     pub max_report_age: core::time::Duration,
 }
 
 impl ConformanceBinding {
-    /// The fleet default: every enumerated component, 90-second freshness.
+    /// The fleet default at M0.
+    ///
+    /// **Every component sits at `PresenteOuMelhor`, including the host agent,
+    /// and that is a stated ceiling rather than an oversight.** Nothing in the
+    /// fleet writes a per-node heartbeat today — there is no
+    /// `coordination.k8s.io` Lease anywhere in breathe, and `patch_status`
+    /// writes per-*band* status, not per-node. So demanding `ApenasReportando`
+    /// now would mean no node could ever be released, which is fail-closed but
+    /// ships nothing.
+    ///
+    /// What this default *does* prove is real and worth having: the component
+    /// is on the node and has been continuously ready for `min_stable`. What it
+    /// does **not** prove is that the agent's loop is turning. When the agent
+    /// grows a Lease, flip `BreatheHostAgent` to `ApenasReportando` — one field.
     #[must_use]
     pub fn fleet_default() -> Self {
         Self {
-            required: ComponenteExigido::ALL.to_vec(),
+            required: ComponenteExigido::ALL
+                .into_iter()
+                .map(|c| (c, ProvaExigida::PresenteOuMelhor))
+                .collect(),
+            min_stable: core::time::Duration::from_secs(30),
             max_report_age: core::time::Duration::from_secs(90),
         }
     }
@@ -762,21 +816,61 @@ impl<T: Conformant + Send + Sync> Portao<T> for ConformanceBinding {
             );
         }
 
-        for c in &self.required {
+        for (c, prova) in &self.required {
             match inner.component_state(*c) {
+                // A heartbeat is the strong arm and satisfies every requirement,
+                // provided it is FRESH. Bounded from ABOVE.
                 EstadoComponente::Reporting { last_report_age }
                     if last_report_age <= self.max_report_age => {}
 
-                // Present but stale: the agent is not governing this node now.
                 EstadoComponente::Reporting { last_report_age } => {
                     return ReciboGate::defer(
                         PortaoKind::ConformanceBinding,
                         format!(
-                            "{} last reported {}s ago, over the {}s bound — present \
-                             is not reporting",
+                            "{} last reported {}s ago, over the {}s bound — it \
+                             registered and then stopped",
                             c.as_str(),
                             last_report_age.as_secs(),
                             self.max_report_age.as_secs()
+                        ),
+                    );
+                }
+
+                // Presence is the weak arm, bounded from BELOW: a pod that has
+                // been continuously Ready for long enough. NOTE THE DIRECTION —
+                // folding this into the branch above (comparing a stability
+                // measure against a staleness ceiling) is the exact inversion
+                // this enum's doc records, and it deferred every healthy node.
+                EstadoComponente::Present { ready_for }
+                    if *prova == ProvaExigida::PresenteOuMelhor
+                        && ready_for >= self.min_stable => {}
+
+                // Present, stable enough, but this component demands a real
+                // heartbeat. Stability is not liveness, and saying so is the
+                // whole reason ProvaExigida exists.
+                EstadoComponente::Present { .. }
+                    if *prova == ProvaExigida::ApenasReportando =>
+                {
+                    return ReciboGate::defer(
+                        PortaoKind::ConformanceBinding,
+                        format!(
+                            "{} is present but writes no heartbeat, and this \
+                             component requires one — stability is not liveness",
+                            c.as_str()
+                        ),
+                    );
+                }
+
+                // Present but not yet stable: still flapping or just started.
+                EstadoComponente::Present { ready_for } => {
+                    return ReciboGate::defer(
+                        PortaoKind::ConformanceBinding,
+                        format!(
+                            "{} has only been ready {}s, under the {}s stability \
+                             bound",
+                            c.as_str(),
+                            ready_for.as_secs(),
+                            self.min_stable.as_secs()
                         ),
                     );
                 }
@@ -825,10 +919,17 @@ pub struct ObservacaoPod {
     pub found: bool,
     /// Its `Ready` condition is `True`.
     pub ready: bool,
-    /// How long ago that condition last transitioned. `None` when the API gave
-    /// a Ready pod with no parsable timestamp — which is *not* freshness
-    /// evidence, so it classifies as indeterminate rather than as age zero.
-    pub since_ready: Option<core::time::Duration>,
+    /// How long it has been **continuously Ready** — `now - lastTransitionTime`.
+    ///
+    /// Named `ready_for`, not `since_ready`, because the old name read like a
+    /// staleness and got wired to a staleness ceiling. It is the opposite: a
+    /// STABILITY measure where bigger is healthier. The host-agent DaemonSet
+    /// carries no readinessProbe, so this only ever grows — measured 6 004–
+    /// 20 959 s across camelot's healthy agents.
+    ///
+    /// `None` when the API gave a Ready pod with no parsable timestamp — not
+    /// evidence of anything, so it classifies as indeterminate, never as zero.
+    pub ready_for: Option<core::time::Duration>,
     /// The read itself failed (RBAC, apiserver error, a partial list).
     pub lookup_failed: bool,
 }
@@ -850,10 +951,14 @@ pub fn estado_de_pod(o: &ObservacaoPod) -> EstadoComponente {
     if !o.ready {
         return EstadoComponente::Absent;
     }
-    match o.since_ready {
-        Some(age) => EstadoComponente::Reporting { last_report_age: age },
-        // Ready but undatable: we cannot honour the freshness bound, so we do
-        // not pretend to. Defers rather than passing.
+    match o.ready_for {
+        // A kubelet Ready condition is PRESENCE evidence, never a heartbeat.
+        // Mapping it to `Reporting` is what inverted the polarity: it sent a
+        // stability measure to a staleness ceiling and deferred every healthy
+        // node in the fleet.
+        Some(d) => EstadoComponente::Present { ready_for: d },
+        // Ready but undatable: we cannot honour any bound, so we do not
+        // pretend to. Defers rather than passing.
         None => EstadoComponente::Indeterminate,
     }
 }
@@ -872,10 +977,22 @@ impl VistaNo {
     pub fn new() -> Self {
         Self::default()
     }
-    /// Record one component's reading.
+    /// Record one component's reading from a pod observation.
     #[must_use]
     pub fn observando(mut self, c: ComponenteExigido, o: &ObservacaoPod) -> Self {
         self.estados.insert(c, estado_de_pod(o));
+        self
+    }
+
+    /// Record a state directly, for evidence that does not come from a pod.
+    ///
+    /// The heartbeat path needs this: a Lease read yields `Reporting` with no
+    /// `ObservacaoPod` in sight. Keeping the gather open to both sources is
+    /// what lets a component's bar rise to `ApenasReportando` without the
+    /// gatherer being rewritten.
+    #[must_use]
+    pub fn com_estado(mut self, c: ComponenteExigido, e: EstadoComponente) -> Self {
+        self.estados.insert(c, e);
         self
     }
 }
