@@ -126,6 +126,17 @@ spec:
               value: {{ .Values.requeueSeconds | quote }}
             - name: RUST_LOG
               value: {{ .Values.logLevel | quote }}
+            # Node-readiness (portao). SHADOW default-ON: the loop computes the
+            # taint verdict and writes nothing. Only the exact string "false"
+            # arms the writer — a typo or empty value stays in shadow.
+            #
+            # ★ Arm this BEFORE a NodePool gains the pleme.io/unbreathed
+            # startupTaint, never after. Flipping it while nothing is tainted is
+            # a no-op (every node resolves not_gated). The reverse order lands a
+            # taint whose remover cannot write, and the node stays unschedulable
+            # forever while the loop reports would_release.
+            - name: BREATHE_PORTAO_SHADOW
+              value: {{ .Values.portao.shadow | quote }}
             # NATS reactive-reconcile trigger (task #90) — additive, default-OFF.
             # natsReactiveEnabled=false (the chart default) ⇒
             # BREATHE_NATS_RECONCILE_ENABLED="false" ⇒ nats_trigger::resolve_trigger's

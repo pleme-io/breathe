@@ -137,6 +137,20 @@ imagePullSecrets: []
 
 # Pin the controller pod (e.g. to a tainted, isolated node pool).
 nodeSelector: {}
+# Node-readiness gating (portao). The loop always runs; `shadow` decides
+# whether it WRITES.
+#
+# shadow: true  -> compute the verdict, patch nothing. Safe anywhere.
+# shadow: false -> lift the pleme.io/unbreathed startupTaint on a full pass.
+#
+# ★ Set false BEFORE any NodePool carries the startupTaint, never after.
+# While nothing is tainted, false is a no-op — every node resolves not_gated —
+# so arming the remover first costs nothing. The reverse order lands a taint
+# whose remover cannot write: the node is gated, the loop reports
+# would_release on every pass, and nothing ever lifts it.
+portao:
+  shadow: true
+
 # EXTRA tolerations, appended to the mandatory one.
 #
 # The node-readiness toleration (`pleme.io/unbreathed`) is NOT here and cannot
