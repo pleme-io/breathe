@@ -670,17 +670,7 @@ pub async fn reconcile_portao(
         // re-resolves to NaoGuardado on every later pass and must not be
         // re-counted, or the distribution fills with the age of long-lived
         // nodes rather than the latency of new ones.
-        if matches!(r, ResultadoPortao::Liberado | ResultadoPortao::Liberaria) {
-            histogram!("breathe_portao_time_to_ready_seconds").record(age.as_secs_f64());
-            gauge!("breathe_portao_last_time_to_ready_seconds").set(age.as_secs_f64());
-            tracing::info!(
-                node = %name,
-                seconds = age.as_secs(),
-                shadow = cfg.shadow,
-                "portao: node reached usable — this is measured relief latency, \
-                 not boot-to-Ready"
-            );
-        }
+        registrar_latencia(&name, age, cfg.shadow, r);
 
         // Which component is the long pole, in typed form. Prose reasons are
         // right for a receipt and useless for a dashboard; parsing them back
@@ -749,6 +739,50 @@ pub async fn reconcile_portao(
     }
     counter!("breathe_portao_passes_total").increment(1);
     Ok(out)
+}
+
+/// Record the relief-latency sample for a node that just became usable.
+///
+/// **VALIDITY CONDITION, and it is not pedantic.** Node age is the relief
+/// latency ONLY when the taint was present from birth — a real Karpenter
+/// `startupTaint`, which is the sole way a node gets this taint in production.
+/// Hand-tainting a node that has been up for hours (as this loop's own first
+/// live test did, on a 4-hour-old node) would record that whole AGE as a
+/// latency and poison the distribution with a five-figure outlier.
+///
+/// So samples above a sanity ceiling are DROPPED and counted, never silently
+/// discarded: no node legitimately takes an hour to land three `DaemonSet`s, so
+/// a sample past it is evidence of a hand-taint or a wedge, not of latency.
+fn registrar_latencia(
+    name: &str,
+    age: core::time::Duration,
+    shadow: bool,
+    r: ResultadoPortao,
+) {
+    const SANE_CEILING: core::time::Duration = core::time::Duration::from_secs(3600);
+    if !matches!(r, ResultadoPortao::Liberado | ResultadoPortao::Liberaria) {
+        return;
+    }
+    if age <= SANE_CEILING {
+        histogram!("breathe_portao_time_to_ready_seconds").record(age.as_secs_f64());
+        gauge!("breathe_portao_last_time_to_ready_seconds").set(age.as_secs_f64());
+        tracing::info!(
+            node = %name,
+            seconds = age.as_secs(),
+            shadow,
+            "portao: node reached usable — measured relief latency (creation to \
+             schedulable), not boot-to-Ready"
+        );
+    } else {
+        counter!("breathe_portao_latency_samples_dropped_total").increment(1);
+        tracing::warn!(
+            node = %name,
+            seconds = age.as_secs(),
+            "portao: released a node older than the sanity ceiling — NOT recorded as relief \
+             latency. The taint was almost certainly applied by hand rather than at birth, \
+             so its age is not a latency."
+        );
+    }
 }
 
 /// The defer budget for one pass. A node that keeps deferring is re-judged on
