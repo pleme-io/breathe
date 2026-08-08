@@ -288,3 +288,107 @@ fn every_required_component_is_enumerated_and_named() {
     }
     assert_eq!(ConformanceBinding::fleet_default().required.len(), ComponenteExigido::ALL.len());
 }
+
+// ── acao_para — the join between the seal and the cluster ──────────────────
+
+use super::{acao_para, AcaoPortao, MotivoDevolucao};
+
+/// Verdicts are built through the REAL `classify` path, never by constructing
+/// a `ValidationStep` arm directly — the point is the join, not the match.
+fn acao(receipts: &[ReciboGate], budget: u32) -> AcaoPortao {
+    acao_para(&classify(candidate(), receipts, budget))
+}
+
+#[test]
+fn every_gate_passing_releases_the_node() {
+    let all_pass: Vec<_> =
+        PortaoKind::ALL.into_iter().map(ReciboGate::pass).collect();
+    assert_eq!(acao(&all_pass, 3), AcaoPortao::Liberar);
+}
+
+#[test]
+fn a_deferred_gate_holds_the_taint_and_keeps_the_budget() {
+    let r = vec![
+        ReciboGate::pass(PortaoKind::CapacidadeProof),
+        ReciboGate::defer(PortaoKind::ConformanceBinding, "agent absent"),
+    ];
+    assert_eq!(acao(&r, 3), AcaoPortao::Reter { orcamento_restante: 2 });
+}
+
+#[test]
+fn an_exhausted_defer_budget_hands_the_node_back() {
+    let r = vec![ReciboGate::defer(PortaoKind::ConformanceBinding, "still absent")];
+    assert_eq!(acao(&r, 0), AcaoPortao::Devolver { motivo: MotivoDevolucao::Expirado });
+}
+
+#[test]
+fn a_rejecting_gate_hands_the_node_back() {
+    let r = vec![
+        ReciboGate::pass(PortaoKind::ConformanceBinding),
+        ReciboGate::reject(PortaoKind::CapacidadeProof, "allocatable below floor"),
+    ];
+    assert_eq!(acao(&r, 9), AcaoPortao::Devolver { motivo: MotivoDevolucao::Rejeitado });
+}
+
+/// **The load-bearing property.** Nothing but a full pass makes a node
+/// schedulable — checked over every single-gate failure, not argued.
+#[test]
+fn only_a_full_pass_releases_a_node() {
+    for spoiler in PortaoKind::ALL {
+        for bad in [
+            ReciboGate::defer(spoiler, "not yet"),
+            ReciboGate::reject(spoiler, "no"),
+        ] {
+            let mut receipts: Vec<_> = PortaoKind::ALL
+                .into_iter()
+                .filter(|k| *k != spoiler)
+                .map(ReciboGate::pass)
+                .collect();
+            receipts.push(bad);
+            for budget in [0, 1, 7] {
+                assert!(
+                    !acao(&receipts, budget).releases_node(),
+                    "{spoiler:?} failing must never release the node"
+                );
+            }
+        }
+    }
+}
+
+/// **Operational invariant, and the reason the taint must land last.** A stub
+/// gate ALWAYS defers, so any chain containing one can never reach `Liberar` —
+/// it burns the defer budget and hands every node back. Seven of the nine kinds
+/// are stubs today, so the deployed chain must run the REAL gates only. Adding
+/// a stub to a live chain would make every new node unschedulable and then
+/// reclaimed, which is a cluster-wide outage rather than a degraded check.
+#[test]
+fn a_chain_containing_a_stub_can_never_release_a_node() {
+    let stub = StubGate(PortaoKind::AttestationBinding);
+    let inner = 0u32;
+    let receipt = block_on(stub.check(&candidate(), &inner));
+    let mut receipts: Vec<_> = PortaoKind::ALL
+        .into_iter()
+        .filter(|k| *k != PortaoKind::AttestationBinding)
+        .map(ReciboGate::pass)
+        .collect();
+    receipts.push(receipt);
+    for budget in [0, 1, 100] {
+        assert!(
+            !acao(&receipts, budget).releases_node(),
+            "a stub in the chain must never release — it defers forever"
+        );
+    }
+}
+
+/// `releases_node` is the single reader of the release question, so a future
+/// variant cannot be misclassified by a caller's own re-derived match.
+#[test]
+fn exactly_one_action_releases_the_node() {
+    let all = [
+        AcaoPortao::Liberar,
+        AcaoPortao::Reter { orcamento_restante: 1 },
+        AcaoPortao::Devolver { motivo: MotivoDevolucao::Rejeitado },
+        AcaoPortao::Devolver { motivo: MotivoDevolucao::Expirado },
+    ];
+    assert_eq!(all.iter().filter(|a| a.releases_node()).count(), 1);
+}

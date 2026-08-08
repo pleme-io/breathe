@@ -807,6 +807,75 @@ impl<T: Conformant + Send + Sync> Portao<T> for ConformanceBinding {
     }
 }
 
+// ── The actuator projection: gate verdict → what to do to the real node ────
+//
+// This is the join between a seal that was airtight in Rust and a cluster that
+// never asked it. Everything above decides; nothing above ACTS. A node in
+// camelot goes `Ready` and takes work regardless of any verdict here.
+//
+// The mechanism is a Karpenter `startupTaint` that only this projection lifts:
+// a node is born unschedulable and is released against evidence. The property
+// that makes it worth the machinery is narrow and checkable —
+// **`Liberar` is constructible only from [`ValidationStep::Ready`]** — and
+// `Ready` is itself only reachable through `classify`, whose `Pronto`
+// constructor is `pub(crate)`. So "let work onto this node" cannot be reached
+// without a full pass of the gate chain. Not a convention: there is no other
+// arm that returns it, and the match is total, so a fifth `ValidationStep`
+// variant fails the build here rather than defaulting to a release.
+
+/// Why a node is being handed back rather than released.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MotivoDevolucao {
+    /// A gate rejected it — a definite non-conformance.
+    Rejeitado,
+    /// Gates kept deferring until the budget ran out. The node never breathed.
+    Expirado,
+}
+
+/// What the actuator must do to the node, projected **totally** from the gate
+/// chain's verdict.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AcaoPortao {
+    /// Remove the startup taint. The node proved itself and may take work.
+    ///
+    /// **The only arm that makes a node schedulable, and the only one no gate
+    /// verdict but `Ready` produces.**
+    Liberar,
+    /// Leave the taint in place and re-run — gates deferred, budget remains.
+    /// The node stays unschedulable meanwhile, which is the point.
+    Reter { orcamento_restante: u32 },
+    /// Leave the taint permanently and hand the node back for reclamation.
+    Devolver { motivo: MotivoDevolucao },
+}
+
+impl AcaoPortao {
+    /// Does this action let workload onto the node?
+    ///
+    /// Exists so a caller cannot re-derive "is this a release?" with its own
+    /// match and get it wrong on a future variant.
+    #[must_use]
+    pub const fn releases_node(self) -> bool {
+        matches!(self, Self::Liberar)
+    }
+}
+
+/// Project a gate verdict onto the node action. Total by construction.
+#[must_use]
+pub fn acao_para(step: &ValidationStep) -> AcaoPortao {
+    match step {
+        ValidationStep::Ready(_) => AcaoPortao::Liberar,
+        ValidationStep::Deferred(_, orcamento) => {
+            AcaoPortao::Reter { orcamento_restante: *orcamento }
+        }
+        ValidationStep::Rejected(_) => {
+            AcaoPortao::Devolver { motivo: MotivoDevolucao::Rejeitado }
+        }
+        ValidationStep::Expired(_) => {
+            AcaoPortao::Devolver { motivo: MotivoDevolucao::Expirado }
+        }
+    }
+}
+
 /// An honest M1 stub gate — `Defer`s with a "not yet implemented" reason for one
 /// of the eight not-yet-real gate kinds. Fail-safe: a candidate cannot be admitted
 /// while any gate is a stub (it stays in the deferral loop until the budget
