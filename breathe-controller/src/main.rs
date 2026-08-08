@@ -1114,6 +1114,47 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         });
     }
 
+    // ── portao: node-readiness, SHADOW-ONLY ────────────────────────────────
+    //
+    // Safe to spawn against a live cluster before any NodePool carries the
+    // taint, for two independent reasons, and it is spawned precisely so a
+    // shadow verdict can be OBSERVED before the taint is ever added:
+    //
+    //   1. `shadow: true` — `resultado_para_no` cannot return `Liberado` in
+    //      shadow, swept over every action at every age by
+    //      `portao::outcome_tests::shadow_never_releases`. No patch is issued.
+    //   2. No node carries `pleme.io/unbreathed` today, so every node resolves
+    //      to `NaoGuardado` and the loop is a pure read regardless.
+    //
+    // Flipping `shadow` to false is the deliberate promotion step, and it must
+    // not happen before this loop has been watched saying `would_release` for
+    // healthy nodes. Read the verdict from the `breathe_portao_nodes` gauge.
+    {
+        let portao_client = client.clone();
+        let portao_every = requeue;
+        tokio::spawn(async move {
+            let cfg = portao::PortaoConfig {
+                catalogo: portao::CatalogoComponentes::eks(),
+                portao: breathe_admission::ConformanceBinding::fleet_default(),
+                shadow: true,
+                stuck_after: Duration::from_secs(600),
+            };
+            loop {
+                match portao::reconcile_portao(&portao_client, &cfg).await {
+                    Ok(rows) => {
+                        let gated = rows
+                            .iter()
+                            .filter(|(_, r)| *r != portao::ResultadoPortao::NaoGuardado)
+                            .count();
+                        tracing::debug!(nodes = rows.len(), gated, "portao: shadow pass");
+                    }
+                    Err(e) => warn!(error = %e, "portao: shadow pass failed"),
+                }
+                tokio::time::sleep(portao_every).await;
+            }
+        });
+    }
+
     let ctx = Arc::new(Ctx {
         client: client.clone(),
         prometheus_url,
