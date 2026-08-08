@@ -89,7 +89,7 @@ pub fn release_patch(action: AcaoPortao, current: &[Taint]) -> Option<Vec<serde_
 
 use std::collections::BTreeMap;
 
-use breathe_admission::{ComponenteExigido, ConformanceBinding, ObservacaoPod, VistaNo};
+use breathe_admission::{ComponenteExigido, ConformanceBinding, ObservacaoPod, Portao, VistaNo};
 
 /// Where a component's pod lives and how to recognise it.
 ///
@@ -219,6 +219,79 @@ pub fn vista_para_no(node: &str, pods: &[PodLeitura], cat: &CatalogoComponentes)
         v = v.observando(c, &obs);
     }
     v
+}
+
+// ── The per-node outcome ───────────────────────────────────────────────────
+
+/// What the reconcile did, or would have done, to one node.
+///
+/// Mirrors [`crate::node_forma::ClaimOutcome`]'s `WouldTaint`/`Tainted` split
+/// so the shadow ladder reads the same at both taint surfaces.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResultadoPortao {
+    /// The node does not carry the taint. Nothing to decide, nothing to write —
+    /// every node in the fleet today, since no `NodePool` stamps it yet.
+    NaoGuardado,
+    /// Shadow: the gate passed and the taint WOULD be lifted.
+    Liberaria,
+    /// Live: the gate passed and the taint was lifted.
+    Liberado,
+    /// Still gated.
+    ///
+    /// `preso` marks a node held past the stuck bound. It exists because
+    /// **nothing else in the system will report this**: an un-Initialized node
+    /// is exempt from Karpenter consolidation and from drift
+    /// (v1.8.1 `statenode.go:209-211`), so a node wedged here is invisible —
+    /// its pending pod simply never schedules and no controller complains.
+    Retido { preso: bool },
+    /// A gate rejected, or the defer budget ran out. The taint STAYS ON, so
+    /// nothing schedules onto a node being handed back.
+    Devolvido,
+}
+
+impl ResultadoPortao {
+    /// The metric/status label, in the style [`crate::node_forma::outcome_of`]
+    /// already uses.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::NaoGuardado => "not_gated",
+            Self::Liberaria => "would_release",
+            Self::Liberado => "released",
+            Self::Retido { preso: false } => "held",
+            Self::Retido { preso: true } => "stuck",
+            Self::Devolvido => "handed_back",
+        }
+    }
+}
+
+/// PURE: the whole per-node decision.
+///
+/// **The safety property, tested: `shadow == true` can never yield
+/// [`ResultadoPortao::Liberado`].** A shadow reconcile computes the same verdict
+/// and writes nothing, which is what makes it safe to run against a live
+/// cluster before any pool carries the taint.
+#[must_use]
+pub fn resultado_para_no(
+    carries_taint: bool,
+    action: AcaoPortao,
+    shadow: bool,
+    node_age: core::time::Duration,
+    stuck_after: core::time::Duration,
+) -> ResultadoPortao {
+    if !carries_taint {
+        return ResultadoPortao::NaoGuardado;
+    }
+    if action.releases_node() {
+        return if shadow { ResultadoPortao::Liberaria } else { ResultadoPortao::Liberado };
+    }
+    match action {
+        AcaoPortao::Devolver { .. } => ResultadoPortao::Devolvido,
+        // Age is measured from the NODE, not from when this loop first saw it:
+        // a controller restart must not reset the clock on a node that has been
+        // wedged for an hour.
+        _ => ResultadoPortao::Retido { preso: node_age >= stuck_after },
+    }
 }
 
 #[cfg(test)]
@@ -463,5 +536,253 @@ mod gather_tests {
         );
         assert_eq!(catalogo_cobre_o_portao(&cat, &only_agent), Ok(()));
         assert!(catalogo_cobre_o_portao(&cat, &ConformanceBinding::fleet_default()).is_err());
+    }
+}
+
+// ── The kube half ──────────────────────────────────────────────────────────
+//
+// Thin by design: everything decidable lives above this line and is tested
+// without a cluster. What remains here is listing, mapping, and one patch.
+
+use k8s_openapi::api::core::v1::{Node, Pod};
+use kube::{
+    api::{Api, ListParams, Patch, PatchParams},
+    ResourceExt,
+};
+use metrics::{counter, gauge};
+
+/// How the reconcile is configured for one cluster.
+pub struct PortaoConfig {
+    pub catalogo: CatalogoComponentes,
+    pub portao: ConformanceBinding,
+    /// Shadow computes and reports without writing. **Default true** — the
+    /// two-gate ladder this codebase already uses everywhere else.
+    pub shadow: bool,
+    /// How long a node may stay gated before it is reported as stuck.
+    pub stuck_after: core::time::Duration,
+}
+
+/// Age of a `Ready` condition, and whether it is currently `True`.
+fn ready_state(p: &Pod, now: std::time::SystemTime) -> (bool, Option<core::time::Duration>) {
+    let Some(c) = p
+        .status
+        .as_ref()
+        .and_then(|s| s.conditions.as_ref())
+        .and_then(|cs| cs.iter().find(|c| c.type_ == "Ready"))
+    else {
+        return (false, None);
+    };
+    let ready = c.status == "True";
+    // `Time` already wraps a DateTime<Utc>; no string round-trip needed.
+    let age = c
+        .last_transition_time
+        .as_ref()
+        .and_then(|t| u64::try_from(t.0.timestamp()).ok())
+        .and_then(|ts| {
+            now.duration_since(std::time::UNIX_EPOCH)
+                .ok()
+                .map(|n| core::time::Duration::from_secs(n.as_secs().saturating_sub(ts)))
+        });
+    (ready, age)
+}
+
+fn leitura(p: &Pod, now: std::time::SystemTime) -> PodLeitura {
+    let (ready, ready_for) = ready_state(p, now);
+    PodLeitura {
+        namespace: p.namespace().unwrap_or_default(),
+        labels: p.labels().clone().into_iter().collect(),
+        node_name: p.spec.as_ref().and_then(|s| s.node_name.clone()),
+        ready,
+        ready_for,
+    }
+}
+
+fn node_age(n: &Node, now: std::time::SystemTime) -> core::time::Duration {
+    n.creation_timestamp()
+        .and_then(|t| u64::try_from(t.0.timestamp()).ok())
+        .and_then(|ts| {
+            now.duration_since(std::time::UNIX_EPOCH)
+                .ok()
+                .map(|n| core::time::Duration::from_secs(n.as_secs().saturating_sub(ts)))
+        })
+        .unwrap_or_default()
+}
+
+/// One pass over every node. Returns each node's outcome.
+///
+/// # Errors
+/// Propagates apiserver failures. A failed LIST is never treated as "no pods" —
+/// that would read as every component absent and hand back the whole fleet.
+pub async fn reconcile_portao(
+    client: &kube::Client,
+    cfg: &PortaoConfig,
+) -> Result<Vec<(String, ResultadoPortao)>, kube::Error> {
+    // Refuse to run a gate the catalog cannot serve, rather than defer every
+    // node forever while nothing reports it.
+    if let Err(missing) = catalogo_cobre_o_portao(&cfg.catalogo, &cfg.portao) {
+        tracing::error!(
+            ?missing,
+            "portao: catalog does not cover the gate's required components — refusing to \
+             reconcile. Every node would defer forever and nothing would report it."
+        );
+        return Ok(vec![]);
+    }
+
+    let now = std::time::SystemTime::now();
+    let nodes = Api::<Node>::all(client.clone()).list(&ListParams::default()).await?;
+    let pods = Api::<Pod>::all(client.clone()).list(&ListParams::default()).await?;
+    let leituras: Vec<PodLeitura> = pods.items.iter().map(|p| leitura(p, now)).collect();
+
+    let mut out = Vec::with_capacity(nodes.items.len());
+    let mut tally: BTreeMap<&'static str, u64> = BTreeMap::new();
+
+    for n in &nodes.items {
+        let name = n.name_any();
+        let taints = n.spec.as_ref().and_then(|s| s.taints.clone()).unwrap_or_default();
+        let carries = taints.iter().any(|t| t.key == TAINT_KEY);
+
+        let vista = vista_para_no(&name, &leituras, &cfg.catalogo);
+        let receipts = vec![cfg.portao.check(&candidato(&name), &vista).await];
+        let action = breathe_admission::acao_para(&breathe_admission::classify(
+            candidato(&name),
+            &receipts,
+            DEFER_BUDGET,
+        ));
+
+        let r = resultado_para_no(carries, action, cfg.shadow, node_age(n, now), cfg.stuck_after);
+        if r == ResultadoPortao::Liberado
+            && let Some(patch) = release_patch(action, &taints)
+        {
+            {
+                Api::<Node>::all(client.clone())
+                    .patch(
+                        &name,
+                        &PatchParams::apply("breathe-portao").force(),
+                        &Patch::Merge(serde_json::json!({ "spec": { "taints": patch } })),
+                    )
+                    .await?;
+            }
+        }
+        if let ResultadoPortao::Retido { preso: true } = r {
+            tracing::warn!(
+                node = %name,
+                "portao: node has been gated past the stuck bound. Nothing else reports this — \
+                 an un-Initialized node is exempt from Karpenter consolidation AND drift."
+            );
+        }
+        *tally.entry(r.as_str()).or_default() += 1;
+        out.push((name, r));
+    }
+
+    for (state, n) in &tally {
+        #[allow(clippy::cast_precision_loss)] // a node count never nears 2^53
+        gauge!("breathe_portao_nodes", "state" => *state).set(*n as f64);
+    }
+    counter!("breathe_portao_passes_total").increment(1);
+    Ok(out)
+}
+
+/// The defer budget for one pass. A node that keeps deferring is re-judged on
+/// the NEXT pass with a fresh budget — the stuck bound, not this counter, is
+/// what bounds the total wait, because a node legitimately takes minutes to
+/// land its `DaemonSet`s and burning the budget in one pass would hand it back.
+const DEFER_BUDGET: u32 = 3;
+
+fn candidato(name: &str) -> breathe_admission::Recurso<breathe_admission::Validando> {
+    breathe_admission::Recurso::<breathe_admission::Descoberto>::discover(
+        breathe_admission::ResourceId::new(name),
+        breathe_provider::Forma::NodeOnDemand,
+    )
+    .begin_provision()
+    .provisioned()
+    .begin_validation()
+}
+
+#[cfg(test)]
+mod outcome_tests {
+    use super::{resultado_para_no, ResultadoPortao};
+    use breathe_admission::{AcaoPortao, MotivoDevolucao};
+    use core::time::Duration;
+
+    const YOUNG: Duration = Duration::from_secs(10);
+    const OLD: Duration = Duration::from_secs(3600);
+    const BOUND: Duration = Duration::from_secs(600);
+
+    /// **The safety property.** Shadow can never produce a live release, for any
+    /// action, at any age. This is what makes it safe to run the loop against a
+    /// live cluster before a single pool carries the taint.
+    #[test]
+    fn shadow_never_releases() {
+        for action in [
+            AcaoPortao::Liberar,
+            AcaoPortao::Reter { orcamento_restante: 2 },
+            AcaoPortao::Devolver { motivo: MotivoDevolucao::Rejeitado },
+            AcaoPortao::Devolver { motivo: MotivoDevolucao::Expirado },
+        ] {
+            for age in [YOUNG, OLD] {
+                for carries in [true, false] {
+                    assert_ne!(
+                        resultado_para_no(carries, action, true, age, BOUND),
+                        ResultadoPortao::Liberado,
+                        "{action:?} in shadow must never report a live release"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn an_ungated_node_is_never_touched() {
+        for action in [AcaoPortao::Liberar, AcaoPortao::Devolver { motivo: MotivoDevolucao::Rejeitado }] {
+            assert_eq!(
+                resultado_para_no(false, action, false, OLD, BOUND),
+                ResultadoPortao::NaoGuardado,
+                "a node without the taint is not this loop's business"
+            );
+        }
+    }
+
+    #[test]
+    fn a_passing_gate_releases_when_live_and_reports_when_shadow() {
+        assert_eq!(resultado_para_no(true, AcaoPortao::Liberar, false, YOUNG, BOUND), ResultadoPortao::Liberado);
+        assert_eq!(resultado_para_no(true, AcaoPortao::Liberar, true, YOUNG, BOUND), ResultadoPortao::Liberaria);
+    }
+
+    /// The stuck bound is what makes a wedged node visible at all.
+    #[test]
+    fn a_node_held_past_the_bound_is_reported_stuck() {
+        let held = AcaoPortao::Reter { orcamento_restante: 1 };
+        assert_eq!(resultado_para_no(true, held, false, YOUNG, BOUND), ResultadoPortao::Retido { preso: false });
+        assert_eq!(resultado_para_no(true, held, false, OLD, BOUND), ResultadoPortao::Retido { preso: true });
+    }
+
+    /// Handing a node back leaves the taint ON — nothing may schedule onto a
+    /// node being reclaimed — so it is never confused with a release.
+    #[test]
+    fn handing_back_is_not_a_release_at_any_age() {
+        for m in [MotivoDevolucao::Rejeitado, MotivoDevolucao::Expirado] {
+            for age in [YOUNG, OLD] {
+                assert_eq!(
+                    resultado_para_no(true, AcaoPortao::Devolver { motivo: m }, false, age, BOUND),
+                    ResultadoPortao::Devolvido
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn every_outcome_has_a_distinct_label() {
+        let all = [
+            ResultadoPortao::NaoGuardado,
+            ResultadoPortao::Liberaria,
+            ResultadoPortao::Liberado,
+            ResultadoPortao::Retido { preso: false },
+            ResultadoPortao::Retido { preso: true },
+            ResultadoPortao::Devolvido,
+        ];
+        let mut seen: Vec<&str> = all.iter().map(|r| r.as_str()).collect();
+        seen.sort_unstable();
+        seen.dedup();
+        assert_eq!(seen.len(), all.len(), "metric labels must not collide");
     }
 }
