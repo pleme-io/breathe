@@ -552,7 +552,7 @@ use kube::{
     api::{Api, ListParams, Patch, PatchParams},
     ResourceExt,
 };
-use metrics::{counter, gauge};
+use metrics::{counter, gauge, histogram};
 
 /// How the reconcile is configured for one cluster.
 pub struct PortaoConfig {
@@ -638,6 +638,7 @@ pub async fn reconcile_portao(
 
     let mut out = Vec::with_capacity(nodes.items.len());
     let mut tally: BTreeMap<&'static str, u64> = BTreeMap::new();
+    let mut blocked: BTreeMap<(&'static str, &'static str), u64> = BTreeMap::new();
 
     for n in &nodes.items {
         let name = n.name_any();
@@ -652,7 +653,47 @@ pub async fn reconcile_portao(
             DEFER_BUDGET,
         ));
 
-        let r = resultado_para_no(carries, action, cfg.shadow, node_age(n, now), cfg.stuck_after);
+        let age = node_age(n, now);
+        let r = resultado_para_no(carries, action, cfg.shadow, age, cfg.stuck_after);
+
+        // ── The measurement breathability actually needs ───────────────────
+        //
+        // `reliefLatencySeconds` is the lookahead the predictive previsor must
+        // meet or exceed (BREATHABILITY-NODE-LIFECYCLE, P8) — and on camelot it
+        // is 180 on both pools: a round, identical, hand-picked number. This
+        // loop is the only thing in the fleet positioned to MEASURE the real
+        // value, because relief latency is not boot-to-Ready, it is
+        // creation-to-USABLE, and the gap between them is exactly the
+        // DaemonSet-landing window this gate was built to close.
+        //
+        // Recorded on the release edge only. A node that is already released
+        // re-resolves to NaoGuardado on every later pass and must not be
+        // re-counted, or the distribution fills with the age of long-lived
+        // nodes rather than the latency of new ones.
+        if matches!(r, ResultadoPortao::Liberado | ResultadoPortao::Liberaria) {
+            histogram!("breathe_portao_time_to_ready_seconds").record(age.as_secs_f64());
+            gauge!("breathe_portao_last_time_to_ready_seconds").set(age.as_secs_f64());
+            tracing::info!(
+                node = %name,
+                seconds = age.as_secs(),
+                shadow = cfg.shadow,
+                "portao: node reached usable — this is measured relief latency, \
+                 not boot-to-Ready"
+            );
+        }
+
+        // Which component is the long pole, in typed form. Prose reasons are
+        // right for a receipt and useless for a dashboard; parsing them back
+        // out would be the format-then-reparse shape the fleet bans.
+        if let Some((comp, estado)) = cfg.portao.bloqueador(&vista) {
+            let est = match estado {
+                breathe_admission::EstadoComponente::Absent => "absent",
+                breathe_admission::EstadoComponente::Indeterminate => "indeterminate",
+                breathe_admission::EstadoComponente::Present { .. } => "present_unstable",
+                breathe_admission::EstadoComponente::Reporting { .. } => "reporting_stale",
+            };
+            *blocked.entry((comp.as_str(), est)).or_default() += 1;
+        }
         // A write that FAILS must not look like a node that was held. It gets
         // its own outcome, its own metric label, and ERROR not WARN — because
         // the first live test of this loop failed exactly here (force+Merge is
@@ -697,6 +738,14 @@ pub async fn reconcile_portao(
     for (state, n) in &tally {
         #[allow(clippy::cast_precision_loss)] // a node count never nears 2^53
         gauge!("breathe_portao_nodes", "state" => *state).set(*n as f64);
+    }
+    // Emitted even when empty is impossible for a gauge, so zero out nothing:
+    // an absent series and a zero series read differently, and the catalog of
+    // components is closed, so every component that is NOT blocking simply has
+    // no sample this pass.
+    for ((comp, est), n) in &blocked {
+        #[allow(clippy::cast_precision_loss)]
+        gauge!("breathe_portao_blocked_by", "component" => *comp, "state" => *est).set(*n as f64);
     }
     counter!("breathe_portao_passes_total").increment(1);
     Ok(out)

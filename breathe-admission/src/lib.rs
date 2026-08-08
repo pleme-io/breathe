@@ -799,6 +799,38 @@ impl ConformanceBinding {
     }
 }
 
+impl ConformanceBinding {
+    /// The first component that would block admission, in TYPED form.
+    ///
+    /// The gate's own verdict carries its reason as prose, which is right for a
+    /// receipt and useless for telemetry — parsing it back out would be the
+    /// `format!()`-then-reparse shape the fleet bans. This answers the same
+    /// question structurally, so a caller can label a metric by component and
+    /// state and learn *which* component is the long pole on node startup.
+    ///
+    /// `None` when every requirement is satisfied. Deliberately mirrors the
+    /// check's own order so the two can never disagree about who is blocking.
+    #[must_use]
+    pub fn bloqueador<T: Conformant>(
+        &self,
+        inner: &T,
+    ) -> Option<(ComponenteExigido, EstadoComponente)> {
+        self.required.iter().find_map(|(c, prova)| {
+            let e = inner.component_state(*c);
+            let ok = match e {
+                EstadoComponente::Reporting { last_report_age } => {
+                    last_report_age <= self.max_report_age
+                }
+                EstadoComponente::Present { ready_for } => {
+                    *prova == ProvaExigida::PresenteOuMelhor && ready_for >= self.min_stable
+                }
+                EstadoComponente::Absent | EstadoComponente::Indeterminate => false,
+            };
+            (!ok).then_some((*c, e))
+        })
+    }
+}
+
 #[async_trait::async_trait]
 impl<T: Conformant + Send + Sync> Portao<T> for ConformanceBinding {
     fn kind(&self) -> PortaoKind {
