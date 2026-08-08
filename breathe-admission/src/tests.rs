@@ -173,7 +173,7 @@ impl FakeNode {
         Self(
             ComponenteExigido::ALL
                 .into_iter()
-                .map(|c| (c, EstadoComponente::Reporting { last_report_age: Duration::from_secs(5) }))
+                .map(|c| (c, EstadoComponente::Present { ready_for: Duration::from_secs(600) }))
                 .collect(),
         )
     }
@@ -189,7 +189,7 @@ impl Conformant for FakeNode {
     }
 }
 
-fn verdict(node: &FakeNode, gate: &ConformanceBinding) -> GateDecision {
+fn verdict<T: Conformant + Send + Sync>(node: &T, gate: &ConformanceBinding) -> GateDecision {
     block_on(gate.check(&candidate(), node)).decision
 }
 
@@ -227,6 +227,62 @@ fn an_agent_that_stopped_reporting_does_not_pass() {
     ));
 }
 
+/// ★ THE REGRESSION. Measured on camelot 2026-08-08: every healthy host agent
+/// had been Ready for 6 004–20 959 s, because the DaemonSet carries no
+/// readinessProbe so `Ready` never re-transitions. The first cut compared that
+/// against a 90 s staleness ceiling and DEFERRED all of them — a stable agent
+/// failed while a freshly restarted one passed. The old suite could not catch
+/// it: every case used `ready_for(5)`.
+#[test]
+fn a_long_stable_agent_passes_rather_than_deferring() {
+    for secs in [600u64, 6_004, 20_959, 86_400] {
+        let node = ComponenteExigido::ALL.into_iter().fold(VistaNo::new(), |v, c| {
+            v.observando(c, &ready_for(secs))
+        });
+        assert_eq!(
+            verdict(&node, &ConformanceBinding::fleet_default()),
+            GateDecision::Pass,
+            "an agent ready for {secs}s is HEALTHIER, not staler"
+        );
+    }
+}
+
+/// The stability bound is a FLOOR, so the two arms cannot be merged again:
+/// raising readiness time can only ever help.
+#[test]
+fn presence_is_bounded_from_below_not_above() {
+    let gate = ConformanceBinding::fleet_default();
+    let at = |secs: u64| {
+        let n = ComponenteExigido::ALL
+            .into_iter()
+            .fold(VistaNo::new(), |v, c| v.observando(c, &ready_for(secs)));
+        verdict(&n, &gate)
+    };
+    assert!(matches!(at(5), GateDecision::Defer { .. }), "under min_stable");
+    assert_eq!(at(31), GateDecision::Pass);
+    assert_eq!(at(999_999), GateDecision::Pass, "more stability never hurts");
+}
+
+/// `ApenasReportando` refuses presence however stable — stability is not
+/// liveness. This is the one-field flip that lands when the agent grows a Lease.
+#[test]
+fn a_component_demanding_a_heartbeat_refuses_mere_presence() {
+    let gate = ConformanceBinding {
+        required: vec![(ComponenteExigido::BreatheHostAgent, ProvaExigida::ApenasReportando)],
+        ..ConformanceBinding::fleet_default()
+    };
+    let stable = VistaNo::new()
+        .observando(ComponenteExigido::BreatheHostAgent, &ready_for(86_400));
+    assert!(matches!(verdict(&stable, &gate), GateDecision::Defer { .. }));
+
+    let mut beating = VistaNo::new();
+    beating = beating.com_estado(
+        ComponenteExigido::BreatheHostAgent,
+        EstadoComponente::Reporting { last_report_age: Duration::from_secs(5) },
+    );
+    assert_eq!(verdict(&beating, &gate), GateDecision::Pass);
+}
+
 /// Gate-0 state 5 — "can't tell" must not round up to "fine".
 #[test]
 fn an_unobservable_component_defers_rather_than_passing() {
@@ -254,7 +310,7 @@ fn a_booting_node_defers_and_is_not_rejected() {
 /// would report green over every node in the fleet.
 #[test]
 fn a_gate_requiring_nothing_is_a_reject_not_a_pass() {
-    let gate = ConformanceBinding { required: vec![], max_report_age: Duration::from_secs(90) };
+    let gate = ConformanceBinding { required: vec![], ..ConformanceBinding::fleet_default() };
     assert!(matches!(verdict(&FakeNode::breathed(), &gate), GateDecision::Reject { .. }));
 }
 
@@ -266,13 +322,16 @@ fn the_freshness_bound_belongs_to_the_gate() {
         ComponenteExigido::BreatheHostAgent,
         EstadoComponente::Reporting { last_report_age: Duration::from_secs(120) },
     );
+    let only_agent = vec![(ComponenteExigido::BreatheHostAgent, ProvaExigida::PresenteOuMelhor)];
     let strict = ConformanceBinding {
-        required: vec![ComponenteExigido::BreatheHostAgent],
+        required: only_agent.clone(),
         max_report_age: Duration::from_secs(90),
+        ..ConformanceBinding::fleet_default()
     };
     let lax = ConformanceBinding {
-        required: vec![ComponenteExigido::BreatheHostAgent],
+        required: only_agent,
         max_report_age: Duration::from_secs(300),
+        ..ConformanceBinding::fleet_default()
     };
     assert!(matches!(verdict(&node, &strict), GateDecision::Defer { .. }));
     assert_eq!(verdict(&node, &lax), GateDecision::Pass);
@@ -395,17 +454,20 @@ fn exactly_one_action_releases_the_node() {
 
 // ── estado_de_pod — a reading becomes a gate input ─────────────────────────
 
-use super::{estado_de_pod, ObservacaoPod, VistaNo};
+use super::{estado_de_pod, ObservacaoPod, ProvaExigida, VistaNo};
 
+/// A pod continuously Ready for `secs`. Defaults well above `min_stable` (30s)
+/// so callers that do not care about the stability bound get a healthy node.
 fn ready_for(secs: u64) -> ObservacaoPod {
-    ObservacaoPod { found: true, ready: true, since_ready: Some(Duration::from_secs(secs)), lookup_failed: false }
+    ObservacaoPod { found: true, ready: true, ready_for: Some(Duration::from_secs(secs)), lookup_failed: false }
 }
 
+/// A kubelet Ready condition is PRESENCE, never a heartbeat.
 #[test]
-fn a_ready_pod_with_an_age_is_reporting() {
+fn a_ready_pod_is_present_not_reporting() {
     assert_eq!(
         estado_de_pod(&ready_for(5)),
-        EstadoComponente::Reporting { last_report_age: Duration::from_secs(5) }
+        EstadoComponente::Present { ready_for: Duration::from_secs(5) }
     );
 }
 
@@ -434,9 +496,9 @@ fn a_failed_lookup_is_indeterminate_never_absent() {
 /// to by reporting age zero.
 #[test]
 fn a_ready_pod_with_no_timestamp_does_not_become_age_zero() {
-    let o = ObservacaoPod { found: true, ready: true, since_ready: None, lookup_failed: false };
+    let o = ObservacaoPod { found: true, ready: true, ready_for: None, lookup_failed: false };
     assert_eq!(estado_de_pod(&o), EstadoComponente::Indeterminate);
-    assert_ne!(estado_de_pod(&o), EstadoComponente::Reporting { last_report_age: Duration::ZERO });
+    assert_ne!(estado_de_pod(&o), EstadoComponente::Present { ready_for: Duration::ZERO });
 }
 
 /// A component the gatherer forgot is indeterminate, not absent — the safe
@@ -457,14 +519,14 @@ fn a_gathered_view_drives_the_real_gate() {
     let gate = ConformanceBinding::fleet_default();
     let healthy = ComponenteExigido::ALL
         .into_iter()
-        .fold(VistaNo::new(), |v, c| v.observando(c, &ready_for(3)));
+        .fold(VistaNo::new(), |v, c| v.observando(c, &ready_for(600)));
     assert_eq!(block_on(gate.check(&candidate(), &healthy)).decision, GateDecision::Pass);
 
     let unbreathed = ComponenteExigido::ALL.into_iter().fold(VistaNo::new(), |v, c| {
         let o = if c == ComponenteExigido::BreatheHostAgent {
             ObservacaoPod::default()
         } else {
-            ready_for(3)
+            ready_for(600)
         };
         v.observando(c, &o)
     });
