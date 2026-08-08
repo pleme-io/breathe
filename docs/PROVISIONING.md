@@ -310,14 +310,45 @@ first operator value is M2 — **gated honestly on magma**.
     becomes "fine". An empty `required` set is a **`Reject`**, not a pass —
     a gate that checks nothing would report green over the whole fleet.
     8 mock-green tests, zero kube linkage.
-  - **The actuator is still missing, and the ordering is load-bearing.** The
-    typestate has always forbidden an unvalidated node reaching the pool
+  - **2026-08-08, later the same day: THE ACTUATOR SHIPPED AND IS PROVEN LIVE.**
+    The typestate had always forbidden an unvalidated node reaching the pool
     (`Pronto` is the sole ctor of `Admitido`), but **Kubernetes never asked
-    it**: a Karpenter node goes `Ready` and the scheduler places work on it
-    while the host-agent DaemonSet is still being pulled. Closing that needs a
-    `startupTaint` the gate chain is the only remover — and the taint **must
-    not** land before the remover exists, or every new node stays
-    unschedulable forever. Gate first, controller second, taint last.
+    it** — a Karpenter node went `Ready` and took work while the host-agent
+    DaemonSet was still being pulled. `breathe-controller/src/portao.rs` closes
+    that: a `startupTaint` the gate chain is the only remover.
+    - Landed in the order the failure modes demand — **gate, controller,
+      toleration, ARM, taint** — and each step verified before the next.
+      Two of those orderings are not obvious and each would have caused an
+      outage: the controller must TOLERATE the taint (or a reclaimed controller
+      node can never be replaced and nothing lifts a taint again,
+      cluster-wide), and the writer must be ARMED before the taint exists (in
+      shadow the remover cannot write, so a tainted node reports
+      `would_release` forever).
+    - **Proven, not inferred:** a hand-tainted node on camelot was released on
+      the fixed controller's first pass — `breathe_portao_nodes{state=
+      "released"} 1`. First pool gated: `builder-arm64` (chosen because it had
+      ZERO nodes; adding any field under `template.spec` changes the NodePool
+      hash and DRIFTS every node in the pool).
+    - **What only a live test found.** The first cut paired
+      `PatchParams::apply(..).force()` with `Patch::Merge`, which kube-rs
+      rejects at request-build time. 200+ green tests could not see it: the
+      decision was right and the API call was malformed. Worse, the error
+      `?`-aborted the pass *before the gauges were set*, so every
+      `breathe_portao_*` series vanished while 1296 other `breathe_*` series
+      stayed healthy — one bad write blinded the loop's own telemetry. Both
+      fixed; a failed write is now `FalhouAoLiberar` with its own metric label,
+      so a broken actuator cannot hide behind a normal-looking deferral.
+  - **The loop measures what breathability currently guesses.** Both camelot
+    `BreatheCloudPool`s carry `reliefLatencySeconds: 180` — a round, identical,
+    hand-picked number that P8 makes load-bearing (predictive lookahead must be
+    ≥ it). Relief latency is **creation-to-usable**, not boot-to-Ready, and the
+    gap between them is exactly the DaemonSet window this gate closes.
+    `breathe_portao_time_to_ready_seconds` records it on the release edge only,
+    with a one-hour sanity ceiling — a hand-tainted old node would otherwise
+    log its whole age as a "latency". `breathe_portao_blocked_by{component,
+    state}` names the long pole in typed form (`ConformanceBinding::bloqueador`
+    — the gate's prose reason is right for a receipt and useless for a
+    dashboard).
 - **M2 — first rio value: predictive cost-bounded attested node provisioning.**
   Wire `Crescer → NodeOnDemandProvedor.provision()` via a `magma` `Plan`; the cost
   gate (consuming `attribution-forge`/`commitment-forge`, §3) enters the decision;
