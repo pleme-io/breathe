@@ -155,3 +155,136 @@ fn admitido_round_trips_inner() {
     assert_eq!(*cert.get(), 42);
     assert_eq!(cert.into_inner(), 42);
 }
+
+// ── ConformanceBinding — no node is usable before it is breathed ───────────
+//
+// One test per Gate-0 illegal state the gate was built to corner. Mock-green:
+// the whole gate runs against a fake node handle, with zero kube linkage.
+
+use super::{ComponenteExigido, ConformanceBinding, Conformant, EstadoComponente};
+use core::time::Duration;
+
+/// A node's self-report, entirely in memory.
+struct FakeNode(std::collections::BTreeMap<ComponenteExigido, EstadoComponente>);
+
+impl FakeNode {
+    /// Every component healthy — the baseline the other cases perturb.
+    fn breathed() -> Self {
+        Self(
+            ComponenteExigido::ALL
+                .into_iter()
+                .map(|c| (c, EstadoComponente::Reporting { last_report_age: Duration::from_secs(5) }))
+                .collect(),
+        )
+    }
+    fn with(mut self, c: ComponenteExigido, s: EstadoComponente) -> Self {
+        self.0.insert(c, s);
+        self
+    }
+}
+
+impl Conformant for FakeNode {
+    fn component_state(&self, c: ComponenteExigido) -> EstadoComponente {
+        self.0.get(&c).copied().unwrap_or(EstadoComponente::Indeterminate)
+    }
+}
+
+fn verdict(node: &FakeNode, gate: &ConformanceBinding) -> GateDecision {
+    block_on(gate.check(&candidate(), node)).decision
+}
+
+#[test]
+fn a_fully_breathed_node_passes() {
+    assert_eq!(
+        verdict(&FakeNode::breathed(), &ConformanceBinding::fleet_default()),
+        GateDecision::Pass
+    );
+}
+
+/// Gate-0 state 1 — the whole point. A node without the host agent must not
+/// become schedulable, however healthy Kubernetes thinks it is.
+#[test]
+fn a_node_without_the_host_agent_never_passes() {
+    let node = FakeNode::breathed()
+        .with(ComponenteExigido::BreatheHostAgent, EstadoComponente::Absent);
+    assert!(
+        !matches!(verdict(&node, &ConformanceBinding::fleet_default()), GateDecision::Pass),
+        "an unbreathed node reaching Pass is the gap this gate exists to close"
+    );
+}
+
+/// Gate-0 state 3 — present is not reporting. An agent that registered at boot
+/// and died leaves the node ungoverned while looking identical to a healthy one.
+#[test]
+fn an_agent_that_stopped_reporting_does_not_pass() {
+    let node = FakeNode::breathed().with(
+        ComponenteExigido::BreatheHostAgent,
+        EstadoComponente::Reporting { last_report_age: Duration::from_secs(3600) },
+    );
+    assert!(!matches!(
+        verdict(&node, &ConformanceBinding::fleet_default()),
+        GateDecision::Pass
+    ));
+}
+
+/// Gate-0 state 5 — "can't tell" must not round up to "fine".
+#[test]
+fn an_unobservable_component_defers_rather_than_passing() {
+    let node = FakeNode::breathed()
+        .with(ComponenteExigido::ContainerNetwork, EstadoComponente::Indeterminate);
+    assert!(matches!(
+        verdict(&node, &ConformanceBinding::fleet_default()),
+        GateDecision::Defer { .. }
+    ));
+}
+
+/// A node still coming up DEFERS — it must not be rejected, because the
+/// DaemonSet is landing and the defer budget is what bounds the wait.
+#[test]
+fn a_booting_node_defers_and_is_not_rejected() {
+    let node = FakeNode::breathed()
+        .with(ComponenteExigido::StorageDriver, EstadoComponente::Absent);
+    assert!(matches!(
+        verdict(&node, &ConformanceBinding::fleet_default()),
+        GateDecision::Defer { .. }
+    ));
+}
+
+/// The vacuous guard, refused explicitly: a gate configured to require nothing
+/// would report green over every node in the fleet.
+#[test]
+fn a_gate_requiring_nothing_is_a_reject_not_a_pass() {
+    let gate = ConformanceBinding { required: vec![], max_report_age: Duration::from_secs(90) };
+    assert!(matches!(verdict(&FakeNode::breathed(), &gate), GateDecision::Reject { .. }));
+}
+
+/// Freshness is the gate's policy, not the observer's — the same observation
+/// passes or defers purely on the configured bound.
+#[test]
+fn the_freshness_bound_belongs_to_the_gate() {
+    let node = FakeNode::breathed().with(
+        ComponenteExigido::BreatheHostAgent,
+        EstadoComponente::Reporting { last_report_age: Duration::from_secs(120) },
+    );
+    let strict = ConformanceBinding {
+        required: vec![ComponenteExigido::BreatheHostAgent],
+        max_report_age: Duration::from_secs(90),
+    };
+    let lax = ConformanceBinding {
+        required: vec![ComponenteExigido::BreatheHostAgent],
+        max_report_age: Duration::from_secs(300),
+    };
+    assert!(matches!(verdict(&node, &strict), GateDecision::Defer { .. }));
+    assert_eq!(verdict(&node, &lax), GateDecision::Pass);
+}
+
+/// The catalog is enumerable, so "everything the node must carry" is readable
+/// back rather than remembered (★★ CATALOG REFLECTION).
+#[test]
+fn every_required_component_is_enumerated_and_named() {
+    assert_eq!(ComponenteExigido::ALL.len(), 3);
+    for c in ComponenteExigido::ALL {
+        assert!(!c.as_str().is_empty());
+    }
+    assert_eq!(ConformanceBinding::fleet_default().required.len(), ComponenteExigido::ALL.len());
+}

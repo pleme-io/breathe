@@ -649,6 +649,164 @@ impl<T: Allocatable + Send + Sync> Portao<T> for CapacidadeProof {
     }
 }
 
+// ── ConformanceBinding: no node is usable before it is BREATHED ────────────
+//
+// The gap this closes, measured on camelot 2026-08-08: a Karpenter node joins,
+// goes `Ready`, and the scheduler places workload on it *immediately* — while
+// `breathe-host-agent` is still a DaemonSet pod being pulled. The window is
+// small and it is real, and during it the node hosts work that no band governs.
+// The typestate above already forbids an unvalidated node reaching the pool
+// (`Pronto` is the sole constructor of `Admitido`), but Kubernetes never asked
+// the typestate: the invariant was airtight in Rust and had no actuator.
+//
+// So conformance becomes a REAL gate rather than a ninth stub, and the actuator
+// is a Karpenter `startupTaint` the gate chain is the only thing that removes.
+// A node is born unschedulable and is un-tainted only against evidence.
+
+/// A required pleme-io component, enumerated.
+///
+/// Closed on purpose (★★ CATALOG REFLECTION): "everything else the node must
+/// carry" is a set the fleet can read back, not prose in a runbook. Adding a
+/// fleet-wide component is a variant here, which is what makes the requirement
+/// checkable rather than remembered.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum ComponenteExigido {
+    /// `breathe-host-agent` — without it the node's host plane is ungoverned,
+    /// which is the whole reason this gate exists.
+    BreatheHostAgent,
+    /// The CNI has assigned the node a pod CIDR and is ready to wire pods.
+    ContainerNetwork,
+    /// The CSI node plugin is registered, so a volume-bearing pod can mount.
+    StorageDriver,
+}
+
+impl ComponenteExigido {
+    pub const ALL: [Self; 3] =
+        [Self::BreatheHostAgent, Self::ContainerNetwork, Self::StorageDriver];
+
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::BreatheHostAgent => "breathe-host-agent",
+            Self::ContainerNetwork => "container-network",
+            Self::StorageDriver => "storage-driver",
+        }
+    }
+}
+
+/// What the node says about one required component.
+///
+/// **There is deliberately no `bool` and no `is_ok()`.** A boolean forces the
+/// reader to decide what `false` means, and the two `false`s here are not the
+/// same: *absent* is a node still coming up, *indeterminate* is a broken
+/// observation. Collapsing them is how "can't tell" becomes "fine" — Gate-0
+/// illegal state 5. As a closed enum every arm must be answered at the match.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EstadoComponente {
+    /// Present AND reporting, with the age of its most recent report.
+    ///
+    /// Age is carried rather than a `fresh: bool` so the freshness *bound* lives
+    /// with the gate that decides policy, not with the observer that cannot.
+    Reporting { last_report_age: core::time::Duration },
+    /// Definitively not on the node yet.
+    Absent,
+    /// The observation itself failed. Never a pass — see the impl.
+    Indeterminate,
+}
+
+/// What `ConformanceBinding` inspects on the candidate's inner handle.
+pub trait Conformant {
+    /// The node's own account of one required component.
+    fn component_state(&self, c: ComponenteExigido) -> EstadoComponente;
+}
+
+/// Real: proves the node carries every required pleme-io component and that each
+/// is *reporting recently*, before any workload may be scheduled onto it.
+///
+/// **Presence is not enough, which is why `max_report_age` exists.** A host agent
+/// that registered at boot and died an hour ago leaves exactly the ungoverned
+/// node this gate is meant to forbid, and it looks identical to a healthy one if
+/// you only ask "is it there?" (Gate-0 illegal state 3).
+pub struct ConformanceBinding {
+    /// Components that must be `Reporting`. Empty is rejected as vacuous.
+    pub required: Vec<ComponenteExigido>,
+    /// How stale a component's last report may be and still count.
+    pub max_report_age: core::time::Duration,
+}
+
+impl ConformanceBinding {
+    /// The fleet default: every enumerated component, 90-second freshness.
+    #[must_use]
+    pub fn fleet_default() -> Self {
+        Self {
+            required: ComponenteExigido::ALL.to_vec(),
+            max_report_age: core::time::Duration::from_secs(90),
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl<T: Conformant + Send + Sync> Portao<T> for ConformanceBinding {
+    fn kind(&self) -> PortaoKind {
+        PortaoKind::ConformanceBinding
+    }
+
+    async fn check(&self, _candidate: &Recurso<Validando>, inner: &T) -> ReciboGate {
+        // A gate with nothing to check passes everything. That is the vacuous
+        // guard this codebase keeps finding, so it is a Reject, not a Pass.
+        if self.required.is_empty() {
+            return ReciboGate::reject(
+                PortaoKind::ConformanceBinding,
+                "no required components configured — a gate that checks nothing \
+                 would admit every node while reporting green",
+            );
+        }
+
+        for c in &self.required {
+            match inner.component_state(*c) {
+                EstadoComponente::Reporting { last_report_age }
+                    if last_report_age <= self.max_report_age => {}
+
+                // Present but stale: the agent is not governing this node now.
+                EstadoComponente::Reporting { last_report_age } => {
+                    return ReciboGate::defer(
+                        PortaoKind::ConformanceBinding,
+                        format!(
+                            "{} last reported {}s ago, over the {}s bound — present \
+                             is not reporting",
+                            c.as_str(),
+                            last_report_age.as_secs(),
+                            self.max_report_age.as_secs()
+                        ),
+                    );
+                }
+
+                // Still coming up. Defer, never Reject: the DaemonSet is landing,
+                // and the defer budget is what bounds the wait into an Expirado.
+                EstadoComponente::Absent => {
+                    return ReciboGate::defer(
+                        PortaoKind::ConformanceBinding,
+                        format!("{} absent — node not yet breathed", c.as_str()),
+                    );
+                }
+
+                // The observation broke. Deferring keeps the node unschedulable;
+                // passing would admit a node we know nothing about.
+                EstadoComponente::Indeterminate => {
+                    return ReciboGate::defer(
+                        PortaoKind::ConformanceBinding,
+                        format!(
+                            "{} indeterminate — cannot observe, so cannot admit",
+                            c.as_str()
+                        ),
+                    );
+                }
+            }
+        }
+        ReciboGate::pass(PortaoKind::ConformanceBinding)
+    }
+}
+
 /// An honest M1 stub gate — `Defer`s with a "not yet implemented" reason for one
 /// of the eight not-yet-real gate kinds. Fail-safe: a candidate cannot be admitted
 /// while any gate is a stub (it stays in the deferral loop until the budget

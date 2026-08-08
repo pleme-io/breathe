@@ -300,6 +300,24 @@ first operator value is M2 — **gated honestly on magma**.
   unadmitted-node **taint** mechanism (§4). 3 compile-fail tests (illegal
   transitions; raw-resource-into-pool). The BFS reachability CI test (§6 row 11).
   *This is the hard type-discipline milestone.*
+  - **2026-08-08: `ConformanceBinding` is REAL — 2 of 9, not 1.** It proves the
+    node carries every enumerated `ComponenteExigido` (`breathe-host-agent`,
+    CNI, CSI) and that each is *reporting inside a freshness bound*, so
+    "registered at boot then died" cannot pass as healthy. `EstadoComponente`
+    is a closed 3-arm enum with no `bool` and no `is_ok()`, because *absent*
+    (still coming up → `Defer`) and *indeterminate* (observation broke →
+    `Defer`) are different facts and collapsing them is how "can't tell"
+    becomes "fine". An empty `required` set is a **`Reject`**, not a pass —
+    a gate that checks nothing would report green over the whole fleet.
+    8 mock-green tests, zero kube linkage.
+  - **The actuator is still missing, and the ordering is load-bearing.** The
+    typestate has always forbidden an unvalidated node reaching the pool
+    (`Pronto` is the sole ctor of `Admitido`), but **Kubernetes never asked
+    it**: a Karpenter node goes `Ready` and the scheduler places work on it
+    while the host-agent DaemonSet is still being pulled. Closing that needs a
+    `startupTaint` the gate chain is the only remover — and the taint **must
+    not** land before the remover exists, or every new node stays
+    unschedulable forever. Gate first, controller second, taint last.
 - **M2 — first rio value: predictive cost-bounded attested node provisioning.**
   Wire `Crescer → NodeOnDemandProvedor.provision()` via a `magma` `Plan`; the cost
   gate (consuming `attribution-forge`/`commitment-forge`, §3) enters the decision;
