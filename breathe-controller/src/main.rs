@@ -22,6 +22,7 @@ mod kube_param;
 mod quinhao;
 mod pod_memory_high;
 mod policy_controller;
+mod portaria;
 mod replica_band;
 
 /// The two Tier-B authorization verdicts this crate's tests actuate under,

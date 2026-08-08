@@ -392,3 +392,84 @@ fn exactly_one_action_releases_the_node() {
     ];
     assert_eq!(all.iter().filter(|a| a.releases_node()).count(), 1);
 }
+
+// ── estado_de_pod — a reading becomes a gate input ─────────────────────────
+
+use super::{estado_de_pod, ObservacaoPod, VistaNo};
+
+fn ready_for(secs: u64) -> ObservacaoPod {
+    ObservacaoPod { found: true, ready: true, since_ready: Some(Duration::from_secs(secs)), lookup_failed: false }
+}
+
+#[test]
+fn a_ready_pod_with_an_age_is_reporting() {
+    assert_eq!(
+        estado_de_pod(&ready_for(5)),
+        EstadoComponente::Reporting { last_report_age: Duration::from_secs(5) }
+    );
+}
+
+#[test]
+fn a_missing_pod_is_absent() {
+    assert_eq!(estado_de_pod(&ObservacaoPod::default()), EstadoComponente::Absent);
+}
+
+#[test]
+fn a_found_but_unready_pod_is_absent_not_reporting() {
+    let o = ObservacaoPod { found: true, ready: false, ..Default::default() };
+    assert_eq!(estado_de_pod(&o), EstadoComponente::Absent);
+}
+
+/// **The distinction that matters.** A failed read and an empty read produce
+/// the same empty result set from a list call. Treating them alike would let a
+/// broken watch reclaim healthy nodes wholesale.
+#[test]
+fn a_failed_lookup_is_indeterminate_never_absent() {
+    let o = ObservacaoPod { lookup_failed: true, ..Default::default() };
+    assert_eq!(estado_de_pod(&o), EstadoComponente::Indeterminate);
+    assert_ne!(estado_de_pod(&o), EstadoComponente::Absent);
+}
+
+/// Ready but undatable cannot honour a freshness bound, so it must not pretend
+/// to by reporting age zero.
+#[test]
+fn a_ready_pod_with_no_timestamp_does_not_become_age_zero() {
+    let o = ObservacaoPod { found: true, ready: true, since_ready: None, lookup_failed: false };
+    assert_eq!(estado_de_pod(&o), EstadoComponente::Indeterminate);
+    assert_ne!(estado_de_pod(&o), EstadoComponente::Reporting { last_report_age: Duration::ZERO });
+}
+
+/// A component the gatherer forgot is indeterminate, not absent — the safe
+/// reading of a bug in the gatherer.
+#[test]
+fn an_unobserved_component_is_indeterminate() {
+    let vista = VistaNo::new().observando(ComponenteExigido::BreatheHostAgent, &ready_for(1));
+    assert_eq!(
+        vista.component_state(ComponenteExigido::StorageDriver),
+        EstadoComponente::Indeterminate
+    );
+}
+
+/// End to end over the real gate: a gathered view of a healthy node passes,
+/// and the same view with the agent's pod gone does not.
+#[test]
+fn a_gathered_view_drives_the_real_gate() {
+    let gate = ConformanceBinding::fleet_default();
+    let healthy = ComponenteExigido::ALL
+        .into_iter()
+        .fold(VistaNo::new(), |v, c| v.observando(c, &ready_for(3)));
+    assert_eq!(block_on(gate.check(&candidate(), &healthy)).decision, GateDecision::Pass);
+
+    let unbreathed = ComponenteExigido::ALL.into_iter().fold(VistaNo::new(), |v, c| {
+        let o = if c == ComponenteExigido::BreatheHostAgent {
+            ObservacaoPod::default()
+        } else {
+            ready_for(3)
+        };
+        v.observando(c, &o)
+    });
+    assert!(!matches!(
+        block_on(gate.check(&candidate(), &unbreathed)).decision,
+        GateDecision::Pass
+    ));
+}
