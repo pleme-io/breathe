@@ -665,6 +665,28 @@ pub(crate) fn upsert_taint(existing: &[Taint], key: &str, value: Option<&str>, e
     taints
 }
 
+/// PURE (tested): does this pod's CPU request count toward `owned`'s pool?
+///
+/// The whole per-pool demand attribution, in one decidable place, shared by
+/// every node-band backend so they cannot drift on it. Two cases, with
+/// deliberately different strengths:
+///
+/// * **Scheduled** (`node_name = Some`) — attributed to exactly the pool that
+///   owns that node. Exact, and the dominant term in a steady-state cluster.
+/// * **Unscheduled** (`node_name = None`) — attributed to EVERY pool. Which
+///   pool an unscheduled pod lands on is Karpenter's own decision, and
+///   reproducing it means re-implementing its scheduler against its
+///   instance-type catalog. So this over-counts, in the only safe direction:
+///   surplus demand can produce grow signal (bounded by each pool's ceiling)
+///   and can never fabricate a shrink.
+///
+/// Before 2026-08-08 every backend counted every pod for every pool — with six
+/// NodePools live on camelot, no pool could observe its own idleness, and both
+/// pools sat pegged `Growing` with `flapDetected`.
+pub(crate) fn demand_attributable(node_name: Option<&str>, owned: &std::collections::HashSet<String>) -> bool {
+    node_name.is_none_or(|n| owned.contains(n))
+}
+
 /// PURE (tested): the INVERSE of [`upsert_taint`] — drop the entry for `key`
 /// and return the remaining taints as merge-patch JSON, or `None` when the node
 /// does not carry it.
@@ -1199,8 +1221,8 @@ mod tests {
     use super::{
         apply_claim_to_status, claim_outcome_label, claim_patch, cloud_pool_status,
         fake_node_object, flap_status, forma_from_str, is_claim_candidate, is_kwok_managed, node_imbalance,
-        outcome_of, parse_cpu_milli, pick_claim_candidate, remove_taint, upsert_taint, ClaimOutcome,
-        CLAIM_POOL_LABEL,
+        demand_attributable, outcome_of, parse_cpu_milli, pick_claim_candidate, remove_taint,
+        upsert_taint, ClaimOutcome, CLAIM_POOL_LABEL,
         KWOK_MANAGED_LABEL, MAX_CONSECUTIVE_STUCK_TICKS,
     };
     use breathe_crd::CloudPoolStatus;
@@ -1435,6 +1457,41 @@ mod tests {
         let nodes = vec![not_ready_node("a"), ready_node("b", Some("pool-a"), vec![])];
         assert_eq!(pick_claim_candidate(&nodes), None);
         assert_eq!(pick_claim_candidate(&[]), None);
+    }
+
+    // ── demand_attributable (per-pool demand scoping, all node backends) ──
+
+    fn owned(names: &[&str]) -> std::collections::HashSet<String> {
+        names.iter().map(|s| (*s).to_string()).collect()
+    }
+
+    /// The defect this closes: before scoping, every pool counted every pod, so
+    /// with six live NodePools no pool could ever observe its own idleness.
+    #[test]
+    fn a_scheduled_pod_counts_only_for_the_pool_that_owns_its_node() {
+        let mine = owned(&["node-a", "node-b"]);
+        assert!(demand_attributable(Some("node-a"), &mine));
+        assert!(!demand_attributable(Some("other-pool-node"), &mine), "another pool's node is another pool's demand");
+    }
+
+    /// An unscheduled pod is counted by EVERY pool. Which pool it lands on is
+    /// Karpenter's decision; guessing would be the same class of error as not
+    /// scoping at all. Over-counting can only produce grow signal.
+    #[test]
+    fn an_unscheduled_pod_counts_for_every_pool() {
+        assert!(demand_attributable(None, &owned(&["node-a"])));
+        assert!(demand_attributable(None, &owned(&[])), "even a pool with no nodes must see pending work");
+    }
+
+    /// The safety property that makes the over-count acceptable: a pool with
+    /// nothing of its own scheduled on it sees ZERO scheduled demand, so it can
+    /// reach the shrink edge. That edge is the packing mechanism.
+    #[test]
+    fn an_idle_pool_sees_none_of_a_busy_pools_scheduled_demand() {
+        let idle = owned(&["idle-1"]);
+        for busy_node in ["busy-1", "busy-2", "busy-3"] {
+            assert!(!demand_attributable(Some(busy_node), &idle));
+        }
     }
 
     // ── remove_taint (upsert_taint's inverse, shared with crate::portao) ──

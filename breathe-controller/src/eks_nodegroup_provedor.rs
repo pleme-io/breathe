@@ -302,12 +302,13 @@ pub trait EksNodegroupEnvironment: Send + Sync {
     async fn observe_owned_nodes(&self, nodegroup_name: &str) -> Result<Vec<ObservedNode>, ProviderError>;
     /// Requested millicores of Running+Pending pods, cluster-wide.
     ///
-    /// v1 simplification, flagged not silently claimed — the SAME
-    /// cluster-wide-unscoped shape [`crate::karpenter_provedor::KarpenterEnvironment::observe_pod_demand_milli`]
-    /// already carries, for the identical reason: scoping to pods that
-    /// tolerate this specific nodegroup's taints is a named follow-up once a
-    /// real multi-nodegroup `EksManagedNodegroup` fleet exists.
-    async fn observe_pod_demand_milli(&self) -> Result<u64, ProviderError>;
+    /// **Scoped as of 2026-08-08**, the same split its Karpenter twin
+    /// ([`crate::karpenter_provedor::KarpenterEnvironment::observe_pod_demand_milli`])
+    /// now carries — read that doc for the full reasoning. Scheduled pods are
+    /// attributed EXACTLY to the nodegroup owning their node; unscheduled pods
+    /// are counted by every pool, an over-count in the grow-only direction that
+    /// can never fabricate a shrink.
+    async fn observe_pod_demand_milli(&self, nodegroup_name: &str) -> Result<u64, ProviderError>;
     /// The referenced nodegroup's live `scalingConfig` + `status` — see
     /// [`NodegroupState`]. One real `DescribeNodegroup` call.
     async fn describe_nodegroup(&self, cluster_name: &str, nodegroup_name: &str) -> Result<NodegroupState, ProviderError>;
@@ -495,7 +496,7 @@ impl<E: EksNodegroupEnvironment> Provedor for EksNodegroupProvedor<E> {
         let nodes = self.env.observe_owned_nodes(&self.nodegroup_name).await?;
         let capacity = nodes.len() as u64;
         let total_alloc: u64 = nodes.iter().map(|n| n.allocatable_cpu_milli).sum();
-        let demand_milli = self.env.observe_pod_demand_milli().await?;
+        let demand_milli = self.env.observe_pod_demand_milli(&self.nodegroup_name).await?;
         // Zero is a real reading — see `KarpenterProvedor::observe` for why the
         // `.max(1)` floors on both terms made scale-to-zero unreachable.
         let used = if capacity > 0 {
@@ -619,7 +620,17 @@ impl EksNodegroupEnvironment for KubeEksNodegroupEnvironment {
             .collect())
     }
 
-    async fn observe_pod_demand_milli(&self) -> Result<u64, ProviderError> {
+    async fn observe_pod_demand_milli(&self, nodegroup_name: &str) -> Result<u64, ProviderError> {
+        let owned: std::collections::HashSet<String> = Api::<Node>::all(self.kube_client.clone())
+            .list(&ListParams::default())
+            .await
+            .map_err(|e| ProviderError::ApiTransient(e.to_string()))?
+            .items
+            .iter()
+            .filter(|n| owned_by_nodegroup(n, nodegroup_name))
+            .map(kube::ResourceExt::name_any)
+            .collect();
+
         let pods = Api::<Pod>::all(self.kube_client.clone())
             .list(&ListParams::default())
             .await
@@ -630,11 +641,13 @@ impl EksNodegroupEnvironment for KubeEksNodegroupEnvironment {
             if phase != "Running" && phase != "Pending" {
                 continue;
             }
-            if let Some(spec) = &p.spec {
-                for c in &spec.containers {
-                    if let Some(cpu) = c.resources.as_ref().and_then(|r| r.requests.as_ref()).and_then(|m| m.get("cpu")) {
-                        demand_milli += parse_cpu_milli(&cpu.0);
-                    }
+            let Some(spec) = &p.spec else { continue };
+            if !crate::node_forma::demand_attributable(spec.node_name.as_deref(), &owned) {
+                continue;
+            }
+            for c in &spec.containers {
+                if let Some(cpu) = c.resources.as_ref().and_then(|r| r.requests.as_ref()).and_then(|m| m.get("cpu")) {
+                    demand_milli += parse_cpu_milli(&cpu.0);
                 }
             }
         }
@@ -1063,7 +1076,7 @@ mod tests {
         async fn observe_owned_nodes(&self, _nodegroup_name: &str) -> Result<Vec<ObservedNode>, ProviderError> {
             Ok(self.nodes.clone())
         }
-        async fn observe_pod_demand_milli(&self) -> Result<u64, ProviderError> {
+        async fn observe_pod_demand_milli(&self, _nodegroup_name: &str) -> Result<u64, ProviderError> {
             Ok(self.pod_demand_milli)
         }
         async fn describe_nodegroup(&self, _cluster_name: &str, _nodegroup_name: &str) -> Result<NodegroupState, ProviderError> {
