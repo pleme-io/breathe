@@ -48,12 +48,9 @@
 //! `breathe-admission`'s `a_chain_containing_a_stub_can_never_release_a_node`),
 //! so it would burn the defer budget and hand every node back as `Expirado`.
 
-// AUTHORED AHEAD OF ITS CALLER, deliberately — the same "safe to author ahead
-// of the wiring" precedent the builder NodePool uses while INERT. The reconcile
-// loop that gathers pod readings and applies the patch is the next step; until
-// it lands nothing in this crate calls these, and suppressing the resulting
-// dead-code warning is preferable to wiring a loop that would run before it has
-// been observed. Remove this attribute when the loop lands.
+// The loop is spawned from `main` in SHADOW. A few items here are reached only
+// by a future live promotion or by tests, so the crate-level allow stays until
+// `shadow: false` lands and exercises the write path.
 #![allow(dead_code)]
 
 use breathe_admission::AcaoPortao;
