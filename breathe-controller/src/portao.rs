@@ -252,6 +252,19 @@ pub enum ResultadoPortao {
 }
 
 impl ResultadoPortao {
+    /// Every outcome, so the metric's label set can be zero-seeded. A gauge
+    /// with no `idle_timeout` keeps its last value forever, so a state must be
+    /// emitted as 0 when it does not occur rather than simply omitted.
+    pub const ALL: [Self; 7] = [
+        Self::NaoGuardado,
+        Self::Liberaria,
+        Self::Liberado,
+        Self::Retido { preso: false },
+        Self::Retido { preso: true },
+        Self::Devolvido,
+        Self::FalhouAoLiberar,
+    ];
+
     /// The metric/status label, in the style [`crate::node_forma::outcome_of`]
     /// already uses.
     #[must_use]
@@ -725,17 +738,28 @@ pub async fn reconcile_portao(
         out.push((name, r));
     }
 
-    for (state, n) in &tally {
+    // ZERO-SEED THE WHOLE CLOSED SET. This exporter sets no idle_timeout, so a
+    // label once written re-renders at its last value FOREVER. Emitting only
+    // the states seen this pass means a node that stops being `stuck` leaves a
+    // permanent `stuck 1` on the dashboard — a fixed problem that never stops
+    // alarming, which is how an alert gets muted and then ignored. Both label
+    // sets are closed enums, so the full cross-product is enumerable and every
+    // state that did NOT occur is explicitly zero.
+    for st in ResultadoPortao::ALL {
         #[allow(clippy::cast_precision_loss)] // a node count never nears 2^53
-        gauge!("breathe_portao_nodes", "state" => *state).set(*n as f64);
+        gauge!("breathe_portao_nodes", "state" => st.as_str())
+            .set(*tally.get(st.as_str()).unwrap_or(&0) as f64);
     }
     // Emitted even when empty is impossible for a gauge, so zero out nothing:
     // an absent series and a zero series read differently, and the catalog of
     // components is closed, so every component that is NOT blocking simply has
     // no sample this pass.
-    for ((comp, est), n) in &blocked {
-        #[allow(clippy::cast_precision_loss)]
-        gauge!("breathe_portao_blocked_by", "component" => *comp, "state" => *est).set(*n as f64);
+    for comp in ComponenteExigido::ALL {
+        for est in ["absent", "indeterminate", "present_unstable", "reporting_stale"] {
+            #[allow(clippy::cast_precision_loss)]
+            gauge!("breathe_portao_blocked_by", "component" => comp.as_str(), "state" => est)
+                .set(*blocked.get(&(comp.as_str(), est)).unwrap_or(&0) as f64);
+        }
     }
     counter!("breathe_portao_passes_total").increment(1);
     Ok(out)
@@ -760,7 +784,19 @@ fn registrar_latencia(
     r: ResultadoPortao,
 ) {
     const SANE_CEILING: core::time::Duration = core::time::Duration::from_secs(3600);
-    if !matches!(r, ResultadoPortao::Liberado | ResultadoPortao::Liberaria) {
+    // ONLY on a real release. `Liberaria` (shadow) looked like the same event
+    // and is not: in shadow nothing is written, so the node stays tainted and
+    // resolves `Liberaria` again on EVERY subsequent pass — the histogram would
+    // fill with the same node re-recorded forever at a steadily growing age,
+    // which is worse than no data because it looks like data. A real
+    // `Liberado` is self-limiting: the taint is gone, so the node resolves
+    // `NaoGuardado` from the next pass on and can never be counted twice.
+    //
+    // Consequence, stated rather than worked around: a shadow deployment
+    // produces NO latency samples. That is correct. Nothing was released, so
+    // there is no time-to-ready to measure, and a repeated hypothetical is not
+    // a measurement.
+    if r != ResultadoPortao::Liberado {
         return;
     }
     if age <= SANE_CEILING {
@@ -871,6 +907,24 @@ mod outcome_tests {
                 );
             }
         }
+    }
+
+    /// `ALL` must stay exhaustive or zero-seeding silently misses a state and
+    /// that label sticks at its last value forever.
+    #[test]
+    fn all_covers_every_outcome_the_loop_can_produce() {
+        use super::ResultadoPortao as R;
+        for r in R::ALL {
+            // Compile-time exhaustiveness: a new variant fails to match here.
+            let _: &str = match r {
+                R::NaoGuardado | R::Liberaria | R::Liberado | R::Retido { .. }
+                | R::Devolvido | R::FalhouAoLiberar => r.as_str(),
+            };
+        }
+        let mut labels: Vec<&str> = R::ALL.iter().map(|r| r.as_str()).collect();
+        labels.sort_unstable();
+        labels.dedup();
+        assert_eq!(labels.len(), 7, "every ALL entry needs its own label — held and stuck differ");
     }
 
     #[test]
