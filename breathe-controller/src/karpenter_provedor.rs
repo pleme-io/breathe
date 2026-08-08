@@ -309,9 +309,33 @@ impl<E: KarpenterEnvironment> Provedor for KarpenterProvedor<E> {
         let capacity = nodes.len() as u64;
         let total_alloc: u64 = nodes.iter().map(|n| n.allocatable_cpu_milli).sum();
         let demand_milli = self.env.observe_pod_demand_milli().await?;
-        let per_node = if capacity > 0 { (total_alloc / capacity).max(1) } else { 1 };
-        let used = demand_milli.div_ceil(per_node).max(1);
-        Ok(FormaSample { used, capacity: capacity.max(1) })
+        // ── ZERO IS A REAL READING HERE. Do not restore a `.max(1)`. ────────
+        //
+        // `used` and `capacity` both carried a `.max(1)` floor, which made an
+        // idle empty pool report used=1/capacity=1 — utilisation 1.0, i.e.
+        // permanently `Growing`. Scale-to-zero was not merely unreached, it was
+        // arithmetically unreachable, and the shrink edge IS the packing
+        // mechanism. Measured on camelot: both pools pegged Growing with
+        // flapDetected=true.
+        //
+        // Nothing downstream needs the lie. `BreatheCloudPool::band_config()`
+        // already sets `MetricMissingPolicy::Trust`, whose own doc names this
+        // case — "the dimension treats 0 as a real value (node-count
+        // scaled-to-zero, etc.)" — so a 0 here runs the band law rather than
+        // tripping the split-brain gate that protects pod-memory dimensions.
+        // `KwokProvedor::observe` has always omitted the floor, so the
+        // zero-capacity path is already exercised in-tree.
+        let used = if capacity > 0 {
+            let per_node = (total_alloc / capacity).max(1);
+            demand_milli.div_ceil(per_node)
+        } else {
+            // No owned nodes, so no measured per-node size to divide by. The
+            // old code substituted per_node = 1, which turned millicores into a
+            // node count and asked for thousands of nodes. Demand with no
+            // capacity means "at least one node"; no demand means zero.
+            u64::from(demand_milli > 0)
+        };
+        Ok(FormaSample { used, capacity })
     }
 
     async fn provision(&self, n: u64) -> Result<ProvisionReceipt, ProviderError> {
@@ -774,13 +798,33 @@ mod tests {
         assert_eq!(sample, FormaSample { used: 2, capacity: 2 });
     }
 
+    /// **This test used to pin the defect.** It asserted `capacity == 1` and
+    /// `used >= 1` for an empty pool — the `.max(1)` floors — which made an
+    /// idle pool report utilisation 1.0 and grow forever. Scale-to-zero was
+    /// arithmetically unreachable, and the shrink edge is the packing
+    /// mechanism. `MetricMissingPolicy::Trust` on this band already treats 0 as
+    /// a real reading, so nothing downstream ever needed the lie.
     #[tokio::test]
-    async fn observe_with_zero_owned_nodes_reports_zero_capacity_floored_to_one_and_used_at_least_one() {
+    async fn an_empty_pool_with_no_demand_reports_zero_not_a_floor_of_one() {
+        let env = MockEnv { nodes: vec![], pod_demand_milli: 0, ..MockEnv::empty() };
+        let p = KarpenterProvedor::new(env, "pool".into(), "nodepool".into(), live_gate());
+        let sample = p.observe().await.expect("observe succeeds");
+        assert_eq!(
+            sample,
+            FormaSample { used: 0, capacity: 0 },
+            "an idle empty pool is 0/0 — anything else pins utilisation at 1.0"
+        );
+    }
+
+    /// Demand with no nodes means "at least one node", never "one node per
+    /// millicore". The old `per_node = 1` fallback turned 500 millicores into a
+    /// request for 500 nodes, capped only by the pool ceiling.
+    #[tokio::test]
+    async fn demand_with_no_owned_nodes_asks_for_one_node_not_one_per_millicore() {
         let env = MockEnv { nodes: vec![], pod_demand_milli: 500, ..MockEnv::empty() };
         let p = KarpenterProvedor::new(env, "pool".into(), "nodepool".into(), live_gate());
         let sample = p.observe().await.expect("observe succeeds");
-        assert_eq!(sample.capacity, 1, "capacity floors to 1 even with zero owned nodes (never a div-by-zero)");
-        assert!(sample.used >= 1);
+        assert_eq!(sample, FormaSample { used: 1, capacity: 0 });
     }
 
     #[tokio::test]

@@ -279,10 +279,15 @@ impl Provedor for KubeNodeProvedor {
         gauge!("breathe_node_util_ratio_min").set(imb.min_util);
         gauge!("breathe_node_imbalance_spread").set(imb.spread);
 
-        let per_node = if node_count > 0 { (total_alloc_milli / node_count).max(1) } else { 1 };
-        let used = demand_milli.div_ceil(per_node).max(1);
-        let capacity = node_count.max(1);
-        Ok(FormaSample { used, capacity })
+        // Zero is a real reading — see `KarpenterProvedor::observe` for why the
+        // `.max(1)` floors on both terms made scale-to-zero unreachable.
+        let used = if node_count > 0 {
+            let per_node = (total_alloc_milli / node_count).max(1);
+            demand_milli.div_ceil(per_node)
+        } else {
+            u64::from(demand_milli > 0)
+        };
+        Ok(FormaSample { used, capacity: node_count })
     }
 
     async fn provision(&self, n: u64) -> Result<ProvisionReceipt, ProviderError> {
