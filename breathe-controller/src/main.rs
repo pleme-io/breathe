@@ -1133,12 +1133,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let portao_client = client.clone();
         let portao_every = requeue;
         tokio::spawn(async move {
+            // SHADOW DEFAULTS ON and must be flipped explicitly. `!= Ok("false")`
+            // rather than `== Ok("true")` deliberately: a typo, an empty value,
+            // or an unset var all resolve to shadow, so only the exact string
+            // arms the writer.
+            //
+            // ★ ORDER: arm this BEFORE any NodePool gains the startupTaint, not
+            // after. Flipping it while nothing is tainted is a no-op — every
+            // node resolves NaoGuardado, proven by
+            // `an_ungated_node_is_never_touched` and observed live (7 passes,
+            // 6/6 not_gated). Do it the other way round and the taint lands
+            // with a remover that cannot write: the node is gated, the loop
+            // reports `would_release` forever, and nothing ever lifts it.
+            let shadow = std::env::var("BREATHE_PORTAO_SHADOW").as_deref() != Ok("false");
             let cfg = portao::PortaoConfig {
                 catalogo: portao::CatalogoComponentes::eks(),
                 portao: breathe_admission::ConformanceBinding::fleet_default(),
-                shadow: true,
+                shadow,
                 stuck_after: Duration::from_secs(600),
             };
+            tracing::info!(shadow, "portao: node-readiness loop starting");
             loop {
                 match portao::reconcile_portao(&portao_client, &cfg).await {
                     Ok(rows) => {
