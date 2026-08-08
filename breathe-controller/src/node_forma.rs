@@ -660,6 +660,36 @@ pub(crate) fn upsert_taint(existing: &[Taint], key: &str, value: Option<&str>, e
     taints
 }
 
+/// PURE (tested): the INVERSE of [`upsert_taint`] — drop the entry for `key`
+/// and return the remaining taints as merge-patch JSON, or `None` when the node
+/// does not carry it.
+///
+/// Lives here, next to its inverse, on purpose. The same merge-patch hazard
+/// applies in the removal direction — a JSON merge patch REPLACES the whole
+/// `spec.taints`, so a remover that forgets to pass the survivors through would
+/// silently un-taint a node for everything else it carries. One vocabulary for
+/// both directions is the only way the two cannot drift.
+///
+/// `None` rather than an unchanged list because the caller must not issue a
+/// patch that changes nothing: it is churn against the apiserver, and an
+/// unconditional write makes "did we act?" unanswerable from the audit log.
+///
+/// **It cannot add a taint** — the output is a strict subset of `existing`.
+/// That is a property of the shape, not a check, and it is why the readiness
+/// actuator is allowed to hold a node's release verb at all.
+pub(crate) fn remove_taint(existing: &[Taint], key: &str) -> Option<Vec<serde_json::Value>> {
+    if !existing.iter().any(|t| t.key == key) {
+        return None;
+    }
+    Some(
+        existing
+            .iter()
+            .filter(|t| t.key != key)
+            .map(|t| serde_json::json!({ "key": t.key, "value": t.value, "effect": t.effect }))
+            .collect(),
+    )
+}
+
 /// PURE (tested): the merge-patch body that claims a node into `pool` on
 /// `lane` — labels [`CLAIM_POOL_LABEL`]/[`CLAIM_LANE_LABEL`], and the claim
 /// taint upserted via [`upsert_taint`] alongside every taint the node already
@@ -1164,7 +1194,8 @@ mod tests {
     use super::{
         apply_claim_to_status, claim_outcome_label, claim_patch, cloud_pool_status,
         fake_node_object, flap_status, forma_from_str, is_claim_candidate, is_kwok_managed, node_imbalance,
-        outcome_of, parse_cpu_milli, pick_claim_candidate, upsert_taint, ClaimOutcome, CLAIM_POOL_LABEL,
+        outcome_of, parse_cpu_milli, pick_claim_candidate, remove_taint, upsert_taint, ClaimOutcome,
+        CLAIM_POOL_LABEL,
         KWOK_MANAGED_LABEL, MAX_CONSECUTIVE_STUCK_TICKS,
     };
     use breathe_crd::CloudPoolStatus;
@@ -1399,6 +1430,51 @@ mod tests {
         let nodes = vec![not_ready_node("a"), ready_node("b", Some("pool-a"), vec![])];
         assert_eq!(pick_claim_candidate(&nodes), None);
         assert_eq!(pick_claim_candidate(&[]), None);
+    }
+
+    // ── remove_taint (upsert_taint's inverse, shared with crate::portao) ──
+
+    /// The merge-patch hazard in the removal direction: a JSON merge patch
+    /// REPLACES `spec.taints`, so dropping the survivors would silently
+    /// un-taint the node for everything else it carries.
+    #[test]
+    fn remove_taint_drops_only_its_own_key_and_keeps_the_survivors() {
+        let existing = vec![
+            Taint { key: "dedicated".into(), effect: "NoSchedule".into(), ..Default::default() },
+            Taint {
+                key: "pleme.io/unbreathed".into(),
+                effect: "NoSchedule".into(),
+                ..Default::default()
+            },
+        ];
+        let out = remove_taint(&existing, "pleme.io/unbreathed").expect("a write");
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0]["key"], "dedicated");
+    }
+
+    /// `None`, not an unchanged list — the caller must not patch a node that
+    /// needs no change, or the audit log stops meaning anything.
+    #[test]
+    fn remove_taint_is_none_when_the_key_is_absent() {
+        let existing =
+            vec![Taint { key: "dedicated".into(), effect: "NoSchedule".into(), ..Default::default() }];
+        assert!(remove_taint(&existing, "pleme.io/unbreathed").is_none());
+        assert!(remove_taint(&[], "pleme.io/unbreathed").is_none());
+    }
+
+    /// It is a strict subset of its input, so it cannot introduce a taint —
+    /// the property that lets the readiness actuator hold a release verb.
+    #[test]
+    fn remove_taint_can_only_shrink_the_list() {
+        let existing = vec![
+            Taint { key: "a".into(), effect: "NoSchedule".into(), ..Default::default() },
+            Taint { key: "b".into(), effect: "NoSchedule".into(), ..Default::default() },
+        ];
+        for key in ["a", "b"] {
+            let out = remove_taint(&existing, key).expect("a write");
+            assert!(out.len() < existing.len());
+            assert!(out.iter().all(|t| t["key"] != key));
+        }
     }
 
     // ── upsert_taint (the shared primitive claim_patch AND origin_guard use) ──
