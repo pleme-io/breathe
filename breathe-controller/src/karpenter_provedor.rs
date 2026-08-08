@@ -44,7 +44,7 @@ use kube::{
 };
 use tracing::warn;
 
-use crate::node_forma::{is_busy_runner_pod, node_ready, parse_cpu_milli, CLAIM_POOL_LABEL};
+use crate::node_forma::{demand_attributable, is_busy_runner_pod, node_ready, parse_cpu_milli, CLAIM_POOL_LABEL};
 
 const KARPENTER_GROUP: &str = "karpenter.sh";
 const KARPENTER_VERSION: &str = "v1";
@@ -121,15 +121,33 @@ pub trait KarpenterEnvironment: Send + Sync {
     /// Ready nodes carrying `karpenter.sh/nodepool == node_pool_ref`, each
     /// with its allocatable CPU (millicores) — the capacity signal.
     async fn observe_owned_nodes(&self, node_pool_ref: &str) -> Result<Vec<ObservedNode>, ProviderError>;
-    /// Requested millicores of Running+Pending pods, cluster-wide.
+    /// Requested millicores of Running+Pending pods attributable to
+    /// `node_pool_ref`.
     ///
-    /// v1 simplification, flagged not silently claimed: this is the SAME
-    /// cluster-wide aggregate [`crate::node_forma::KubeNodeProvedor`]
-    /// computes — UNSCOPED to this specific NodePool. Scoping to pods that
-    /// tolerate this pool's taint (the
-    /// [`crate::node_forma::KwokProvedor::observe`] pattern) is a named
-    /// follow-up once a real multi-NodePool `EksKarpenter` fleet exists.
-    async fn observe_pod_demand_milli(&self) -> Result<u64, ProviderError>;
+    /// **Scoped as of 2026-08-08.** This was a cluster-wide aggregate — every
+    /// pool measured the whole cluster — described in its own doc as a "v1
+    /// simplification" whose follow-up was gated on "a real multi-NodePool
+    /// `EksKarpenter` fleet existing". camelot now runs six NodePools, so that
+    /// condition is met and the simplification has become a live defect: with
+    /// six pools each seeing all six pools' demand, no pool can ever observe
+    /// its own idleness, and the shrink edge is the packing mechanism.
+    ///
+    /// The attribution splits, and the two halves have different strengths:
+    ///
+    /// * **Scheduled pods are EXACT.** A pod with `spec.nodeName` set is
+    ///   attributed to the pool that owns that node, and to no other. This is
+    ///   the dominant term in a steady-state cluster and the whole of the
+    ///   cross-pool contamination that was being measured.
+    /// * **Pending pods are NOT attributable here**, and pretending otherwise
+    ///   would be the same class of error. Which pool an unscheduled pod lands
+    ///   on is Karpenter's own scheduling decision, and reproducing it would
+    ///   mean re-implementing its scheduler against its instance-type catalog.
+    ///   They are therefore counted by EVERY pool — an over-count, in the safe
+    ///   direction: it can only ever produce grow signal, bounded by each
+    ///   pool's own ceiling, and never a false shrink. Narrowing it to a
+    ///   feasibility filter (taints/nodeSelector the pool could satisfy) is the
+    ///   named next step; it is strictly a refinement of an already-safe bound.
+    async fn observe_pod_demand_milli(&self, node_pool_ref: &str) -> Result<u64, ProviderError>;
     /// The referenced NodePool's `.spec.template` — see [`NodePoolTemplate`].
     async fn get_nodepool_template(&self, node_pool_ref: &str) -> Result<NodePoolTemplate, ProviderError>;
     /// This pool's own NodeClaims (labeled `CLAIM_POOL_LABEL=pool`).
@@ -308,7 +326,7 @@ impl<E: KarpenterEnvironment> Provedor for KarpenterProvedor<E> {
         let nodes = self.env.observe_owned_nodes(&self.node_pool_ref).await?;
         let capacity = nodes.len() as u64;
         let total_alloc: u64 = nodes.iter().map(|n| n.allocatable_cpu_milli).sum();
-        let demand_milli = self.env.observe_pod_demand_milli().await?;
+        let demand_milli = self.env.observe_pod_demand_milli(&self.node_pool_ref).await?;
         // ── ZERO IS A REAL READING HERE. Do not restore a `.max(1)`. ────────
         //
         // `used` and `capacity` both carried a `.max(1)` floor, which made an
@@ -443,7 +461,19 @@ impl KarpenterEnvironment for KubeKarpenterEnvironment {
             .collect())
     }
 
-    async fn observe_pod_demand_milli(&self) -> Result<u64, ProviderError> {
+    async fn observe_pod_demand_milli(&self, node_pool_ref: &str) -> Result<u64, ProviderError> {
+        // The set of node names this pool owns — the exact-attribution key for
+        // every pod that has already been scheduled.
+        let owned: HashSet<String> = Api::<Node>::all(self.client.clone())
+            .list(&ListParams::default())
+            .await
+            .map_err(|e| ProviderError::ApiTransient(e.to_string()))?
+            .items
+            .iter()
+            .filter(|n| owned_by_nodepool(n, node_pool_ref))
+            .map(ResourceExt::name_any)
+            .collect();
+
         let pods = Api::<Pod>::all(self.client.clone())
             .list(&ListParams::default())
             .await
@@ -454,11 +484,16 @@ impl KarpenterEnvironment for KubeKarpenterEnvironment {
             if phase != "Running" && phase != "Pending" {
                 continue;
             }
-            if let Some(spec) = &p.spec {
-                for c in &spec.containers {
-                    if let Some(cpu) = c.resources.as_ref().and_then(|r| r.requests.as_ref()).and_then(|m| m.get("cpu")) {
-                        demand_milli += parse_cpu_milli(&cpu.0);
-                    }
+            let Some(spec) = &p.spec else { continue };
+            // Scheduled → exact. Unscheduled → counted by every pool, which
+            // over-counts grow signal and can never fabricate a shrink. See
+            // the trait method's doc for why the alternative is worse.
+            if !demand_attributable(spec.node_name.as_deref(), &owned) {
+                continue;
+            }
+            for c in &spec.containers {
+                if let Some(cpu) = c.resources.as_ref().and_then(|r| r.requests.as_ref()).and_then(|m| m.get("cpu")) {
+                    demand_milli += parse_cpu_milli(&cpu.0);
                 }
             }
         }
@@ -751,7 +786,7 @@ mod tests {
         async fn observe_owned_nodes(&self, _node_pool_ref: &str) -> Result<Vec<ObservedNode>, ProviderError> {
             Ok(self.nodes.clone())
         }
-        async fn observe_pod_demand_milli(&self) -> Result<u64, ProviderError> {
+        async fn observe_pod_demand_milli(&self, _node_pool_ref: &str) -> Result<u64, ProviderError> {
             Ok(self.pod_demand_milli)
         }
         async fn get_nodepool_template(&self, _node_pool_ref: &str) -> Result<NodePoolTemplate, ProviderError> {
@@ -1059,8 +1094,8 @@ mod tests {
             async fn observe_owned_nodes(&self, r: &str) -> Result<Vec<ObservedNode>, ProviderError> {
                 self.0.observe_owned_nodes(r).await
             }
-            async fn observe_pod_demand_milli(&self) -> Result<u64, ProviderError> {
-                self.0.observe_pod_demand_milli().await
+            async fn observe_pod_demand_milli(&self, r: &str) -> Result<u64, ProviderError> {
+                self.0.observe_pod_demand_milli(r).await
             }
             async fn get_nodepool_template(&self, r: &str) -> Result<NodePoolTemplate, ProviderError> {
                 self.0.get_nodepool_template(r).await
