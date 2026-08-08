@@ -807,6 +807,88 @@ impl<T: Conformant + Send + Sync> Portao<T> for ConformanceBinding {
     }
 }
 
+// ── Observing a component, without touching kube ───────────────────────────
+//
+// The controller reads pods; this maps that reading onto the gate's vocabulary.
+// It lives here, kube-free, because the interesting part is the CLASSIFICATION
+// (which of the three states a reading means) and that is exactly the part a
+// live-cluster test would prove least well.
+
+/// One reading of a component's pod on a node, as the controller found it.
+///
+/// `found: false` and "found but not ready" are kept apart all the way to the
+/// classifier rather than collapsed into a single boolean, because they map to
+/// different [`EstadoComponente`] arms and the collapse is the bug.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ObservacaoPod {
+    /// A pod for this component is scheduled on the node.
+    pub found: bool,
+    /// Its `Ready` condition is `True`.
+    pub ready: bool,
+    /// How long ago that condition last transitioned. `None` when the API gave
+    /// a Ready pod with no parsable timestamp — which is *not* freshness
+    /// evidence, so it classifies as indeterminate rather than as age zero.
+    pub since_ready: Option<core::time::Duration>,
+    /// The read itself failed (RBAC, apiserver error, a partial list).
+    pub lookup_failed: bool,
+}
+
+/// Classify one reading. Pure, total, and the only place a reading becomes a
+/// gate input.
+///
+/// **A failed lookup is never `Absent`.** "I could not ask" and "it is not
+/// there" produce the same empty result set from a list call, and treating
+/// them alike is how a broken watch silently reclaims healthy nodes.
+#[must_use]
+pub fn estado_de_pod(o: &ObservacaoPod) -> EstadoComponente {
+    if o.lookup_failed {
+        return EstadoComponente::Indeterminate;
+    }
+    if !o.found {
+        return EstadoComponente::Absent;
+    }
+    if !o.ready {
+        return EstadoComponente::Absent;
+    }
+    match o.since_ready {
+        Some(age) => EstadoComponente::Reporting { last_report_age: age },
+        // Ready but undatable: we cannot honour the freshness bound, so we do
+        // not pretend to. Defers rather than passing.
+        None => EstadoComponente::Indeterminate,
+    }
+}
+
+/// A gathered snapshot of every required component on one node.
+///
+/// Built once per reconcile so the gate decides against a consistent picture
+/// rather than re-reading the cluster mid-chain.
+#[derive(Debug, Clone, Default)]
+pub struct VistaNo {
+    estados: std::collections::BTreeMap<ComponenteExigido, EstadoComponente>,
+}
+
+impl VistaNo {
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+    /// Record one component's reading.
+    #[must_use]
+    pub fn observando(mut self, c: ComponenteExigido, o: &ObservacaoPod) -> Self {
+        self.estados.insert(c, estado_de_pod(o));
+        self
+    }
+}
+
+impl Conformant for VistaNo {
+    /// A component nobody observed is **indeterminate, never absent**. Omitting
+    /// a required component from the gather is a bug in the gatherer, and the
+    /// safe reading of a bug is "cannot tell".
+    fn component_state(&self, c: ComponenteExigido) -> EstadoComponente {
+        self.estados.get(&c).copied().unwrap_or(EstadoComponente::Indeterminate)
+    }
+}
+
 // ── The actuator projection: gate verdict → what to do to the real node ────
 //
 // This is the join between a seal that was airtight in Rust and a cluster that
