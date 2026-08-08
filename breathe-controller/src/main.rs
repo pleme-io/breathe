@@ -1084,6 +1084,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // "watch it breathe" view. Non-fatal: a failed install logs + continues.
     if let Err(e) = metrics_exporter_prometheus::PrometheusBuilder::new()
         .with_http_listener(([0, 0, 0, 0], 9100))
+        // Without explicit buckets this exporter renders a histogram as a
+        // ROLLING-WINDOW SUMMARY, and its quantiles read a false 0.0 for a
+        // metric sampled minutes apart — which is exactly the cadence of
+        // node releases. `_sum`/`_count` stay honest either way, but the
+        // quantiles are the thing an operator would read first.
+        //
+        // Buckets chosen against the number this measurement exists to
+        // challenge: both camelot pools declare reliefLatencySeconds: 180,
+        // so the range has to resolve well on either side of it rather than
+        // bunch everything into one bucket that says "yes, about 180".
+        .set_buckets_for_metric(
+            metrics_exporter_prometheus::Matcher::Full(
+                "breathe_portao_time_to_ready_seconds".to_owned(),
+            ),
+            &[15.0, 30.0, 45.0, 60.0, 90.0, 120.0, 180.0, 240.0, 300.0, 600.0, 900.0],
+        )
+        .expect("static bucket list is non-empty and finite")
         .install()
     {
         error!(error = %e, "failed to install /metrics exporter — continuing without metrics");
@@ -1160,7 +1177,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             .iter()
                             .filter(|(_, r)| *r != portao::ResultadoPortao::NaoGuardado)
                             .count();
-                        tracing::debug!(nodes = rows.len(), gated, "portao: shadow pass");
+                        // INFO, not debug: the fleet runs RUST_LOG=info, so a
+                        // debug line is invisible on every real deployment —
+                        // and while the metrics tier is parked this line is
+                        // the ONLY way to see the loop working at all.
+                        tracing::info!(
+                            nodes = rows.len(),
+                            gated,
+                            shadow = cfg.shadow,
+                            "portao: pass complete"
+                        );
                     }
                     Err(e) => warn!(error = %e, "portao: shadow pass failed"),
                 }
