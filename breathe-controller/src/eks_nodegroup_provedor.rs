@@ -496,9 +496,15 @@ impl<E: EksNodegroupEnvironment> Provedor for EksNodegroupProvedor<E> {
         let capacity = nodes.len() as u64;
         let total_alloc: u64 = nodes.iter().map(|n| n.allocatable_cpu_milli).sum();
         let demand_milli = self.env.observe_pod_demand_milli().await?;
-        let per_node = if capacity > 0 { (total_alloc / capacity).max(1) } else { 1 };
-        let used = demand_milli.div_ceil(per_node).max(1);
-        Ok(FormaSample { used, capacity: capacity.max(1) })
+        // Zero is a real reading — see `KarpenterProvedor::observe` for why the
+        // `.max(1)` floors on both terms made scale-to-zero unreachable.
+        let used = if capacity > 0 {
+            let per_node = (total_alloc / capacity).max(1);
+            demand_milli.div_ceil(per_node)
+        } else {
+            u64::from(demand_milli > 0)
+        };
+        Ok(FormaSample { used, capacity })
     }
 
     async fn provision(&self, n: u64) -> Result<ProvisionReceipt, ProviderError> {
@@ -1106,13 +1112,22 @@ mod tests {
         assert_eq!(sample, FormaSample { used: 2, capacity: 2 });
     }
 
+    /// Was a defect-pinning test — see the Karpenter provedor's twin for the
+    /// full reasoning. An idle empty nodegroup is 0/0.
     #[tokio::test]
-    async fn observe_with_zero_owned_nodes_reports_zero_capacity_floored_to_one_and_used_at_least_one() {
+    async fn an_empty_nodegroup_with_no_demand_reports_zero_not_a_floor_of_one() {
+        let env = MockEnv { nodes: vec![], pod_demand_milli: 0, ..MockEnv::empty() };
+        let p = EksNodegroupProvedor::new(env, "pool".into(), "cluster".into(), "nodegroup".into(), live_gate(), 10, 10, 1.25, 0.9);
+        let sample = p.observe().await.expect("observe succeeds");
+        assert_eq!(sample, FormaSample { used: 0, capacity: 0 });
+    }
+
+    #[tokio::test]
+    async fn demand_with_no_owned_nodes_asks_for_one_node_not_one_per_millicore() {
         let env = MockEnv { nodes: vec![], pod_demand_milli: 500, ..MockEnv::empty() };
         let p = EksNodegroupProvedor::new(env, "pool".into(), "cluster".into(), "nodegroup".into(), live_gate(), 10, 10, 1.25, 0.9);
         let sample = p.observe().await.expect("observe succeeds");
-        assert_eq!(sample.capacity, 1, "capacity floors to 1 even with zero owned nodes (never a div-by-zero)");
-        assert!(sample.used >= 1);
+        assert_eq!(sample, FormaSample { used: 1, capacity: 0 });
     }
 
     #[tokio::test]
