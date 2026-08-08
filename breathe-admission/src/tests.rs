@@ -535,3 +535,59 @@ fn a_gathered_view_drives_the_real_gate() {
         GateDecision::Pass
     ));
 }
+
+// ── bloqueador — the typed "who is blocking" for telemetry ────────────────
+
+/// It must agree with the gate itself. Two answers to one question is how a
+/// dashboard ends up contradicting the thing it is watching.
+#[test]
+fn the_blocker_agrees_with_the_gates_own_verdict() {
+    let gate = ConformanceBinding::fleet_default();
+    let healthy = ComponenteExigido::ALL
+        .into_iter()
+        .fold(VistaNo::new(), |v, c| v.observando(c, &ready_for(600)));
+    assert!(gate.bloqueador(&healthy).is_none());
+    assert_eq!(verdict(&healthy, &gate), GateDecision::Pass);
+
+    for missing in ComponenteExigido::ALL {
+        let node = ComponenteExigido::ALL.into_iter().fold(VistaNo::new(), |v, c| {
+            v.observando(c, &if c == missing { ObservacaoPod::default() } else { ready_for(600) })
+        });
+        assert_eq!(
+            gate.bloqueador(&node),
+            Some((missing, EstadoComponente::Absent)),
+            "the blocker must name the component the gate is actually waiting on"
+        );
+        assert!(!matches!(verdict(&node, &gate), GateDecision::Pass));
+    }
+}
+
+/// It reports the STATE too, so a metric can distinguish "not there yet" from
+/// "cannot observe" — different remedies, and the whole reason the enum has
+/// both arms.
+#[test]
+fn the_blocker_carries_the_state_not_just_the_name() {
+    let gate = ConformanceBinding::fleet_default();
+    let unobservable = ComponenteExigido::ALL.into_iter().fold(VistaNo::new(), |v, c| {
+        if c == ComponenteExigido::ContainerNetwork {
+            v.com_estado(c, EstadoComponente::Indeterminate)
+        } else {
+            v.observando(c, &ready_for(600))
+        }
+    });
+    assert_eq!(
+        gate.bloqueador(&unobservable),
+        Some((ComponenteExigido::ContainerNetwork, EstadoComponente::Indeterminate))
+    );
+
+    let too_fresh = ComponenteExigido::ALL.into_iter().fold(VistaNo::new(), |v, c| {
+        v.observando(c, &ready_for(if c == ComponenteExigido::StorageDriver { 5 } else { 600 }))
+    });
+    assert_eq!(
+        gate.bloqueador(&too_fresh),
+        Some((
+            ComponenteExigido::StorageDriver,
+            EstadoComponente::Present { ready_for: Duration::from_secs(5) }
+        ))
+    );
+}
