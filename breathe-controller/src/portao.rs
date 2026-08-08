@@ -1,5 +1,12 @@
-//! `portaria` — the gatehouse. Lifts a node's startup taint against a gate
-//! verdict, and never for any other reason.
+//! `portao` — the controller-side half of the admission gate. Lifts a node's
+//! startup taint against a gate verdict, and never for any other reason.
+//!
+//! Named for the `Portao` it actuates rather than for a new word. This was
+//! briefly `portaria` (the porter's lodge), which `theory/NATURALIZE-SSH.md:399`
+//! already proposes for ssh naturalization — and proposes with the SAME sense,
+//! "where you are identified before you are admitted". An adjacent sense is a
+//! worse collision than an unrelated one, and no lint catches it; the naming
+//! skill's step 4 does, which is what happened here.
 //!
 //! This is the controller half of the admission seal. `breathe-admission`
 //! decides ([`AcaoPortao`]); this module is the only thing that turns a
