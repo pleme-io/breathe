@@ -38,10 +38,39 @@ spec:
       nodeSelector:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-      {{- with .Values.tolerations }}
+      {{- /*
+        THE DEADLOCK PRECONDITION — emitted unconditionally, ahead of
+        .Values.tolerations, and deliberately NOT configurable.
+
+        `pleme.io/unbreathed` is the node-readiness startupTaint: a node is born
+        carrying it and only this controller can lift it. An untolerated
+        controller is therefore a permanent cluster-wide deadlock — its node is
+        reclaimed, it cannot schedule anywhere because no new node has been
+        released, so nothing releases any node, ever. Recovery is a human
+        editing NodePools.
+
+        A values DEFAULT cannot carry this. Helm REPLACES list values rather
+        than merging them, and camelot's own HelmRelease already sets
+        `tolerations: [camelot-builder]` — which would silently drop a default
+        and re-create the deadlock on the one cluster that has the taint. So it
+        is emitted by the template, where an override cannot reach it, and
+        .Values.tolerations appends rather than replaces.
+
+        Scoped to the single key on purpose: the agent DaemonSet legitimately
+        tolerates everything (it must reach every node), but this controller is
+        one reconciler and should still be kept off genuinely tainted workload
+        pools. This grants exactly the freedom the deadlock needs and no more.
+
+        Safe ahead of any taint — a toleration only ever ADDS scheduling
+        freedom, so on a cluster with no such taint it changes nothing.
+      */}}
       tolerations:
+        - key: pleme.io/unbreathed
+          operator: Exists
+          effect: NoSchedule
+        {{- with .Values.tolerations }}
         {{- toYaml . | nindent 8 }}
-      {{- end }}
+        {{- end }}
       {{- if .Values.priorityClassName }}
       priorityClassName: {{ .Values.priorityClassName }}
       {{- else if .Values.priorityClass.create }}

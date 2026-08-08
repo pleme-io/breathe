@@ -137,6 +137,20 @@ imagePullSecrets: []
 
 # Pin the controller pod (e.g. to a tainted, isolated node pool).
 nodeSelector: {}
+# EXTRA tolerations, appended to the mandatory one.
+#
+# The node-readiness toleration (`pleme.io/unbreathed`) is NOT here and cannot
+# be set here: `templates/deployment.yaml` emits it unconditionally, because a
+# values default would be silently dropped by any consumer that sets this key
+# (Helm replaces list values rather than merging, and camelot already sets
+# `tolerations: [camelot-builder]`). Read that template's comment before
+# touching controller scheduling — an untolerated controller is a permanent
+# cluster-wide deadlock, not a degraded state.
+#
+# This list still works as it always did; it now appends rather than being the
+# whole list. Corrects the `agent.tolerations` note above, which reasoned that
+# the controller "only needs to land somewhere untainted" — true before the
+# readiness gate existed, false the moment a pool stamps a startupTaint.
 tolerations: []
 
 # Explicit priorityClassName override; wins over priorityClass.create below.
