@@ -13,6 +13,10 @@ name = "breathe-mcp"
 path = "src/main.rs"
 
 [dependencies]
+# kotae (答え) — the typed answer a machine gives a machine. StoreError has
+# always carried BadRequest vs Kube in its variants; the JSON threw that
+# away and returned one `{"error": ...}` shape for both.
+kotae = "0.1"
 breathe-facade = { path = "../breathe-facade", version = "0.1.0" }
 # IntentKind — the four writeIntent arms, as an MCP tool-input enum. Re-exported,
 # never re-declared: a parallel copy here is how the old five-arm BandKind fell
