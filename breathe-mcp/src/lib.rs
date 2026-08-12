@@ -245,10 +245,31 @@ pub struct BreatheMcp {
 }
 
 fn ok(v: &Value) -> String {
-    serde_json::to_string_pretty(v).unwrap_or_else(|e| format!("{{\"error\":\"serialize: {e}\"}}"))
+    kotae::Answer::found_value(v.clone()).render()
 }
+
+/// **The classification the variants already encoded and nobody read.**
+///
+/// Every failure returned `{"error": <display>}`, so a malformed request and an
+/// unreachable apiserver were one shape — with opposite remedies. `StoreError`
+/// has carried the distinction in its own variants all along:
+///
+/// - [`StoreError::BadRequest`] → `refused`. The CALLER must change something.
+/// - [`StoreError::Kube`] / [`StoreError::Serde`] → `blind`. We could not look
+///   or could not render what we found; conclude nothing about the bands.
+///
+/// Unlike pangea-operator's, this error type is stringly-typed and carries no
+/// HTTP status, so a 404 cannot be split out as `empty` here. Stated rather
+/// than silently approximated: `pending-breathe: typed-kube-status`.
 fn err(e: &StoreError) -> String {
-    json!({ "error": e.to_string() }).to_string()
+    let msg = e.to_string();
+    match e {
+        StoreError::BadRequest(_) => {
+            kotae::Answer::refused(msg, ["a request breathe accepts (check kind, namespace, name)"])
+                .render()
+        }
+        StoreError::Kube(_) | StoreError::Serde(_) => kotae::Answer::blind(msg).render(),
+    }
 }
 fn result(r: Result<Value, StoreError>) -> String {
     match r {
@@ -1005,6 +1026,30 @@ mod tests {
         let widened = get(Some(5)).await;
         assert_eq!(widened["band"]["history"].as_array().unwrap().len(), 5);
         assert_eq!(widened["band"].get("truncated"), None, "nothing dropped ⇒ nothing to report");
+    }
+
+    /// **The distinction the variants already encoded and the JSON discarded.**
+    ///
+    /// A malformed request and an unreachable apiserver were one `{"error": ..}`
+    /// shape with opposite remedies: change the request, versus fix the
+    /// environment.
+    #[test]
+    fn a_bad_request_is_refused_and_a_kube_failure_is_blind() {
+        let outcome = |s: &str| -> String {
+            let v: Value = serde_json::from_str(s).expect("valid JSON");
+            v["outcome"].as_str().expect("discriminant").to_owned()
+        };
+        assert_eq!(outcome(&err(&StoreError::BadRequest("no such kind".into()))), "refused");
+        assert_eq!(outcome(&err(&StoreError::Kube("connection refused".into()))), "blind");
+        assert_eq!(outcome(&err(&StoreError::Serde("bad utf8".into()))), "blind");
+    }
+
+    /// A refusal names what would be accepted, so the retry costs one call.
+    #[test]
+    fn a_refusal_carries_the_legal_set() {
+        let s = err(&StoreError::BadRequest("unknown kind `mem`".into()));
+        let v: Value = serde_json::from_str(&s).expect("valid JSON");
+        assert!(v["legal"].as_array().is_some_and(|a| !a.is_empty()), "{v}");
     }
 
     /// A list answers the question a list is asked, in the fields an operator

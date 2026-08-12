@@ -1,6 +1,6 @@
 {
   "schema_version": 2,
-  "cargo_lock_sha256": "59eab73ee7f54da5ce3c72a4679e8612be993c179ce7242594c008c3715c7cf9",
+  "cargo_lock_sha256": "b91594c2297e944e51db22b49963524cb6cb974ac54000b6791ad336c2b829ac",
   "manifest_sha256": {
     "Cargo.toml": "fb522df56773295398f811768dd9448dc735de3ea66771a671198aa666ef08c1",
     "breathe-actuator/Cargo.toml": "f437a6ee9e1e0e3b430733be4869bce4b7a8a740e484673145bbb43f04a8e705",
@@ -23,7 +23,7 @@
     "breathe-host/Cargo.toml": "0fa543c2c21b45daea08c7a7e238b3a75f1ab04f5297a0523effd17059d71b96",
     "breathe-jmx/Cargo.toml": "a76059319fd9e240165b49f281089cbedd25792c3c3fa05405663032c64b70b5",
     "breathe-kube/Cargo.toml": "9c162f2f46302ed2d8362da47e9939c33f0b13d16854c87b1890f73cc2e3b295",
-    "breathe-mcp/Cargo.toml": "39bf4b12fcdd34bc9e275da0098a27153c5ec397a6b6fc4f33dc4558830a5e1e",
+    "breathe-mcp/Cargo.toml": "b47abeebdc101e94d1ff10e76f8327bffad86016ae5cfb1587ba0d0f51b7474b",
     "breathe-nodewaste/Cargo.toml": "87f38caf05b4a949c1e6f44886482a5543a0c4e89d7b82bb0653593e9b848d41",
     "breathe-provider/Cargo.toml": "c4dd367a079e5ae0b9089bfe99955ce34937b5ca84cefa4cde17529eef708115",
     "breathe-provision/Cargo.toml": "a45d465477197a802cbb814d080ce8729db6e34df5ccbbd40de68ccab92c36c3",
@@ -7109,6 +7109,16 @@
             "tree": "target"
           },
           {
+            "name": "kotae",
+            "package_key": "kotae-0.1.1",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
             "name": "rmcp",
             "package_key": "rmcp-0.15.0",
             "kind": "normal",
@@ -12909,6 +12919,34 @@
           "latest",
           "v1_31"
         ]
+      },
+      "kotae-0.1.1": {
+        "runtime_dependencies": [
+          {
+            "name": "serde",
+            "package_key": "serde-1.0.228",
+            "kind": "normal",
+            "features": [
+              "derive"
+            ],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "serde_json",
+            "package_key": "serde_json-1.0.150",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          }
+        ],
+        "build_dependencies": [],
+        "features": []
       },
       "kube-0.96.0": {
         "runtime_dependencies": [
@@ -33812,6 +33850,9 @@
       "links": "k8s-openapi-0.23.0"
     },
     "kanchi-0.1.3": {
+      "edition": "2024"
+    },
+    "kotae-0.1.1": {
       "edition": "2024"
     },
     "kube-0.96.0": {
