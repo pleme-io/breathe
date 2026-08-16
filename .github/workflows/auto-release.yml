@@ -1,0 +1,59 @@
+# ★★ AUTO-RELEASE — ship on merge, default-on (the canonical consumer shim).
+#
+# WHY THIS REPO HAD NONE UNTIL NOW, which is the useful part of this file:
+# breathe adopted the SERVICE half of the delivery doctrine — `image.yml` and
+# `helm-release.yml`, both correct for a controller — and never the LIBRARY
+# half. So `breathe-control` (9.6k lines of dependency-free, proven band law,
+# whose own manifest comment argues that "every resident problem category
+# projects into (used, capacity) and runs this exact law unchanged") was a
+# reusable library trapped inside a service repo's release posture, absent from
+# crates.io with nothing actually blocking it.
+#
+# Diagnosed 2026-08-16, and every candidate blocker was measured and ruled out:
+#   - Actions ARE enabled and running (retirada-ci-watch succeeds on schedule)
+#   - no `publish = false` anywhere in the workspace
+#   - no git dependency freezing the publish (the only `git = "https"` hit in
+#     the tree is inside a `#` comment in breathe-crd/Cargo.toml)
+#   - internal path deps already carry `version = "0.1.0"`, the publishable
+#     shape — a path dep without a version is what blocks a workspace publish
+# The shim was simply never written.
+#
+# WHICH REUSABLE, and it is not the one most repos use: `[workspace.package]`
+# here declares edition/rust-version/license/authors/repository but NO
+# `version`, so members version independently. That is exactly the case
+# `cargo-publish-each-member-auto-release.yml` documents itself for ("multi-crate
+# workspaces WITHOUT a shared [workspace.package].version ... each member bumps
+# in-place", per-member `<member>-v<version>` tags). `rust-auto-release.yml`
+# assumes a workspace-level bump and is the wrong shape here.
+#
+# Called DIRECTLY rather than through the polymorphic `auto-release.yml`: that
+# shim startup_failure's for every consumer (GitHub creates the run with 0 jobs
+# and no annotations), so a release through it never starts.
+#
+# TIER-HONEST: a committed shim proves ADOPTION, never a RUN. Until a green run
+# exists on this repo, this is Tier ⊥ (*unreached*) — do not cite it as
+# "breathe auto-releases".
+#
+# SCOPE, stated because it is a real consequence: this publishes EVERY
+# publishable member, and most of them are service-shaped (breathe-controller,
+# breathe-kube, breathe-crd). The doctrine's own line is that a service is a
+# Docker IMAGE, not a crate. Publishing them is an operator decision taken
+# knowingly on 2026-08-16; the minimal correction, if that is later regretted,
+# is `publish = false` on the service-shaped members, which needs no change to
+# this file.
+name: auto-release
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      bump-type:
+        description: "patch | minor | major"
+        required: false
+        default: patch
+
+jobs:
+  release:
+    uses: pleme-io/substrate/.github/workflows/cargo-publish-each-member-auto-release.yml@main
+    secrets: inherit
