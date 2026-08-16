@@ -1,6 +1,6 @@
 [package]
 name = "breathe-provision"
-version = "0.1.0"
+version = "0.1.29"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -9,10 +9,10 @@ repository.workspace = true
 description = "The closed reconcile loop for a Forma: observe → predict → decide (the band law via the auctioneer) → act (provision + validated admission into the Viveiro). The single-row pipeline that proves the provisioning substrate composes end-to-end (docs/PROVISIONING.md)."
 
 [dependencies]
-breathe-control = { path = "../breathe-control", version = "0.1.0" }
-breathe-provider = { path = "../breathe-provider", version = "0.1.0" }
-breathe-auction = { path = "../breathe-auction", version = "0.1.0" }
-breathe-admission = { path = "../breathe-admission", version = "0.1.0" }
+breathe-control = { path = "../breathe-control", version = "0.1.29" }
+breathe-provider = { path = "../breathe-provider", version = "0.1.29" }
+breathe-auction = { path = "../breathe-auction", version = "0.1.29" }
+breathe-admission = { path = "../breathe-admission", version = "0.1.29" }
 # `sim::SimProvedor` is a non-test `Provedor` impl (the node-tier test bed), so
 # async-trait is a regular dependency, not dev-only.
 async-trait = "0.1"
