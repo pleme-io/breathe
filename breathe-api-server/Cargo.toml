@@ -1,6 +1,6 @@
 [package]
 name = "breathe-api-server"
-version = "0.1.0"
+version = "0.1.29"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -13,10 +13,10 @@ name = "breathe-api-server"
 path = "src/main.rs"
 
 [dependencies]
-breathe-facade = { path = "../breathe-facade", version = "0.1.0" }
+breathe-facade = { path = "../breathe-facade", version = "0.1.29" }
 # CONFIRMED_ANNOTATION + DimensionId::dry_run_is_honored — the surface needs the
 # canonical facts, not a local copy of them.
-breathe-provider = { path = "../breathe-provider", version = "0.1.0" }
+breathe-provider = { path = "../breathe-provider", version = "0.1.29" }
 # Explicit process-wide CryptoProvider install (main.rs) -- see
 # breathe-controller/Cargo.toml for the full story.
 rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs"] }
@@ -56,7 +56,7 @@ http-body-util = "0.1"
 # The canonical dimension count — the catalog tests assert against ALL_DIMENSIONS
 # so the API-surface count never goes stale when a dimension lands (it bit 7->8
 # and 8->9 as hardcoded literals; now it tracks the source of truth).
-breathe-catalog = { path = "../breathe-catalog", version = "0.1.0" }
+breathe-catalog = { path = "../breathe-catalog", version = "0.1.29" }
 
 [lints]
 workspace = true
