@@ -1,6 +1,6 @@
 [package]
 name = "breathe-host-agent"
-version = "0.1.0"
+version = "0.1.29"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -13,12 +13,12 @@ name = "breathe-host-agent"
 path = "src/main.rs"
 
 [dependencies]
-breathe-control = { path = "../breathe-control", version = "0.1.0" }
-breathe-provider = { path = "../breathe-provider", version = "0.1.0" }
-breathe-core = { path = "../breathe-core", version = "0.1.0" }
-breathe-crd = { path = "../breathe-crd", version = "0.1.0" }
-breathe-host = { path = "../breathe-host", version = "0.1.0" }
-breathe-runtime = { path = "../breathe-runtime", version = "0.1.0" }
+breathe-control = { path = "../breathe-control", version = "0.1.29" }
+breathe-provider = { path = "../breathe-provider", version = "0.1.29" }
+breathe-core = { path = "../breathe-core", version = "0.1.29" }
+breathe-crd = { path = "../breathe-crd", version = "0.1.29" }
+breathe-host = { path = "../breathe-host", version = "0.1.29" }
+breathe-runtime = { path = "../breathe-runtime", version = "0.1.29" }
 kube = { version = "0.96", features = ["client", "runtime", "derive", "rustls-tls", "unstable-runtime"], default-features = false }
 # Explicit process-wide CryptoProvider install (main.rs) -- see
 # breathe-controller/Cargo.toml for the full story.
@@ -36,7 +36,7 @@ serde_yaml = "0.9"
 # name-version key collision that silently shadows one source with the other.
 shikumi = "0.1"
 thiserror = "2"
-breathe-nodewaste = { path = "../breathe-nodewaste", version = "0.1.0" }
+breathe-nodewaste = { path = "../breathe-nodewaste", version = "0.1.29" }
 metrics = "0.24"
 metrics-exporter-prometheus = { version = "0.16", default-features = false, features = ["http-listener"] }
 
