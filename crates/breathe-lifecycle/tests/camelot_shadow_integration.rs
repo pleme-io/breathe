@@ -1,6 +1,6 @@
 //! REAL, READ-ONLY, TERMINATE-INCAPABLE proof that `OrphanTracker` correctly
-//! classifies Camelot's known real orphan against the live
-//! `akeyless-development` AWS account (376129857990, us-east-2).
+//! classifies Camelot's known real orphan against the live AWS account Camelot
+//! runs in (us-east-2).
 //!
 //! # Why an integration test, not a live in-cluster controller
 //!
@@ -9,12 +9,12 @@
 //! independent, verified-live blockers make a real in-cluster deployment
 //! of this specific piece premature today, not merely inconvenient:
 //!
-//! 1. **Camelot Mode-1 carries no working GitOps path.** Every workload on
-//!    the cluster today (`akeyless-saas`, `camelot-lookout`, `pangea-operator`
-//!    itself) was installed via hand-run `helm install` — confirmed live via
-//!    `akeyless-k8s/clusters/camelot-mode1/README.md`, which documents the
-//!    *entire* tree as `AUTHORED-NOT-YET-RECONCILED` (no `flux-system`
-//!    namespace exists on the cluster at all). Landing a brand-new workload
+//! 1. **The Camelot cluster carries no working GitOps path.** Every workload
+//!    on the cluster today (`pangea-operator` itself included) was installed
+//!    via hand-run `helm install` — confirmed live via that cluster's own
+//!    GitOps tree README, which documents the *entire* tree as
+//!    `AUTHORED-NOT-YET-RECONCILED` (no `flux-system` namespace exists on the
+//!    cluster at all). Landing a brand-new workload
 //!    live would mean either hand-rolling a fifth imperative `helm install`
 //!    (compounding the exact posture that tree exists to retire) or standing
 //!    up Flux bootstrap as a side effect of this task — out of scope and a
@@ -47,8 +47,8 @@
 //! `consecutive_ticks` can never reach the sweep threshold even if the
 //! refusal above were somehow bypassed — belt-and-suspenders, not the sole
 //! guard. Credentials come from the standard AWS SDK credential chain
-//! (`AWS_PROFILE=akeyless-development`, the org's existing typed SSO profile
-//! for this account — see `~/.aws/config`), never a hardcoded key.
+//! (`AWS_PROFILE=<the SSO profile for Camelot's account>` — see
+//! `~/.aws/config`), never a hardcoded key.
 //!
 //! # Running it
 //!
@@ -56,7 +56,7 @@
 //! session against the real account:
 //!
 //! ```text
-//! AWS_PROFILE=akeyless-development RUN_CAMELOT_AWS_INTEGRATION=1 \
+//! AWS_PROFILE=<your-sso-profile> RUN_CAMELOT_AWS_INTEGRATION=1 \
 //!   cargo test --test camelot_shadow_integration -- --nocapture
 //! ```
 
@@ -150,7 +150,7 @@ async fn camelot_known_orphan_is_flagged_against_real_aws() {
     if std::env::var("RUN_CAMELOT_AWS_INTEGRATION").ok().as_deref() != Some("1") {
         eprintln!(
             "skipped (default): set RUN_CAMELOT_AWS_INTEGRATION=1 and a live \
-             AWS_PROFILE=akeyless-development SSO session to run this against real AWS"
+             AWS_PROFILE SSO session for Camelot's account to run this against real AWS"
         );
         return;
     }
@@ -171,14 +171,14 @@ async fn camelot_known_orphan_is_flagged_against_real_aws() {
         .await
         .expect("tick against real AWS + the (empty) real declared-record store");
 
-    eprintln!("real tick report against live akeyless-development/us-east-2: {report:?}");
+    eprintln!("real tick report against live us-east-2: {report:?}");
 
     // The known hand-launched orphan: i-019af78a72a51590e, Name=camelot-dev-k3s,
     // tagged project=camelot / owner=luis / posture=spot-breathable, launched
-    // via a bare RunInstances call (confirmed via CloudTrail, actor
-    // luis.d@akeyless.io) — never through any declarative record. It carries
-    // no camelot.pleme.io/lifecycle-id tag, so it must be flagged newly-marked
-    // on this, its first-ever OrphanTracker tick.
+    // via a bare RunInstances call (confirmed via CloudTrail) — never through
+    // any declarative record. It carries no camelot.pleme.io/lifecycle-id tag,
+    // so it must be flagged newly-marked on this, its first-ever
+    // OrphanTracker tick.
     let known_orphan = InstanceId::new("i-019af78a72a51590e");
     assert!(
         report.newly_marked.contains(&known_orphan),
