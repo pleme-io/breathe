@@ -4,7 +4,7 @@
 //!
 //! The Camelot breathe posture used to live in TWO uncoupled places: the typed
 //! [`crate::preset::CAMELOT`] preset (Rust) and a hand-authored `global.breathe`
-//! block in `helmworks-akeyless/charts/lareira-akeyless-deployment/architectures/camelot.yaml`
+//! block in the deployment chart's `architectures/camelot.yaml`
 //! (YAML). Two copies, no oracle — a RESOLVE-vs-REPLACE duplication where an edit
 //! to one silently drifted from the other. This module removes the duplication:
 //! the typed preset RENDERS the exact `global.breathe` block, a golden test pins
@@ -259,7 +259,7 @@ mod tests {
             rendered.trim_end(),
             GOLDEN.trim_end(),
             "the CAMELOT preset render drifted from the committed golden — \
-             re-render and re-sync helmworks-akeyless architectures/camelot.yaml"
+             re-render and re-sync the deployment chart's architectures/camelot.yaml"
         );
     }
 

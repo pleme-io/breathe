@@ -115,9 +115,9 @@ pub const DB_MATRIX: &[DbKnobSpec] = &[
         // coordination). For CNPG, the correct actuator is KubeParamBand's
         // KubeLayoutSpec::CrField targeting the Cluster CR's
         // spec.postgresql.parameters.<knob> field path, letting CNPG keep sole
-        // ownership of the render + reload/restart decision. See
-        // akeyless-k8s/clusters/camelot-mode1/apps/camelot/pangea-database-breathe-band.yaml
-        // for the live, shadow-mode worked example (max_connections).
+        // ownership of the render + reload/restart decision. The cluster's own
+        // GitOps tree carries the live, shadow-mode worked example
+        // (a PangeaDatabase breathe band on max_connections).
         actuator: "config-file + rolling restart (postgresql.conf shared_buffers) — bare Postgres only; CNPG-managed uses KubeParamBand CrField instead",
         requires_roll: true, // shared_buffers is set at boot — the carve needs a roll
         topology_kind: "masterSlave",

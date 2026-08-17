@@ -31,7 +31,7 @@ use crate::{TopologyArm, REPLICA_TOPOLOGY_AXIS};
 /// [`REPLICA_TOPOLOGY_AXIS`] arms (enforced by a reflection test).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WorkloadClass {
-    /// A stateless SaaS service pod (auth / bis / uam / gator / kfm …). Pods are
+    /// A stateless SaaS service pod (a request-serving API/worker tier). Pods are
     /// interchangeable — free HPA-style scaling, HA floor only. `nonPersistent`.
     StatelessService,
     /// A relational primary + read-replicas tier (MySQL). Only the read-replicas

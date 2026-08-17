@@ -420,7 +420,7 @@ mod tests {
         assert!(p.auto_tune, "the tuner must be armed (discover V + partition over N)");
         assert_eq!(p.nix_max_jobs, "auto", "max-jobs sentinel hands control to the tuner");
         assert_eq!(p.nix_cores, 0, "cores sentinel hands control to the tuner");
-        assert_eq!(p.dag_shape, "narrow", "the akeyless fleet is a narrow (monolithic) DAG");
+        assert_eq!(p.dag_shape, "narrow", "the target fleet is a narrow (monolithic) DAG");
         assert!(p.across_images_concurrent, "the service fan must be concurrent (wall-clock = slowest, not sum)");
         assert_eq!(p.matrix_max_parallel, 0, "the matrix is uncapped by default (scale-to-zero absorbs the burst)");
     }

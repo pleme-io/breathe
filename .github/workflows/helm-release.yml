@@ -1,6 +1,6 @@
 # AUTO-RELEASE (default-on) for the pleme-breathe chart, under charts/pleme-breathe
 # (no root Chart.yaml -- that's the single-chart shim's assumption). Uses the
-# MONOREPO reusable instead (same shape as helmworks/akeyless-dev): it wraps
+# MONOREPO reusable instead (same shape as the helmworks chart monorepos): it wraps
 # `nix run .#release` = forge helm release-all, which discovers charts under
 # charts/*, publishes any (name, version) not yet on the registry, and skips
 # what's already there. No auto-bump here -- bump Chart.yaml's version by hand

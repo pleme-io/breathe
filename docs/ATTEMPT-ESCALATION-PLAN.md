@@ -94,7 +94,7 @@ camelot-builder-eks-…-b8xsz           5.58 Gi     2.44 cores   ← long-build 
 
 The pleme short-job runners peak at **0.28–0.80 Gi**. Against a **24 Gi**
 request that is **30–80x oversized**, and even the heaviest observed runner
-(5.58 Gi, on the akeylesslabs long-build set) sits 4x under it. CPU peaks
+(5.58 Gi, on the long-build set) sits 4x under it. CPU peaks
 0.96–2.53 cores against a 3-core request, so CPU is roughly right and **memory
 is the entire mis-sizing**.
 
