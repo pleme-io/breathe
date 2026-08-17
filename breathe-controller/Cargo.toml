@@ -1,6 +1,6 @@
 [package]
 name = "breathe-controller"
-version = "0.1.0"
+version = "0.1.29"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -13,27 +13,27 @@ name = "breathe-controller"
 path = "src/main.rs"
 
 [dependencies]
-breathe-control = { path = "../breathe-control", version = "0.1.0" }
-breathe-provider = { path = "../breathe-provider", version = "0.1.0" }
-breathe-core = { path = "../breathe-core", version = "0.1.0" }
-breathe-crd = { path = "../breathe-crd", version = "0.1.0" }
-breathe-discovery = { path = "../breathe-discovery", version = "0.1.0" }
-breathe-kube = { path = "../breathe-kube", version = "0.1.0" }
-breathe-actuator = { path = "../breathe-actuator", version = "0.1.0" }
-breathe-dimensions = { path = "../breathe-dimensions", version = "0.1.0" }
-breathe-runtime = { path = "../breathe-runtime", version = "0.1.0" }
-breathe-store = { path = "../breathe-store", version = "0.1.0", features = ["postgres"] }
-breathe-config = { path = "../breathe-config", version = "0.1.0" }
+breathe-control = { path = "../breathe-control", version = "0.1.29" }
+breathe-provider = { path = "../breathe-provider", version = "0.1.29" }
+breathe-core = { path = "../breathe-core", version = "0.1.29" }
+breathe-crd = { path = "../breathe-crd", version = "0.1.29" }
+breathe-discovery = { path = "../breathe-discovery", version = "0.1.29" }
+breathe-kube = { path = "../breathe-kube", version = "0.1.29" }
+breathe-actuator = { path = "../breathe-actuator", version = "0.1.29" }
+breathe-dimensions = { path = "../breathe-dimensions", version = "0.1.29" }
+breathe-runtime = { path = "../breathe-runtime", version = "0.1.29" }
+breathe-store = { path = "../breathe-store", version = "0.1.29", features = ["postgres"] }
+breathe-config = { path = "../breathe-config", version = "0.1.29" }
 # BU1 — node-tier shadow loop (reconcile_forma wired into the running controller)
-breathe-provision = { path = "../breathe-provision", version = "0.1.0" }
-breathe-auction = { path = "../breathe-auction", version = "0.1.0" }
-breathe-admission = { path = "../breathe-admission", version = "0.1.0" }
+breathe-provision = { path = "../breathe-provision", version = "0.1.29" }
+breathe-auction = { path = "../breathe-auction", version = "0.1.29" }
+breathe-admission = { path = "../breathe-admission", version = "0.1.29" }
 # correnteza M0 — the compute/auction permutation-space lock (Lane/AuctionSpread).
 # Was package-named `breathe-auction` too (a real collision with the elasticity
 # engine above, since Cargo refuses two same-named local packages in one
 # resolve graph) — renamed to `breathe-spread` (theory/CORRENTEZA.md §1.2) so
 # both coexist here with no alias needed.
-breathe-spread = { path = "../crates/breathe-spread", version = "0.1.0" }
+breathe-spread = { path = "../crates/breathe-spread", version = "0.1.29" }
 async-trait = "0.1"
 # eks_nodegroup_provedor (task #205) — the EksManagedNodegroup backend's real
 # AWS calls (DescribeNodegroup + UpdateNodegroupConfig). Same major-version
