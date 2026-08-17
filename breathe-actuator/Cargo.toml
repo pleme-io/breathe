@@ -1,6 +1,6 @@
 [package]
 name = "breathe-actuator"
-version = "0.1.0"
+version = "0.1.29"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -9,12 +9,12 @@ repository.workspace = true
 description = "ActuatorCluster — the app-plane Cluster that dispatches ConfigFile/ApiCall bands to the ConfigReload / redis-CLI / JMX-Jolokia / app-admin-RPC actuators via a typed sum type (no dyn), reading `used` from a metric KubeCluster. The app-plane peer of node_forma's PoolProvedor."
 
 [dependencies]
-breathe-provider = { path = "../breathe-provider", version = "0.1.0" }
-breathe-kube = { path = "../breathe-kube", version = "0.1.0" }
-breathe-configreload = { path = "../breathe-configreload", version = "0.1.0" }
-breathe-apicall = { path = "../breathe-apicall", version = "0.1.0" }
-breathe-jmx = { path = "../breathe-jmx", version = "0.1.0" }
-breathe-apprpc = { path = "../breathe-apprpc", version = "0.1.0" }
+breathe-provider = { path = "../breathe-provider", version = "0.1.29" }
+breathe-kube = { path = "../breathe-kube", version = "0.1.29" }
+breathe-configreload = { path = "../breathe-configreload", version = "0.1.29" }
+breathe-apicall = { path = "../breathe-apicall", version = "0.1.29" }
+breathe-jmx = { path = "../breathe-jmx", version = "0.1.29" }
+breathe-apprpc = { path = "../breathe-apprpc", version = "0.1.29" }
 async-trait = "0.1"
 
 [lints]
