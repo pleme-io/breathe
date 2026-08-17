@@ -1,6 +1,6 @@
 [package]
 name = "breathe-mcp"
-version = "0.1.0"
+version = "0.1.29"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -17,11 +17,11 @@ path = "src/main.rs"
 # always carried BadRequest vs Kube in its variants; the JSON threw that
 # away and returned one `{"error": ...}` shape for both.
 kotae = "0.1"
-breathe-facade = { path = "../breathe-facade", version = "0.1.0" }
+breathe-facade = { path = "../breathe-facade", version = "0.1.29" }
 # IntentKind — the four writeIntent arms, as an MCP tool-input enum. Re-exported,
 # never re-declared: a parallel copy here is how the old five-arm BandKind fell
 # five kinds behind the CRDs it was supposed to address.
-breathe-provider = { path = "../breathe-provider", version = "0.1.0" }
+breathe-provider = { path = "../breathe-provider", version = "0.1.29" }
 # Explicit process-wide CryptoProvider install (main.rs) -- see
 # breathe-controller/Cargo.toml for the full story.
 rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs"] }
