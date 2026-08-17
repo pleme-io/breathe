@@ -920,7 +920,7 @@ mod tests {
 
     fn pvc_target(name: &str) -> Target {
         Target {
-            namespace: "akeyless".into(),
+            namespace: "tenant-workloads".into(),
             name: name.into(),
             kind: "PersistentVolumeClaim".into(),
             api_version: String::new(),

@@ -18,7 +18,7 @@ use crate::axis::{
 /// The use-case a molding arms — the operator's three named shapes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum UseCase {
-    /// The steady, HA-floored akeyless SaaS + gateway pool (CamelotNodeGroup).
+    /// The steady, HA-floored SaaS + gateway pool (CamelotNodeGroup).
     SaasSteady,
     /// The bursty, floor-0, cache-backed Nix builder pool (CamelotBuilderNodeGroup
     /// + super-cache-ci).
@@ -404,7 +404,7 @@ pub const BUILD_BURST: AuctionSpread = AuctionSpread {
     resiliency_effect: "evolving-degrade always places (never on-demand); multi-AZ stateless = deep independent pools; retry-on-reclaim survives a mid-build reclaim (idempotent + cache-backed)",
     cost_rationale: CostRationale {
         chosen_arch: ResolvedArch::Arm64,
-        rationale: "builder=arm: −37%/build-hr + ~18% faster wall-clock (proven by the arm cross-compile eval); the akeyless fleet builds CGO=0 pure-Go so arm is native — no emulation, no cgo blocker",
+        rationale: "builder=arm: −37%/build-hr + ~18% faster wall-clock (proven by the arm cross-compile eval); the target fleet builds CGO=0 pure-Go so arm is native — no emulation, no cgo blocker",
         counterintuitive: None, // arm winning the builder is the EXPECTED answer
         auto_flip_when: "x86 large-spot effective-$/build drops below arm effective-$/build (the multi-arch image makes the flip free)",
     },

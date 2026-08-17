@@ -28,8 +28,8 @@
 # any other subscriber. See k8s/clusters/rio/infrastructure/flux-image-
 # automation/RUNBOOK.md for the ImageRepository/ImagePolicy/
 # ImageUpdateAutomation shape this tag scheme is designed to feed; Camelot's
-# own equivalent lives in akeyless-k8s/clusters/camelot-mode1/infrastructure/
-# flux-image-automation/.
+# own equivalent lives under infrastructure/flux-image-automation/ in its own
+# cluster's GitOps tree.
 name: image
 
 on:

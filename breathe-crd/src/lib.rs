@@ -5753,8 +5753,8 @@ mod tests {
 
     #[test]
     fn real_live_cr_fixture_deserializes_with_all_eight_fields_explicit() {
-        // A real, live CR pulled verbatim from `akeyless-k8s`'s
-        // `clusters/camelot-eks/infrastructure/karpenter/breathe-bands.yaml` (the
+        // A real, live CR pulled verbatim from a cluster's GitOps tree
+        // (`infrastructure/karpenter/breathe-bands.yaml` — the
         // karpenter-cpu CpuBand). Every hand-authored CR on the fleet sets these 7
         // numeric fields + disruptionPolicy explicitly — this proves the Option<T>
         // conversion is wire-compatible: an EXISTING CR deserializes to Some(value)

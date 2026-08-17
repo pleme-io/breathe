@@ -12,7 +12,7 @@
 //! ## The three invariants, made structural
 //!
 //! **1. Never overstep other structures (footprint ownership).** The cluster has
-//! resident non-camelot volumes (rabbitmq, profiling, the resident akeyless
+//! resident non-camelot volumes (rabbitmq, profiling, the resident tenant
 //! workloads). The carve commit takes an [`OwnedPvc`], never a raw ref. An
 //! `OwnedPvc` is constructible ONLY through [`FootprintPolicy::try_own`], which
 //! re-parses the volume's live identity against the footprint predicate (label
@@ -148,7 +148,7 @@ pub struct VolumeIdentity {
 
 impl VolumeIdentity {
     /// A bare identity carrying neither the role label nor the ownership tag — the
-    /// resident-volume shape (rabbitmq / profiling / akeyless), owned iff its
+    /// resident-volume shape (rabbitmq / profiling / a tenant workload), owned iff its
     /// namespace is in the footprint's owned set.
     #[must_use]
     pub fn resident(namespace: impl Into<String>, name: impl Into<String>) -> Self {
@@ -178,7 +178,7 @@ impl FootprintPolicy {
 
     /// The camelot footprint: namespaces `{camelot, camelot-build, tendril}` and
     /// the `role: camelot` label. The resident non-camelot namespaces
-    /// (`rabbitmq`, `profiling`, the akeyless workloads) are NOT in the set, so a
+    /// (`rabbitmq`, `profiling`, the resident tenant workloads) are NOT in the set, so a
     /// volume in them yields no [`OwnedPvc`].
     #[must_use]
     pub fn camelot() -> Self {
@@ -713,11 +713,11 @@ mod tests {
 
     #[test]
     fn a_resident_non_camelot_volume_yields_no_owned_pvc() {
-        // THE overstep guard: rabbitmq / profiling / akeyless volumes have NO
+        // THE overstep guard: rabbitmq / profiling / tenant volumes have NO
         // OwnedPvc — acting on them is unrepresentable (no witness to pass the
         // actuator commit).
         let fp = FootprintPolicy::camelot();
-        for ns in ["rabbitmq", "profiling", "akeyless", "kube-system", "default"] {
+        for ns in ["rabbitmq", "profiling", "tenant-workloads", "kube-system", "default"] {
             let id = VolumeIdentity::resident(ns, "some-data");
             assert!(fp.try_own(&id, t(1)).is_none(), "{ns} volume must not be ownable");
         }
@@ -957,7 +957,7 @@ mod tests {
     fn prop_a_non_owned_volume_yields_no_owned_pvc() {
         // Sweep resident namespaces: none are ownable under the camelot footprint.
         let fp = FootprintPolicy::camelot();
-        for ns in ["rabbitmq", "profiling", "akeyless", "monitoring", "istio-system", "flux-system"] {
+        for ns in ["rabbitmq", "profiling", "tenant-workloads", "monitoring", "istio-system", "flux-system"] {
             assert!(fp.try_own(&VolumeIdentity::resident(ns, "d"), t(1)).is_none());
         }
         // and every owned namespace is ownable.

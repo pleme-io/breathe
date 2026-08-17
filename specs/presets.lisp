@@ -14,7 +14,7 @@
 ;;;; dimension-agnostic band law (breathe-control) still does the deciding.
 ;;;;
 ;;;; Canonical (and today only) instance: :camelot — the aggressive 80/20,
-;;;; shadow-first, 100%-spot posture for the Camelot ephemeral akeyless SaaS.
+;;;; shadow-first, 100%-spot posture for the Camelot ephemeral SaaS environment.
 
 (defmeta-catalog breathe-presets
   :description "Named breathe-posture bundles — one preset reference arms a workload's whole band-set."
@@ -55,7 +55,7 @@
   ;; the quorum class raises its floor to an odd quorum ≥ 3.
   :profiles
    ((:class "stateless-service"   :topology "nonPersistent"    :replica-floor 2 :storage nil
-      :note "auth/bis/uam/gator/kfm — interchangeable pods; free HPA scaling, HA floor only")
+      :note "request-serving API/worker tiers — interchangeable pods; free HPA scaling, HA floor only")
     (:class "relational-database" :topology "masterSlave"      :replica-floor 2 :storage t
       :note "mysql — only the read-replicas breathe; the primary is never scaled away")
     (:class "persistent-store"    :topology "persistent"       :replica-floor 2 :storage t

@@ -12,8 +12,7 @@ The canonical `global.breathe` value block for the Camelot posture — the rende
 `render::tests::render_matches_the_committed_golden`.
 
 **Single source of truth.** This block is carried VERBATIM under `global.breathe`
-in
-`helmworks-akeyless/charts/lareira-akeyless-deployment/architectures/camelot.yaml`.
+in the deployment chart's `architectures/camelot.yaml`.
 The chart's `global.breathe.preset: camelot` names this source (the kata binding);
 the explicit `memory` / `cpu` / `replica` bands under it are this render's
 materialization. To change the Camelot breathe posture, edit `src/preset.rs`
