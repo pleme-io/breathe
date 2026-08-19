@@ -182,17 +182,30 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+      # The comparison moved to pleme-io/actions/regen-drift; the REASON did
+      # not, and that is the point of the action taking it as an input. The
+      # four-line explanation below is the whole value of this gate — it is what
+      # tells a reader to fix the source rather than regenerate blindly — so it
+      # stays here, with the repo that knows why a pruned field matters.
       - name: regenerate and diff
-        run: |
-          cargo run -q -p breathe-crd --bin crdgen --locked > /tmp/crds.yaml
-          if ! diff -u charts/pleme-breathe/crds/bands.yaml /tmp/crds.yaml; then
-            echo "::error::charts/pleme-breathe/crds/bands.yaml is STALE vs the Rust CRD types."
-            echo "::error::A field present in Rust but absent from the chart CRD is PRUNED by the"
-            echo "::error::apiserver — the CR applies cleanly and the field silently vanishes."
-            echo "::error::Regenerate: cargo run -p breathe-crd --bin crdgen > charts/pleme-breathe/crds/bands.yaml"
-            exit 1
-          fi
-          echo "chart CRDs are in sync with crdgen"
+        uses: pleme-io/actions/regen-drift@main
+        with:
+          program: cargo
+          args: |
+            run
+            -q
+            -p
+            breathe-crd
+            --bin
+            crdgen
+            --locked
+          committed: charts/pleme-breathe/crds/bands.yaml
+          reason: |
+            charts/pleme-breathe/crds/bands.yaml is STALE vs the Rust CRD types.
+            A field present in Rust but absent from the chart CRD is PRUNED by the
+            apiserver — the CR applies cleanly and the field silently vanishes.
+            That is the same false-green class the field was added to eliminate,
+            reintroduced one layer down in the packaging.
 
   # Advisory. The backlog IS now measured (901 warnings, 0 errors — see the
   # header); what blocks the flip is burning it down, not knowing its size.
