@@ -145,16 +145,32 @@ jobs:
         env:
           GITHUB_TOKEN: ""
           CARGO_NET_GIT_FETCH_WITH_CLI: "false"
-        run: |
-          git config --global --unset-all url."https://x-access-token:".insteadOf 2>/dev/null || true
-          if ! cargo fetch --locked; then
-            echo "::error::A dependency could not be resolved WITHOUT credentials."
-            echo "::error::breathe is a PUBLIC repo — every dep must be reachable by the public."
-            echo "::error::A git dep on a PRIVATE repo also makes crates.io publishing impossible."
-            echo "::error::Fix: depend on the published crate version, not a git rev."
-            exit 1
-          fi
-          echo "all dependencies resolve without credentials"
+        # The credential-unset stays as glue: one line, no branch. What leaves
+        # is the `if ! …; then echo…; exit 1; fi` wrapper — a failing cargo
+        # fetch already fails the job, so the only thing that shell added was
+        # the explanation, and checked-run carries the explanation as data.
+        run: git config --global --unset-all url."https://x-access-token:".insteadOf 2>/dev/null || true
+
+      - name: Every dependency must resolve with NO credentials
+        # The env moves WITH the cargo invocation, not left behind on the step
+        # that no longer runs it. Per the header above, persist-credentials is
+        # the load-bearing mechanism and these two are belt-and-braces — but
+        # belt-and-braces that silently stopped applying would be worse than
+        # never having had them.
+        env:
+          GITHUB_TOKEN: ""
+          CARGO_NET_GIT_FETCH_WITH_CLI: "false"
+        uses: pleme-io/actions/checked-run@main
+        with:
+          program: cargo
+          args: |
+            fetch
+            --locked
+          reason: |
+            A dependency could not be resolved WITHOUT credentials.
+            breathe is a PUBLIC repo — every dep must be reachable by the public.
+            A git dep on a PRIVATE repo also makes crates.io publishing impossible.
+            Fix: depend on the published crate version, not a git rev.
 
   # FAILS THE RUN (not a merge gate -- see the note on public-buildable
   # above: main has no branch protection). The chart's CRD manifest is crdgen OUTPUT, and until 2026-07-27
