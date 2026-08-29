@@ -7,10 +7,10 @@ answers the third question neither of them owns:
 > **Given the workloads that exist and the nodes that exist, is this the
 > arrangement we would choose?**
 
-Today the answer on camelot is measurably no, and the reason is not that breathe
+Today the answer on one cluster is measurably no, and the reason is not that breathe
 decided badly. It is that breathe has no opinion at all.
 
-## 1. Measured starting state (camelot-eks, 2026-08-05)
+## 1. Measured starting state (private-estate-eks, 2026-08-05)
 
 Read from the live cluster, not from memory:
 
@@ -30,10 +30,10 @@ Where the 27 came from:
 13  builder        karpenter   m6a.2xlarge   ON-DEMAND   CI burst, self-draining
  2  controllers    karpenter   c7i-flex.xl   spot
  2  general        karpenter   c6a.large     spot
- 6  camelot-eks-nixbuild   managed nodegroup   r5.xlarge x4, m5a.2xlarge, r6i.xlarge
- 2  camelot-eks-controllers managed nodegroup  c5.xlarge, t3.xlarge
- 1  camelot-eks-base        managed nodegroup  m6a.2xlarge
- 1  camelot-eks-system      managed nodegroup  t4g.large
+ 6  private-estate-eks-nixbuild   managed nodegroup   r5.xlarge x4, m5a.2xlarge, r6i.xlarge
+ 2  private-estate-eks-controllers managed nodegroup  c5.xlarge, t3.xlarge
+ 1  private-estate-eks-base        managed nodegroup  m6a.2xlarge
+ 1  private-estate-eks-system      managed nodegroup  t4g.large
 ```
 
 Two distinct pathologies, and they need different fixes:
@@ -46,7 +46,7 @@ Two distinct pathologies, and they need different fixes:
   at full rate against a stated 100%-spot CI posture.
 - **Standing waste.** 10 managed-nodegroup nodes are a fixed `desired` count.
   Karpenter does not manage them, so no consolidation policy will ever reclaim
-  one. `camelot-eks-nixbuild` is 6 permanently-on nodes carrying 19 real pods
+  one. `private-estate-eks-nixbuild` is 6 permanently-on nodes carrying 19 real pods
   between them, one of them carrying zero.
 
 ## 2. What breathe is actually doing right now: nothing
@@ -102,7 +102,7 @@ The dependency is strict and is the reason the phases below are ordered:
   shape. Right-sizing requests is not a cost optimization here — it is the
   precondition for the other three being safe.
 - **L4 without L3 is a stall.** `WhenEmpty` can only reclaim a node that
-  something else emptied. On camelot the burst nodes emptied themselves because
+  something else emptied. On the private estate the burst nodes emptied themselves because
   CI pods are ephemeral; the nixbuild nodes never will, because their pods are
   long-lived and nothing moves them.
 - **L3 without L1 is dangerous.** Repacking on wrong requests is how you turn
@@ -137,7 +137,7 @@ hole and the p99 it learns is fiction.
   seam
 - spot interruption rate by shape/zone — the risk term the auction already
   reserves a slot for
-- workload *class* (interruptible CI vs control-plane) — camelot already
+- workload *class* (interruptible CI vs control-plane) — the private estate already
   expresses this as `pleme.io/workload=critical` and the `critical` nodepool
 
 **Deliberately excluded, and why:** no forecasting of future demand in v1. The
@@ -165,7 +165,7 @@ makes this a plan rather than a wish.
 - Emit, per workload, the distribution of `request / p99(usage)`.
 - **This is the phase that produces the actual finding.** Today's aggregate is
   13.5 cores requested cluster-wide; that number is small enough that request
-  bloat may turn out *not* to be camelot's problem, in which case L1 is cheap
+  bloat may turn out *not* to be the private estate's problem, in which case L1 is cheap
   insurance rather than the win, and the plan's weight shifts to L3/L4. Let the
   data decide which, rather than assuming.
 - **Gate:** every workload has a recommendation with a stated confidence, and
@@ -199,8 +199,8 @@ Ordered by blast radius, smallest first. Each is independently revertible:
 
    The same comment states the intended design: *"Short/restartable builds keep
    spot (the controllers pool above)."* **That intent is not realized.** All
-   four ARC runner scale sets — `camelot-builder-eks`,
-   `camelot-builder-pleme-eks` (max 18), `-arm64`, `camelot-pace-ramdisk` —
+   four ARC runner scale sets — `private-estate-builder-eks`,
+   the self-hosted builder pool (max 18), `-arm64`, `private-estate-pace-ramdisk` —
    select `pleme.io/workload: nix-build`, which is the on-demand builder pool.
    There is no spot-backed runner scale set, so **every** CI job lands on
    on-demand regardless of class.
@@ -256,13 +256,13 @@ Ordered by blast radius, smallest first. Each is independently revertible:
    the same spot-preferring routing; nothing bounds that loop, and the node tier
    reports healthy throughout because §2.4 restored capacity every time. So the
    short scale set ships with: the attempt identified, its death **attributed to a
-   reclaim from the capacity side** (never from exit status — measured on camelot,
+   reclaim from the capacity side** (never from exit status — measured on one cluster,
    an on-demand job died with exit 130 and a shutdown signal, which reads exactly
    like a reclaim and was not one), and the escalated retry pinned to the
    on-demand builder set. Cheap first attempt, guaranteed landing.
 
 2. **Shorten `consolidateAfter` on `builder`** to match real job duration.
-3. **Right-size or scale-to-zero `camelot-eks-nixbuild`.** 6 always-on nodes for
+3. **Right-size or scale-to-zero `private-estate-eks-nixbuild`.** 6 always-on nodes for
    19 pods is the standing bleed. Managed nodegroups need an explicit desired
    count change; nothing reclaims them automatically.
 
@@ -281,7 +281,7 @@ The only lever with no existing primitive. Design constraints, all derived from
 what the cluster already enforces:
 
 - Never evict what cannot move: respect PDBs, `karpenter.sh/do-not-disrupt`
-  (camelot's ARC runner pods carry it), local storage, and single-replica
+  (the private estate's ARC runner pods carry it), local storage, and single-replica
   control-plane pods.
 - Target selection is *emptiable* nodes, not merely underused ones. Moving one
   pod off a node that keeps nine others has bought nothing — the reclaim only

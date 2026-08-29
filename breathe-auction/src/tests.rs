@@ -1,6 +1,6 @@
 use super::{
-    BandLeiloeiro, DecisaoForma, InterruptionOracle, LatencyOracle, Leiloeiro, Otimizador, ParetoOtimizador,
-    PickPolicy, PriceOracle, Previsao, Previsor, ReactivePrevisor,
+    BandLeiloeiro, DecisaoForma, InterruptionOracle, LatencyOracle, Leiloeiro, Otimizador,
+    ParetoOtimizador, PickPolicy, Previsao, Previsor, PriceOracle, ReactivePrevisor,
 };
 use breathe_control::BandConfig;
 use breathe_provider::Forma;
@@ -24,11 +24,17 @@ fn cfg() -> BandConfig {
 
 /// A CAPPED config — ceiling == 100, so demand beyond it exhausts the envelope.
 fn cfg_capped() -> BandConfig {
-    BandConfig { ceiling_bytes: 100, ..cfg() }
+    BandConfig {
+        ceiling_bytes: 100,
+        ..cfg()
+    }
 }
 
 fn previsao(used: u64, capacity: u64) -> Previsao {
-    Previsao { immediate_used: used, capacity }
+    Previsao {
+        immediate_used: used,
+        capacity,
+    }
 }
 
 #[test]
@@ -53,14 +59,21 @@ fn grows_when_demand_is_high() {
 #[test]
 fn holds_when_in_band() {
     // util 0.75 ∈ [shrink_below, grow_above] → Manter (per MATH §3.3: in-band).
-    assert_eq!(BandLeiloeiro.decide(Forma::NodeOnDemand, &previsao(75, 100), &cfg()), DecisaoForma::Manter);
+    assert_eq!(
+        BandLeiloeiro.decide(Forma::NodeOnDemand, &previsao(75, 100), &cfg()),
+        DecisaoForma::Manter
+    );
 }
 
 #[test]
 fn shrinks_when_demand_is_low() {
     // util 0.50 < shrink_below 0.70 → Encolher (one band-law step, drain-first).
     match BandLeiloeiro.decide(Forma::NodeOnDemand, &previsao(50, 100), &cfg()) {
-        DecisaoForma::Encolher { forma, delta, drain } => {
+        DecisaoForma::Encolher {
+            forma,
+            delta,
+            drain,
+        } => {
             assert_eq!(forma, Forma::NodeOnDemand);
             assert!(delta > 0);
             assert!(drain, "a node shrink must drain (PDB-aware) first");
@@ -97,7 +110,10 @@ fn single_forma_leiloeiro_is_the_band_law_lifted() {
                 "Manter at util {util:.3} above grow_above"
             ),
             DecisaoForma::Crescer { .. } | DecisaoForma::EnvelopeExausto { .. } => {
-                assert!(util > c.grow_above - 1e-9, "grow/escalate at util {util:.3} below grow_above");
+                assert!(
+                    util > c.grow_above - 1e-9,
+                    "grow/escalate at util {util:.3} below grow_above"
+                );
             }
             DecisaoForma::Encolher { .. } => assert!(util < c.shrink_below + 1e-9),
             DecisaoForma::Reformar { .. } => panic!("BandLeiloeiro never reforms"),
@@ -124,7 +140,10 @@ fn forecaster_projects_a_rising_trend_ahead_of_the_horizon() {
     p.predict(10, 100);
     p.predict(20, 100);
     let f = p.predict(30, 100); // slope +10/tick over 2 ticks; project 3 ahead
-    assert!(f.immediate_used > 30, "must lead the current sample on a rising trend");
+    assert!(
+        f.immediate_used > 30,
+        "must lead the current sample on a rising trend"
+    );
     // newest 30 + slope(10)*horizon(3) = 60.
     assert_eq!(f.immediate_used, 60);
 }
@@ -137,7 +156,10 @@ fn forecaster_is_monotone_safe_a_falling_trend_never_forecasts_below_current() {
     p.predict(90, 100);
     p.predict(70, 100);
     let f = p.predict(50, 100); // slope -20/tick; naive proj = 50 - 60 < 0
-    assert_eq!(f.immediate_used, 50, "falling trend collapses to the reactive echo");
+    assert_eq!(
+        f.immediate_used, 50,
+        "falling trend collapses to the reactive echo"
+    );
 }
 
 #[test]
@@ -146,7 +168,11 @@ fn forecaster_never_undershoots_the_current_sample_for_any_history() {
     let p = LinearTrendPrevisor::new(5, 4);
     for used in [100, 80, 60, 90, 40, 200, 10] {
         let f = p.predict(used, 1000);
-        assert!(f.immediate_used >= used, "forecast {} < current {used}", f.immediate_used);
+        assert!(
+            f.immediate_used >= used,
+            "forecast {} < current {used}",
+            f.immediate_used
+        );
     }
 }
 
@@ -175,7 +201,10 @@ impl PriceOracle for FixedPrice {
 }
 
 fn otimizador_cfg(warmup_seconds: u64) -> BandConfig {
-    BandConfig { warmup_seconds, ..cfg() }
+    BandConfig {
+        warmup_seconds,
+        ..cfg()
+    }
 }
 
 #[test]
@@ -226,7 +255,11 @@ fn dominated_candidate_never_reaches_the_frontier() {
             .then_some(*forma)
         })
         .collect();
-    assert_eq!(candidates.len(), 2, "sanity: both should be Grow candidates");
+    assert_eq!(
+        candidates.len(),
+        2,
+        "sanity: both should be Grow candidates"
+    );
     let frontier_forms: Vec<Forma> = o.optimize(&previsoes).iter().map(|p| p.forma).collect();
     assert_eq!(frontier_forms, vec![Forma::NodeSpot]);
 }
@@ -264,7 +297,11 @@ fn min_cost_under_deadline_rules_out_the_cheap_but_slow_candidate() {
         (Forma::NodeOnDemand, previsao(90, 100)),
     ];
     let winners = o.optimize(&previsoes);
-    assert_eq!(winners.len(), 1, "must still return a winner, never silently empty");
+    assert_eq!(
+        winners.len(),
+        1,
+        "must still return a winner, never silently empty"
+    );
     // Neither meets the 10s deadline (both are 120s) -- falls back to
     // min-latency, and both tie at 120s, so the tie-break is min_by_key's
     // first-match (NodeSpot, since it's first in `previsoes`); the load-
@@ -365,7 +402,10 @@ fn risk_adjusted_without_an_oracle_degrades_exactly_to_min_cost() {
         otimizador_cfg(60),
         PickPolicy::MinCostRiskAdjusted { risk_weight: 5.0 },
     );
-    assert_eq!(plain.optimize(&previsoes), risk_adjusted.optimize(&previsoes));
+    assert_eq!(
+        plain.optimize(&previsoes),
+        risk_adjusted.optimize(&previsoes)
+    );
 }
 
 #[test]
@@ -440,7 +480,11 @@ fn risk_adjusted_never_panics_and_always_returns_a_single_winner_over_many_weigh
         )
         .with_interruption_oracle(FixedInterruption);
         let winners = o.optimize(&previsoes);
-        assert_eq!(winners.len(), 1, "risk_weight={w} must yield exactly one winner");
+        assert_eq!(
+            winners.len(),
+            1,
+            "risk_weight={w} must yield exactly one winner"
+        );
     }
 }
 
@@ -493,9 +537,16 @@ fn top_performance_without_a_latency_oracle_degrades_exactly_to_min_cost() {
         (Forma::NodeSpot, previsao(90, 100)),
         (Forma::NodeOnDemand, previsao(90, 100)),
     ];
-    let top_perf =
-        ParetoOtimizador::new(SpotCheapOnDemandExpensive, otimizador_cfg(60), PickPolicy::TopPerformanceThenMinCost);
-    let min_cost = ParetoOtimizador::new(SpotCheapOnDemandExpensive, otimizador_cfg(60), PickPolicy::MinCost);
+    let top_perf = ParetoOtimizador::new(
+        SpotCheapOnDemandExpensive,
+        otimizador_cfg(60),
+        PickPolicy::TopPerformanceThenMinCost,
+    );
+    let min_cost = ParetoOtimizador::new(
+        SpotCheapOnDemandExpensive,
+        otimizador_cfg(60),
+        PickPolicy::MinCost,
+    );
     assert_eq!(top_perf.optimize(&previsoes), min_cost.optimize(&previsoes));
 }
 
@@ -510,16 +561,34 @@ fn top_performance_genuinely_diverges_from_min_cost_once_latency_varies() {
         (Forma::NodeSpot, previsao(90, 100)),
         (Forma::NodeOnDemand, previsao(90, 100)),
     ];
-    let min_cost = ParetoOtimizador::new(SpotCheapOnDemandExpensive, otimizador_cfg(60), PickPolicy::MinCost);
-    assert_eq!(min_cost.optimize(&previsoes)[0].forma, Forma::NodeSpot, "sanity: plain MinCost picks the cheap one");
+    let min_cost = ParetoOtimizador::new(
+        SpotCheapOnDemandExpensive,
+        otimizador_cfg(60),
+        PickPolicy::MinCost,
+    );
+    assert_eq!(
+        min_cost.optimize(&previsoes)[0].forma,
+        Forma::NodeSpot,
+        "sanity: plain MinCost picks the cheap one"
+    );
 
-    let top_perf =
-        ParetoOtimizador::new(SpotCheapOnDemandExpensive, otimizador_cfg(60), PickPolicy::TopPerformanceThenMinCost)
-            .with_latency_oracle(SpotSlowOnDemandFast);
+    let top_perf = ParetoOtimizador::new(
+        SpotCheapOnDemandExpensive,
+        otimizador_cfg(60),
+        PickPolicy::TopPerformanceThenMinCost,
+    )
+    .with_latency_oracle(SpotSlowOnDemandFast);
     let winners = top_perf.optimize(&previsoes);
     assert_eq!(winners.len(), 1);
-    assert_eq!(winners[0].forma, Forma::NodeOnDemand, "performance-first picks the FASTEST candidate, never the cheap-but-slow one");
-    assert_eq!(winners[0].relief_latency_secs, 30, "the actual fastest latency, not a fabricated number");
+    assert_eq!(
+        winners[0].forma,
+        Forma::NodeOnDemand,
+        "performance-first picks the FASTEST candidate, never the cheap-but-slow one"
+    );
+    assert_eq!(
+        winners[0].relief_latency_secs, 30,
+        "the actual fastest latency, not a fabricated number"
+    );
 }
 
 #[test]
@@ -543,9 +612,9 @@ fn top_performance_picks_cheapest_among_candidates_tied_at_the_fastest_latency()
     impl PriceOracle for ThreeWayPrice {
         fn cost_cents(&self, forma: Forma, duration_secs: u64) -> u64 {
             match forma {
-                Forma::NodeSpot => duration_secs,          // cheapest overall, but slow
+                Forma::NodeSpot => duration_secs, // cheapest overall, but slow
                 Forma::NodeOnDemand => duration_secs * 10, // fast, expensive
-                Forma::Accelerator => duration_secs * 4,   // fast, CHEAPER than on-demand
+                Forma::Accelerator => duration_secs * 4, // fast, CHEAPER than on-demand
                 _ => duration_secs * 1000,
             }
         }
@@ -555,11 +624,19 @@ fn top_performance_picks_cheapest_among_candidates_tied_at_the_fastest_latency()
         (Forma::NodeOnDemand, previsao(90, 100)),
         (Forma::Accelerator, previsao(90, 100)),
     ];
-    let o = ParetoOtimizador::new(ThreeWayPrice, otimizador_cfg(60), PickPolicy::TopPerformanceThenMinCost)
-        .with_latency_oracle(ThreeWayLatency);
+    let o = ParetoOtimizador::new(
+        ThreeWayPrice,
+        otimizador_cfg(60),
+        PickPolicy::TopPerformanceThenMinCost,
+    )
+    .with_latency_oracle(ThreeWayLatency);
     let winners = o.optimize(&previsoes);
     assert_eq!(winners.len(), 1);
-    assert_eq!(winners[0].forma, Forma::Accelerator, "cheapest among the two tied-fastest candidates, never the globally-cheapest-but-slow spot");
+    assert_eq!(
+        winners[0].forma,
+        Forma::Accelerator,
+        "cheapest among the two tied-fastest candidates, never the globally-cheapest-but-slow spot"
+    );
 }
 
 #[test]
@@ -584,12 +661,29 @@ fn top_performance_winner_always_has_the_frontiers_true_minimum_latency() {
         (Forma::NodeOnDemand, previsao(90, 100)),
         (Forma::Accelerator, previsao(90, 100)),
     ];
-    for (a, b, c) in [(10, 20, 30), (300, 5, 300), (1, 1, 1), (50, 50, 1), (999, 1, 999)] {
+    for (a, b, c) in [
+        (10, 20, 30),
+        (300, 5, 300),
+        (1, 1, 1),
+        (50, 50, 1),
+        (999, 1, 999),
+    ] {
         let true_min = a.min(b).min(c);
-        let o = ParetoOtimizador::new(SpotCheapOnDemandExpensive, otimizador_cfg(60), PickPolicy::TopPerformanceThenMinCost)
-            .with_latency_oracle(VariedLatency(a, b, c));
+        let o = ParetoOtimizador::new(
+            SpotCheapOnDemandExpensive,
+            otimizador_cfg(60),
+            PickPolicy::TopPerformanceThenMinCost,
+        )
+        .with_latency_oracle(VariedLatency(a, b, c));
         let winners = o.optimize(&previsoes);
-        assert_eq!(winners.len(), 1, "case ({a},{b},{c}) must yield exactly one winner");
-        assert_eq!(winners[0].relief_latency_secs, true_min, "case ({a},{b},{c}): winner must hold the true minimum latency");
+        assert_eq!(
+            winners.len(),
+            1,
+            "case ({a},{b},{c}) must yield exactly one winner"
+        );
+        assert_eq!(
+            winners[0].relief_latency_secs, true_min,
+            "case ({a},{b},{c}): winner must hold the true minimum latency"
+        );
     }
 }

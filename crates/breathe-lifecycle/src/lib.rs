@@ -1,5 +1,5 @@
 //! `breathe-lifecycle` — the "no straggler nodes, ever" typescape for
-//! Camelot node provisioning. Node-lifecycle addendum to
+//! the private estate node provisioning. Node-lifecycle addendum to
 //! `theory/CORRENTEZA.md` (which owns tick-by-tick WORKLOAD placement onto
 //! EXISTING nodes via taints/tolerations); this crate owns the orthogonal
 //! concern CORRENTEZA §5 deliberately declines: the cloud NODE's own

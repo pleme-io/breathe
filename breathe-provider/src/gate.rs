@@ -16,7 +16,7 @@
 //! defensible (kill "parked in permanent shadow with no exit"), but the effect
 //! **inverted the meaning of `spec.dryRun` on every live CR** with no schema
 //! change, no migration and no doc update. `dryRun: true` — authored on 74 of
-//! camelot-eks's 76 bands as an explicit safety declaration — became dead code,
+//! private-estate-eks's 76 bands as an explicit safety declaration — became dead code,
 //! and ~4,045 real carves ran under it.
 //!
 //! The defect class is not "a bad boolean". It is: **the authorization decision
@@ -133,7 +133,8 @@ pub const CLAIM_DRY_RUN_LIVE: &str = "actually read `dryRun`";
 
 /// The resolution order, stated once. Every kind whose spec carries a `mode`
 /// field must say this somewhere in its schema.
-pub const CLAIM_RESOLUTION_ORDER: &str = "`writeIntent` > `mode` > the compiled `shadowConfirmEffect`";
+pub const CLAIM_RESOLUTION_ORDER: &str =
+    "`writeIntent` > `mode` > the compiled `shadowConfirmEffect`";
 
 /// The claim every kind must make about an unattributed go-live.
 ///
@@ -144,8 +145,7 @@ pub const CLAIM_RESOLUTION_ORDER: &str = "`writeIntent` > `mode` > the compiled 
 /// [`ShadowReason::IntentMalformed`]. Fail-safe and visible, but *mitigated at
 /// runtime*, not *parse-time-rejected*. Rounding that up is how the whole
 /// `dryRun` class was born; the honest sentence is pinned here instead.
-pub const CLAIM_UNATTRIBUTED_WRITE: &str =
-    "an `{intent: write}` naming no `authorizedBy` never goes live: it is held in shadow as `intentMalformed`";
+pub const CLAIM_UNATTRIBUTED_WRITE: &str = "an `{intent: write}` naming no `authorizedBy` never goes live: it is held in shadow as `intentMalformed`";
 
 fn d_confirm_after_seconds() -> u64 {
     1800
@@ -223,7 +223,12 @@ impl IntentKind {
     /// both derives. Rather than mirror a second four-arm enum in `breathe-mcp` —
     /// the duplication that let the old five-arm `BandKind` fall behind — the MCP
     /// surface builds its input schema from this list.
-    pub const ALL: [Self; 4] = [Self::Observe, Self::CalibrateThenWrite, Self::Write, Self::Frozen];
+    pub const ALL: [Self; 4] = [
+        Self::Observe,
+        Self::CalibrateThenWrite,
+        Self::Write,
+        Self::Frozen,
+    ];
 
     /// The wire label, identical to the serde `camelCase` rename (pinned by
     /// `intent_kind_labels_match_serde`).
@@ -294,10 +299,14 @@ impl WriteIntentSpec {
             IntentKind::Observe => Ok(WriteIntent::Observe),
             IntentKind::Frozen => Ok(WriteIntent::Frozen),
             IntentKind::CalibrateThenWrite => Ok(WriteIntent::CalibrateThenWrite {
-                confirm_after_seconds: self.confirm_after_seconds.unwrap_or_else(d_confirm_after_seconds),
+                confirm_after_seconds: self
+                    .confirm_after_seconds
+                    .unwrap_or_else(d_confirm_after_seconds),
             }),
             IntentKind::Write => match self.authorized_by.as_deref().map(str::trim) {
-                Some(a) if !a.is_empty() => Ok(WriteIntent::Write { authorized_by: a.to_owned() }),
+                Some(a) if !a.is_empty() => Ok(WriteIntent::Write {
+                    authorized_by: a.to_owned(),
+                }),
                 _ => Err(IntentError::UnattributedWrite),
             },
         }
@@ -319,7 +328,7 @@ impl WriteIntentSpec {
 /// carry — the same already-blessed split as `PromotionMode::to_outorga`.
 ///
 /// This is what makes an *accidentally* shadowed band distinguishable from a
-/// *deliberately* shadowed one — the distinction that mattered on camelot-eks,
+/// *deliberately* shadowed one — the distinction that mattered on one cluster-eks,
 /// where six bands were shadowed by `NotReady`, not by any authored intent, and
 /// every surface reported the cause as "dryRun".
 ///
@@ -404,12 +413,15 @@ impl ShadowReason {
     #[must_use]
     pub fn window(self) -> Option<(i64, i64)> {
         match self {
-            Self::ConfirmPending { held_secs, need_secs } => Some((held_secs, need_secs)),
+            Self::ConfirmPending {
+                held_secs,
+                need_secs,
+            } => Some((held_secs, need_secs)),
             _ => None,
         }
     }
     /// `true` iff an operator authored this hold, as opposed to the band
-    /// falling into it. The distinction six camelot-eks bands needed and no
+    /// falling into it. The distinction six private-estate-eks bands needed and no
     /// surface could make.
     #[must_use]
     pub fn is_authored(self) -> bool {
@@ -470,7 +482,7 @@ pub enum LegacyPath {
     TwoStateDryRun,
     /// No intent and no mode: the compiled `ShadowConfirmEffect` default
     /// promoted this band once its confirm window elapsed. **This is the path
-    /// the ~70 live camelot-eks bands took**, under an authored `dryRun: true`
+    /// the ~70 live private-estate-eks bands took**, under an authored `dryRun: true`
     /// that had no effect.
     #[serde(rename_all = "camelCase")]
     ConfirmGate {
@@ -506,7 +518,11 @@ enum Witness {
     #[serde(rename_all = "camelCase")]
     ExplicitIntent { authorized_by: String },
     #[serde(rename_all = "camelCase")]
-    ConfirmGatePassed { ready_since_epoch: i64, held_secs: i64, required_secs: i64 },
+    ConfirmGatePassed {
+        ready_since_epoch: i64,
+        held_secs: i64,
+        required_secs: i64,
+    },
     #[serde(rename_all = "camelCase")]
     OperatorAnnotation { annotation: &'static str },
     #[serde(rename_all = "camelCase")]
@@ -562,9 +578,11 @@ impl LiveWitness {
     #[must_use]
     pub fn passed_window(&self) -> Option<(i64, i64, i64)> {
         match self.0 {
-            Witness::ConfirmGatePassed { ready_since_epoch, held_secs, required_secs } => {
-                Some((ready_since_epoch, held_secs, required_secs))
-            }
+            Witness::ConfirmGatePassed {
+                ready_since_epoch,
+                held_secs,
+                required_secs,
+            } => Some((ready_since_epoch, held_secs, required_secs)),
             _ => None,
         }
     }
@@ -579,11 +597,21 @@ impl LiveWitness {
     pub(crate) fn explicit_intent(authorized_by: String) -> Self {
         Self(Witness::ExplicitIntent { authorized_by })
     }
-    pub(crate) fn confirm_gate_passed(ready_since_epoch: i64, held_secs: i64, required_secs: i64) -> Self {
-        Self(Witness::ConfirmGatePassed { ready_since_epoch, held_secs, required_secs })
+    pub(crate) fn confirm_gate_passed(
+        ready_since_epoch: i64,
+        held_secs: i64,
+        required_secs: i64,
+    ) -> Self {
+        Self(Witness::ConfirmGatePassed {
+            ready_since_epoch,
+            held_secs,
+            required_secs,
+        })
     }
     pub(crate) fn operator_annotation() -> Self {
-        Self(Witness::OperatorAnnotation { annotation: CONFIRMED_ANNOTATION })
+        Self(Witness::OperatorAnnotation {
+            annotation: CONFIRMED_ANNOTATION,
+        })
     }
     pub(crate) fn legacy_default(would_be: LegacyPath) -> Self {
         Self(Witness::LegacyDefault { would_be })
@@ -810,30 +838,50 @@ pub struct GateInputs {
 pub fn resolve_gate(i: &GateInputs) -> EffectiveGate {
     // Key 1 — an external freeze shadows unconditionally, ahead of any intent.
     if i.frozen {
-        return EffectiveGate::Shadow { reason: ShadowReason::Frozen };
+        return EffectiveGate::Shadow {
+            reason: ShadowReason::Frozen,
+        };
     }
     match &i.intent {
         // ── authored but unparseable ⇒ FAIL SAFE, and say so ──────────────────
-        Some(Err(IntentError::UnattributedWrite)) => {
-            EffectiveGate::Shadow { reason: ShadowReason::IntentMalformed }
-        }
+        Some(Err(IntentError::UnattributedWrite)) => EffectiveGate::Shadow {
+            reason: ShadowReason::IntentMalformed,
+        },
         // ── authored ──────────────────────────────────────────────────────────
-        Some(Ok(WriteIntent::Observe)) => EffectiveGate::Shadow { reason: ShadowReason::ModeShadow },
-        Some(Ok(WriteIntent::Frozen)) => EffectiveGate::Shadow { reason: ShadowReason::Suspended },
-        Some(Ok(WriteIntent::Write { authorized_by })) => {
-            EffectiveGate::Live { witness: LiveWitness::explicit_intent(authorized_by.clone()) }
-        }
-        Some(Ok(WriteIntent::CalibrateThenWrite { confirm_after_seconds })) => match i.confirm {
-            ConfirmVerdict::OperatorConfirmed => {
-                EffectiveGate::Live { witness: LiveWitness::operator_annotation() }
-            }
-            ConfirmVerdict::Passed { ready_since_epoch, held_secs, required_secs } => {
-                EffectiveGate::Live {
-                    witness: LiveWitness::confirm_gate_passed(ready_since_epoch, held_secs, required_secs),
-                }
-            }
-            ConfirmVerdict::Pending { held_secs, required_secs } => EffectiveGate::Shadow {
-                reason: ShadowReason::ConfirmPending { held_secs, need_secs: required_secs },
+        Some(Ok(WriteIntent::Observe)) => EffectiveGate::Shadow {
+            reason: ShadowReason::ModeShadow,
+        },
+        Some(Ok(WriteIntent::Frozen)) => EffectiveGate::Shadow {
+            reason: ShadowReason::Suspended,
+        },
+        Some(Ok(WriteIntent::Write { authorized_by })) => EffectiveGate::Live {
+            witness: LiveWitness::explicit_intent(authorized_by.clone()),
+        },
+        Some(Ok(WriteIntent::CalibrateThenWrite {
+            confirm_after_seconds,
+        })) => match i.confirm {
+            ConfirmVerdict::OperatorConfirmed => EffectiveGate::Live {
+                witness: LiveWitness::operator_annotation(),
+            },
+            ConfirmVerdict::Passed {
+                ready_since_epoch,
+                held_secs,
+                required_secs,
+            } => EffectiveGate::Live {
+                witness: LiveWitness::confirm_gate_passed(
+                    ready_since_epoch,
+                    held_secs,
+                    required_secs,
+                ),
+            },
+            ConfirmVerdict::Pending {
+                held_secs,
+                required_secs,
+            } => EffectiveGate::Shadow {
+                reason: ShadowReason::ConfirmPending {
+                    held_secs,
+                    need_secs: required_secs,
+                },
             },
             ConfirmVerdict::Blocked(reason) => EffectiveGate::Shadow { reason },
             // A calibrating intent whose gate was never evaluated is a CALLER
@@ -848,7 +896,9 @@ pub fn resolve_gate(i: &GateInputs) -> EffectiveGate {
         },
         // ── unauthored: the retire-not-delete migration chain ─────────────────
         None => match i.legacy {
-            LegacyDecision::Apply(path) => EffectiveGate::Live { witness: LiveWitness::legacy_default(path) },
+            LegacyDecision::Apply(path) => EffectiveGate::Live {
+                witness: LiveWitness::legacy_default(path),
+            },
             LegacyDecision::Shadow(reason) => EffectiveGate::Shadow { reason },
         },
     }
@@ -873,12 +923,14 @@ pub fn resolve_gate(i: &GateInputs) -> EffectiveGate {
 #[must_use]
 pub fn authored_write_gate(authorized_by: &str) -> EffectiveGate {
     resolve_gate(&GateInputs {
-        intent: Some(WriteIntentSpec {
-            intent: IntentKind::Write,
-            confirm_after_seconds: None,
-            authorized_by: Some(authorized_by.to_owned()),
-        }
-        .parse()),
+        intent: Some(
+            WriteIntentSpec {
+                intent: IntentKind::Write,
+                confirm_after_seconds: None,
+                authorized_by: Some(authorized_by.to_owned()),
+            }
+            .parse(),
+        ),
         frozen: false,
         confirm: ConfirmVerdict::NotEvaluated,
         // Unreachable: an authored intent short-circuits the legacy chain. Named
@@ -937,9 +989,17 @@ mod tests {
     fn intent_kind_all_is_total_and_labels_match_serde() {
         assert_eq!(IntentKind::ALL.len(), 4);
         for k in IntentKind::ALL {
-            assert_eq!(IntentKind::ALL.iter().filter(|x| **x == k).count(), 1, "{k:?} appears twice in ALL");
+            assert_eq!(
+                IntentKind::ALL.iter().filter(|x| **x == k).count(),
+                1,
+                "{k:?} appears twice in ALL"
+            );
             let json = serde_json::to_value(k).unwrap();
-            assert_eq!(json.as_str(), Some(k.as_str()), "serde label != as_str for {k:?}");
+            assert_eq!(
+                json.as_str(),
+                Some(k.as_str()),
+                "serde label != as_str for {k:?}"
+            );
             let back: IntentKind = serde_json::from_value(json).unwrap();
             assert_eq!(back, k);
         }
@@ -963,17 +1023,30 @@ mod tests {
     /// THE ROOT-DEFECT ROW. A band with `dryRun: true`, no `mode` and no
     /// `writeIntent`, whose confirm window has elapsed, goes **LIVE** — and the
     /// verdict says so, naming the legacy path, instead of reporting "dryRun".
-    /// This is the ~70-band camelot-eks reality, made visible.
+    /// This is the ~70-band private-estate-eks reality, made visible.
     #[test]
     fn unauthored_band_past_its_window_is_live_via_a_named_legacy_path() {
         let g = resolve_gate(&GateInputs {
-            legacy: LegacyDecision::Apply(LegacyPath::ConfirmGate { required_secs: 1800 }),
+            legacy: LegacyDecision::Apply(LegacyPath::ConfirmGate {
+                required_secs: 1800,
+            }),
             ..inputs(None)
         });
-        assert!(g.is_live(), "an unauthored, promoted band IS live — dryRun does not hold it");
+        assert!(
+            g.is_live(),
+            "an unauthored, promoted band IS live — dryRun does not hold it"
+        );
         let w = g.witness().expect("live");
-        assert!(w.is_legacy_default(), "and it is attributable as migration debt");
-        assert_eq!(w.legacy_path(), Some(LegacyPath::ConfirmGate { required_secs: 1800 }));
+        assert!(
+            w.is_legacy_default(),
+            "and it is attributable as migration debt"
+        );
+        assert_eq!(
+            w.legacy_path(),
+            Some(LegacyPath::ConfirmGate {
+                required_secs: 1800
+            })
+        );
         assert_eq!(w.kind(), WitnessKind::LegacyDefault);
     }
 
@@ -995,9 +1068,14 @@ mod tests {
     fn an_external_freeze_overrides_even_an_explicit_write_intent() {
         let g = resolve_gate(&GateInputs {
             frozen: true,
-            ..inputs(Some(WriteIntent::Write { authorized_by: "drzzln 2026-07-26".into() }))
+            ..inputs(Some(WriteIntent::Write {
+                authorized_by: "drzzln 2026-07-26".into(),
+            }))
         });
-        assert!(g.is_shadow(), "the two-key rule: a freeze wins over any intent");
+        assert!(
+            g.is_shadow(),
+            "the two-key rule: a freeze wins over any intent"
+        );
         assert_eq!(g.shadow_reason(), Some(ShadowReason::Frozen));
     }
 
@@ -1013,16 +1091,27 @@ mod tests {
 
     #[test]
     fn an_explicit_write_names_its_author() {
-        let g = resolve_gate(&inputs(Some(WriteIntent::Write { authorized_by: "drzzln: neo4j sized by hand".into() })));
-        assert_eq!(g.witness().and_then(LiveWitness::authorized_by), Some("drzzln: neo4j sized by hand"));
-        assert!(!g.witness().unwrap().is_legacy_default(), "an authored write is not migration debt");
+        let g = resolve_gate(&inputs(Some(WriteIntent::Write {
+            authorized_by: "drzzln: neo4j sized by hand".into(),
+        })));
+        assert_eq!(
+            g.witness().and_then(LiveWitness::authorized_by),
+            Some("drzzln: neo4j sized by hand")
+        );
+        assert!(
+            !g.witness().unwrap().is_legacy_default(),
+            "an authored write is not migration debt"
+        );
     }
 
     #[test]
     fn frozen_intent_holds_but_stays_distinguishable_from_a_pool_freeze() {
         let authored = resolve_gate(&inputs(Some(WriteIntent::Frozen)));
         assert_eq!(authored.shadow_reason(), Some(ShadowReason::Suspended));
-        let external = resolve_gate(&GateInputs { frozen: true, ..inputs(None) });
+        let external = resolve_gate(&GateInputs {
+            frozen: true,
+            ..inputs(None)
+        });
         assert_eq!(external.shadow_reason(), Some(ShadowReason::Frozen));
     }
 
@@ -1031,34 +1120,59 @@ mod tests {
     #[test]
     fn calibration_shadows_until_the_window_elapses_then_witnesses_the_gate() {
         let pending = resolve_gate(&GateInputs {
-            confirm: ConfirmVerdict::Pending { held_secs: 400, required_secs: 1800 },
-            ..inputs(Some(WriteIntent::CalibrateThenWrite { confirm_after_seconds: 1800 }))
+            confirm: ConfirmVerdict::Pending {
+                held_secs: 400,
+                required_secs: 1800,
+            },
+            ..inputs(Some(WriteIntent::CalibrateThenWrite {
+                confirm_after_seconds: 1800,
+            }))
         });
         assert_eq!(
             pending.shadow_reason(),
-            Some(ShadowReason::ConfirmPending { held_secs: 400, need_secs: 1800 }),
+            Some(ShadowReason::ConfirmPending {
+                held_secs: 400,
+                need_secs: 1800
+            }),
             "and the operator is told how much longer, not 'dryRun'"
         );
 
         let passed = resolve_gate(&GateInputs {
-            confirm: ConfirmVerdict::Passed { ready_since_epoch: 1000, held_secs: 1801, required_secs: 1800 },
-            ..inputs(Some(WriteIntent::CalibrateThenWrite { confirm_after_seconds: 1800 }))
+            confirm: ConfirmVerdict::Passed {
+                ready_since_epoch: 1000,
+                held_secs: 1801,
+                required_secs: 1800,
+            },
+            ..inputs(Some(WriteIntent::CalibrateThenWrite {
+                confirm_after_seconds: 1800,
+            }))
         });
-        assert_eq!(passed.witness().map(LiveWitness::kind), Some(WitnessKind::ConfirmGatePassed));
+        assert_eq!(
+            passed.witness().map(LiveWitness::kind),
+            Some(WitnessKind::ConfirmGatePassed)
+        );
     }
 
     #[test]
     fn a_calibrating_intent_with_an_unevaluated_gate_fails_safe() {
-        let g = resolve_gate(&inputs(Some(WriteIntent::CalibrateThenWrite { confirm_after_seconds: 900 })));
+        let g = resolve_gate(&inputs(Some(WriteIntent::CalibrateThenWrite {
+            confirm_after_seconds: 900,
+        })));
         assert!(g.is_shadow(), "an unevaluated gate must never promote");
     }
 
     #[test]
     fn a_blocked_gate_reports_the_hard_condition_not_a_pending_window() {
-        for r in [ShadowReason::Stale, ShadowReason::Conflict, ShadowReason::NotReady] {
+        for r in [
+            ShadowReason::Stale,
+            ShadowReason::Conflict,
+            ShadowReason::NotReady,
+        ] {
             let g = resolve_gate(&GateInputs {
                 confirm: ConfirmVerdict::Blocked(r),
-                ..inputs(Some(WriteIntent::CalibrateThenWrite { confirm_after_seconds: 1800 }))
+                ..inputs(Some(WriteIntent::CalibrateThenWrite {
+                    confirm_after_seconds: 1800,
+                }))
             });
             assert_eq!(g.shadow_reason(), Some(r));
         }
@@ -1068,9 +1182,14 @@ mod tests {
     fn the_operator_annotation_is_its_own_witness() {
         let g = resolve_gate(&GateInputs {
             confirm: ConfirmVerdict::OperatorConfirmed,
-            ..inputs(Some(WriteIntent::CalibrateThenWrite { confirm_after_seconds: 1800 }))
+            ..inputs(Some(WriteIntent::CalibrateThenWrite {
+                confirm_after_seconds: 1800,
+            }))
         });
-        assert_eq!(g.witness().map(LiveWitness::kind), Some(WitnessKind::OperatorAnnotation));
+        assert_eq!(
+            g.witness().map(LiveWitness::kind),
+            Some(WitnessKind::OperatorAnnotation)
+        );
     }
 
     // ── the status projection ─────────────────────────────────────────────────
@@ -1085,7 +1204,8 @@ mod tests {
         assert_eq!(r.state, GateState::Live);
         assert_eq!(r.legacy_path, Some(LegacyPathKind::TwoStateDryRun));
         let json = serde_json::to_string(&r).expect("serialize");
-        let back: EffectiveGateReport = serde_json::from_str(&json).expect("the status DTO round-trips");
+        let back: EffectiveGateReport =
+            serde_json::from_str(&json).expect("the status DTO round-trips");
         assert_eq!(r, back);
     }
 
@@ -1110,14 +1230,23 @@ mod tests {
                 confirm_after_seconds: None,
                 authorized_by: a.map(ToOwned::to_owned),
             };
-            assert_eq!(spec.parse(), Err(IntentError::UnattributedWrite), "author {a:?} must not authorize");
+            assert_eq!(
+                spec.parse(),
+                Err(IntentError::UnattributedWrite),
+                "author {a:?} must not authorize"
+            );
         }
         let named = WriteIntentSpec {
             intent: IntentKind::Write,
             confirm_after_seconds: None,
             authorized_by: Some("  drzzln 2026-07-26  ".into()),
         };
-        assert_eq!(named.parse(), Ok(WriteIntent::Write { authorized_by: "drzzln 2026-07-26".into() }));
+        assert_eq!(
+            named.parse(),
+            Ok(WriteIntent::Write {
+                authorized_by: "drzzln 2026-07-26".into()
+            })
+        );
     }
 
     /// An unattributed write must never reach the mutation door — it shadows,
@@ -1130,7 +1259,10 @@ mod tests {
             legacy: LegacyDecision::Apply(LegacyPath::ModeEffect),
             ..raw(Some(Err(IntentError::UnattributedWrite)))
         });
-        assert!(g.is_shadow(), "a malformed intent must never authorize a write");
+        assert!(
+            g.is_shadow(),
+            "a malformed intent must never authorize a write"
+        );
         assert_eq!(g.shadow_reason(), Some(ShadowReason::IntentMalformed));
     }
 
@@ -1140,27 +1272,55 @@ mod tests {
     #[test]
     fn the_wire_shape_is_flat_and_camel_cased() {
         let spec: WriteIntentSpec =
-            serde_json::from_str(r#"{"intent":"calibrateThenWrite","confirmAfterSeconds":900}"#).expect("flat");
-        assert_eq!(spec.parse(), Ok(WriteIntent::CalibrateThenWrite { confirm_after_seconds: 900 }));
+            serde_json::from_str(r#"{"intent":"calibrateThenWrite","confirmAfterSeconds":900}"#)
+                .expect("flat");
+        assert_eq!(
+            spec.parse(),
+            Ok(WriteIntent::CalibrateThenWrite {
+                confirm_after_seconds: 900
+            })
+        );
         let json = serde_json::to_value(&spec).expect("serialize");
         assert!(json.get("intent").is_some() && json.get("confirmAfterSeconds").is_some());
-        assert!(json.get("authorizedBy").is_none(), "absent optionals stay absent");
+        assert!(
+            json.get("authorizedBy").is_none(),
+            "absent optionals stay absent"
+        );
     }
 
     #[test]
     fn calibration_defaults_its_window_and_absence_is_never_a_silent_intent() {
-        let spec: WriteIntentSpec = serde_json::from_str(r#"{"intent":"calibrateThenWrite"}"#).expect("defaults");
-        assert_eq!(spec.parse(), Ok(WriteIntent::CalibrateThenWrite { confirm_after_seconds: 1800 }));
+        let spec: WriteIntentSpec =
+            serde_json::from_str(r#"{"intent":"calibrateThenWrite"}"#).expect("defaults");
+        assert_eq!(
+            spec.parse(),
+            Ok(WriteIntent::CalibrateThenWrite {
+                confirm_after_seconds: 1800
+            })
+        );
         // `WriteIntent` has no `Default` impl (a `WriteIntent::default()` call
         // would not compile) and the wire shape has no default `intent`, so an
         // empty object cannot silently become an authorization.
-        assert!(serde_json::from_str::<WriteIntentSpec>("{}").is_err(), "absence is never a silent intent");
+        assert!(
+            serde_json::from_str::<WriteIntentSpec>("{}").is_err(),
+            "absence is never a silent intent"
+        );
     }
 
     #[test]
     fn may_write_partitions_the_intents() {
-        assert!(WriteIntent::Write { authorized_by: "x".into() }.may_write());
-        assert!(WriteIntent::CalibrateThenWrite { confirm_after_seconds: 1 }.may_write());
+        assert!(
+            WriteIntent::Write {
+                authorized_by: "x".into()
+            }
+            .may_write()
+        );
+        assert!(
+            WriteIntent::CalibrateThenWrite {
+                confirm_after_seconds: 1
+            }
+            .may_write()
+        );
         assert!(!WriteIntent::Observe.may_write());
         assert!(!WriteIntent::Frozen.may_write());
     }

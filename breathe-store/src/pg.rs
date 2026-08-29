@@ -12,8 +12,8 @@ use sqlx::postgres::PgPoolOptions;
 use sqlx::{PgPool, Row};
 
 use crate::{
-    decision_content_hash, decision_content_hash_fields, BandRef, CumulativeCounters, DecisionEntry,
-    DecisionLog, StoreError, GENESIS_HASH,
+    BandRef, CumulativeCounters, DecisionEntry, DecisionLog, GENESIS_HASH, StoreError,
+    decision_content_hash, decision_content_hash_fields,
 };
 
 /// Map any displayable backend error into [`StoreError::Backend`].
@@ -48,7 +48,10 @@ impl PgDecisionLog {
                 ),
                 other => StoreError::Backend(format!("postgres connect failed: {other}")),
             })?;
-        sqlx::migrate!("./migrations").run(&pool).await.map_err(be)?;
+        sqlx::migrate!("./migrations")
+            .run(&pool)
+            .await
+            .map_err(be)?;
         Ok(Self { pool })
     }
 
@@ -115,11 +118,12 @@ impl PgDecisionLog {
         // Cross-check the registry head: the chain tail (last_seq + the last
         // content_hash) must equal what band_registry recorded — else rows were
         // truncated off the tail (a prefix that walks clean from genesis).
-        let head = sqlx::query("SELECT seq, last_hash FROM breathe.band_registry WHERE band_ref = $1")
-            .bind(band.as_str())
-            .fetch_optional(&self.pool)
-            .await
-            .map_err(be)?;
+        let head =
+            sqlx::query("SELECT seq, last_hash FROM breathe.band_registry WHERE band_ref = $1")
+                .bind(band.as_str())
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(be)?;
         match head {
             // No registry row ⇒ the chain must be empty.
             None => Ok(last_seq == 0 && expected_prev == GENESIS_HASH),
@@ -276,7 +280,9 @@ mod tests {
             eprintln!("SKIP pg_append…: set BREATHE_TEST_PG_URL to run");
             return;
         };
-        let log = PgDecisionLog::connect(&url, 5, 1).await.expect("connect + migrate");
+        let log = PgDecisionLog::connect(&url, 5, 1)
+            .await
+            .expect("connect + migrate");
         let band = BandRef::new("MemoryBand", "breathe-test", "restart");
         clean(&log, &band).await;
 
@@ -284,28 +290,57 @@ mod tests {
         let c1 = log
             .append(
                 &band,
-                CumulativeCounters { carves: 5, deferrals: 1, conflicts: 0 },
+                CumulativeCounters {
+                    carves: 5,
+                    deferrals: 1,
+                    conflicts: 0,
+                },
                 entry("Applied", CounterClass::Carve),
             )
             .await
             .unwrap();
-        assert_eq!(c1, CumulativeCounters { carves: 6, deferrals: 1, conflicts: 0 });
+        assert_eq!(
+            c1,
+            CumulativeCounters {
+                carves: 6,
+                deferrals: 1,
+                conflicts: 0
+            }
+        );
 
         // Second append: the seed is IGNORED (row exists) — folds from durable 6.
         let c2 = log
-            .append(&band, CumulativeCounters::ZERO, entry("Conflict", CounterClass::Conflict))
+            .append(
+                &band,
+                CumulativeCounters::ZERO,
+                entry("Conflict", CounterClass::Conflict),
+            )
             .await
             .unwrap();
-        assert_eq!(c2, CumulativeCounters { carves: 6, deferrals: 1, conflicts: 1 });
+        assert_eq!(
+            c2,
+            CumulativeCounters {
+                carves: 6,
+                deferrals: 1,
+                conflicts: 1
+            }
+        );
         assert!(log.verify_chain(&band).await.unwrap(), "chain verifies");
 
         // RESTART survival: a fresh connection continues the durable count.
         let log2 = PgDecisionLog::connect(&url, 5, 1).await.unwrap();
         let c3 = log2
-            .append(&band, CumulativeCounters::ZERO, entry("Applied", CounterClass::Carve))
+            .append(
+                &band,
+                CumulativeCounters::ZERO,
+                entry("Applied", CounterClass::Carve),
+            )
             .await
             .unwrap();
-        assert_eq!(c3.carves, 7, "durable count continues across restart, not reset");
+        assert_eq!(
+            c3.carves, 7,
+            "durable count continues across restart, not reset"
+        );
         assert!(log2.verify_chain(&band).await.unwrap());
 
         clean(&log, &band).await;
@@ -329,32 +364,41 @@ mod tests {
             let log = log.clone();
             let band = band.clone();
             handles.push(tokio::spawn(async move {
-                log.append(&band, CumulativeCounters::ZERO, entry("Applied", CounterClass::Carve))
-                    .await
+                log.append(
+                    &band,
+                    CumulativeCounters::ZERO,
+                    entry("Applied", CounterClass::Carve),
+                )
+                .await
             }));
         }
         for h in handles {
             h.await.unwrap().expect("a concurrent append must not fail");
         }
 
-        let total: i64 = sqlx::query("SELECT carves_total FROM breathe.band_registry WHERE band_ref = $1")
-            .bind(band.as_str())
-            .fetch_one(&log.pool)
-            .await
-            .unwrap()
-            .try_get("carves_total")
-            .unwrap();
+        let total: i64 =
+            sqlx::query("SELECT carves_total FROM breathe.band_registry WHERE band_ref = $1")
+                .bind(band.as_str())
+                .fetch_one(&log.pool)
+                .await
+                .unwrap()
+                .try_get("carves_total")
+                .unwrap();
         assert_eq!(total, n, "every concurrent carve counted exactly once");
 
-        let rows: i64 = sqlx::query("SELECT COUNT(*) AS c FROM breathe.decision_log WHERE band_ref = $1")
-            .bind(band.as_str())
-            .fetch_one(&log.pool)
-            .await
-            .unwrap()
-            .try_get("c")
-            .unwrap();
+        let rows: i64 =
+            sqlx::query("SELECT COUNT(*) AS c FROM breathe.decision_log WHERE band_ref = $1")
+                .bind(band.as_str())
+                .fetch_one(&log.pool)
+                .await
+                .unwrap()
+                .try_get("c")
+                .unwrap();
         assert_eq!(rows, n, "exactly n decision rows, no forked chain");
-        assert!(log.verify_chain(&band).await.unwrap(), "chain unbroken under concurrency");
+        assert!(
+            log.verify_chain(&band).await.unwrap(),
+            "chain unbroken under concurrency"
+        );
 
         clean(&log, &band).await;
     }
@@ -370,10 +414,17 @@ mod tests {
         clean(&log, &band).await;
 
         // A NoCount row (the majority class — Observed/Cooldown/Stale/Dormant).
-        log.append(&band, CumulativeCounters::ZERO, entry("Observed", CounterClass::NoCount))
-            .await
-            .unwrap();
-        assert!(log.verify_chain(&band).await.unwrap(), "a genuine chain verifies");
+        log.append(
+            &band,
+            CumulativeCounters::ZERO,
+            entry("Observed", CounterClass::NoCount),
+        )
+        .await
+        .unwrap();
+        assert!(
+            log.verify_chain(&band).await.unwrap(),
+            "a genuine chain verifies"
+        );
 
         // Tamper the stored counter_class to a non-canonical string — the exact
         // attack the adversarial pass found (from_tag would collapse it back to
@@ -394,7 +445,9 @@ mod tests {
     #[tokio::test]
     async fn pg_verify_chain_detects_tail_truncation() {
         let Some(url) = test_url() else {
-            eprintln!("SKIP pg_verify_chain_detects_tail_truncation…: set BREATHE_TEST_PG_URL to run");
+            eprintln!(
+                "SKIP pg_verify_chain_detects_tail_truncation…: set BREATHE_TEST_PG_URL to run"
+            );
             return;
         };
         let log = PgDecisionLog::connect(&url, 5, 1).await.unwrap();
@@ -405,13 +458,24 @@ mod tests {
         // band_registry still points (seq + last_hash) past it. A walk-from-genesis
         // alone would accept the shorter prefix — the registry-head cross-check
         // catches it.
-        log.append(&band, CumulativeCounters::ZERO, entry("Applied", CounterClass::Carve))
-            .await
-            .unwrap();
-        log.append(&band, CumulativeCounters::ZERO, entry("Conflict", CounterClass::Conflict))
-            .await
-            .unwrap();
-        assert!(log.verify_chain(&band).await.unwrap(), "the full chain verifies");
+        log.append(
+            &band,
+            CumulativeCounters::ZERO,
+            entry("Applied", CounterClass::Carve),
+        )
+        .await
+        .unwrap();
+        log.append(
+            &band,
+            CumulativeCounters::ZERO,
+            entry("Conflict", CounterClass::Conflict),
+        )
+        .await
+        .unwrap();
+        assert!(
+            log.verify_chain(&band).await.unwrap(),
+            "the full chain verifies"
+        );
 
         sqlx::query("DELETE FROM breathe.decision_log WHERE band_ref = $1 AND seq = (SELECT MAX(seq) FROM breathe.decision_log WHERE band_ref = $1)")
             .bind(band.as_str())

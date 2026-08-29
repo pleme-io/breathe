@@ -149,7 +149,7 @@ pub enum NoActionReason {
 /// The configured escalation target + retry ceiling — typed config,
 /// never a hardcoded string. This is exactly the "auction ether" →
 /// "which on-demand label" mapping the org's tag/query/control
-/// discipline (`theory/CAMELOT-RUNNER-CONTROL.md`) requires be a
+/// discipline (the runner-control doctrine) requires be a
 /// single typed source, not a scattered literal.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RetiradaCiPolicy {
@@ -330,9 +330,7 @@ pub fn compute_adaptive_starvation_threshold(
     }
     let mut sorted: Vec<std::time::Duration> = wake_latencies.to_vec();
     sorted.sort();
-    let p95_idx = (((sorted.len() as f64) * 0.95).ceil() as usize)
-        .clamp(1, sorted.len())
-        - 1;
+    let p95_idx = (((sorted.len() as f64) * 0.95).ceil() as usize).clamp(1, sorted.len()) - 1;
     let p95 = sorted[p95_idx];
     p95.mul_f64(multiplier).max(floor)
 }
@@ -592,7 +590,7 @@ mod tests {
             &dispatcher,
             &policy,
             "arc-runners",
-            "camelot-builder-pleme-abc123",
+            "isolated-builder-pleme-abc123",
         )
         .await
         .unwrap();
@@ -625,7 +623,7 @@ mod tests {
             &dispatcher,
             &policy,
             "arc-runners",
-            "camelot-builder-pleme-abc123",
+            "isolated-builder-pleme-abc123",
         )
         .await
         .unwrap();
@@ -656,7 +654,7 @@ mod tests {
             &dispatcher,
             &policy,
             "arc-runners",
-            "camelot-builder-pleme-abc123",
+            "isolated-builder-pleme-abc123",
         )
         .await
         .unwrap();
@@ -695,8 +693,11 @@ mod tests {
         // started_at delta). Must classify as a real starvation
         // redispatch, not a normal Wake.
         let obs = queue_obs(false, Duration::from_secs(25 * 3600));
-        let decision =
-            classify_queue_starvation(&obs, &QueueStarvationPolicy::default(), &RetiradaCiPolicy::default());
+        let decision = classify_queue_starvation(
+            &obs,
+            &QueueStarvationPolicy::default(),
+            &RetiradaCiPolicy::default(),
+        );
         assert_eq!(
             decision,
             RemediationDecision::RedispatchOnDemand {
@@ -726,9 +727,15 @@ mod tests {
             queued_for: Duration::from_secs(3 * 3600 + 12 * 60),
             prior_auto_retries: 0,
         };
-        let decision =
-            classify_queue_starvation(&obs, &QueueStarvationPolicy::default(), &RetiradaCiPolicy::default());
-        assert!(matches!(decision, RemediationDecision::RedispatchOnDemand { .. }));
+        let decision = classify_queue_starvation(
+            &obs,
+            &QueueStarvationPolicy::default(),
+            &RetiradaCiPolicy::default(),
+        );
+        assert!(matches!(
+            decision,
+            RemediationDecision::RedispatchOnDemand { .. }
+        ));
     }
 
     #[test]
@@ -737,8 +744,11 @@ mod tests {
         // minutes) must NEVER trigger a redispatch -- only real,
         // sustained starvation past the threshold does.
         let obs = queue_obs(false, Duration::from_secs(90));
-        let decision =
-            classify_queue_starvation(&obs, &QueueStarvationPolicy::default(), &RetiradaCiPolicy::default());
+        let decision = classify_queue_starvation(
+            &obs,
+            &QueueStarvationPolicy::default(),
+            &RetiradaCiPolicy::default(),
+        );
         assert_eq!(
             decision,
             RemediationDecision::NoAction {
@@ -753,8 +763,11 @@ mod tests {
         // pod-eviction classifier's question, never this one's -- even
         // if it somehow queued a long time before being claimed.
         let obs = queue_obs(true, Duration::from_secs(2 * 3600));
-        let decision =
-            classify_queue_starvation(&obs, &QueueStarvationPolicy::default(), &RetiradaCiPolicy::default());
+        let decision = classify_queue_starvation(
+            &obs,
+            &QueueStarvationPolicy::default(),
+            &RetiradaCiPolicy::default(),
+        );
         assert_eq!(
             decision,
             RemediationDecision::NoAction {

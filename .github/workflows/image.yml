@@ -1,12 +1,12 @@
 # Build + push EVERY breathe OCI image on merge to main.
 #
-# runner: resolves from vars.CAMELOT_IMAGE_RUNNER, falls back to
-# camelot-builder-pleme (was rio-build-01 -- confirmed dead 2026-07-17, 0
+# runner: resolves from vars.PRIVATE_BUILDER_RUNNER, falls back to
+# private-estate-builder-pleme (was rio-build-01 -- confirmed dead 2026-07-17, 0
 # registered runners fleet-wide; see pangea-operator's release.yml for the
 # sibling fix + the full routing writeup), with the in-cluster sui
-# super-cache wired as a Nix substituter -- see the camelot skill's
+# super-cache wired as a Nix substituter -- see the private estate skill's
 # "pleme-io-org runner pool" section for the full routing pattern + why
-# (camelot-builder-pleme, the pleme-io-org ARC scale set on camelot's own
+# (private-estate-builder-pleme, the pleme-io-org ARC scale set on one cluster's own
 # 100%-spot builder floor, registered at githubConfigUrl:
 # https://github.com/pleme-io into the org's Default runner group).
 #
@@ -15,26 +15,26 @@
 # CVE gate: each image is scanned (blocking, zero-tolerance) immediately
 # after its own push -- see the cve-scan-* jobs below.
 #
-# ★ AUTOBUMP + the camelot CHANNEL extension (2026-07-11). Every push emits a
+# ★ AUTOBUMP + the private estate CHANNEL extension (2026-07-11). Every push emits a
 # sortable, exact, immutable tag — never :latest as a deploy source (org ★
 # AUTOBUMP directive). Two channels share one image (one ghcr package, one
 # ImageRepository per app):
 #   main         -> amd64-r<run>-<sha>          (the fleet-wide stream)
-#   camelot/**   -> amd64-camelot-r<run>-<sha>  (Camelot-only stream)
-# A camelot/* branch build never touches main's tag lineage or any other
-# cluster's ImagePolicy (its pattern requires the "camelot-" infix main's
-# never carries, and vice versa) -- so Camelot can run ahead of / diverged
-# from the fleet by pushing to a camelot/* branch, with zero risk to rio or
+#   the private estate/**   -> amd64-private-estate-r<run>-<sha>  (private-estate-only stream)
+# A private-estate/* branch build never touches main's tag lineage or any other
+# cluster's ImagePolicy (its pattern requires the "private-estate-" infix main's
+# never carries, and vice versa) -- so the private estate can run ahead of / diverged
+# from the fleet by pushing to a private-estate/* branch, with zero risk to rio or
 # any other subscriber. See k8s/clusters/rio/infrastructure/flux-image-
 # automation/RUNBOOK.md for the ImageRepository/ImagePolicy/
-# ImageUpdateAutomation shape this tag scheme is designed to feed; Camelot's
+# ImageUpdateAutomation shape this tag scheme is designed to feed; the private estate's
 # own equivalent lives under infrastructure/flux-image-automation/ in its own
 # cluster's GitOps tree.
 name: image
 
 on:
   push:
-    branches: [main, "camelot/**"]
+    branches: [main, "isolated/**"]
     paths:
       - "**/*.rs"
       - "**/Cargo.*"
@@ -45,12 +45,12 @@ on:
     inputs:
       runnerOverride:
         description: >-
-          Escape hatch for when CAMELOT_IMAGE_RUNNER's scale set is broken
+          Escape hatch for when PRIVATE_BUILDER_RUNNER's scale set is broken
           (e.g. its ClusterSecretStore credential isn't provisioned yet —
-          see task tracker "camelot-builder-pleme ARC scale set broken").
+          see task tracker "isolated-builder-pleme ARC scale set broken").
           Set to a real GitHub-hosted label (e.g. ubuntu-24.04) to bypass
           it for one manual run. Empty (default) = normal var-driven
-          selection, unaffected. Never rio-build-01 for Camelot images
+          selection, unaffected. Never rio-build-01 for isolated images
           (org rule) — this input exists so the fallback never silently
           becomes rio.
         type: string
@@ -68,15 +68,15 @@ jobs:
     with:
       imageAttr: image
       imageName: pleme-io/breathe-controller
-      tag: amd64-${{ startsWith(github.ref_name, 'camelot/') && 'camelot-' || '' }}r${{ github.run_number }}-${{ github.sha }}
-      additionalTags: ${{ startsWith(github.ref_name, 'camelot/') && 'amd64-camelot-latest' || 'amd64-latest' }}
+      tag: amd64-${{ startsWith(github.ref_name, 'isolated/') && 'isolated-' || '' }}r${{ github.run_number }}-${{ github.sha }}
+      additionalTags: ${{ startsWith(github.ref_name, 'isolated/') && 'amd64-isolated-latest' || 'amd64-latest' }}
       # NO explicit runner (2026-07-27). Left EMPTY so substrate's
       # image-push.yml routes through runner-resolve's VISIBILITY-AWARE
-      # default: private-repo callers land on Camelot's self-hosted pool,
+      # default: private-repo callers land on the org's self-hosted pool,
       # public-repo callers keep free GitHub-hosted minutes.
       #
       # WHY THIS LINE HAD TO GO. breathe is a PUBLIC repo, and this line
-      # forced `vars.CAMELOT_IMAGE_RUNNER` = camelot-builder-pleme-eks --
+      # forced `vars.PRIVATE_BUILDER_RUNNER` = the self-hosted builder pool --
       # a SELF-HOSTED label. GitHub does not assign public-repository jobs
       # to self-hosted runners (a fork PR could otherwise execute arbitrary
       # code on our cluster), so every build queued FOREVER: 4 runs stuck
@@ -86,7 +86,7 @@ jobs:
       # the job said `queued` (not failed), the ARC listener honestly
       # reported `assigned job: 0` and scaled to zero, ImageRepository and
       # ImagePolicy both Ready=True correctly finding the newest MATCHING
-      # tag. There just had been no amd64-r<n> tag since r174, so camelot's
+      # tag. There just had been no amd64-r<n> tag since r174, so the private estate's
       # controller sat 21 commits behind with nothing anywhere saying why.
       # NOTE (corrected 2026-07-28): `runnerOverride` is now INERT. Removing
       # the `runner:` line severed its ONLY consumer -- the input is still
@@ -97,8 +97,8 @@ jobs:
       # input is non-empty, so the visibility-aware default still applies by
       # default -- not restoring the unconditional pin that caused the
       # public-repo queue-forever bug.
-      extraSubstituters: ${{ vars.CAMELOT_SUI_SUBSTITUTER }}
-      requireSigs: ${{ vars.CAMELOT_SUI_REQUIRE_SIGS }}
+      extraSubstituters: ${{ vars.PRIVATE_SUI_SUBSTITUTER }}
+      requireSigs: ${{ vars.PRIVATE_SUI_REQUIRE_SIGS || vars.CAMELOT_SUI_REQUIRE_SIGS }}
     secrets: inherit
   host-agent:
     name: breathe-host-agent image → ghcr.io
@@ -106,15 +106,15 @@ jobs:
     with:
       imageAttr: agent-image
       imageName: pleme-io/breathe-host-agent
-      tag: amd64-${{ startsWith(github.ref_name, 'camelot/') && 'camelot-' || '' }}r${{ github.run_number }}-${{ github.sha }}
-      additionalTags: ${{ startsWith(github.ref_name, 'camelot/') && 'amd64-camelot-latest' || 'amd64-latest' }}
+      tag: amd64-${{ startsWith(github.ref_name, 'isolated/') && 'isolated-' || '' }}r${{ github.run_number }}-${{ github.sha }}
+      additionalTags: ${{ startsWith(github.ref_name, 'isolated/') && 'amd64-isolated-latest' || 'amd64-latest' }}
       # NO explicit runner (2026-07-27). Left EMPTY so substrate's
       # image-push.yml routes through runner-resolve's VISIBILITY-AWARE
-      # default: private-repo callers land on Camelot's self-hosted pool,
+      # default: private-repo callers land on the org's self-hosted pool,
       # public-repo callers keep free GitHub-hosted minutes.
       #
       # WHY THIS LINE HAD TO GO. breathe is a PUBLIC repo, and this line
-      # forced `vars.CAMELOT_IMAGE_RUNNER` = camelot-builder-pleme-eks --
+      # forced `vars.PRIVATE_BUILDER_RUNNER` = the self-hosted builder pool --
       # a SELF-HOSTED label. GitHub does not assign public-repository jobs
       # to self-hosted runners (a fork PR could otherwise execute arbitrary
       # code on our cluster), so every build queued FOREVER: 4 runs stuck
@@ -124,7 +124,7 @@ jobs:
       # the job said `queued` (not failed), the ARC listener honestly
       # reported `assigned job: 0` and scaled to zero, ImageRepository and
       # ImagePolicy both Ready=True correctly finding the newest MATCHING
-      # tag. There just had been no amd64-r<n> tag since r174, so camelot's
+      # tag. There just had been no amd64-r<n> tag since r174, so the private estate's
       # controller sat 21 commits behind with nothing anywhere saying why.
       # NOTE (corrected 2026-07-28): `runnerOverride` is now INERT. Removing
       # the `runner:` line severed its ONLY consumer -- the input is still
@@ -135,8 +135,8 @@ jobs:
       # input is non-empty, so the visibility-aware default still applies by
       # default -- not restoring the unconditional pin that caused the
       # public-repo queue-forever bug.
-      extraSubstituters: ${{ vars.CAMELOT_SUI_SUBSTITUTER }}
-      requireSigs: ${{ vars.CAMELOT_SUI_REQUIRE_SIGS }}
+      extraSubstituters: ${{ vars.PRIVATE_SUI_SUBSTITUTER }}
+      requireSigs: ${{ vars.PRIVATE_SUI_REQUIRE_SIGS || vars.CAMELOT_SUI_REQUIRE_SIGS }}
     secrets: inherit
   api-server:
     name: breathe-api-server image → ghcr.io
@@ -144,15 +144,15 @@ jobs:
     with:
       imageAttr: api-server-image
       imageName: pleme-io/breathe-api-server
-      tag: amd64-${{ startsWith(github.ref_name, 'camelot/') && 'camelot-' || '' }}r${{ github.run_number }}-${{ github.sha }}
-      additionalTags: ${{ startsWith(github.ref_name, 'camelot/') && 'amd64-camelot-latest' || 'amd64-latest' }}
+      tag: amd64-${{ startsWith(github.ref_name, 'isolated/') && 'isolated-' || '' }}r${{ github.run_number }}-${{ github.sha }}
+      additionalTags: ${{ startsWith(github.ref_name, 'isolated/') && 'amd64-isolated-latest' || 'amd64-latest' }}
       # NO explicit runner (2026-07-27). Left EMPTY so substrate's
       # image-push.yml routes through runner-resolve's VISIBILITY-AWARE
-      # default: private-repo callers land on Camelot's self-hosted pool,
+      # default: private-repo callers land on the org's self-hosted pool,
       # public-repo callers keep free GitHub-hosted minutes.
       #
       # WHY THIS LINE HAD TO GO. breathe is a PUBLIC repo, and this line
-      # forced `vars.CAMELOT_IMAGE_RUNNER` = camelot-builder-pleme-eks --
+      # forced `vars.PRIVATE_BUILDER_RUNNER` = the self-hosted builder pool --
       # a SELF-HOSTED label. GitHub does not assign public-repository jobs
       # to self-hosted runners (a fork PR could otherwise execute arbitrary
       # code on our cluster), so every build queued FOREVER: 4 runs stuck
@@ -162,7 +162,7 @@ jobs:
       # the job said `queued` (not failed), the ARC listener honestly
       # reported `assigned job: 0` and scaled to zero, ImageRepository and
       # ImagePolicy both Ready=True correctly finding the newest MATCHING
-      # tag. There just had been no amd64-r<n> tag since r174, so camelot's
+      # tag. There just had been no amd64-r<n> tag since r174, so the private estate's
       # controller sat 21 commits behind with nothing anywhere saying why.
       # NOTE (corrected 2026-07-28): `runnerOverride` is now INERT. Removing
       # the `runner:` line severed its ONLY consumer -- the input is still
@@ -173,8 +173,8 @@ jobs:
       # input is non-empty, so the visibility-aware default still applies by
       # default -- not restoring the unconditional pin that caused the
       # public-repo queue-forever bug.
-      extraSubstituters: ${{ vars.CAMELOT_SUI_SUBSTITUTER }}
-      requireSigs: ${{ vars.CAMELOT_SUI_REQUIRE_SIGS }}
+      extraSubstituters: ${{ vars.PRIVATE_SUI_SUBSTITUTER }}
+      requireSigs: ${{ vars.PRIVATE_SUI_REQUIRE_SIGS || vars.CAMELOT_SUI_REQUIRE_SIGS }}
     secrets: inherit
 
   # Zero-tolerance CVE gate on each JUST-published image (2026-07-17 —
@@ -192,7 +192,7 @@ jobs:
     steps:
       - uses: pleme-io/actions/image-scan@main
         with:
-          image-ref: ghcr.io/pleme-io/breathe-controller:amd64-${{ startsWith(github.ref_name, 'camelot/') && 'camelot-' || '' }}r${{ github.run_number }}-${{ github.sha }}
+          image-ref: ghcr.io/pleme-io/breathe-controller:amd64-${{ startsWith(github.ref_name, 'isolated/') && 'isolated-' || '' }}r${{ github.run_number }}-${{ github.sha }}
           fail-on-severity: HIGH
 
   host-agent-arm64:
@@ -201,24 +201,24 @@ jobs:
     with:
       imageAttr: agent-image
       imageName: pleme-io/breathe-host-agent
-      tag: arm64-${{ startsWith(github.ref_name, 'camelot/') && 'camelot-' || '' }}r${{ github.run_number }}-${{ github.sha }}
-      additionalTags: ${{ startsWith(github.ref_name, 'camelot/') && 'arm64-camelot-latest' || 'arm64-latest' }}
+      tag: arm64-${{ startsWith(github.ref_name, 'isolated/') && 'isolated-' || '' }}r${{ github.run_number }}-${{ github.sha }}
+      additionalTags: ${{ startsWith(github.ref_name, 'isolated/') && 'arm64-isolated-latest' || 'arm64-latest' }}
       # ADDED 2026-08-02. Until now this image published amd64 tags ONLY, and the
       # consequence was measured the first time the DaemonSet rolled on
-      # camelot-eks: 22 pods came up Running and one CrashLoopBackOff'd on an
+      # private-estate-eks: 22 pods came up Running and one CrashLoopBackOff'd on an
       # arm64 c6g.large with
       #   exec /nix/store/...-x86_64-unknown-linux-musl/bin/breathe-host-agent:
       #   exec format error
       # The workaround shipped there is a `kubernetes.io/arch: amd64`
       # nodeSelector, which keeps the agent healthy but leaves every arm64 node
-      # UNWATCHED -- including camelot's builder-arm64 pool, which runs
+      # UNWATCHED -- including the private estate's builder-arm64 pool, which runs
       # m7g.2xlarge ON-DEMAND and is exactly the idle-prone shape the agent's
       # node-waste reporter exists to catch. This job is what lets that
       # nodeSelector be dropped.
       #
       # EXPLICIT runner, and it must be a GITHUB-HOSTED arm64 one. The obvious
-      # move -- point this at Camelot's scale-to-zero ARC arm64 pool
-      # (camelot-builder-pleme-eks-arm64, minRunners 0) -- CANNOT work: breathe
+      # move -- point this at the private estate's scale-to-zero ARC arm64 pool
+      # (the self-hosted builder pool-arm64, minRunners 0) -- CANNOT work: breathe
       # is a PUBLIC repo, and GitHub never assigns public-repository jobs to
       # self-hosted runners, because a fork PR could otherwise execute arbitrary
       # code on the cluster. That was already tried on the amd64 job and it did
@@ -229,8 +229,8 @@ jobs:
       # off-target build mislabels the arch and exec-format-errors at runtime,
       # which is the failure this job exists to end.
       runner: ubuntu-24.04-arm
-      extraSubstituters: ${{ vars.CAMELOT_SUI_SUBSTITUTER }}
-      requireSigs: ${{ vars.CAMELOT_SUI_REQUIRE_SIGS }}
+      extraSubstituters: ${{ vars.PRIVATE_SUI_SUBSTITUTER }}
+      requireSigs: ${{ vars.PRIVATE_SUI_REQUIRE_SIGS || vars.CAMELOT_SUI_REQUIRE_SIGS }}
     secrets: inherit
 
   host-agent-manifest:
@@ -245,7 +245,7 @@ jobs:
       # arm64-<tag>. A Kubernetes DaemonSet has ONE image field, so per-arch tags
       # cannot cover a mixed-arch cluster: whichever tag is chosen, the other
       # architecture exec-format-errors. That is not hypothetical -- it is what
-      # happened on camelot-eks the first time this DaemonSet rolled, and the
+      # happened on one cluster-eks the first time this DaemonSet rolled, and the
       # workaround was an arch nodeSelector that left every arm64 node unwatched.
       #
       # This composes both legs into ONE multi-arch OCI index, so a single tag
@@ -258,8 +258,8 @@ jobs:
       - uses: pleme-io/actions/manifest-list-join@main
         with:
           repo: ghcr.io/pleme-io/breathe-host-agent
-          tag: ${{ startsWith(github.ref_name, 'camelot/') && 'camelot-' || '' }}r${{ github.run_number }}-${{ github.sha }}
-          arch-refs: amd64=ghcr.io/pleme-io/breathe-host-agent:amd64-${{ startsWith(github.ref_name, 'camelot/') && 'camelot-' || '' }}r${{ github.run_number }}-${{ github.sha }},arm64=ghcr.io/pleme-io/breathe-host-agent:arm64-${{ startsWith(github.ref_name, 'camelot/') && 'camelot-' || '' }}r${{ github.run_number }}-${{ github.sha }}
+          tag: ${{ startsWith(github.ref_name, 'isolated/') && 'isolated-' || '' }}r${{ github.run_number }}-${{ github.sha }}
+          arch-refs: amd64=ghcr.io/pleme-io/breathe-host-agent:amd64-${{ startsWith(github.ref_name, 'isolated/') && 'isolated-' || '' }}r${{ github.run_number }}-${{ github.sha }},arm64=ghcr.io/pleme-io/breathe-host-agent:arm64-${{ startsWith(github.ref_name, 'isolated/') && 'isolated-' || '' }}r${{ github.run_number }}-${{ github.sha }}
 
   cve-scan-host-agent:
     name: zero-tolerance CVE scan — breathe-host-agent
@@ -268,7 +268,7 @@ jobs:
     steps:
       - uses: pleme-io/actions/image-scan@main
         with:
-          image-ref: ghcr.io/pleme-io/breathe-host-agent:amd64-${{ startsWith(github.ref_name, 'camelot/') && 'camelot-' || '' }}r${{ github.run_number }}-${{ github.sha }}
+          image-ref: ghcr.io/pleme-io/breathe-host-agent:amd64-${{ startsWith(github.ref_name, 'isolated/') && 'isolated-' || '' }}r${{ github.run_number }}-${{ github.sha }}
           fail-on-severity: HIGH
 
   cve-scan-api-server:
@@ -278,5 +278,5 @@ jobs:
     steps:
       - uses: pleme-io/actions/image-scan@main
         with:
-          image-ref: ghcr.io/pleme-io/breathe-api-server:amd64-${{ startsWith(github.ref_name, 'camelot/') && 'camelot-' || '' }}r${{ github.run_number }}-${{ github.sha }}
+          image-ref: ghcr.io/pleme-io/breathe-api-server:amd64-${{ startsWith(github.ref_name, 'isolated/') && 'isolated-' || '' }}r${{ github.run_number }}-${{ github.sha }}
           fail-on-severity: HIGH

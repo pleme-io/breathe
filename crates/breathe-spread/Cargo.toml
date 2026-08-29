@@ -34,7 +34,7 @@
 # workspace members ... once the concurrent band-crate work lands") — this IS
 # that band-crate work (theory/CORRENTEZA.md M0). The concrete realizers this
 # crate composes BY REFERENCE are unaffected — `breathe-catalog::builder` (the
-# DegradeTier ladders), `pangea-architectures` (Camelot{,Builder}NodeGroup +
+# DegradeTier ladders), `pangea-architectures` (the private estate{,Builder}NodeGroup +
 # AzTopology), `pangea-spot` (Allocation + Catalog) — none of them are actual
 # Cargo dependencies, so folding into the workspace adds no build coupling to
 # their churn; it only lets a REAL Rust dependent (breathe-controller) exist.

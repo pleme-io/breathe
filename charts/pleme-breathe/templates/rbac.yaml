@@ -81,7 +81,7 @@ rules:
   # reference data the controller resolves via a reflector::Store every
   # reconcile tick (breathe-controller/src/main.rs), never writes. Missing
   # from chart 0.1.28's initial ship (a597770/b0406ae) — found live 2026-07-24
-  # via a real 403 on the first postureRef-migrated CRs on camelot-eks
+  # via a real 403 on the first postureRef-migrated CRs on one cluster-eks
   # ("breathepostures.breathe.pleme.io is forbidden ... cannot list resource
   # breathepostures ... at the cluster scope"): every postureRef silently fell
   # through to the compiled default instead of resolving the referenced
@@ -258,7 +258,7 @@ rules:
       - "breathenodepools"
       - "breathenodepools/status"
       # ADDED 2026-08-02, found by a real 403 the moment the DaemonSet first ran
-      # on camelot-eks:
+      # on one cluster-eks:
       #   hostparambands.breathe.pleme.io is forbidden: User
       #   "system:serviceaccount:breathe-system:breathe-host-agent" cannot list
       #   resource "hostparambands" ... at the cluster scope

@@ -18,7 +18,7 @@
 //! churn, exactly as `gen-pdc` stays decoupled from the adapter crates). The
 //! breathe substrate REALIZES the carve; this crate is the CONTRACT the
 //! doctrine surfaces (`theory/BREATHABILITY.md`, the `/breathability` +
-//! `/camelot` skills, the org rule) point to as the canonical lock.
+//! `/the private estate` skills, the org rule) point to as the canonical lock.
 //!
 //! ## The invariant
 //!
@@ -66,26 +66,27 @@ pub mod isolation;
 pub mod setpoint;
 
 pub use carve::{
-    carve_to_setpoint, fill_velocity, realized_utilization, seconds_to_full, CarveLaw,
-    MultiplicativeBand,
+    CarveLaw, MultiplicativeBand, carve_to_setpoint, fill_velocity, realized_utilization,
+    seconds_to_full,
 };
-pub use catalog::{dimension, maturity_histogram, CATALOG};
-pub use check::{check, BreatheCheckOutcome, BreatheViolation, DimensionUse, WorkloadProfile};
+pub use catalog::{CATALOG, dimension, maturity_histogram};
+pub use check::{BreatheCheckOutcome, BreatheViolation, DimensionUse, WorkloadProfile, check};
 pub use clause::{BreatheClause, UnrepTier};
 pub use database::{
-    architecture_for, failover_step, legal_permutations, resolve_permutation, DatabasePermutation,
-    DbArchitecture, DbEngine, DbRole, DiscoveryError, FailoverAction, FailoverEvent, FailoverMachine,
-    FailoverPolicy, FailoverState, IllegalTransition, MockReplicationDiscovery, PermutationError,
-    PrimaryReclaimAuthorization, PromotionReceipt, ReplicaId, ReplicaScalePolicy, ReplicationClass,
-    ReplicationDiscovery, ReplicationOverlay, ReplicationTopology, SpotPosture, DB_ARCHITECTURES,
+    DB_ARCHITECTURES, DatabasePermutation, DbArchitecture, DbEngine, DbRole, DiscoveryError,
+    FailoverAction, FailoverEvent, FailoverMachine, FailoverPolicy, FailoverState,
+    IllegalTransition, MockReplicationDiscovery, PermutationError, PrimaryReclaimAuthorization,
+    PromotionReceipt, ReplicaId, ReplicaScalePolicy, ReplicationClass, ReplicationDiscovery,
+    ReplicationOverlay, ReplicationTopology, SpotPosture, architecture_for, failover_step,
+    legal_permutations, resolve_permutation,
 };
 pub use dimension::{
     BreatheDimension, CarveAlgorithm, ClauseStatus, DimensionId, DiscoveryStrategy, Maturity,
 };
 pub use isolation::{
-    all_critical_sealed, carve_respecting_seal, optimize_reserved, resolve_posture,
-    total_reserved_cost, unsealed_critical_workloads, InterferenceSensitivity, IsolationOverlay,
-    IsolationPosture, PlacementIsolation, QosClass, SealError, SealedCarve, WorkloadClass,
+    InterferenceSensitivity, IsolationOverlay, IsolationPosture, PlacementIsolation, QosClass,
+    SealError, SealedCarve, WorkloadClass, all_critical_sealed, carve_respecting_seal,
+    optimize_reserved, resolve_posture, total_reserved_cost, unsealed_critical_workloads,
 };
 pub use setpoint::{SetpointError, UtilizationSetpoint};
 
@@ -133,13 +134,24 @@ mod tests {
         // (defbreathe-invariant …) / (defband …) lisp vocabulary can never
         // drift.
         const LISP: &str = include_str!("../specs/breathe-invariant.lisp");
-        assert!(LISP.contains("defbreathe-invariant"), "lisp must declare (defbreathe-invariant …)");
+        assert!(
+            LISP.contains("defbreathe-invariant"),
+            "lisp must declare (defbreathe-invariant …)"
+        );
         for d in CATALOG {
-            assert!(LISP.contains(d.band_keyword), "lisp missing band keyword {}", d.band_keyword);
+            assert!(
+                LISP.contains(d.band_keyword),
+                "lisp missing band keyword {}",
+                d.band_keyword
+            );
             assert!(LISP.contains(d.band), "lisp missing band {}", d.band);
         }
         for c in BreatheClause::ALL {
-            assert!(LISP.contains(c.rule_name()), "lisp missing clause {}", c.rule_name());
+            assert!(
+                LISP.contains(c.rule_name()),
+                "lisp missing clause {}",
+                c.rule_name()
+            );
         }
     }
 }

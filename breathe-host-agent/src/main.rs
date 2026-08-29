@@ -41,7 +41,7 @@ mod config;
 mod nodewaste;
 
 use breathe_control::{BoundIntroduction, Reclaim};
-use breathe_core::{reconcile_one, ReconcileInput};
+use breathe_core::{ReconcileInput, reconcile_one};
 use breathe_crd::{
     ArcBand, Band, BreatheNodePool, CgroupBand, CgroupCpuBand, GiB, HostParamBand, NodePoolStatus,
     PodMemoryHigh, PodMemoryHighStatus,
@@ -51,21 +51,23 @@ use breathe_host::{
     HostParamDescriptor, NodeEnvelopes, SystemdSysfsEnv, new_cpu_sample_cache,
 };
 use breathe_provider::{
-    BandProvider, Cluster, ClassCooldowns, DimensionDescriptor, LimitLayout, ResourceProvider, SsaPatch, Target,
+    BandProvider, ClassCooldowns, Cluster, DimensionDescriptor, LimitLayout, ResourceProvider,
+    SsaPatch, Target,
 };
 use breathe_runtime::{
-    error_status, event_for, metrics_for, next_requeue, now_secs, patch_status, rfc3339_in_future,
-    should_emit_event, status_for, suspended_status, BandLabels, EventKind,
+    BandLabels, EventKind, error_status, event_for, metrics_for, next_requeue, now_secs,
+    patch_status, rfc3339_in_future, should_emit_event, status_for, suspended_status,
 };
 use futures::StreamExt;
 use kube::{
+    Client, ResourceExt,
     api::{Api, ListParams, Patch, PatchParams},
     runtime::{
+        Controller, WatchStreamExt,
         controller::Action,
         events::{Event, EventType, Recorder, Reporter},
-        predicates, reflector, watcher, Controller, WatchStreamExt,
+        predicates, reflector, watcher,
     },
-    Client, ResourceExt,
 };
 use serde_json::json;
 use tracing::{debug, error, info, warn};
@@ -107,8 +109,16 @@ struct Ctx {
 }
 
 /// Publish a k8s Event for this host tick onto `obj`, transition-gated. Non-fatal.
-async fn emit_event<B: Band>(ctx: &Ctx, obj: &B, receipt: &breathe_core::TickReceipt, new_phase: Option<&str>, prior_phase: Option<&str>) {
-    let Some((kind, reason, note)) = event_for(receipt) else { return };
+async fn emit_event<B: Band>(
+    ctx: &Ctx,
+    obj: &B,
+    receipt: &breathe_core::TickReceipt,
+    new_phase: Option<&str>,
+    prior_phase: Option<&str>,
+) {
+    let Some((kind, reason, note)) = event_for(receipt) else {
+        return;
+    };
     if !should_emit_event(receipt, new_phase, prior_phase) {
         return;
     }
@@ -116,8 +126,18 @@ async fn emit_event<B: Band>(ctx: &Ctx, obj: &B, receipt: &breathe_core::TickRec
         EventKind::Normal => EventType::Normal,
         EventKind::Warning => EventType::Warning,
     };
-    let recorder = Recorder::new(ctx.client.clone(), ctx.reporter.clone(), obj.object_ref(&()));
-    let ev = Event { type_, reason: reason.to_string(), note: Some(note), action: "Reconcile".to_string(), secondary: None };
+    let recorder = Recorder::new(
+        ctx.client.clone(),
+        ctx.reporter.clone(),
+        obj.object_ref(&()),
+    );
+    let ev = Event {
+        type_,
+        reason: reason.to_string(),
+        note: Some(note),
+        action: "Reconcile".to_string(),
+        secondary: None,
+    };
     if let Err(e) = recorder.publish(ev).await {
         warn!(error = %e, "event publish failed (non-fatal)");
     }
@@ -136,7 +156,8 @@ async fn node_pool(ctx: &Ctx) -> Result<Option<BreatheNodePool>, Error> {
 /// SAFETY WALL 2 — it is refused (and the node held), never written blind.
 fn envelopes_from(pool: &BreatheNodePool) -> Result<NodeEnvelopes, String> {
     let to_bytes = |g: GiB, what: &str| -> Result<u64, String> {
-        g.0.checked_mul(GIB).ok_or_else(|| format!("{what} = {} GiB overflows u64 bytes", g.0))
+        g.0.checked_mul(GIB)
+            .ok_or_else(|| format!("{what} = {} GiB overflows u64 bytes", g.0))
     };
     let arc_max_bytes = to_bytes(pool.spec.arc_max_gi_b, "arcMaxGiB")?;
     let mut cgroup_max_bytes = std::collections::BTreeMap::new();
@@ -145,7 +166,11 @@ fn envelopes_from(pool: &BreatheNodePool) -> Result<NodeEnvelopes, String> {
     }
     // cpu ceilings are already millicores (no byte conversion / overflow risk).
     let cgroup_cpu_max_millicores = pool.spec.cgroup_cpu_max_milli.clone();
-    Ok(NodeEnvelopes { arc_max_bytes, cgroup_max_bytes, cgroup_cpu_max_millicores })
+    Ok(NodeEnvelopes {
+        arc_max_bytes,
+        cgroup_max_bytes,
+        cgroup_cpu_max_millicores,
+    })
 }
 
 /// The one host reconcile body for every host dimension, given an already-built
@@ -170,7 +195,10 @@ async fn reconcile_host_with<B: Band, D: DimensionDescriptor>(
     // The enrollment charter carries the L2 ceilings + the master write switch.
     // No charter for this node ⇒ refuse to manage anything (never write blind).
     let Some(pool) = node_pool(&ctx).await? else {
-        let s = error_status(obj.status(), format!("no BreatheNodePool enrolls node {}", ctx.node_name));
+        let s = error_status(
+            obj.status(),
+            format!("no BreatheNodePool enrolls node {}", ctx.node_name),
+        );
         patch_status::<B>(&ctx.client, &ns, &name, &s).await?;
         warn!(node = %ctx.node_name, band = %name, "unenrolled node — holding");
         return Ok(Action::requeue(ctx.requeue));
@@ -180,7 +208,10 @@ async fn reconcile_host_with<B: Band, D: DimensionDescriptor>(
     let envelopes = match envelopes_from(&pool) {
         Ok(e) => e,
         Err(reason) => {
-            let s = error_status(obj.status(), format!("invalid BreatheNodePool envelopes: {reason}"));
+            let s = error_status(
+                obj.status(),
+                format!("invalid BreatheNodePool envelopes: {reason}"),
+            );
             patch_status::<B>(&ctx.client, &ns, &name, &s).await?;
             warn!(node = %ctx.node_name, band = %name, %reason, "bad envelopes — holding");
             return Ok(Action::requeue(ctx.requeue));
@@ -203,7 +234,13 @@ async fn reconcile_host_with<B: Band, D: DimensionDescriptor>(
     let cfg = match obj.band_config() {
         Ok(c) => c,
         Err(e) => {
-            patch_status::<B>(&ctx.client, &ns, &name, &error_status(obj.status(), e.to_string())).await?;
+            patch_status::<B>(
+                &ctx.client,
+                &ns,
+                &name,
+                &error_status(obj.status(), e.to_string()),
+            )
+            .await?;
             return Ok(Action::requeue(ctx.requeue));
         }
     };
@@ -225,7 +262,9 @@ async fn reconcile_host_with<B: Band, D: DimensionDescriptor>(
         descriptor,
     );
     // BREAK-GLASS forceLimit (still bounded by the L2 ceiling in HostCluster::apply).
-    let force = obj.force_limit_value().filter(|_| obj.force_limit_expiry().map_or(true, rfc3339_in_future));
+    let force = obj
+        .force_limit_value()
+        .filter(|_| obj.force_limit_expiry().map_or(true, rfc3339_in_future));
     // NEVER-OOM-FROM-CARVE: carry the decayed trailing-window peak forward (see the
     // main controller); `reconcile_one` folds in the current `used`.
     let peak_used = obj
@@ -263,27 +302,51 @@ async fn reconcile_host_with<B: Band, D: DimensionDescriptor>(
     };
 
     let outcome = reconcile_one(&input, &provider).await;
-    let prior_phase = obj.status().and_then(|s| s.phase.as_deref()).map(String::from);
+    let prior_phase = obj
+        .status()
+        .and_then(|s| s.phase.as_deref())
+        .map(String::from);
     // The hands have no durable store wired (the brain/controller is the M2
     // target); fold the cumulative count from the status seed directly — the same
     // single fold the controller's DecisionLog uses, byte-identical to the prior
     // inline accumulation.
-    let counters = breathe_runtime::counters_from_status(obj.status()).fold(&breathe_runtime::entry_for(&outcome));
-    let status = status_for(&outcome, obj.status(), obj.cooldown_seconds(), obj.generation(), counters);
+    let counters = breathe_runtime::counters_from_status(obj.status())
+        .fold(&breathe_runtime::entry_for(&outcome));
+    let status = status_for(
+        &outcome,
+        obj.status(),
+        obj.cooldown_seconds(),
+        obj.generation(),
+        counters,
+    );
     info!(
         dim = %provider.id(), band = %name, unit = %target.name,
         write_enabled, phase = ?status.phase, "host reconciled"
     );
-    emit_event(&ctx, obj.as_ref(), &outcome.receipt, status.phase.as_deref(), prior_phase.as_deref()).await;
+    emit_event(
+        &ctx,
+        obj.as_ref(),
+        &outcome.receipt,
+        status.phase.as_deref(),
+        prior_phase.as_deref(),
+    )
+    .await;
     metrics_for(
-        &BandLabels { dim: provider.id().to_string(), namespace: ns.clone(), name: name.clone() },
+        &BandLabels {
+            dim: provider.id().to_string(),
+            namespace: ns.clone(),
+            name: name.clone(),
+        },
         &outcome,
         &cfg,
         status.cooldown_remaining_seconds.unwrap_or(0),
     );
     patch_status::<B>(&ctx.client, &ns, &name, &status).await?;
     // host carves are all RestartFree → re-tick at the fast golden cadence.
-    Ok(Action::requeue(next_requeue(&outcome.receipt, &ClassCooldowns::default())))
+    Ok(Action::requeue(next_requeue(
+        &outcome.receipt,
+        &ClassCooldowns::default(),
+    )))
 }
 
 /// The fixed-descriptor host reconcile (arc/cgroup/cgroup-cpu): build the
@@ -315,7 +378,11 @@ async fn reconcile_pool(obj: Arc<BreatheNodePool>, ctx: Arc<Ctx>) -> Result<Acti
         // not ours — another node's agent owns it.
         return Ok(Action::requeue(ctx.requeue));
     }
-    let phase = Some(if obj.spec.write_enabled { "Active".into() } else { "Shadow".into() });
+    let phase = Some(if obj.spec.write_enabled {
+        "Active".into()
+    } else {
+        "Shadow".into()
+    });
     let observed_node = Some(ctx.node_name.clone());
     // every host lever this node manages: cgroup-memory units + cgroup-cpu units + ARC (1).
     let managed_units =
@@ -325,18 +392,26 @@ async fn reconcile_pool(obj: Arc<BreatheNodePool>, ctx: Arc<Ctx>) -> Result<Acti
     // then marks the last CHANGE (not the last tick), so a stable enrollment writes
     // ZERO — the heartbeat can never re-fire the watch. Agent liveness lives on
     // /metrics + pod readiness, not on a per-tick status write.
-    let unchanged = obj
-        .status
-        .as_ref()
-        .is_some_and(|s| s.phase == phase && s.observed_node == observed_node && s.managed_units == managed_units);
+    let unchanged = obj.status.as_ref().is_some_and(|s| {
+        s.phase == phase && s.observed_node == observed_node && s.managed_units == managed_units
+    });
     if unchanged {
         return Ok(Action::requeue(ctx.requeue));
     }
 
-    let status = NodePoolStatus { phase, observed_node, managed_units, last_seen_epoch: Some(now_secs()) };
+    let status = NodePoolStatus {
+        phase,
+        observed_node,
+        managed_units,
+        last_seen_epoch: Some(now_secs()),
+    };
     let api: Api<BreatheNodePool> = Api::all(ctx.client.clone());
-    api.patch_status(&name, &PatchParams::default(), &Patch::Merge(&json!({ "status": status })))
-        .await?;
+    api.patch_status(
+        &name,
+        &PatchParams::default(),
+        &Patch::Merge(&json!({ "status": status })),
+    )
+    .await?;
     Ok(Action::requeue(ctx.requeue))
 }
 
@@ -354,7 +429,10 @@ async fn reconcile_pool(obj: Arc<BreatheNodePool>, ctx: Arc<Ctx>) -> Result<Acti
 /// is on AND the dispatch's `dryRun` is off; the pod's `memory.high` is bounded by
 /// the band's CRD ceiling (the dispatch carries an already-clamped value) and can
 /// never exceed the pod's `memory.max`.
-async fn reconcile_pod_memory_high(obj: Arc<PodMemoryHigh>, ctx: Arc<Ctx>) -> Result<Action, Error> {
+async fn reconcile_pod_memory_high(
+    obj: Arc<PodMemoryHigh>,
+    ctx: Arc<Ctx>,
+) -> Result<Action, Error> {
     let name = obj.name_any();
     // not ours — another node's agent owns the pod.
     if obj.spec.node_name != ctx.node_name {
@@ -365,9 +443,13 @@ async fn reconcile_pod_memory_high(obj: Arc<PodMemoryHigh>, ctx: Arc<Ctx>) -> Re
         let api = api.clone();
         let name = name.clone();
         async move {
-            api.patch_status(&name, &PatchParams::default(), &Patch::Merge(&json!({ "status": status })))
-                .await
-                .map(|_| ())
+            api.patch_status(
+                &name,
+                &PatchParams::default(),
+                &Patch::Merge(&json!({ "status": status })),
+            )
+            .await
+            .map(|_| ())
         }
     };
 
@@ -438,7 +520,8 @@ async fn reconcile_pod_memory_high(obj: Arc<PodMemoryHigh>, ctx: Arc<Ctx>) -> Re
             // resolves `Frozen` above), so the second gate agrees — belt and
             // braces, deliberately kept: `HostCluster`'s own wall and the L2
             // ceiling are independent of authorization and stay where they are.
-            let cluster = HostCluster::new(SystemdSysfsEnv::from_env(), NodeEnvelopes::default(), true);
+            let cluster =
+                HostCluster::new(SystemdSysfsEnv::from_env(), NodeEnvelopes::default(), true);
             match cluster.apply(witness, &patch).await {
                 Ok(_) => {
                     info!(node = %ctx.node_name, pmh = %name, desired = obj.spec.desired_bytes, witness = ?witness.kind(), "pod memory.high reconciled");
@@ -508,24 +591,37 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .unwrap_or_else(|_| cfg.logging.filter.clone().into());
     match cfg.logging.format {
         config::LogFormat::Json => {
-            tracing_subscriber::fmt().json().with_env_filter(filter).init();
+            tracing_subscriber::fmt()
+                .json()
+                .with_env_filter(filter)
+                .init();
         }
         config::LogFormat::Pretty => {
-            tracing_subscriber::fmt().pretty().with_env_filter(filter).init();
+            tracing_subscriber::fmt()
+                .pretty()
+                .with_env_filter(filter)
+                .init();
         }
         config::LogFormat::Compact => {
-            tracing_subscriber::fmt().compact().with_env_filter(filter).init();
+            tracing_subscriber::fmt()
+                .compact()
+                .with_env_filter(filter)
+                .init();
         }
     }
 
     let node_name = cfg.node.name.clone();
     if node_name.is_empty() {
-        warn!("NODE_NAME is empty — set it via the downward API (spec.nodeName); the agent will not match any BreatheNodePool");
+        warn!(
+            "NODE_NAME is empty — set it via the downward API (spec.nodeName); the agent will not match any BreatheNodePool"
+        );
     }
     // Watching nothing is legal (a metrics-only node) but is far more often a
     // typo'd YAML key, so it is never silent.
     if cfg.dimensions.none_enabled() {
-        warn!("every host dimension is disabled — this agent will watch nothing; check the `dimensions` block of your config");
+        warn!(
+            "every host dimension is disabled — this agent will watch nothing; check the `dimensions` block of your config"
+        );
     }
     let requeue = Duration::from_secs(cfg.reconcile.requeue_seconds);
     let client = Client::try_default().await?;
@@ -562,7 +658,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!(node = %node_name, "breathe-host-agent starting — arc + cgroup-memory + cgroup-cpu + host-param (sysctl/zfs) + pod-memory-high (SOFT k8s carve) dimensions");
 
     let arc = gen_controller!(Api::<ArcBand>::all(client.clone()))
-        .run(reconcile_host::<ArcBand, ArcDescriptor>, error_policy::<ArcBand>, ctx.clone())
+        .run(
+            reconcile_host::<ArcBand, ArcDescriptor>,
+            error_policy::<ArcBand>,
+            ctx.clone(),
+        )
         .for_each(|_| async {});
     let cgroup = gen_controller!(Api::<CgroupBand>::all(client.clone()))
         .run(
@@ -580,7 +680,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .for_each(|_| async {});
     // PR-2: the GENERIC sysctl / ZFS-param band — one controller, every vector a CR.
     let host_param = gen_controller!(Api::<HostParamBand>::all(client.clone()))
-        .run(reconcile_host_param, error_policy::<HostParamBand>, ctx.clone())
+        .run(
+            reconcile_host_param,
+            error_policy::<HostParamBand>,
+            ctx.clone(),
+        )
         .for_each(|_| async {});
     let pool = gen_controller!(Api::<BreatheNodePool>::all(client.clone()))
         .run(reconcile_pool, pool_error_policy, ctx.clone())
@@ -588,7 +692,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Part 1: the SOFT-k8s-carve dispatch — write a managed pod's memory.high to the
     // controller's desiredBytes (the k8s limits.memory / memory.max is NEVER touched).
     let pod_memory_high = gen_controller!(Api::<PodMemoryHigh>::all(client.clone()))
-        .run(reconcile_pod_memory_high, pod_memory_high_error_policy, ctx.clone())
+        .run(
+            reconcile_pod_memory_high,
+            pod_memory_high_error_policy,
+            ctx.clone(),
+        )
         .for_each(|_| async {});
 
     tokio::join!(arc, cgroup, cgroup_cpu, host_param, pool, pod_memory_high);
@@ -622,7 +730,10 @@ mod tests {
     fn envelopes_convert_gib_to_bytes() {
         let e = envelopes_from(&pool(6, &[("nix-daemon.service", 12)])).unwrap();
         assert_eq!(e.arc_max_bytes, 6 * GIB);
-        assert_eq!(e.cgroup_max_bytes.get("nix-daemon.service"), Some(&(12 * GIB)));
+        assert_eq!(
+            e.cgroup_max_bytes.get("nix-daemon.service"),
+            Some(&(12 * GIB))
+        );
     }
 
     #[test]
@@ -630,7 +741,10 @@ mod tests {
         // the safety-review PoC: a ceiling whose *2^30 wraps u64 must REFUSE
         // (so SAFETY WALL 2 is never corrupted), never silently wrap to a small
         // value that would let a live write exceed the L2 partition.
-        assert!(envelopes_from(&pool(u64::MAX, &[])).is_err(), "overflowing arc ceiling must refuse");
+        assert!(
+            envelopes_from(&pool(u64::MAX, &[])).is_err(),
+            "overflowing arc ceiling must refuse"
+        );
         assert!(
             envelopes_from(&pool(6, &[("x.service", u64::MAX)])).is_err(),
             "overflowing cgroup ceiling must refuse"

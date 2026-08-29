@@ -35,7 +35,7 @@
     clippy::doc_markdown
 )]
 
-use breathe_provider::{FormaSample, Provedor, ProvisionReceipt, ProviderError};
+use breathe_provider::{FormaSample, Provedor, ProviderError, ProvisionReceipt};
 use std::sync::Mutex;
 
 /// A simulated node's lifecycle phase (the node-tier peer of a pod's phase).
@@ -90,7 +90,11 @@ impl SimProvedor {
     pub fn new(ready: u64, demand: u64, boot_ticks: u64, drain_ticks: u64) -> Self {
         let nodes = vec![SimNodePhase::Ready; ready as usize];
         Self {
-            state: Mutex::new(SimState { nodes, demand, seq: 0 }),
+            state: Mutex::new(SimState {
+                nodes,
+                demand,
+                seq: 0,
+            }),
             boot_ticks,
             drain_ticks,
         }
@@ -129,7 +133,13 @@ impl SimProvedor {
 
     /// Count of nodes in a given predicate — test/observability helper.
     fn count(&self, pred: impl Fn(SimNodePhase) -> bool) -> u64 {
-        self.state.lock().expect("sim poisoned").nodes.iter().filter(|p| pred(**p)).count() as u64
+        self.state
+            .lock()
+            .expect("sim poisoned")
+            .nodes
+            .iter()
+            .filter(|p| pred(**p))
+            .count() as u64
     }
 
     /// Usable, provisioned capacity right now (Ready nodes).
@@ -156,7 +166,10 @@ impl Provedor for SimProvedor {
     async fn observe(&self) -> Result<FormaSample, ProviderError> {
         let s = self.state.lock().expect("sim poisoned");
         let capacity = s.nodes.iter().filter(|p| p.is_capacity()).count() as u64;
-        Ok(FormaSample { used: s.demand, capacity })
+        Ok(FormaSample {
+            used: s.demand,
+            capacity,
+        })
     }
 
     async fn provision(&self, n: u64) -> Result<ProvisionReceipt, ProviderError> {
@@ -169,13 +182,18 @@ impl Provedor for SimProvedor {
             let phase = if self.boot_ticks == 0 {
                 SimNodePhase::Ready
             } else {
-                SimNodePhase::Provisioning { ticks_remaining: self.boot_ticks }
+                SimNodePhase::Provisioning {
+                    ticks_remaining: self.boot_ticks,
+                }
             };
             s.nodes.push(phase);
         }
         s.seq += 1;
         let plan_id = format!("sim:provision:{}", s.seq);
-        Ok(ProvisionReceipt::Applied { delta: n as i64, plan_id })
+        Ok(ProvisionReceipt::Applied {
+            delta: n as i64,
+            plan_id,
+        })
     }
 
     async fn deprovision(&self, n: u64) -> Result<ProvisionReceipt, ProviderError> {
@@ -204,7 +222,9 @@ impl Provedor for SimProvedor {
                     break;
                 }
                 if matches!(phase, SimNodePhase::Ready) {
-                    *phase = SimNodePhase::Draining { ticks_remaining: self.drain_ticks };
+                    *phase = SimNodePhase::Draining {
+                        ticks_remaining: self.drain_ticks,
+                    };
                     released += 1;
                 }
             }
@@ -214,7 +234,10 @@ impl Provedor for SimProvedor {
         }
         s.seq += 1;
         let plan_id = format!("sim:deprovision:{}", s.seq);
-        Ok(ProvisionReceipt::Applied { delta: -(released as i64), plan_id })
+        Ok(ProvisionReceipt::Applied {
+            delta: -(released as i64),
+            plan_id,
+        })
     }
 }
 
@@ -222,7 +245,7 @@ impl Provedor for SimProvedor {
 mod sim_tests {
     use super::SimProvedor;
     use crate::reconcile_forma;
-    use crate::tests::{block_on as run, capacidade_gate, open_cfg, NodeRef};
+    use crate::tests::{NodeRef, block_on as run, capacidade_gate, open_cfg};
     use breathe_admission::Viveiro;
     use breathe_auction::{BandLeiloeiro, LinearTrendPrevisor, Previsor, ReactivePrevisor};
     use breathe_provider::{Forma, Provedor, ProvisionReceipt};
@@ -253,7 +276,11 @@ mod sim_tests {
         assert_eq!(sim.draining_count(), 2);
         sim.advance();
         sim.advance();
-        assert_eq!(sim.draining_count(), 0, "drained + terminated after 2 ticks");
+        assert_eq!(
+            sim.draining_count(),
+            0,
+            "drained + terminated after 2 ticks"
+        );
     }
 
     #[test]
@@ -262,7 +289,10 @@ mod sim_tests {
         let sim = SimProvedor::new(1, 0, 5, 1);
         run(sim.provision(2));
         let r = run(sim.deprovision(3));
-        assert!(matches!(r, Ok(ProvisionReceipt::Applied { delta: -1, .. })), "only the Ready node drains");
+        assert!(
+            matches!(r, Ok(ProvisionReceipt::Applied { delta: -1, .. })),
+            "only the Ready node drains"
+        );
         assert_eq!(sim.provisioning_count(), 2, "booting nodes untouched");
     }
 
@@ -301,8 +331,14 @@ mod sim_tests {
         }
         let cap = sim.ready_count();
         let util = 90.0 / cap as f64;
-        assert!(held, "loop must converge into the deadband; ended at util={util:.3} cap={cap}");
-        assert!((0.70..=0.85).contains(&util), "settled out of band: util={util:.3}");
+        assert!(
+            held,
+            "loop must converge into the deadband; ended at util={util:.3} cap={cap}"
+        );
+        assert!(
+            (0.70..=0.85).contains(&util),
+            "settled out of band: util={util:.3}"
+        );
         assert_eq!(sim.draining_count(), 0, "a growing pool drains nothing");
     }
 
@@ -343,8 +379,14 @@ mod sim_tests {
         }
         let cap = sim.ready_count();
         let util = 40.0 / cap as f64;
-        assert!(held, "loop must converge down into the deadband; ended at util={util:.3} cap={cap}");
-        assert!((0.70..=0.85).contains(&util), "settled out of band: util={util:.3}");
+        assert!(
+            held,
+            "loop must converge down into the deadband; ended at util={util:.3} cap={cap}"
+        );
+        assert!(
+            (0.70..=0.85).contains(&util),
+            "settled out of band: util={util:.3}"
+        );
     }
 
     #[test]
@@ -361,8 +403,15 @@ mod sim_tests {
             for _ in 0..40 {
                 let mut viveiro = Viveiro::new();
                 let _ = run(reconcile_forma(
-                    Forma::NodeOnDemand, sim, &previsor, &leiloeiro, &cfg, &gates, 3,
-                    &mut viveiro, |_id| NodeRef { allocatable: 1 },
+                    Forma::NodeOnDemand,
+                    sim,
+                    &previsor,
+                    &leiloeiro,
+                    &cfg,
+                    &gates,
+                    3,
+                    &mut viveiro,
+                    |_id| NodeRef { allocatable: 1 },
                 ));
                 sim.advance();
                 let cap = sim.ready_count();
@@ -376,7 +425,10 @@ mod sim_tests {
         let before = sim.ready_count();
         sim.set_demand(120); // workload shifts onto this pool
         assert!(settle(&sim, 120.0), "re-converge after the load jump");
-        assert!(sim.ready_count() > before, "the pool grew to absorb the shifted load");
+        assert!(
+            sim.ready_count() > before,
+            "the pool grew to absorb the shifted load"
+        );
     }
 
     /// Drive one pool through a demand ramp, return the PEAK utilisation seen.
@@ -396,8 +448,15 @@ mod sim_tests {
             sim.set_demand(demand);
             let mut viveiro = Viveiro::new();
             let _ = run(reconcile_forma(
-                Forma::NodeOnDemand, &sim, previsor, &leiloeiro, &cfg, &gates, 3,
-                &mut viveiro, |_id| NodeRef { allocatable: 1 },
+                Forma::NodeOnDemand,
+                &sim,
+                previsor,
+                &leiloeiro,
+                &cfg,
+                &gates,
+                3,
+                &mut viveiro,
+                |_id| NodeRef { allocatable: 1 },
             ));
             sim.advance();
             let cap = sim.ready_count().max(1);

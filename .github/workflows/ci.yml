@@ -45,8 +45,8 @@
 #
 # ─── runner ───────────────────────────────────────────────────────────────────
 #
-# ubuntu-latest, NOT the camelot ARC pool image.yml uses. Deliberate: a test gate
-# whose runner can be broken (image.yml's own header records CAMELOT_IMAGE_RUNNER
+# ubuntu-latest, NOT the self-hosted ARC pool image.yml uses. Deliberate: a test gate
+# whose runner can be broken (image.yml's own header records PRIVATE_BUILDER_RUNNER
 # outages) is a gate that silently stops gating — the exact failure mode this
 # file exists to end. A plain cargo test needs no Nix substituter, no registry
 # credentials and no cluster.
@@ -54,7 +54,7 @@ name: ci
 
 on:
   push:
-    branches: [main, "camelot/**"]
+    branches: [main, "isolated/**"]
   pull_request:
   workflow_dispatch:
 

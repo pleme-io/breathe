@@ -3,7 +3,7 @@
 //! # Why this crate exists
 //!
 //! Band enrollment was authored — by hand, or by a one-shot generator run
-//! against one cluster on one day. Measured on camelot-eks 2026-08-05, that
+//! against one cluster on one day. Measured on one cluster-eks 2026-08-05, that
 //! produced:
 //!
 //! | Defect | Measurement |
@@ -196,7 +196,9 @@ impl BandDimension {
             // materializing a band that can only ever be held.
             Self::Replica => {
                 if shape.horizontal_autoscaler_present {
-                    Warrant::NotApplicable("an HPA already owns replicas — two writers on one field")
+                    Warrant::NotApplicable(
+                        "an HPA already owns replicas — two writers on one field",
+                    )
                 } else if !shape.kind.replicas_are_settable() {
                     Warrant::NotApplicable("workload kind has no operator-settable replica count")
                 } else {
@@ -444,14 +446,14 @@ mod tests {
     use super::*;
 
     fn deployment() -> WorkloadShape {
-        let mut s = WorkloadShape::bare("camelot", "pangea-operator", WorkloadKind::Deployment);
+        let mut s = WorkloadShape::bare("isolated", "pangea-operator", WorkloadKind::Deployment);
         s.declares_cpu_request = true;
         s.declares_memory_request = true;
         s
     }
 
     /// The motivating defect, as a test: a plain Deployment declaring cpu/memory
-    /// requests MUST derive RequestBands. camelot had 111 limit-bands and zero of
+    /// requests MUST derive RequestBands. the private estate had 111 limit-bands and zero of
     /// these while 10.9 vCPU sat reserved-and-unused.
     #[test]
     fn requests_are_derived_for_a_workload_that_declares_them() {
@@ -531,9 +533,7 @@ mod tests {
         ] {
             assert_eq!(
                 d.warrant_for(&s),
-                Warrant::NotApplicable(
-                    "workload's nodes are not enrolled in a BreatheNodePool"
-                )
+                Warrant::NotApplicable("workload's nodes are not enrolled in a BreatheNodePool")
             );
         }
         let mut enrolled = deployment();
@@ -545,8 +545,8 @@ mod tests {
     fn arc_only_for_runner_scale_sets() {
         assert!(!BandDimension::Arc.warrant_for(&deployment()).is_warranted());
         let s = WorkloadShape::bare(
-            "camelot-ci",
-            "camelot-builder-pleme-eks",
+            "builder-ci",
+            "the self-hosted builder pool",
             WorkloadKind::AutoscalingRunnerSet,
         );
         assert!(BandDimension::Arc.warrant_for(&s).is_warranted());
@@ -653,8 +653,10 @@ mod tests {
             declared.len()
         );
 
-        let covered: BTreeSet<&str> =
-            BandDimension::ALL.into_iter().map(BandDimension::crd_kind).collect();
+        let covered: BTreeSet<&str> = BandDimension::ALL
+            .into_iter()
+            .map(BandDimension::crd_kind)
+            .collect();
 
         let unenrolled: Vec<_> = declared.difference(&covered).copied().collect();
         assert!(
@@ -687,11 +689,15 @@ mod tests {
         assert_eq!(BandDimension::RequestCpu.crd_kind(), "RequestBand");
         assert_eq!(BandDimension::RequestMemory.crd_kind(), "RequestBand");
         assert_eq!(
-            BandDimension::RequestCpu.resource().map(RequestResource::as_str),
+            BandDimension::RequestCpu
+                .resource()
+                .map(RequestResource::as_str),
             Some("cpu")
         );
         assert_eq!(
-            BandDimension::RequestMemory.resource().map(RequestResource::as_str),
+            BandDimension::RequestMemory
+                .resource()
+                .map(RequestResource::as_str),
             Some("memory")
         );
         assert_eq!(BandDimension::Cpu.resource(), None);

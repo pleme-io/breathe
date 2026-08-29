@@ -31,20 +31,29 @@ fn owns_path(fields_v1: &Value, segments: &[String]) -> bool {
 /// for the guard's equality check (the fieldsV1 segments are the *encoding*; the
 /// logical path is the *contract*).
 #[must_use]
-pub fn field_owners(managed_fields: &Value, segments: &[String], logical_field: &str) -> Vec<FieldOwner> {
+pub fn field_owners(
+    managed_fields: &Value,
+    segments: &[String],
+    logical_field: &str,
+) -> Vec<FieldOwner> {
     let Some(entries) = managed_fields.as_array() else {
         return Vec::new();
     };
     let mut owners = Vec::new();
     for e in entries {
-        let Some(fv1) = e.get("fieldsV1") else { continue };
+        let Some(fv1) = e.get("fieldsV1") else {
+            continue;
+        };
         if owns_path(fv1, segments) {
             let manager = e
                 .get("manager")
                 .and_then(Value::as_str)
                 .unwrap_or_default()
                 .to_string();
-            owners.push(FieldOwner { manager, field: logical_field.to_string() });
+            owners.push(FieldOwner {
+                manager,
+                field: logical_field.to_string(),
+            });
         }
     }
     owners
@@ -143,16 +152,35 @@ mod tests {
         // vpa owns BOTH cpu+memory here; a query for cpu still returns it,
         // and (critically) a query for a field nobody owns returns empty.
         let mf = deployment_managed_fields();
-        assert_eq!(field_owners(&mf, &pod_template_limit_segments("app", "cpu"), "resources.limits.cpu").len(), 1);
+        assert_eq!(
+            field_owners(
+                &mf,
+                &pod_template_limit_segments("app", "cpu"),
+                "resources.limits.cpu"
+            )
+            .len(),
+            1
+        );
         // ephemeral-storage is owned by no one
-        assert!(field_owners(&mf, &pod_template_limit_segments("app", "ephemeral-storage"), "x").is_empty());
+        assert!(
+            field_owners(
+                &mf,
+                &pod_template_limit_segments("app", "ephemeral-storage"),
+                "x"
+            )
+            .is_empty()
+        );
     }
 
     #[test]
     fn wrong_container_is_not_a_match() {
         // The keyed entry is k:{"name":"app"}; querying container "sidecar" misses.
         let mf = deployment_managed_fields();
-        let owners = field_owners(&mf, &pod_template_limit_segments("sidecar", "memory"), "resources.limits.memory");
+        let owners = field_owners(
+            &mf,
+            &pod_template_limit_segments("sidecar", "memory"),
+            "resources.limits.memory",
+        );
         assert!(owners.is_empty(), "container key must match exactly");
     }
 
@@ -167,7 +195,11 @@ mod tests {
                 "k:{\"name\":\"app\"}": { "f:resources": { "f:limits": { "f:memory": {} } } }
             }}}}}
         }]);
-        let owners = field_owners(&mf, &pod_template_limit_segments("app", "memory"), "resources.limits.memory");
+        let owners = field_owners(
+            &mf,
+            &pod_template_limit_segments("app", "memory"),
+            "resources.limits.memory",
+        );
         assert_eq!(owners.len(), 1);
         assert_eq!(owners[0].manager, "breathe/memory");
     }
@@ -179,7 +211,11 @@ mod tests {
             "manager": "cnpg-cloudnative-pg",
             "fieldsV1": { "f:spec": { "f:resources": { "f:limits": { "f:memory": {} } } } }
         }]);
-        let owners = field_owners(&mf, &cnpg_cluster_limit_segments("memory"), "spec.resources.limits.memory");
+        let owners = field_owners(
+            &mf,
+            &cnpg_cluster_limit_segments("memory"),
+            "spec.resources.limits.memory",
+        );
         assert_eq!(owners.len(), 1);
         assert_eq!(owners[0].manager, "cnpg-cloudnative-pg");
     }
@@ -192,8 +228,18 @@ mod tests {
             "manager": "keda-operator",
             "fieldsV1": { "f:spec": { "f:replicas": {} } }
         }]);
-        assert!(field_owners(&mf, &pod_template_limit_segments("app", "memory"), "resources.limits.memory").is_empty());
-        assert_eq!(field_owners(&mf, &replicas_segments(), "spec.replicas").len(), 1);
+        assert!(
+            field_owners(
+                &mf,
+                &pod_template_limit_segments("app", "memory"),
+                "resources.limits.memory"
+            )
+            .is_empty()
+        );
+        assert_eq!(
+            field_owners(&mf, &replicas_segments(), "spec.replicas").len(),
+            1
+        );
     }
 
     #[test]

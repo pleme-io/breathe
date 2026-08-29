@@ -19,7 +19,7 @@
 //! this loop is testable with zero cluster.
 
 use breathe_admission::{
-    classify, Allocatable, Descoberto, Portao, Recurso, ResourceId, ValidationStep, Viveiro,
+    Allocatable, Descoberto, Portao, Recurso, ResourceId, ValidationStep, Viveiro, classify,
 };
 use breathe_auction::{DecisaoForma, Leiloeiro, Previsor};
 use breathe_control::BandConfig;
@@ -134,12 +134,25 @@ where
                     _ => rejected += 1,
                 }
             }
-            FormaTick::Grew { forma, requested: delta, admitted, rejected, provision_error }
+            FormaTick::Grew {
+                forma,
+                requested: delta,
+                admitted,
+                rejected,
+                provision_error,
+            }
         }
 
-        DecisaoForma::Encolher { forma, delta, drain: _ } => {
+        DecisaoForma::Encolher {
+            forma,
+            delta,
+            drain: _,
+        } => {
             let _ = provedor.deprovision(delta).await;
-            FormaTick::Shrank { forma, released: delta }
+            FormaTick::Shrank {
+                forma,
+                released: delta,
+            }
         }
 
         // Replace (spot→on-demand on interruption) lands at M3; the single-forma

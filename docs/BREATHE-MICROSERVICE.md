@@ -325,7 +325,7 @@ the `:runtime`-slot gap.
   `inmem_decision_log_reproduces_the_status_backed_sequence`; the testcontainers arm is the gap).
   **Write-volume gate landed 2026-07-26 (pre-requisite for switching the tier ON):** `append` was
   called unconditionally on every reconcile while its sibling `patch_status_if_changed` had been
-  diff-gated since #220. At the live camelot-eks shape (~100 bands on the 15s restart-free cooldown
+  diff-gated since #220. At the live private-estate-eks shape (~100 bands on the 15s restart-free cooldown
   path, ~95 in an `Observed`-family phase) that is ≈576k rows/day ≈242 MB/day ≈88 GB/yr; gated it is
   ≈31k rows/day ≈13 MB/day ≈4.8 GB/yr. `breathe_store::GatedDecisionLog` (a decorator over any tier,
   `scale.decisionHeartbeatSeconds`, default 900, `0` = gate off) implements `BREATHE.md` § 8 row 8's

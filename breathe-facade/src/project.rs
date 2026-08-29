@@ -3,7 +3,7 @@
 //!
 //! # Why this exists
 //!
-//! A `breathe_band_list(kind="memory")` against camelot-eks returned **428,850
+//! A `breathe_band_list(kind="memory")` against private-estate-eks returned **428,850
 //! bytes / 13,055 lines** — 52 `MemoryBand` CRs at ~8.2 KB each, larger than the
 //! whole org `CLAUDE.md`. It overflowed the caller's tool-result limit and spilled
 //! to disk, which made the tool unusable for the one question it exists to answer:
@@ -66,7 +66,7 @@
 //! and no string concatenation of JSON.
 
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 pub use breathe_provider::DimensionId;
 
@@ -86,7 +86,9 @@ pub const DEFAULT_HISTORY_LIMIT: usize = 3;
 ///
 /// The ordering is a widening ladder: every view is a superset of the one before
 /// it, so raising it never loses a field and lowering it never invents one.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, schemars::JsonSchema,
+)]
 #[serde(rename_all = "camelCase")]
 // The description is ONE short line on purpose. This enum is inlined into six
 // MCP tool schemas, and each tool's own `view` field already carries the longer
@@ -260,7 +262,9 @@ pub struct BandView {
 /// single-writer guard parses it — which is why [`ProjectionView::Raw`] exists
 /// and this function is never applied to it.
 pub fn strip_bookkeeping(cr: &mut Value) {
-    let Some(meta) = cr.get_mut("metadata").and_then(Value::as_object_mut) else { return };
+    let Some(meta) = cr.get_mut("metadata").and_then(Value::as_object_mut) else {
+        return;
+    };
     meta.remove("managedFields");
     meta.remove("ownerReferences");
     if let Some(ann) = meta.get_mut("annotations").and_then(Value::as_object_mut) {
@@ -317,10 +321,18 @@ pub fn newest_condition_per_type(conditions: &[Value]) -> Vec<ConditionView> {
 /// `history_limit` bounds `status.history` to its most recent N samples (the
 /// controller appends, so the tail is newest); `0` drops the series entirely.
 #[must_use]
-pub fn band_view(dimension: DimensionId, cr: &Value, view: ProjectionView, history_limit: usize) -> BandView {
-    let history_all: &[Value] = walk(cr, &["status", "history"]).and_then(Value::as_array).map_or(&[], Vec::as_slice);
-    let conditions_all: &[Value] =
-        walk(cr, &["status", "conditions"]).and_then(Value::as_array).map_or(&[], Vec::as_slice);
+pub fn band_view(
+    dimension: DimensionId,
+    cr: &Value,
+    view: ProjectionView,
+    history_limit: usize,
+) -> BandView {
+    let history_all: &[Value] = walk(cr, &["status", "history"])
+        .and_then(Value::as_array)
+        .map_or(&[], Vec::as_slice);
+    let conditions_all: &[Value] = walk(cr, &["status", "conditions"])
+        .and_then(Value::as_array)
+        .map_or(&[], Vec::as_slice);
 
     let mut out = BandView {
         dimension: dimension.as_str().to_owned(),
@@ -342,7 +354,9 @@ pub fn band_view(dimension: DimensionId, cr: &Value, view: ProjectionView, histo
         last_decision: s(cr, &["status", "lastDecision"]),
         write_intent: s(cr, &["spec", "writeIntent", "intent"]),
         effective_gate: walk(cr, &["status", "effectiveGate"]).cloned(),
-        suspended: walk(cr, &["spec", "suspend"]).and_then(Value::as_bool).unwrap_or(false),
+        suspended: walk(cr, &["spec", "suspend"])
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
         conditions: None,
         history: None,
         truncated: None,
@@ -359,7 +373,8 @@ pub fn band_view(dimension: DimensionId, cr: &Value, view: ProjectionView, histo
             conditions_total: conditions_all.len(),
         };
         // Say what was dropped, and only when something was.
-        if truncation.history_kept < truncation.history_total || truncation.conditions_kept < truncation.conditions_total
+        if truncation.history_kept < truncation.history_total
+            || truncation.conditions_kept < truncation.conditions_total
         {
             out.truncated = Some(truncation);
         }
@@ -388,7 +403,12 @@ const VIEW_HINT: &str = "compact projection — pass view:\"detail\" for the new
 /// dropping data on an unexpected shape is exactly the silent-wrong-answer this
 /// module exists to avoid.
 #[must_use]
-pub fn project_band_list(dimension: DimensionId, list: &Value, view: ProjectionView, history_limit: usize) -> Value {
+pub fn project_band_list(
+    dimension: DimensionId,
+    list: &Value,
+    view: ProjectionView,
+    history_limit: usize,
+) -> Value {
     if view == ProjectionView::Raw {
         return list.clone();
     }
@@ -410,7 +430,10 @@ pub fn project_band_list(dimension: DimensionId, list: &Value, view: ProjectionV
             .collect();
         return json!({ "dimension": dimension.as_str(), "view": view.as_str(), "count": stripped.len(), "bands": stripped });
     }
-    let bands: Vec<BandView> = items.iter().map(|cr| band_view(dimension, cr, view, history_limit)).collect();
+    let bands: Vec<BandView> = items
+        .iter()
+        .map(|cr| band_view(dimension, cr, view, history_limit))
+        .collect();
     json!({
         "dimension": dimension.as_str(),
         "view": view.as_str(),
@@ -422,7 +445,12 @@ pub fn project_band_list(dimension: DimensionId, list: &Value, view: ProjectionV
 
 /// Project the `get_band` payload.
 #[must_use]
-pub fn project_band(dimension: DimensionId, cr: &Value, view: ProjectionView, history_limit: usize) -> Value {
+pub fn project_band(
+    dimension: DimensionId,
+    cr: &Value,
+    view: ProjectionView,
+    history_limit: usize,
+) -> Value {
     match view {
         ProjectionView::Raw => cr.clone(),
         ProjectionView::Full => {
@@ -525,14 +553,16 @@ pub fn project_object(cr: &Value, view: ProjectionView) -> Value {
 mod tests {
     use super::*;
     use breathe_crd::{BandStatus, Condition, MemoryBand, MemoryBandSpec, TrendSample};
-    use k8s_openapi::apimachinery::pkg::apis::meta::v1::{ManagedFieldsEntry, ObjectMeta, OwnerReference, Time};
+    use k8s_openapi::apimachinery::pkg::apis::meta::v1::{
+        ManagedFieldsEntry, ObjectMeta, OwnerReference, Time,
+    };
     use std::collections::BTreeMap;
 
     fn t(rfc3339: &str) -> Time {
         Time(rfc3339.parse().expect("fixture timestamp parses"))
     }
 
-    /// A `MemoryBand` shaped like the ones camelot-eks actually returns:
+    /// A `MemoryBand` shaped like the ones private-estate-eks actually returns:
     /// the CR body built from the REAL `breathe-crd` types (so no field name here
     /// can drift from the CRD), wrapped in the metadata a Flux-managed,
     /// kubectl-applied, twice-reconciled object carries.
@@ -559,10 +589,25 @@ mod tests {
                 api_version: Some("breathe.pleme.io/v1".into()),
                 fields_type: Some("FieldsV1".into()),
                 fields_v1: Some(fields_v1(&[
-                    ".", "f:ceiling", "f:confirmAfterSeconds", "f:cooldownSeconds", "f:disruptionPolicy", "f:dryRun",
-                    "f:floor", "f:growAbove", "f:growFactor", "f:maxStalenessSeconds", "f:postureRef",
-                    "f:predictive", "f:predictiveLookaheadSeconds", "f:requestFloor", "f:setpoint", "f:shrinkBelow",
-                    "f:shrinkFactor", "f:targetRef", "f:writeIntent",
+                    ".",
+                    "f:ceiling",
+                    "f:confirmAfterSeconds",
+                    "f:cooldownSeconds",
+                    "f:disruptionPolicy",
+                    "f:dryRun",
+                    "f:floor",
+                    "f:growAbove",
+                    "f:growFactor",
+                    "f:maxStalenessSeconds",
+                    "f:postureRef",
+                    "f:predictive",
+                    "f:predictiveLookaheadSeconds",
+                    "f:requestFloor",
+                    "f:setpoint",
+                    "f:shrinkBelow",
+                    "f:shrinkFactor",
+                    "f:targetRef",
+                    "f:writeIntent",
                 ])),
                 manager: Some("kustomize-controller".into()),
                 operation: Some("Apply".into()),
@@ -582,8 +627,14 @@ mod tests {
 
         let mut labels = BTreeMap::new();
         labels.insert("app.kubernetes.io/managed-by".to_owned(), "flux".to_owned());
-        labels.insert("kustomize.toolkit.fluxcd.io/name".to_owned(), "breathe-bands".to_owned());
-        labels.insert("kustomize.toolkit.fluxcd.io/namespace".to_owned(), "flux-system".to_owned());
+        labels.insert(
+            "kustomize.toolkit.fluxcd.io/name".to_owned(),
+            "breathe-bands".to_owned(),
+        );
+        labels.insert(
+            "kustomize.toolkit.fluxcd.io/namespace".to_owned(),
+            "flux-system".to_owned(),
+        );
 
         let mut annotations = BTreeMap::new();
         annotations.insert(
@@ -592,7 +643,7 @@ mod tests {
             // is generated from the same spec below rather than typed by hand.
             serde_json::to_string(&json!({
                 "apiVersion": "breathe.pleme.io/v1", "kind": "MemoryBand",
-                "metadata": { "name": name, "namespace": "camelot" },
+                "metadata": { "name": name, "namespace": "ns-a" },
                 "spec": { "targetRef": { "kind": "Deployment", "name": name },
                           "floor": "256Mi", "ceiling": "4Gi", "setpoint": 0.8,
                           "growAbove": 0.9, "shrinkBelow": 0.6, "growFactor": 1.25, "shrinkFactor": 0.9,
@@ -625,7 +676,7 @@ mod tests {
         let mut band = MemoryBand::new(name, spec);
         band.metadata = ObjectMeta {
             name: Some(name.to_owned()),
-            namespace: Some("camelot".to_owned()),
+            namespace: Some("ns-a".to_owned()),
             uid: Some("6f1c9f4e-2b3a-4c7d-9a10-8e5b2d4f7c31".to_owned()),
             resource_version: Some("48211934".to_owned()),
             generation: Some(7),
@@ -644,42 +695,56 @@ mod tests {
             ..Default::default()
         };
         band.status = Some(BandStatus {
-                phase: Some("AtSetpoint".into()),
-                health: Some("Healthy".into()),
-                last_util: Some("78%".into()),
-                current_limit: Some("1Gi".into()),
-                last_decision: Some("Hold".into()),
-                observed_util: Some(0.783),
-                observed_used: Some(840_531_968),
-                observed_capacity: Some(1_073_741_824),
-                observed_peak_used: Some(902_299_648),
-                conditions: (0..7)
-                    .map(|i| Condition {
-                        type_: ["Ready", "Converged", "Throttled", "Stale", "Conflict", "TargetFound", "Supported"][i]
-                            .to_owned(),
-                        status: "True".into(),
-                        reason: "ObservedHealthy".into(),
-                        message: "the band observed a fresh metric and is holding the target at its setpoint".into(),
-                        last_transition_time: "2026-07-27T15:42:18Z".into(),
-                        observed_generation: Some(7),
-                    })
-                    .collect(),
-                history: (0..12)
-                    .map(|i| TrendSample {
-                        time: "2026-07-27T15:42:18Z".into(),
-                        util: Some(0.70 + f64::from(i) / 100.0),
-                        limit: Some(1_073_741_824),
-                        phase: "AtSetpoint".into(),
-                        decision: Some("Hold".into()),
-                    })
-                    .collect(),
-                ..Default::default()
-            });
+            phase: Some("AtSetpoint".into()),
+            health: Some("Healthy".into()),
+            last_util: Some("78%".into()),
+            current_limit: Some("1Gi".into()),
+            last_decision: Some("Hold".into()),
+            observed_util: Some(0.783),
+            observed_used: Some(840_531_968),
+            observed_capacity: Some(1_073_741_824),
+            observed_peak_used: Some(902_299_648),
+            conditions: (0..7)
+                .map(|i| Condition {
+                    type_: [
+                        "Ready",
+                        "Converged",
+                        "Throttled",
+                        "Stale",
+                        "Conflict",
+                        "TargetFound",
+                        "Supported",
+                    ][i]
+                        .to_owned(),
+                    status: "True".into(),
+                    reason: "ObservedHealthy".into(),
+                    message:
+                        "the band observed a fresh metric and is holding the target at its setpoint"
+                            .into(),
+                    last_transition_time: "2026-07-27T15:42:18Z".into(),
+                    observed_generation: Some(7),
+                })
+                .collect(),
+            history: (0..12)
+                .map(|i| TrendSample {
+                    time: "2026-07-27T15:42:18Z".into(),
+                    util: Some(0.70 + f64::from(i) / 100.0),
+                    limit: Some(1_073_741_824),
+                    phase: "AtSetpoint".into(),
+                    decision: Some("Hold".into()),
+                })
+                .collect(),
+            ..Default::default()
+        });
         serde_json::to_value(band).expect("a MemoryBand serializes")
     }
 
     fn fixture_list(n: usize) -> Value {
-        Value::Array((0..n).map(|i| fixture_band(&["band-", &i.to_string()].concat())).collect())
+        Value::Array(
+            (0..n)
+                .map(|i| fixture_band(&["band-", &i.to_string()].concat()))
+                .collect(),
+        )
     }
 
     // ── the defect ────────────────────────────────────────────────────────────
@@ -691,20 +756,50 @@ mod tests {
     fn the_projection_is_a_large_measured_reduction() {
         let list = fixture_list(52);
         let raw = serde_json::to_string(&list).expect("list serializes").len();
-        let summary = serde_json::to_string(&project_band_list(DimensionId::Memory, &list, ProjectionView::Summary, 3))
-            .expect("summary serializes")
-            .len();
-        let detail = serde_json::to_string(&project_band_list(DimensionId::Memory, &list, ProjectionView::Detail, 3))
-            .expect("detail serializes")
-            .len();
-        let full = serde_json::to_string(&project_band_list(DimensionId::Memory, &list, ProjectionView::Full, 3))
-            .expect("full serializes")
-            .len();
-        println!("PROJECTION 52 memory bands: raw={raw} full={full} detail={detail} summary={summary}");
-        println!("PROJECTION per band: raw={} summary={}", raw / 52, summary / 52);
-        assert!(summary * 20 < raw, "summary must be at least a 20x reduction: {summary} vs {raw}");
-        assert!(detail < raw / 2, "detail must still roughly halve the payload: {detail} vs {raw}");
-        assert!(full < raw, "full must at least drop the bookkeeping: {full} vs {raw}");
+        let summary = serde_json::to_string(&project_band_list(
+            DimensionId::Memory,
+            &list,
+            ProjectionView::Summary,
+            3,
+        ))
+        .expect("summary serializes")
+        .len();
+        let detail = serde_json::to_string(&project_band_list(
+            DimensionId::Memory,
+            &list,
+            ProjectionView::Detail,
+            3,
+        ))
+        .expect("detail serializes")
+        .len();
+        let full = serde_json::to_string(&project_band_list(
+            DimensionId::Memory,
+            &list,
+            ProjectionView::Full,
+            3,
+        ))
+        .expect("full serializes")
+        .len();
+        println!(
+            "PROJECTION 52 memory bands: raw={raw} full={full} detail={detail} summary={summary}"
+        );
+        println!(
+            "PROJECTION per band: raw={} summary={}",
+            raw / 52,
+            summary / 52
+        );
+        assert!(
+            summary * 20 < raw,
+            "summary must be at least a 20x reduction: {summary} vs {raw}"
+        );
+        assert!(
+            detail < raw / 2,
+            "detail must still roughly halve the payload: {detail} vs {raw}"
+        );
+        assert!(
+            full < raw,
+            "full must at least drop the bookkeeping: {full} vs {raw}"
+        );
     }
 
     /// Serialize the DATA half of a projected envelope — not the `hint`, which
@@ -722,17 +817,36 @@ mod tests {
     #[test]
     fn no_projection_but_raw_emits_apiserver_bookkeeping() {
         let list = fixture_list(3);
-        for view in [ProjectionView::Summary, ProjectionView::Detail, ProjectionView::Full] {
-            let out = payload_bytes(&project_band_list(DimensionId::Memory, &list, view, 3), "bands");
-            assert!(!out.contains("managedFields"), "{view:?} leaked managedFields");
-            assert!(!out.contains("ownerReferences"), "{view:?} leaked ownerReferences");
-            assert!(!out.contains(LAST_APPLIED_ANNOTATION), "{view:?} leaked the last-applied echo");
+        for view in [
+            ProjectionView::Summary,
+            ProjectionView::Detail,
+            ProjectionView::Full,
+        ] {
+            let out = payload_bytes(
+                &project_band_list(DimensionId::Memory, &list, view, 3),
+                "bands",
+            );
+            assert!(
+                !out.contains("managedFields"),
+                "{view:?} leaked managedFields"
+            );
+            assert!(
+                !out.contains("ownerReferences"),
+                "{view:?} leaked ownerReferences"
+            );
+            assert!(
+                !out.contains(LAST_APPLIED_ANNOTATION),
+                "{view:?} leaked the last-applied echo"
+            );
         }
         // …and raw is untouched, byte for byte — the escape hatch is real.
         let raw = project_band_list(DimensionId::Memory, &list, ProjectionView::Raw, 3);
         assert_eq!(raw, list, "raw must be the apiserver's own bytes");
         let raw_s = serde_json::to_string(&raw).expect("raw serializes");
-        assert!(raw_s.contains("managedFields"), "raw must still carry managedFields — that is its whole job");
+        assert!(
+            raw_s.contains("managedFields"),
+            "raw must still carry managedFields — that is its whole job"
+        );
         assert!(raw_s.contains(LAST_APPLIED_ANNOTATION));
         assert!(raw_s.contains("ownerReferences"));
     }
@@ -744,11 +858,20 @@ mod tests {
         let cr = fixture_band("b");
         let projected = project_band(DimensionId::Memory, &cr, ProjectionView::Full, 3);
         assert_eq!(projected["spec"], cr["spec"], "full must not touch spec");
-        assert_eq!(projected["status"], cr["status"], "full must not touch status");
+        assert_eq!(
+            projected["status"], cr["status"],
+            "full must not touch status"
+        );
         assert_eq!(projected["metadata"]["uid"], cr["metadata"]["uid"]);
-        assert_eq!(projected["metadata"]["resourceVersion"], cr["metadata"]["resourceVersion"]);
+        assert_eq!(
+            projected["metadata"]["resourceVersion"],
+            cr["metadata"]["resourceVersion"]
+        );
         // The one annotation that is NOT bookkeeping survives the strip.
-        assert_eq!(projected["metadata"]["annotations"]["breathe.pleme.io/confirmed"], json!("true"));
+        assert_eq!(
+            projected["metadata"]["annotations"]["breathe.pleme.io/confirmed"],
+            json!("true")
+        );
     }
 
     // ── the bounds ────────────────────────────────────────────────────────────
@@ -756,16 +879,32 @@ mod tests {
     #[test]
     fn detail_bounds_history_to_the_newest_n_and_says_what_it_dropped() {
         let cr = fixture_band("b");
-        let stored = cr["status"]["history"].as_array().expect("fixture has history").len();
-        assert_eq!(stored, 12, "the fixture must carry more history than the limit, or this proves nothing");
+        let stored = cr["status"]["history"]
+            .as_array()
+            .expect("fixture has history")
+            .len();
+        assert_eq!(
+            stored, 12,
+            "the fixture must carry more history than the limit, or this proves nothing"
+        );
 
-        let v = band_view(DimensionId::Memory, &cr, ProjectionView::Detail, DEFAULT_HISTORY_LIMIT);
+        let v = band_view(
+            DimensionId::Memory,
+            &cr,
+            ProjectionView::Detail,
+            DEFAULT_HISTORY_LIMIT,
+        );
         let kept = v.history.as_ref().expect("detail carries history");
         assert_eq!(kept.len(), DEFAULT_HISTORY_LIMIT);
         // The NEWEST samples, i.e. the tail — the controller appends and drains
         // from the front (breathe_runtime's HISTORY_MAX), so newest is last.
-        assert_eq!(kept, &cr["status"]["history"].as_array().expect("history")[stored - 3..].to_vec());
-        let t = v.truncated.expect("a bounded projection must say it bounded something");
+        assert_eq!(
+            kept,
+            &cr["status"]["history"].as_array().expect("history")[stored - 3..].to_vec()
+        );
+        let t = v
+            .truncated
+            .expect("a bounded projection must say it bounded something");
         assert_eq!(t.history_kept, 3);
         assert_eq!(t.history_total, 12);
     }
@@ -775,7 +914,12 @@ mod tests {
         let cr = fixture_band("b");
         let v = band_view(DimensionId::Memory, &cr, ProjectionView::Detail, 0);
         assert_eq!(v.history.expect("detail always names the series").len(), 0);
-        assert_eq!(v.truncated.expect("dropping 12 samples is a truncation").history_total, 12);
+        assert_eq!(
+            v.truncated
+                .expect("dropping 12 samples is a truncation")
+                .history_total,
+            12
+        );
     }
 
     #[test]
@@ -784,7 +928,10 @@ mod tests {
         cr["status"]["history"] = json!([]);
         cr["status"]["conditions"] = json!([]);
         let v = band_view(DimensionId::Memory, &cr, ProjectionView::Detail, 3);
-        assert!(v.truncated.is_none(), "an empty series is not a truncation, and must not cost bytes to report");
+        assert!(
+            v.truncated.is_none(),
+            "an empty series is not a truncation, and must not cost bytes to report"
+        );
     }
 
     #[test]
@@ -795,7 +942,7 @@ mod tests {
         assert!(v.conditions.is_none());
         // …and still answers the question a list is asked.
         assert_eq!(v.name, "b");
-        assert_eq!(v.namespace.as_deref(), Some("camelot"));
+        assert_eq!(v.namespace.as_deref(), Some("ns-a"));
         assert_eq!(v.target.expect("target").name, "b");
         assert_eq!(v.floor.as_deref(), Some("256Mi"));
         assert_eq!(v.ceiling.as_deref(), Some("4Gi"));
@@ -828,7 +975,8 @@ mod tests {
         // If the store's contract ever changes, a projection that silently
         // returned `[]` would be the worst possible failure: a confident empty
         // answer. It returns the payload instead.
-        let odd = json!({ "unexpected": "shape", "metadata": { "managedFields": [1], "name": "x" } });
+        let odd =
+            json!({ "unexpected": "shape", "metadata": { "managedFields": [1], "name": "x" } });
         let out = project_band_list(DimensionId::Cpu, &odd, ProjectionView::Summary, 3);
         assert_eq!(out["unexpected"], json!("shape"));
     }
@@ -837,10 +985,21 @@ mod tests {
     fn every_view_round_trips_its_wire_token() {
         for v in ProjectionView::ALL {
             let wire = serde_json::to_value(v).expect("serializes");
-            assert_eq!(wire, json!(v.as_str()), "{v:?} serde label must equal as_str");
-            assert_eq!(serde_json::from_value::<ProjectionView>(wire).expect("parses"), v);
+            assert_eq!(
+                wire,
+                json!(v.as_str()),
+                "{v:?} serde label must equal as_str"
+            );
+            assert_eq!(
+                serde_json::from_value::<ProjectionView>(wire).expect("parses"),
+                v
+            );
         }
-        assert_eq!(ProjectionView::default(), ProjectionView::Summary, "the cheap view is the default");
+        assert_eq!(
+            ProjectionView::default(),
+            ProjectionView::Summary,
+            "the cheap view is the default"
+        );
     }
 
     #[test]
@@ -859,7 +1018,11 @@ mod tests {
     fn an_annotations_map_emptied_by_the_strip_is_removed_outright() {
         let mut v = json!({ "metadata": { "name": "x", "annotations": { LAST_APPLIED_ANNOTATION: "{...}" } } });
         strip_bookkeeping(&mut v);
-        assert_eq!(v["metadata"].get("annotations"), None, "an empty annotations map is noise, not information");
+        assert_eq!(
+            v["metadata"].get("annotations"),
+            None,
+            "an empty annotations map is noise, not information"
+        );
     }
 
     // ── pools + postures ──────────────────────────────────────────────────────
@@ -879,7 +1042,10 @@ mod tests {
             "status": { "phase": "Ready", "managedUnits": 4 },
         });
         let out = project_object(&cr, ProjectionView::Summary);
-        assert_eq!(out["spec"], cr["spec"], "a pool spec is small and authored — keep it verbatim");
+        assert_eq!(
+            out["spec"], cr["spec"],
+            "a pool spec is small and authored — keep it verbatim"
+        );
         assert_eq!(out["status"], cr["status"]);
         assert_eq!(out["name"], json!("rio"));
         assert_eq!(out["labels"], json!({ "a": "b" }));

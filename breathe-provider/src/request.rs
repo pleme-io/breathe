@@ -27,7 +27,7 @@
 //!
 //! Kubernetes refuses a QoS-class change through the in-place resize
 //! subresource **unconditionally**. Verified verbatim against release-1.33 —
-//! the exact minor `camelot-eks` runs (`v1.33.13-eks`) —
+//! the exact minor `private-estate-eks` runs (`v1.33.13-eks`) —
 //! `pkg/apis/core/validation/validation.go:5665`, inside `ValidatePodResize`:
 //!
 //! ```text
@@ -222,7 +222,10 @@ impl PodResources {
     #[must_use]
     pub fn with_request(&self, container_name: &str, r: RequestResource, v: u64) -> Option<Self> {
         let mut next = self.clone();
-        let c = next.containers.iter_mut().find(|c| c.name == container_name)?;
+        let c = next
+            .containers
+            .iter_mut()
+            .find(|c| c.name == container_name)?;
         *c = c.with_request(r, v);
         Some(next)
     }
@@ -310,7 +313,7 @@ struct Preserved {
 /// container, every resource — not just the scalar being carved. That breadth is
 /// the point, and it is not hypothetical:
 ///
-/// > Live on `camelot-eks`, `camelot-build/sui` is Burstable with
+/// > Live on `private-estate-eks`, `private-estate-build/sui` is Burstable with
 /// > `requests.memory=512Mi` against `limits.memory=6Gi` (a 12× ratio), and its
 /// > **cpu request already equals its cpu limit** (200m/200m). A memory-request
 /// > carve all the way to 6Gi would therefore silently promote it
@@ -359,7 +362,11 @@ pub struct NoSuchContainer {
 
 impl std::fmt::Display for NoSuchContainer {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "no container named {:?} in the observed pod", self.container)
+        write!(
+            f,
+            "no container named {:?} in the observed pod",
+            self.container
+        )
     }
 }
 
@@ -399,7 +406,9 @@ impl ClassPreserved {
         to: u64,
     ) -> Result<Self, PreserveError> {
         let Some(candidate) = observed.with_request(container, resource, to) else {
-            return Err(PreserveError::NoSuchContainer(NoSuchContainer { container: container.to_owned() }));
+            return Err(PreserveError::NoSuchContainer(NoSuchContainer {
+                container: container.to_owned(),
+            }));
         };
         let before = observed.qos_class();
         let after = candidate.qos_class();
@@ -411,8 +420,18 @@ impl ClassPreserved {
                 resource,
             }));
         }
-        let from = observed.containers.iter().find(|c| c.name == container).and_then(|c| c.request(resource));
-        Ok(Self(Preserved { class: before, container: container.to_owned(), resource, from, to }))
+        let from = observed
+            .containers
+            .iter()
+            .find(|c| c.name == container)
+            .and_then(|c| c.request(resource));
+        Ok(Self(Preserved {
+            class: before,
+            container: container.to_owned(),
+            resource,
+            from,
+            to,
+        }))
     }
 
     /// The class this change preserves.
@@ -475,7 +494,11 @@ pub struct AboveLimit {
 
 impl std::fmt::Display for AboveLimit {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "request {} exceeds the live limit {}", self.proposed, self.live_limit)
+        write!(
+            f,
+            "request {} exceeds the live limit {}",
+            self.proposed, self.live_limit
+        )
     }
 }
 
@@ -489,7 +512,10 @@ impl RequestTarget {
     /// [`AboveLimit`] when `value > live_limit`.
     pub const fn new(value: u64, live_limit: u64) -> Result<Self, AboveLimit> {
         if value > live_limit {
-            return Err(AboveLimit { proposed: value, live_limit });
+            return Err(AboveLimit {
+                proposed: value,
+                live_limit,
+            });
         }
         Ok(Self(value))
     }
@@ -576,7 +602,11 @@ impl AllocatableHeadroom {
     /// # Errors
     ///
     /// [`WouldNotSchedule`] when a single replica would not fit.
-    pub const fn admit(self, target: RequestTarget, replicas: u32) -> Result<AdmittedRequest, WouldNotSchedule> {
+    pub const fn admit(
+        self,
+        target: RequestTarget,
+        replicas: u32,
+    ) -> Result<AdmittedRequest, WouldNotSchedule> {
         if target.get() > self.per_node {
             return Err(WouldNotSchedule {
                 proposed: target.get(),
@@ -705,7 +735,11 @@ impl ClassTransitionProposal {
     ///
     /// [`SameClass`] when `block` does not actually move the class — a "transition"
     /// that transitions nothing is a caller bug, not a no-op to wave through.
-    pub fn new(target: Target, observed: &PodResources, block: PodResources) -> Result<Self, SameClass> {
+    pub fn new(
+        target: Target,
+        observed: &PodResources,
+        block: PodResources,
+    ) -> Result<Self, SameClass> {
         let from = observed.qos_class();
         let to = block.qos_class();
         if from == to {
@@ -716,7 +750,13 @@ impl ClassTransitionProposal {
         // fields in declaration order.
         let rendered = serde_json::to_vec(&block).unwrap_or_default();
         let addr = ContentAddr::of(&rendered);
-        Ok(Self { target, from, to, block, addr })
+        Ok(Self {
+            target,
+            from,
+            to,
+            block,
+            addr,
+        })
     }
 }
 
@@ -729,7 +769,11 @@ pub struct SameClass {
 
 impl std::fmt::Display for SameClass {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "proposed block is already {} — not a transition", self.class.as_str())
+        write!(
+            f,
+            "proposed block is already {} — not a transition",
+            self.class.as_str()
+        )
     }
 }
 
@@ -795,7 +839,7 @@ pub enum CarveDirection {
 }
 
 /// A container's declared `resizePolicy` for memory. **Zero of the 194 live
-/// containers on `camelot-eks` declare one**, so `Unset` is the case that
+/// containers on `private-estate-eks` declare one**, so `Unset` is the case that
 /// actually matters.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "PascalCase")]
@@ -930,7 +974,10 @@ pub enum WriterError {
     /// No writer is wired. The M0 answer, and the honest one.
     Disabled,
     /// The proposal addresses a path outside this writer's allowed prefix.
-    OutsideBlastRadius { path: String, allowed_prefix: String },
+    OutsideBlastRadius {
+        path: String,
+        allowed_prefix: String,
+    },
     /// The working tree carries edits the writer did not make. Refused rather
     /// than committed on top of: breathe never lands a change over unknown work.
     RepoNotClean,
@@ -951,11 +998,21 @@ impl std::fmt::Display for WriterError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Disabled => f.write_str("no manifest writer is configured"),
-            Self::OutsideBlastRadius { path, allowed_prefix } => {
-                write!(f, "path {path:?} is outside the writer's allowed prefix {allowed_prefix:?}")
+            Self::OutsideBlastRadius {
+                path,
+                allowed_prefix,
+            } => {
+                write!(
+                    f,
+                    "path {path:?} is outside the writer's allowed prefix {allowed_prefix:?}"
+                )
             }
-            Self::RepoNotClean => f.write_str("the manifest repo has uncommitted edits — refusing to commit on top"),
-            Self::Unanchorable { detail } => write!(f, "the proposal has no anchor in the manifest: {detail}"),
+            Self::RepoNotClean => {
+                f.write_str("the manifest repo has uncommitted edits — refusing to commit on top")
+            }
+            Self::Unanchorable { detail } => {
+                write!(f, "the proposal has no anchor in the manifest: {detail}")
+            }
             Self::Conflict { detail } => write!(f, "manifest repo conflict: {detail}"),
             Self::Transport { detail } => write!(f, "manifest writer transport failed: {detail}"),
         }
@@ -1095,7 +1152,10 @@ pub enum RequestCarveBlocked {
     /// breathe proposes transitions that strengthen isolation; it never proposes
     /// to strip a workload's reservation. Removing a seal is an operator edit,
     /// made out loud in the manifest — never a controller's tick.
-    WouldWeakenSeal { observed: QosClass, target: QosClass },
+    WouldWeakenSeal {
+        observed: QosClass,
+        target: QosClass,
+    },
 }
 
 impl std::fmt::Display for RequestCarveBlocked {
@@ -1106,7 +1166,10 @@ impl std::fmt::Display for RequestCarveBlocked {
             Self::AboveLimit(e) => e.fmt(f),
             Self::WouldNotSchedule(e) => e.fmt(f),
             Self::ResizeIllegal { legality } => {
-                write!(f, "the API server will not accept this resize: {legality:?}")
+                write!(
+                    f,
+                    "the API server will not accept this resize: {legality:?}"
+                )
             }
             Self::ShrinkWithoutEvidence { from, to } => write!(
                 f,
@@ -1214,7 +1277,10 @@ pub enum RequestCarvePlan {
     /// when the shared limit-shaped `safe_min` masked the amount upstream — see
     /// `breathe_control::RequestLaw`'s `pending-request-reclaim-naming` note.
     /// Reported either way, because "converged" would be a lie.
-    Withheld { current: u64, reclaimable: Option<u64> },
+    Withheld {
+        current: u64,
+        reclaimable: Option<u64>,
+    },
     /// A typed refusal. Never a silent `Ok`.
     Blocked(RequestCarveBlocked),
 }
@@ -1232,9 +1298,9 @@ impl RequestCarvePlan {
     #[must_use]
     pub fn qos_gap(&self, writer_configured: bool) -> QosGap {
         match self {
-            Self::Transition(p) if writer_configured => {
-                QosGap::PromotionProposed { proposal: p.addr.to_string() }
-            }
+            Self::Transition(p) if writer_configured => QosGap::PromotionProposed {
+                proposal: p.addr.to_string(),
+            },
             Self::Transition(_) => QosGap::Blocked(ClassTransitionBlocked::NoWriterConfigured),
             Self::Blocked(RequestCarveBlocked::Transition(b)) => QosGap::Blocked(b.clone()),
             _ => QosGap::Held,
@@ -1290,7 +1356,10 @@ pub struct RequestCarveInput<'a> {
 enum Unreachable<'a> {
     /// A container declares no limit for `resource`, so its request can never
     /// equal it — the Guaranteed test can never pass.
-    NoLimitToMatch { container: &'a str, resource: RequestResource },
+    NoLimitToMatch {
+        container: &'a str,
+        resource: RequestResource,
+    },
     /// The carved container is not in the observed pod.
     NoSuchContainer { container: &'a str },
     /// De-sealing is an operator edit, never a controller proposal.
@@ -1302,7 +1371,10 @@ enum Unreachable<'a> {
 impl std::fmt::Display for Unreachable<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::NoLimitToMatch { container, resource } => write!(
+            Self::NoLimitToMatch {
+                container,
+                resource,
+            } => write!(
                 f,
                 "container {container:?} declares no {} limit, so its request can never equal it",
                 resource.as_str()
@@ -1310,9 +1382,9 @@ impl std::fmt::Display for Unreachable<'_> {
             Self::NoSuchContainer { container } => {
                 write!(f, "no container named {container:?} in the observed pod")
             }
-            Self::DeSealRefused => {
-                f.write_str("de-sealing to BestEffort is an operator edit, never a controller proposal")
-            }
+            Self::DeSealRefused => f.write_str(
+                "de-sealing to BestEffort is an operator edit, never a controller proposal",
+            ),
             Self::StillSameClass { class } => {
                 write!(f, "the rendered block is still {}", class.as_str())
             }
@@ -1322,7 +1394,9 @@ impl std::fmt::Display for Unreachable<'_> {
 
 impl Unreachable<'_> {
     fn block(self) -> ClassTransitionBlocked {
-        ClassTransitionBlocked::UnreachableFromObserved { detail: self.to_string() }
+        ClassTransitionBlocked::UnreachableFromObserved {
+            detail: self.to_string(),
+        }
     }
 }
 
@@ -1345,9 +1419,11 @@ fn transition_block(
             for c in &mut next.containers {
                 for r in RequestResource::ALL {
                     let Some(l) = c.limit(r) else {
-                        return Err(
-                            Unreachable::NoLimitToMatch { container: &c.name, resource: r }.block()
-                        );
+                        return Err(Unreachable::NoLimitToMatch {
+                            container: &c.name,
+                            resource: r,
+                        }
+                        .block());
                     };
                     *c = c.with_request(r, l);
                 }
@@ -1397,7 +1473,13 @@ fn plan_class_transition(
             ClassTransitionBlocked::EphemeralCannotTransition,
         ));
     }
-    let block = match transition_block(input.observed, input.qos_target, input.container, input.resource, raw_seat) {
+    let block = match transition_block(
+        input.observed,
+        input.qos_target,
+        input.container,
+        input.resource,
+        raw_seat,
+    ) {
         Ok(b) => b,
         Err(e) => return RequestCarvePlan::Blocked(RequestCarveBlocked::Transition(e)),
     };
@@ -1470,7 +1552,12 @@ fn plan_class_transition(
 pub fn plan_request_carve(input: &RequestCarveInput<'_>) -> RequestCarvePlan {
     use breathe_invariant::isolation::carve_respecting_seal;
 
-    let Some(observed_container) = input.observed.containers.iter().find(|c| c.name == input.container) else {
+    let Some(observed_container) = input
+        .observed
+        .containers
+        .iter()
+        .find(|c| c.name == input.container)
+    else {
         return RequestCarvePlan::Blocked(RequestCarveBlocked::NoSuchContainer(NoSuchContainer {
             container: input.container.to_owned(),
         }));
@@ -1493,15 +1580,27 @@ pub fn plan_request_carve(input: &RequestCarveInput<'_>) -> RequestCarvePlan {
     // ── 3. WITHIN-CLASS: only a grow proceeds ───────────────────────────────
     let (from, to) = match input.decision {
         Decision::Grow { from, to } => (from, to),
-        Decision::ReclaimWithheld { current, reclaimable } => {
-            return RequestCarvePlan::Withheld { current, reclaimable: Some(reclaimable) }
+        Decision::ReclaimWithheld {
+            current,
+            reclaimable,
+        } => {
+            return RequestCarvePlan::Withheld {
+                current,
+                reclaimable: Some(reclaimable),
+            };
         }
         Decision::NoSafeShrink { current } => {
-            return RequestCarvePlan::Withheld { current, reclaimable: None }
+            return RequestCarvePlan::Withheld {
+                current,
+                reclaimable: None,
+            };
         }
         // I3 — unreachable through the intended pipeline; refused, not trusted.
         Decision::Shrink { from, to } => {
-            return RequestCarvePlan::Blocked(RequestCarveBlocked::ShrinkWithoutEvidence { from, to })
+            return RequestCarvePlan::Blocked(RequestCarveBlocked::ShrinkWithoutEvidence {
+                from,
+                to,
+            });
         }
         _ => return RequestCarvePlan::Hold,
     };
@@ -1547,22 +1646,28 @@ pub fn plan_request_carve(input: &RequestCarveInput<'_>) -> RequestCarvePlan {
     }
 
     // (d) I6 — the class check, on the FINAL value, over the WHOLE pod.
-    let preserved =
-        match ClassPreserved::check(input.observed, input.container, input.resource, admitted.get()) {
-            Ok(w) => w,
-            Err(PreserveError::ClassWouldChange(e)) => {
-                return RequestCarvePlan::Blocked(RequestCarveBlocked::ClassWouldChange(e))
-            }
-            Err(PreserveError::NoSuchContainer(e)) => {
-                return RequestCarvePlan::Blocked(RequestCarveBlocked::NoSuchContainer(e))
-            }
-        };
+    let preserved = match ClassPreserved::check(
+        input.observed,
+        input.container,
+        input.resource,
+        admitted.get(),
+    ) {
+        Ok(w) => w,
+        Err(PreserveError::ClassWouldChange(e)) => {
+            return RequestCarvePlan::Blocked(RequestCarveBlocked::ClassWouldChange(e));
+        }
+        Err(PreserveError::NoSuchContainer(e)) => {
+            return RequestCarvePlan::Blocked(RequestCarveBlocked::NoSuchContainer(e));
+        }
+    };
 
     RequestCarvePlan::InPlace(InPlaceCarve {
         patch: SsaPatch {
             target: input.target.clone(),
             field_manager: input.field_manager.to_owned(),
-            layout: LimitLayout::PodRequestResize { container: Some(input.container.to_owned()) },
+            layout: LimitLayout::PodRequestResize {
+                container: Some(input.container.to_owned()),
+            },
             resource: input.resource.as_str().to_owned(),
             value: admitted.get(),
         },
@@ -1578,7 +1683,13 @@ pub fn plan_request_carve(input: &RequestCarveInput<'_>) -> RequestCarvePlan {
 mod tests {
     use super::*;
 
-    fn c(name: &str, cr: Option<u64>, cl: Option<u64>, mr: Option<u64>, ml: Option<u64>) -> ContainerResources {
+    fn c(
+        name: &str,
+        cr: Option<u64>,
+        cl: Option<u64>,
+        mr: Option<u64>,
+        ml: Option<u64>,
+    ) -> ContainerResources {
         ContainerResources {
             name: name.to_owned(),
             cpu_request: cr,
@@ -1626,19 +1737,27 @@ mod tests {
         assert_eq!(p.qos_class(), QosClass::Burstable);
     }
 
-    // ── I6 — the live camelot-build/sui shape ────────────────────────────────
+    // ── I6 — the live private-estate-build/sui shape ────────────────────────────────
 
     #[test]
     fn the_live_sui_shape_refuses_a_carve_to_the_limit() {
-        // camelot-build/sui, read from camelot-eks 2026-07-26: Burstable,
+        // private-estate-build/sui, read from private-estate-eks 2026-07-26: Burstable,
         // requests.memory=512Mi vs limits.memory=6Gi (12×), and cpu ALREADY
         // 200m/200m. Carving memory all the way to the limit would promote it
         // Burstable → Guaranteed as an undeclared side effect.
-        let sui = PodResources::new(vec![c("sui", Some(200), Some(200), Some(512 << 20), Some(6144 << 20))]);
+        let sui = PodResources::new(vec![c(
+            "sui",
+            Some(200),
+            Some(200),
+            Some(512 << 20),
+            Some(6144 << 20),
+        )]);
         assert_eq!(sui.qos_class(), QosClass::Burstable);
 
         let err = ClassPreserved::check(&sui, "sui", RequestResource::Memory, 6144 << 20)
-            .expect_err("a carve to the limit must be refused — it silently promotes to Guaranteed");
+            .expect_err(
+                "a carve to the limit must be refused — it silently promotes to Guaranteed",
+            );
         match err {
             PreserveError::ClassWouldChange(e) => {
                 assert_eq!(e.from, QosClass::Burstable);
@@ -1650,7 +1769,13 @@ mod tests {
 
     #[test]
     fn the_live_sui_shape_admits_a_partial_carve() {
-        let sui = PodResources::new(vec![c("sui", Some(200), Some(200), Some(512 << 20), Some(6144 << 20))]);
+        let sui = PodResources::new(vec![c(
+            "sui",
+            Some(200),
+            Some(200),
+            Some(512 << 20),
+            Some(6144 << 20),
+        )]);
         let w = ClassPreserved::check(&sui, "sui", RequestResource::Memory, 2048 << 20)
             .expect("a carve strictly below the limit preserves Burstable");
         assert_eq!(w.class(), QosClass::Burstable);
@@ -1663,7 +1788,13 @@ mod tests {
         // Adversarial: prove the breadth is load-bearing. Looking ONLY at memory,
         // 512Mi→6Gi keeps `memory_request <= memory_limit` and looks fine. It is
         // the cpu leg — already equal — that makes the pod flip.
-        let sui = PodResources::new(vec![c("sui", Some(200), Some(200), Some(512 << 20), Some(6144 << 20))]);
+        let sui = PodResources::new(vec![c(
+            "sui",
+            Some(200),
+            Some(200),
+            Some(512 << 20),
+            Some(6144 << 20),
+        )]);
         let naive_memory_only_ok = 6144u64 << 20 <= 6144u64 << 20;
         assert!(naive_memory_only_ok, "the naive per-resource test passes");
         assert!(
@@ -1700,13 +1831,22 @@ mod tests {
     #[test]
     fn a_request_above_the_live_limit_has_no_representation() {
         assert!(RequestTarget::new(1024, 512).is_err());
-        assert_eq!(RequestTarget::new(512, 512).map(RequestTarget::get), Ok(512));
-        assert_eq!(RequestTarget::new(256, 512).map(RequestTarget::get), Ok(256));
+        assert_eq!(
+            RequestTarget::new(512, 512).map(RequestTarget::get),
+            Ok(512)
+        );
+        assert_eq!(
+            RequestTarget::new(256, 512).map(RequestTarget::get),
+            Ok(256)
+        );
     }
 
     #[test]
     fn allocatable_headroom_admits_and_refuses() {
-        let h = AllocatableHeadroom { per_node: 4096, observed_at_epoch: 1 };
+        let h = AllocatableHeadroom {
+            per_node: 4096,
+            observed_at_epoch: 1,
+        };
         let t = RequestTarget::new(2048, 8192).unwrap();
         assert_eq!(h.admit(t, 3).map(AdmittedRequest::get), Ok(2048));
 
@@ -1731,17 +1871,26 @@ mod tests {
     fn a_transition_that_transitions_nothing_is_refused() {
         let observed = PodResources::new(vec![c("a", Some(200), Some(400), Some(512), Some(1024))]);
         let same = observed.clone();
-        assert!(matches!(ClassTransitionProposal::new(t(), &observed, same), Err(SameClass { .. })));
+        assert!(matches!(
+            ClassTransitionProposal::new(t(), &observed, same),
+            Err(SameClass { .. })
+        ));
     }
 
     #[test]
     fn a_real_transition_is_addressed() {
         let observed = PodResources::new(vec![c("a", Some(200), Some(400), Some(512), Some(1024))]);
-        let promoted = PodResources::new(vec![c("a", Some(400), Some(400), Some(1024), Some(1024))]);
-        let p = ClassTransitionProposal::new(t(), &observed, promoted).expect("Burstable → Guaranteed");
+        let promoted =
+            PodResources::new(vec![c("a", Some(400), Some(400), Some(1024), Some(1024))]);
+        let p =
+            ClassTransitionProposal::new(t(), &observed, promoted).expect("Burstable → Guaranteed");
         assert_eq!(p.from, QosClass::Burstable);
         assert_eq!(p.to, QosClass::Guaranteed);
-        assert_eq!(p.addr.to_string().len(), 64, "a BLAKE3 address renders as 64 hex chars");
+        assert_eq!(
+            p.addr.to_string().len(),
+            64,
+            "a BLAKE3 address renders as 64 hex chars"
+        );
     }
 
     #[test]
@@ -1752,9 +1901,13 @@ mod tests {
         let b = ClassTransitionProposal::new(t(), &observed, g(1024)).unwrap();
         assert_eq!(a.addr, b.addr, "same block ⇒ same address");
 
-        let observed2 = PodResources::new(vec![c("a", Some(200), Some(400), Some(512), Some(2048))]);
+        let observed2 =
+            PodResources::new(vec![c("a", Some(200), Some(400), Some(512), Some(2048))]);
         let cdiff = ClassTransitionProposal::new(t(), &observed2, g(2048)).unwrap();
-        assert_ne!(a.addr, cdiff.addr, "a different block ⇒ a different address");
+        assert_ne!(
+            a.addr, cdiff.addr,
+            "a different block ⇒ a different address"
+        );
     }
 
     // ── I9 — resize legality is version-derived, not constant ────────────────
@@ -1774,53 +1927,65 @@ mod tests {
             ResizeLegality::MemoryDecreaseNeedsRestartPolicy
         );
         // Declaring RestartContainer lifts it, on the same version.
-        assert!(ResizeLegality::evaluate(
-            33,
-            MemoryResizePolicy::RestartContainer,
-            RequestResource::Memory,
-            CarveDirection::Shrink,
-            true
-        )
-        .is_allowed());
+        assert!(
+            ResizeLegality::evaluate(
+                33,
+                MemoryResizePolicy::RestartContainer,
+                RequestResource::Memory,
+                CarveDirection::Shrink,
+                true
+            )
+            .is_allowed()
+        );
         // 1.34+ removed the restriction entirely — the reason this is derived
         // per-tick rather than hardcoded.
-        assert!(ResizeLegality::evaluate(
-            34,
-            MemoryResizePolicy::Unset,
-            RequestResource::Memory,
-            CarveDirection::Shrink,
-            true
-        )
-        .is_allowed());
+        assert!(
+            ResizeLegality::evaluate(
+                34,
+                MemoryResizePolicy::Unset,
+                RequestResource::Memory,
+                CarveDirection::Shrink,
+                true
+            )
+            .is_allowed()
+        );
         // The rule is about memory LIMITS: a request carve is unaffected.
-        assert!(ResizeLegality::evaluate(
-            33,
-            MemoryResizePolicy::Unset,
-            RequestResource::Memory,
-            CarveDirection::Shrink,
-            false
-        )
-        .is_allowed());
+        assert!(
+            ResizeLegality::evaluate(
+                33,
+                MemoryResizePolicy::Unset,
+                RequestResource::Memory,
+                CarveDirection::Shrink,
+                false
+            )
+            .is_allowed()
+        );
         // …and cpu is unaffected in either direction.
-        assert!(ResizeLegality::evaluate(
-            33,
-            MemoryResizePolicy::Unset,
-            RequestResource::Cpu,
-            CarveDirection::Shrink,
-            true
-        )
-        .is_allowed());
+        assert!(
+            ResizeLegality::evaluate(
+                33,
+                MemoryResizePolicy::Unset,
+                RequestResource::Cpu,
+                CarveDirection::Shrink,
+                true
+            )
+            .is_allowed()
+        );
     }
 
     // ── the durable door refuses by construction ─────────────────────────────
 
     #[tokio::test]
     async fn the_null_writer_refuses_every_proposal() {
-        let coord = crate::manifest::ManifestCoordinate::new("clusters/camelot/sui.yaml", "sui-request");
+        let coord =
+            crate::manifest::ManifestCoordinate::new("clusters/isolated/sui.yaml", "sui-request");
         let p = AddressedProposal::carve(&coord, "3Gi", "memory", "sui");
         let gate = crate::gate::authored_write_gate("drzzln: test");
         let w = gate.witness().expect("an authored write resolves Live");
-        assert_eq!(NullManifestWriter.propose(w, &p).await, Err(WriterError::Disabled));
+        assert_eq!(
+            NullManifestWriter.propose(w, &p).await,
+            Err(WriterError::Disabled)
+        );
     }
 
     /// The durable door takes an [`AddressedProposal`] — a proposal fused to a
@@ -1839,14 +2004,21 @@ mod tests {
         // Scanning the whole file would match this test's own literals, which
         // is exactly what the first run of this test did.
         let full = include_str!("request.rs");
-        let src = full.split("\nmod tests {").next().expect("the test module is the last item");
+        let src = full
+            .split("\nmod tests {")
+            .next()
+            .expect("the test module is the last item");
 
         // A `From`/`TryFrom` in either direction would silently re-open the
         // hole the type split exists to close. Assembled at runtime so the
         // needle is never itself a literal in the scanned region.
         let bare = "ClassTransitionProposal";
         let addressed = "AddressedProposal";
-        for (from, to) in [(bare, addressed), (addressed, "SsaPatch"), (addressed, bare)] {
+        for (from, to) in [
+            (bare, addressed),
+            (addressed, "SsaPatch"),
+            (addressed, bare),
+        ] {
             for verb in ["From", "TryFrom"] {
                 let mut needle = String::from("impl ");
                 needle.push_str(verb);
@@ -1854,7 +2026,10 @@ mod tests {
                 needle.push_str(from);
                 needle.push_str("> for ");
                 needle.push_str(to);
-                assert!(!src.contains(&needle), "{needle} would re-open the door split");
+                assert!(
+                    !src.contains(&needle),
+                    "{needle} would re-open the door split"
+                );
             }
         }
         // And the door's own signature names the addressed type, not the bare one.
@@ -1873,23 +2048,36 @@ mod tests {
             c("api", Some(400), Some(400), Some(1024), Some(1024)),
             c("sidecar", Some(100), Some(100), Some(128), Some(128)),
         ]);
-        let p = ClassTransitionProposal::new(t(), &observed, promoted).expect("Burstable → Guaranteed");
+        let p =
+            ClassTransitionProposal::new(t(), &observed, promoted).expect("Burstable → Guaranteed");
 
         // The band supplies ONE marker — the single-`manifestRef` shape.
         let only_one = [("api.requests.memory".to_owned(), "sui-request".to_owned())];
-        let Err(gap) = AddressedProposal::transition("clusters/camelot/sui.yaml", &p, &only_one) else {
+        let Err(gap) = AddressedProposal::transition("clusters/isolated/sui.yaml", &p, &only_one)
+        else {
             panic!("one marker cannot address a four-scalar promotion")
         };
-        assert_eq!(gap.missing.len(), 3, "each unaddressed scalar is named: {:?}", gap.missing);
+        assert_eq!(
+            gap.missing.len(),
+            3,
+            "each unaddressed scalar is named: {:?}",
+            gap.missing
+        );
         assert!(gap.missing.contains(&"sidecar.requests.memory".to_owned()));
 
         // With every marker supplied it succeeds — the gap is about coverage,
         // not a blanket refusal of transitions.
-        let all: Vec<_> = ["api.requests.memory", "api.requests.cpu", "sidecar.requests.memory", "sidecar.requests.cpu"]
-            .iter()
-            .map(|k| ((*k).to_owned(), (*k).to_owned()))
-            .collect();
-        let ok = AddressedProposal::transition("clusters/camelot/sui.yaml", &p, &all).expect("full coverage");
+        let all: Vec<_> = [
+            "api.requests.memory",
+            "api.requests.cpu",
+            "sidecar.requests.memory",
+            "sidecar.requests.cpu",
+        ]
+        .iter()
+        .map(|k| ((*k).to_owned(), (*k).to_owned()))
+        .collect();
+        let ok = AddressedProposal::transition("clusters/isolated/sui.yaml", &p, &all)
+            .expect("full coverage");
         assert_eq!(ok.assignments().len(), 4);
     }
 
@@ -1899,8 +2087,15 @@ mod tests {
 
     /// A posture with no isolation floor — the ordinary Standard/Burstable case.
     fn posture_open() -> IsolationPosture {
-        IsolationPosture::try_seal(WorkloadClass::Standard, QosClass::Burstable, 0, 0, PlacementIsolation::CoLocate, false)
-            .expect("a Standard/Burstable posture with no floor is legal")
+        IsolationPosture::try_seal(
+            WorkloadClass::Standard,
+            QosClass::Burstable,
+            0,
+            0,
+            PlacementIsolation::CoLocate,
+            false,
+        )
+        .expect("a Standard/Burstable posture with no floor is legal")
     }
 
     /// A sealed posture with a real reservation floor.
@@ -1916,7 +2111,7 @@ mod tests {
         .expect("a Critical posture WITH a floor seals")
     }
 
-    /// The default input: the live `camelot-build/sui` shape, Burstable, holding
+    /// The default input: the live `private-estate-build/sui` shape, Burstable, holding
     /// its class, with generous headroom. Each test perturbs exactly one field.
     struct Fixture {
         observed: PodResources,
@@ -1928,7 +2123,13 @@ mod tests {
         fn sui() -> Self {
             Self {
                 // requests.memory=512Mi vs limits.memory=6Gi; cpu ALREADY 200m/200m.
-                observed: PodResources::new(vec![c("sui", Some(200), Some(200), Some(512 << 20), Some(6144 << 20))]),
+                observed: PodResources::new(vec![c(
+                    "sui",
+                    Some(200),
+                    Some(200),
+                    Some(512 << 20),
+                    Some(6144 << 20),
+                )]),
                 posture: posture_open(),
                 target: t(),
             }
@@ -1942,7 +2143,10 @@ mod tests {
                 observed: &self.observed,
                 decision,
                 posture: &self.posture,
-                headroom: AllocatableHeadroom { per_node: headroom, observed_at_epoch: 1 },
+                headroom: AllocatableHeadroom {
+                    per_node: headroom,
+                    observed_at_epoch: 1,
+                },
                 replicas: 1,
                 durability: Durability::Committed,
                 qos_target: QosClass::Burstable,
@@ -1958,8 +2162,16 @@ mod tests {
     #[test]
     fn a_within_class_grow_plans_an_in_place_carve() {
         let f = Fixture::sui();
-        let plan = plan_request_carve(&f.input(Decision::Grow { from: 512 << 20, to: 2048 << 20 }, 16 << 30));
-        let RequestCarvePlan::InPlace(carve) = plan else { panic!("expected InPlace, got {plan:?}") };
+        let plan = plan_request_carve(&f.input(
+            Decision::Grow {
+                from: 512 << 20,
+                to: 2048 << 20,
+            },
+            16 << 30,
+        ));
+        let RequestCarvePlan::InPlace(carve) = plan else {
+            panic!("expected InPlace, got {plan:?}")
+        };
 
         assert_eq!(carve.from(), 512 << 20);
         assert_eq!(carve.to(), 2048 << 20);
@@ -1974,19 +2186,36 @@ mod tests {
         assert_eq!(carve.preserved().class(), QosClass::Burstable);
         assert_eq!(carve.preserved().to(), 2048 << 20);
         assert_eq!(carve.preserved().from(), Some(512 << 20));
-        assert!(!carve.seal_bound(), "no seal floor was configured, so it cannot have bound");
+        assert!(
+            !carve.seal_bound(),
+            "no seal floor was configured, so it cannot have bound"
+        );
         // I5 — this value does NOT survive a rollout, and the plan says so.
-        assert!(carve.durability_gap(), "a Committed band with no writer must report the gap");
+        assert!(
+            carve.durability_gap(),
+            "a Committed band with no writer must report the gap"
+        );
         assert!(RequestCarvePlan::InPlace(carve).writes());
     }
 
     #[test]
     fn an_ephemeral_carve_reports_no_durability_gap() {
         let f = Fixture::sui();
-        let mut i = f.input(Decision::Grow { from: 512 << 20, to: 1024 << 20 }, 16 << 30);
+        let mut i = f.input(
+            Decision::Grow {
+                from: 512 << 20,
+                to: 1024 << 20,
+            },
+            16 << 30,
+        );
         i.durability = Durability::Ephemeral;
-        let RequestCarvePlan::InPlace(carve) = plan_request_carve(&i) else { panic!("expected InPlace") };
-        assert!(!carve.durability_gap(), "an Ephemeral band never claims a durable value");
+        let RequestCarvePlan::InPlace(carve) = plan_request_carve(&i) else {
+            panic!("expected InPlace")
+        };
+        assert!(
+            !carve.durability_gap(),
+            "an Ephemeral band never claims a durable value"
+        );
     }
 
     // ── I6 / I1 — the class check, on the FINAL value ────────────────────────
@@ -1996,7 +2225,13 @@ mod tests {
         // The live sui trap: cpu is already 200m/200m, so seating memory AT the
         // 6Gi limit flips the pod Burstable → Guaranteed. No in-place path exists.
         let f = Fixture::sui();
-        let plan = plan_request_carve(&f.input(Decision::Grow { from: 512 << 20, to: 6144 << 20 }, 16 << 30));
+        let plan = plan_request_carve(&f.input(
+            Decision::Grow {
+                from: 512 << 20,
+                to: 6144 << 20,
+            },
+            16 << 30,
+        ));
         match plan {
             RequestCarvePlan::Blocked(RequestCarveBlocked::ClassWouldChange(e)) => {
                 assert_eq!(e.from, QosClass::Burstable);
@@ -2011,11 +2246,24 @@ mod tests {
     /// so the class would move — a bug a pre-clamp check would wave through.
     #[test]
     fn the_class_check_runs_after_every_clamp_not_before() {
-        let f = Fixture { posture: posture_sealed(6144 << 20, 6144 << 20), ..Fixture::sui() };
-        let plan = plan_request_carve(&f.input(Decision::Grow { from: 512 << 20, to: 1024 << 20 }, 16 << 30));
+        let f = Fixture {
+            posture: posture_sealed(6144 << 20, 6144 << 20),
+            ..Fixture::sui()
+        };
+        let plan = plan_request_carve(&f.input(
+            Decision::Grow {
+                from: 512 << 20,
+                to: 1024 << 20,
+            },
+            16 << 30,
+        ));
         match plan {
             RequestCarvePlan::Blocked(RequestCarveBlocked::ClassWouldChange(e)) => {
-                assert_eq!(e.to, QosClass::Guaranteed, "the SEAL pushed it onto the limit");
+                assert_eq!(
+                    e.to,
+                    QosClass::Guaranteed,
+                    "the SEAL pushed it onto the limit"
+                );
             }
             other => panic!("expected the post-clamp class check to fire, got {other:?}"),
         }
@@ -2028,8 +2276,17 @@ mod tests {
         // The seal demands 8Gi; the container's limit is 6Gi. No legal request
         // satisfies both — a real authoring conflict, reported rather than
         // silently clamped to something neither side asked for.
-        let f = Fixture { posture: posture_sealed(8192 << 20, 0), ..Fixture::sui() };
-        let plan = plan_request_carve(&f.input(Decision::Grow { from: 512 << 20, to: 1024 << 20 }, 32 << 30));
+        let f = Fixture {
+            posture: posture_sealed(8192 << 20, 0),
+            ..Fixture::sui()
+        };
+        let plan = plan_request_carve(&f.input(
+            Decision::Grow {
+                from: 512 << 20,
+                to: 1024 << 20,
+            },
+            32 << 30,
+        ));
         match plan {
             RequestCarvePlan::Blocked(RequestCarveBlocked::AboveLimit(e)) => {
                 assert_eq!(e.proposed, 8192 << 20);
@@ -2044,10 +2301,22 @@ mod tests {
         // k8s's `request <= limit` rule is CONDITIONAL on the limit existing, so
         // an unlimited container has no such bound — allocatable is what binds.
         // (The pod stays Burstable throughout: it carries a cpu limit.)
-        let observed = PodResources::new(vec![c("sui", Some(200), Some(400), Some(256 << 20), None)]);
-        let f = Fixture { observed, ..Fixture::sui() };
-        let plan = plan_request_carve(&f.input(Decision::Grow { from: 256 << 20, to: 1024 << 20 }, 16 << 30));
-        let RequestCarvePlan::InPlace(carve) = plan else { panic!("expected InPlace, got {plan:?}") };
+        let observed =
+            PodResources::new(vec![c("sui", Some(200), Some(400), Some(256 << 20), None)]);
+        let f = Fixture {
+            observed,
+            ..Fixture::sui()
+        };
+        let plan = plan_request_carve(&f.input(
+            Decision::Grow {
+                from: 256 << 20,
+                to: 1024 << 20,
+            },
+            16 << 30,
+        ));
+        let RequestCarvePlan::InPlace(carve) = plan else {
+            panic!("expected InPlace, got {plan:?}")
+        };
         assert_eq!(carve.to(), 1024 << 20);
     }
 
@@ -2057,7 +2326,13 @@ mod tests {
     fn a_carve_that_would_not_schedule_is_blocked() {
         let f = Fixture::sui();
         // 2Gi wanted onto a node class with 1Gi of headroom.
-        let plan = plan_request_carve(&f.input(Decision::Grow { from: 512 << 20, to: 2048 << 20 }, 1024 << 20));
+        let plan = plan_request_carve(&f.input(
+            Decision::Grow {
+                from: 512 << 20,
+                to: 2048 << 20,
+            },
+            1024 << 20,
+        ));
         match plan {
             RequestCarvePlan::Blocked(RequestCarveBlocked::WouldNotSchedule(e)) => {
                 assert_eq!(e.proposed, 2048 << 20);
@@ -2072,9 +2347,18 @@ mod tests {
     #[test]
     fn a_shrink_reaching_the_planner_is_refused_for_want_of_evidence() {
         let f = Fixture::sui();
-        let plan = plan_request_carve(&f.input(Decision::Shrink { from: 512 << 20, to: 256 << 20 }, 16 << 30));
+        let plan = plan_request_carve(&f.input(
+            Decision::Shrink {
+                from: 512 << 20,
+                to: 256 << 20,
+            },
+            16 << 30,
+        ));
         assert!(
-            matches!(plan, RequestCarvePlan::Blocked(RequestCarveBlocked::ShrinkWithoutEvidence { .. })),
+            matches!(
+                plan,
+                RequestCarvePlan::Blocked(RequestCarveBlocked::ShrinkWithoutEvidence { .. })
+            ),
             "lowering a reservation needs RequestShrinkEvidence, which has no constructor: {plan:?}"
         );
         assert!(!plan.writes());
@@ -2083,17 +2367,31 @@ mod tests {
     #[test]
     fn a_withheld_reclaim_is_named_and_a_masked_one_is_honest_about_it() {
         let f = Fixture::sui();
-        let named = plan_request_carve(
-            &f.input(Decision::ReclaimWithheld { current: 512 << 20, reclaimable: 128 << 20 }, 16 << 30),
-        );
+        let named = plan_request_carve(&f.input(
+            Decision::ReclaimWithheld {
+                current: 512 << 20,
+                reclaimable: 128 << 20,
+            },
+            16 << 30,
+        ));
         assert_eq!(
             named,
-            RequestCarvePlan::Withheld { current: 512 << 20, reclaimable: Some(128 << 20) }
+            RequestCarvePlan::Withheld {
+                current: 512 << 20,
+                reclaimable: Some(128 << 20)
+            }
         );
         // The shared limit-shaped safe_min masked the amount upstream — reported
         // as unknown rather than as zero, which would read as "no slack".
-        let masked = plan_request_carve(&f.input(Decision::NoSafeShrink { current: 512 << 20 }, 16 << 30));
-        assert_eq!(masked, RequestCarvePlan::Withheld { current: 512 << 20, reclaimable: None });
+        let masked =
+            plan_request_carve(&f.input(Decision::NoSafeShrink { current: 512 << 20 }, 16 << 30));
+        assert_eq!(
+            masked,
+            RequestCarvePlan::Withheld {
+                current: 512 << 20,
+                reclaimable: None
+            }
+        );
         assert!(!named.writes() && !masked.writes());
     }
 
@@ -2106,8 +2404,17 @@ mod tests {
         // without a RestartContainer resizePolicy.
         let observed = PodResources::new(vec![c("sui", None, None, None, None)]);
         assert_eq!(observed.qos_class(), QosClass::BestEffort);
-        let f = Fixture { observed, ..Fixture::sui() };
-        let plan = plan_request_carve(&f.input(Decision::Grow { from: 0, to: 256 << 20 }, 16 << 30));
+        let f = Fixture {
+            observed,
+            ..Fixture::sui()
+        };
+        let plan = plan_request_carve(&f.input(
+            Decision::Grow {
+                from: 0,
+                to: 256 << 20,
+            },
+            16 << 30,
+        ));
         match &plan {
             RequestCarvePlan::Transition(p) => {
                 assert_eq!(p.from, QosClass::BestEffort);
@@ -2116,10 +2423,19 @@ mod tests {
             }
             other => panic!("expected a Transition proposal, got {other:?}"),
         }
-        assert!(!plan.writes(), "a class transition must NEVER write in place");
+        assert!(
+            !plan.writes(),
+            "a class transition must NEVER write in place"
+        );
         // With no writer wired (M0), the gap is reported as blocked, not held.
-        assert_eq!(plan.qos_gap(false), QosGap::Blocked(ClassTransitionBlocked::NoWriterConfigured));
-        assert!(matches!(plan.qos_gap(true), QosGap::PromotionProposed { .. }));
+        assert_eq!(
+            plan.qos_gap(false),
+            QosGap::Blocked(ClassTransitionBlocked::NoWriterConfigured)
+        );
+        assert!(matches!(
+            plan.qos_gap(true),
+            QosGap::PromotionProposed { .. }
+        ));
     }
 
     /// **I7 applies to the DURABLE path too — and matters more there.**
@@ -2131,9 +2447,18 @@ mod tests {
     #[test]
     fn a_promotion_that_would_not_schedule_is_refused_before_it_is_proposed() {
         let observed = PodResources::new(vec![c("sui", None, None, None, None)]);
-        let f = Fixture { observed, ..Fixture::sui() };
+        let f = Fixture {
+            observed,
+            ..Fixture::sui()
+        };
         // The promotion seat is 4Gi; the node class has 1Gi of headroom.
-        let plan = plan_request_carve(&f.input(Decision::Grow { from: 0, to: 4096 << 20 }, 1024 << 20));
+        let plan = plan_request_carve(&f.input(
+            Decision::Grow {
+                from: 0,
+                to: 4096 << 20,
+            },
+            1024 << 20,
+        ));
         match plan {
             RequestCarvePlan::Blocked(RequestCarveBlocked::WouldNotSchedule(e)) => {
                 assert_eq!(e.proposed, 4096 << 20);
@@ -2142,7 +2467,13 @@ mod tests {
         }
         // …and the same promotion WITH headroom proceeds, so the gate is the
         // headroom and not the promotion itself.
-        let ok = plan_request_carve(&f.input(Decision::Grow { from: 0, to: 4096 << 20 }, 16 << 30));
+        let ok = plan_request_carve(&f.input(
+            Decision::Grow {
+                from: 0,
+                to: 4096 << 20,
+            },
+            16 << 30,
+        ));
         assert!(matches!(ok, RequestCarvePlan::Transition(_)), "got {ok:?}");
     }
 
@@ -2152,13 +2483,22 @@ mod tests {
             c("app", Some(200), Some(400), Some(512), Some(1024)),
             c("sidecar", Some(10), Some(50), Some(64), Some(128)),
         ]);
-        let f = Fixture { observed, ..Fixture::sui() };
+        let f = Fixture {
+            observed,
+            ..Fixture::sui()
+        };
         let mut i = f.input(Decision::Grow { from: 512, to: 600 }, 1 << 40);
         i.container = "app";
         i.qos_target = QosClass::Guaranteed;
-        let RequestCarvePlan::Transition(p) = plan_request_carve(&i) else { panic!("expected Transition") };
+        let RequestCarvePlan::Transition(p) = plan_request_carve(&i) else {
+            panic!("expected Transition")
+        };
         assert_eq!(p.to, QosClass::Guaranteed);
-        assert_eq!(p.block.qos_class(), QosClass::Guaranteed, "the rendered block really is Guaranteed");
+        assert_eq!(
+            p.block.qos_class(),
+            QosClass::Guaranteed,
+            "the rendered block really is Guaranteed"
+        );
         for c in &p.block.containers {
             assert_eq!(c.cpu_request, c.cpu_limit);
             assert_eq!(c.memory_request, c.memory_limit);
@@ -2171,14 +2511,20 @@ mod tests {
             c("app", Some(200), Some(400), Some(512), Some(1024)),
             c("sidecar", Some(10), None, Some(64), None), // no limits at all
         ]);
-        let f = Fixture { observed, ..Fixture::sui() };
+        let f = Fixture {
+            observed,
+            ..Fixture::sui()
+        };
         let mut i = f.input(Decision::Grow { from: 512, to: 600 }, 1 << 40);
         i.container = "app";
         i.qos_target = QosClass::Guaranteed;
         match plan_request_carve(&i) {
             RequestCarvePlan::Blocked(RequestCarveBlocked::Transition(
                 ClassTransitionBlocked::UnreachableFromObserved { detail },
-            )) => assert!(detail.contains("sidecar"), "the reason must NAME the blocking container: {detail}"),
+            )) => assert!(
+                detail.contains("sidecar"),
+                "the reason must NAME the blocking container: {detail}"
+            ),
             other => panic!("expected UnreachableFromObserved, got {other:?}"),
         }
     }
@@ -2189,8 +2535,17 @@ mod tests {
     #[test]
     fn an_ephemeral_band_cannot_transition() {
         let observed = PodResources::new(vec![c("sui", None, None, None, None)]);
-        let f = Fixture { observed, ..Fixture::sui() };
-        let mut i = f.input(Decision::Grow { from: 0, to: 256 << 20 }, 16 << 30);
+        let f = Fixture {
+            observed,
+            ..Fixture::sui()
+        };
+        let mut i = f.input(
+            Decision::Grow {
+                from: 0,
+                to: 256 << 20,
+            },
+            16 << 30,
+        );
         i.durability = Durability::Ephemeral;
         assert!(matches!(
             plan_request_carve(&i),
@@ -2203,14 +2558,21 @@ mod tests {
     /// breathe never proposes to STRIP a workload's reservation.
     #[test]
     fn a_weakening_qos_target_is_refused() {
-        let observed = PodResources::new(vec![c("sui", Some(200), Some(200), Some(512), Some(512))]);
+        let observed =
+            PodResources::new(vec![c("sui", Some(200), Some(200), Some(512), Some(512))]);
         assert_eq!(observed.qos_class(), QosClass::Guaranteed);
-        let f = Fixture { observed, ..Fixture::sui() };
+        let f = Fixture {
+            observed,
+            ..Fixture::sui()
+        };
         for weaker in [QosClass::Burstable, QosClass::BestEffort] {
             let mut i = f.input(Decision::Grow { from: 512, to: 600 }, 1 << 40);
             i.qos_target = weaker;
             match plan_request_carve(&i) {
-                RequestCarvePlan::Blocked(RequestCarveBlocked::WouldWeakenSeal { observed, target }) => {
+                RequestCarvePlan::Blocked(RequestCarveBlocked::WouldWeakenSeal {
+                    observed,
+                    target,
+                }) => {
                     assert_eq!(observed, QosClass::Guaranteed);
                     assert_eq!(target, weaker);
                 }
@@ -2224,7 +2586,13 @@ mod tests {
     #[test]
     fn a_stale_container_target_is_blocked() {
         let f = Fixture::sui();
-        let mut i = f.input(Decision::Grow { from: 512 << 20, to: 1024 << 20 }, 16 << 30);
+        let mut i = f.input(
+            Decision::Grow {
+                from: 512 << 20,
+                to: 1024 << 20,
+            },
+            16 << 30,
+        );
         i.container = "gone";
         assert!(matches!(
             plan_request_carve(&i),
@@ -2238,7 +2606,11 @@ mod tests {
         for d in [
             Decision::Hold,
             Decision::AtCeiling { current: 512 << 20 },
-            Decision::Warmup { current: 512 << 20, observed_for: 1, warmup: 600 },
+            Decision::Warmup {
+                current: 512 << 20,
+                observed_for: 1,
+                warmup: 600,
+            },
             Decision::NoLimit,
         ] {
             let plan = plan_request_carve(&f.input(d, 16 << 30));
@@ -2251,9 +2623,18 @@ mod tests {
     /// not a write — otherwise the band would re-patch the same number forever.
     #[test]
     fn a_carve_that_narrows_back_to_the_current_value_holds() {
-        let f = Fixture { posture: posture_sealed(512 << 20, 0), ..Fixture::sui() };
+        let f = Fixture {
+            posture: posture_sealed(512 << 20, 0),
+            ..Fixture::sui()
+        };
         // The law wanted less; the seal raised it back to exactly the live value.
-        let plan = plan_request_carve(&f.input(Decision::Grow { from: 512 << 20, to: 300 << 20 }, 16 << 30));
+        let plan = plan_request_carve(&f.input(
+            Decision::Grow {
+                from: 512 << 20,
+                to: 300 << 20,
+            },
+            16 << 30,
+        ));
         assert_eq!(plan, RequestCarvePlan::Hold);
     }
 
@@ -2264,21 +2645,51 @@ mod tests {
     /// LIMIT was never binding; the tiny REQUEST set `oom_score_adj`.
     #[test]
     fn the_sui_cache_pg_shape_plans_a_request_raise() {
-        let observed = PodResources::new(vec![c("db", Some(100), Some(500), Some(128 << 20), Some(1 << 30))]);
+        let observed = PodResources::new(vec![c(
+            "db",
+            Some(100),
+            Some(500),
+            Some(128 << 20),
+            Some(1 << 30),
+        )]);
         assert_eq!(observed.qos_class(), QosClass::Burstable);
-        let f = Fixture { observed, ..Fixture::sui() };
-        let mut i = f.input(Decision::Grow { from: 128 << 20, to: 233 << 20 }, 8 << 30);
+        let f = Fixture {
+            observed,
+            ..Fixture::sui()
+        };
+        let mut i = f.input(
+            Decision::Grow {
+                from: 128 << 20,
+                to: 233 << 20,
+            },
+            8 << 30,
+        );
         i.container = "db";
 
         let RequestCarvePlan::InPlace(carve) = plan_request_carve(&i) else {
             panic!("the request band must plan a raise")
         };
-        assert!(carve.to() > carve.from(), "the RESERVATION rises: {} → {}", carve.from(), carve.to());
-        assert!(carve.to() < (1 << 30), "and stays strictly under the never-binding 1Gi limit");
-        assert_eq!(carve.preserved().class(), QosClass::Burstable, "the class is untouched");
+        assert!(
+            carve.to() > carve.from(),
+            "the RESERVATION rises: {} → {}",
+            carve.from(),
+            carve.to()
+        );
+        assert!(
+            carve.to() < (1 << 30),
+            "and stays strictly under the never-binding 1Gi limit"
+        );
+        assert_eq!(
+            carve.preserved().class(),
+            QosClass::Burstable,
+            "the class is untouched"
+        );
         // The write targets requests — the field the kernel ranks on — via the
         // request layout, not the limit layout a MemoryBand would use.
-        assert!(matches!(carve.patch().layout, LimitLayout::PodRequestResize { .. }));
+        assert!(matches!(
+            carve.patch().layout,
+            LimitLayout::PodRequestResize { .. }
+        ));
     }
 
     /// The structural claim, asserted as a compiling program rather than prose:
@@ -2298,7 +2709,8 @@ mod tests {
         // `From<ClassTransitionProposal>`, this stops being true and the
         // reviewer has to come here and say why.
         let observed = PodResources::new(vec![c("a", Some(200), Some(400), Some(512), Some(1024))]);
-        let promoted = PodResources::new(vec![c("a", Some(400), Some(400), Some(1024), Some(1024))]);
+        let promoted =
+            PodResources::new(vec![c("a", Some(400), Some(400), Some(1024), Some(1024))]);
         let p = ClassTransitionProposal::new(t(), &observed, promoted).unwrap();
         assert_eq!(p.block.containers.len(), 1);
         // The proposal names TWO classes and a whole block. An SsaPatch names

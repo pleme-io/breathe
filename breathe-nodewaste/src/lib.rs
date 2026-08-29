@@ -2,7 +2,7 @@
 //!
 //! Every band dimension breathe has carves *within* a host: memory, cpu, arc,
 //! cgroup, host-param. None of them can answer whether the host should exist at
-//! all. On 2026-08-02 that gap was measured on camelot: five `m6a.2xlarge`
+//! all. On 2026-08-02 that gap was measured on one cluster: five `m6a.2xlarge`
 //! ON-DEMAND nodes in the builder pool sat at 19-42m CPU holding ARC runner pods
 //! that had claimed no job — $1.73/hr, invisible to Karpenter's `WhenEmpty`
 //! consolidation because the pods existed, and invisible to breathe because
@@ -154,7 +154,11 @@ pub struct Thresholds {
 
 impl Default for Thresholds {
     fn default() -> Self {
-        Self { idle_millicpu: IDLE_MILLICPU, idle_mem_pct: IDLE_MEM_PCT, grace: IDLE_GRACE }
+        Self {
+            idle_millicpu: IDLE_MILLICPU,
+            idle_mem_pct: IDLE_MEM_PCT,
+            grace: IDLE_GRACE,
+        }
     }
 }
 
@@ -199,7 +203,13 @@ pub fn classify(pods: &[PodFact], usage: NodeUsage, age: Duration, t: Thresholds
         Verdict::Working
     };
 
-    NodeVerdict { verdict, holders: holders.len(), live, stateful, usage }
+    NodeVerdict {
+        verdict,
+        holders: holders.len(),
+        live,
+        stateful,
+        usage,
+    }
 }
 
 #[cfg(test)]
@@ -209,20 +219,38 @@ mod tests {
     const HOUR: Duration = Duration::from_secs(3600);
 
     fn pod(phase: Phase) -> PodFact {
-        PodFact { daemonset: false, stateful: false, phase, terminating: false }
+        PodFact {
+            daemonset: false,
+            stateful: false,
+            phase,
+            terminating: false,
+        }
     }
     fn busy() -> NodeUsage {
-        NodeUsage { millicpu: 7317, mem_pct: 14, known: true }
+        NodeUsage {
+            millicpu: 7317,
+            mem_pct: 14,
+            known: true,
+        }
     }
     fn quiet() -> NodeUsage {
-        NodeUsage { millicpu: 21, mem_pct: 4, known: true }
+        NodeUsage {
+            millicpu: 21,
+            mem_pct: 4,
+            known: true,
+        }
     }
 
     #[test]
     fn a_running_but_jobless_runner_is_idle_not_working() {
         // The measured shape: five m6a.2xlarge on-demand at 19-42m CPU, each
         // holding a Running ARC runner that had claimed no job.
-        let v = classify(&[pod(Phase::Running)], quiet(), 3 * HOUR, Thresholds::default());
+        let v = classify(
+            &[pod(Phase::Running)],
+            quiet(),
+            3 * HOUR,
+            Thresholds::default(),
+        );
         assert_eq!(
             v.verdict,
             Verdict::Idle,
@@ -234,16 +262,29 @@ mod tests {
 
     #[test]
     fn a_busy_runner_is_working() {
-        let v = classify(&[pod(Phase::Running)], busy(), 3 * HOUR, Thresholds::default());
-        assert_eq!(v.verdict, Verdict::Working, "7317m CPU is a build in flight");
+        let v = classify(
+            &[pod(Phase::Running)],
+            busy(),
+            3 * HOUR,
+            Thresholds::default(),
+        );
+        assert_eq!(
+            v.verdict,
+            Verdict::Working,
+            "7317m CPU is a build in flight"
+        );
     }
 
     #[test]
     fn a_database_at_low_cpu_is_not_idle() {
-        // CPU alone flagged mysql, nats and pangea-operator on real camelot data.
+        // CPU alone flagged mysql, nats and pangea-operator on real the private estate data.
         let mut p = pod(Phase::Running);
         p.stateful = true;
-        let usage = NodeUsage { millicpu: 38, mem_pct: 40, known: true };
+        let usage = NodeUsage {
+            millicpu: 38,
+            mem_pct: 40,
+            known: true,
+        };
         let v = classify(&[p], usage, 30 * HOUR, Thresholds::default());
         assert_ne!(
             v.verdict,
@@ -255,14 +296,32 @@ mod tests {
 
     #[test]
     fn high_memory_alone_keeps_a_node_off_the_idle_list() {
-        let usage = NodeUsage { millicpu: 31, mem_pct: 70, known: true };
-        let v = classify(&[pod(Phase::Running)], usage, 30 * HOUR, Thresholds::default());
-        assert_eq!(v.verdict, Verdict::Working, "70% resident is work even at 31m CPU");
+        let usage = NodeUsage {
+            millicpu: 31,
+            mem_pct: 70,
+            known: true,
+        };
+        let v = classify(
+            &[pod(Phase::Running)],
+            usage,
+            30 * HOUR,
+            Thresholds::default(),
+        );
+        assert_eq!(
+            v.verdict,
+            Verdict::Working,
+            "70% resident is work even at 31m CPU"
+        );
     }
 
     #[test]
     fn daemonset_pods_do_not_hold_a_node() {
-        let ds = PodFact { daemonset: true, stateful: false, phase: Phase::Running, terminating: false };
+        let ds = PodFact {
+            daemonset: true,
+            stateful: false,
+            phase: Phase::Running,
+            terminating: false,
+        };
         let v = classify(&[ds.clone(), ds], quiet(), 4 * HOUR, Thresholds::default());
         assert_eq!(
             v.verdict,
@@ -270,7 +329,10 @@ mod tests {
             "Karpenter ignores DaemonSets when judging emptiness, so a node carrying only \
              them is empty and consolidation will take it"
         );
-        assert!(!v.verdict.is_waste(), "an empty node is already leaving; charging it double-books");
+        assert!(
+            !v.verdict.is_waste(),
+            "an empty node is already leaving; charging it double-books"
+        );
     }
 
     #[test]
@@ -304,7 +366,12 @@ mod tests {
 
     #[test]
     fn a_freshly_started_idle_node_gets_grace() {
-        let v = classify(&[pod(Phase::Running)], quiet(), Duration::from_secs(60), Thresholds::default());
+        let v = classify(
+            &[pod(Phase::Running)],
+            quiet(),
+            Duration::from_secs(60),
+            Thresholds::default(),
+        );
         assert_eq!(
             v.verdict,
             Verdict::Working,
@@ -315,7 +382,12 @@ mod tests {
 
     #[test]
     fn unmeasured_is_not_idle() {
-        let v = classify(&[pod(Phase::Running)], NodeUsage::default(), 30 * HOUR, Thresholds::default());
+        let v = classify(
+            &[pod(Phase::Running)],
+            NodeUsage::default(),
+            30 * HOUR,
+            Thresholds::default(),
+        );
         assert_eq!(
             v.verdict,
             Verdict::Working,

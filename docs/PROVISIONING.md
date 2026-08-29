@@ -324,7 +324,7 @@ first operator value is M2 — **gated honestly on magma**.
       cluster-wide), and the writer must be ARMED before the taint exists (in
       shadow the remover cannot write, so a tainted node reports
       `would_release` forever).
-    - **Proven, not inferred:** a hand-tainted node on camelot was released on
+    - **Proven, not inferred:** a hand-tainted node on one cluster was released on
       the fixed controller's first pass — `breathe_portao_nodes{state=
       "released"} 1`. First pool gated: `builder-arm64` (chosen because it had
       ZERO nodes; adding any field under `template.spec` changes the NodePool
@@ -338,7 +338,7 @@ first operator value is M2 — **gated honestly on magma**.
       stayed healthy — one bad write blinded the loop's own telemetry. Both
       fixed; a failed write is now `FalhouAoLiberar` with its own metric label,
       so a broken actuator cannot hide behind a normal-looking deferral.
-  - **The loop measures what breathability currently guesses.** Both camelot
+  - **The loop measures what breathability currently guesses.** Both the private estate
     `BreatheCloudPool`s carry `reliefLatencySeconds: 180` — a round, identical,
     hand-picked number that P8 makes load-bearing (predictive lookahead must be
     ≥ it). Relief latency is **creation-to-usable**, not boot-to-Ready, and the

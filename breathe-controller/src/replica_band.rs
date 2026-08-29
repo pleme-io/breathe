@@ -22,17 +22,17 @@
 
 use std::sync::Arc;
 
-use breathe_control::replica::{plan_replica_tick, ReplicaGate};
+use breathe_control::replica::{ReplicaGate, plan_replica_tick};
 use breathe_crd::{Band, ReplicaBand};
 use breathe_kube::KubeCluster;
 use breathe_provider::{Cluster, DisruptionClass, ProviderError, SsaPatch, Target};
 use breathe_runtime::{
-    counters_from_status, error_status, now_secs, patch_status, replica_entry_for, replica_next_requeue,
-    replica_status_for, rfc3339_in_future, suspended_status, ReplicaReceipt,
+    ReplicaReceipt, counters_from_status, error_status, now_secs, patch_status, replica_entry_for,
+    replica_next_requeue, replica_status_for, rfc3339_in_future, suspended_status,
 };
 use breathe_store::BandRef;
-use kube::runtime::controller::Action;
 use kube::ResourceExt;
+use kube::runtime::controller::Action;
 use tracing::{error, info, warn};
 
 use crate::{Ctx, Error};
@@ -51,7 +51,8 @@ pub async fn reconcile_replica_band(obj: Arc<ReplicaBand>, ctx: Arc<Ctx>) -> Res
 
     // SUSPEND: a frozen band skips observe/plan/act entirely — the count is left as-is.
     if obj.suspended() {
-        patch_status::<ReplicaBand>(&ctx.client, &ns, &name, &suspended_status(obj.status())).await?;
+        patch_status::<ReplicaBand>(&ctx.client, &ns, &name, &suspended_status(obj.status()))
+            .await?;
         return Ok(Action::requeue(ctx.requeue));
     }
 
@@ -72,7 +73,13 @@ pub async fn reconcile_replica_band(obj: Arc<ReplicaBand>, ctx: Arc<Ctx>) -> Res
     // ordinal-drain + never-scale-the-primary-away invariants can't hold).
     let cfg = obj.spec.replica_band_config();
     if let Err(e) = cfg.validate_for_target(&tr.kind) {
-        patch_status::<ReplicaBand>(&ctx.client, &ns, &name, &error_status(obj.status(), e.to_string())).await?;
+        patch_status::<ReplicaBand>(
+            &ctx.client,
+            &ns,
+            &name,
+            &error_status(obj.status(), e.to_string()),
+        )
+        .await?;
         return Ok(Action::requeue(ctx.requeue));
     }
 
@@ -83,20 +90,28 @@ pub async fn reconcile_replica_band(obj: Arc<ReplicaBand>, ctx: Arc<Ctx>) -> Res
 
     // OBSERVE (async): current `.spec.replicas` + the driving signal (raw f64) + the
     // optional spot-reclaim signal, frozen into one sync `ReplicaEnvironment` snapshot.
-    let env = match cluster.observe_replica_env(&target, &layout, &signal, reclaim.as_ref()).await {
+    let env = match cluster
+        .observe_replica_env(&target, &layout, &signal, reclaim.as_ref())
+        .await
+    {
         Ok(e) => e,
         Err(e) => {
             let msg = match &e {
-                ProviderError::TargetNotFound => format!("target {}/{} not found", target.kind, target.name),
+                ProviderError::TargetNotFound => {
+                    format!("target {}/{} not found", target.kind, target.name)
+                }
                 other => other.to_string(),
             };
-            patch_status::<ReplicaBand>(&ctx.client, &ns, &name, &error_status(obj.status(), msg)).await?;
+            patch_status::<ReplicaBand>(&ctx.client, &ns, &name, &error_status(obj.status(), msg))
+                .await?;
             return Ok(Action::requeue(ctx.requeue));
         }
     };
 
     let now = now_secs();
-    let metric_ratio = cfg.signal.metric_ratio(env.current(), env.signal(), cfg.target);
+    let metric_ratio = cfg
+        .signal
+        .metric_ratio(env.current(), env.signal(), cfg.target);
     let staleness = env.staleness_secs();
     let prior = obj.status();
     // The tick's AUTHORIZATION VERDICT — the same `writeIntent` > `mode` > default
@@ -116,26 +131,42 @@ pub async fn reconcile_replica_band(obj: Arc<ReplicaBand>, ctx: Arc<Ctx>) -> Res
 
     // NEVER SCALE ON A STALE SAMPLE → held, reported Stale (no plan, no write).
     let receipt = if staleness > obj.max_staleness_seconds() {
-        ReplicaReceipt::Stale { staleness_secs: staleness, current: env.current() }
+        ReplicaReceipt::Stale {
+            staleness_secs: staleness,
+            current: env.current(),
+        }
     } else {
         let in_cooldown = obj
             .last_change_epoch()
             .is_some_and(|last| now.saturating_sub(last) < obj.cooldown_seconds() as i64);
         // a scale-IN sheds a pod (RestartRequiring); the default `restartFreeOnly`
         // scales OUT freely but gates the scale-in — set `allowRestart` to shed.
-        let scale_in_permitted = obj.disruption_policy().permits(DisruptionClass::RestartRequiring);
+        let scale_in_permitted = obj
+            .disruption_policy()
+            .permits(DisruptionClass::RestartRequiring);
         // BREAK-GLASS forceLimit: active iff set AND (no expiry OR expiry in the future).
         let force = obj
             .force_limit_value()
             .filter(|_| obj.force_limit_expiry().map_or(true, rfc3339_in_future))
             .and_then(|v| u32::try_from(v).ok());
-        let gate = ReplicaGate { dry_run, in_cooldown, scale_in_permitted, force };
+        let gate = ReplicaGate {
+            dry_run,
+            in_cooldown,
+            scale_in_permitted,
+            force,
+        };
 
         // PLAN (pure): interpret the band law (or the forced count) + apply the gate.
         let plan = match plan_replica_tick(&cfg, &env, gate) {
             Ok(p) => p,
             Err(e) => {
-                patch_status::<ReplicaBand>(&ctx.client, &ns, &name, &error_status(obj.status(), e.to_string())).await?;
+                patch_status::<ReplicaBand>(
+                    &ctx.client,
+                    &ns,
+                    &name,
+                    &error_status(obj.status(), e.to_string()),
+                )
+                .await?;
                 return Ok(Action::requeue(ctx.requeue));
             }
         };
@@ -170,7 +201,13 @@ pub async fn reconcile_replica_band(obj: Arc<ReplicaBand>, ctx: Arc<Ctx>) -> Res
                         (false, true)
                     }
                     Err(e) => {
-                        patch_status::<ReplicaBand>(&ctx.client, &ns, &name, &error_status(obj.status(), e.to_string())).await?;
+                        patch_status::<ReplicaBand>(
+                            &ctx.client,
+                            &ns,
+                            &name,
+                            &error_status(obj.status(), e.to_string()),
+                        )
+                        .await?;
                         return Ok(Action::requeue(ctx.requeue));
                     }
                 }
@@ -183,7 +220,11 @@ pub async fn reconcile_replica_band(obj: Arc<ReplicaBand>, ctx: Arc<Ctx>) -> Res
     // COUNTERS — the SAME durable DecisionLog fold the vertical bands use.
     let band_ref = BandRef::new(&<ReplicaBand as kube::Resource>::kind(&()), &ns, &name);
     let entry = replica_entry_for(&receipt, dry_run);
-    let counters = match ctx.decisions.append(&band_ref, counters_from_status(prior), entry).await {
+    let counters = match ctx
+        .decisions
+        .append(&band_ref, counters_from_status(prior), entry)
+        .await
+    {
         Ok(c) => c,
         Err(e) => {
             warn!(band = %name, error = %e, "replica decision-log append failed — holding counters");
@@ -210,7 +251,10 @@ pub async fn reconcile_replica_band(obj: Arc<ReplicaBand>, ctx: Arc<Ctx>) -> Res
         .set(f64::from(env.current()));
     info!(dim = "replica", band = %name, target = %target.name, phase = ?status.phase, ratio = metric_ratio, "replica reconciled");
     patch_status::<ReplicaBand>(&ctx.client, &ns, &name, &status).await?;
-    Ok(Action::requeue(replica_next_requeue(&receipt, &ctx.cooldowns)))
+    Ok(Action::requeue(replica_next_requeue(
+        &receipt,
+        &ctx.cooldowns,
+    )))
 }
 
 pub fn error_policy_replica_band(_obj: Arc<ReplicaBand>, err: &Error, ctx: Arc<Ctx>) -> Action {

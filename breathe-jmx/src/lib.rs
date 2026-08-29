@@ -35,8 +35,8 @@
 use async_trait::async_trait;
 use breathe_provider::LiveWitness;
 use breathe_provider::{
-    AppliedReceipt, Cluster, FieldOwner, LimitLayout, MetricSource, ProviderError, Sample, SsaPatch,
-    Target,
+    AppliedReceipt, Cluster, FieldOwner, LimitLayout, MetricSource, ProviderError, Sample,
+    SsaPatch, Target,
 };
 
 // ───────────────────────────── errors ──────────────────────────────
@@ -52,7 +52,11 @@ pub enum JmxError {
     /// Jolokia returned a body that could not be parsed into the expected `u64`.
     Parse(String),
     /// A `curl` invocation exited non-zero (Jolokia HTTP error / unreachable).
-    Command { argv: String, code: Option<i32>, stderr: String },
+    Command {
+        argv: String,
+        code: Option<i32>,
+        stderr: String,
+    },
     /// No live Jolokia client is linked for the addressed protocol — a TYPED gap,
     /// reported (never a panic) so a consumer sees the missing capability
     /// mechanically. Carries the endpoint/attribute for diagnosis.
@@ -62,7 +66,10 @@ pub enum JmxError {
 impl std::fmt::Display for JmxError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::BadCommand(c) => write!(f, "jmx: malformed MBean command `{c}` (want `ObjectName:attribute`)"),
+            Self::BadCommand(c) => write!(
+                f,
+                "jmx: malformed MBean command `{c}` (want `ObjectName:attribute`)"
+            ),
             Self::Io(m) => write!(f, "jmx io error: {m}"),
             Self::Parse(m) => write!(f, "jmx parse error: {m}"),
             Self::Command { argv, code, stderr } => write!(f, "`{argv}` exited {code:?}: {stderr}"),
@@ -116,7 +123,12 @@ pub trait JmxEnv: Send + Sync {
     /// `attribute` is the `ObjectName:attribute` coordinate.
     async fn read_mbean(&self, endpoint: &str, attribute: &str) -> Result<u64, JmxError>;
     /// Write a `u64` to an MBean attribute (the carve — the new `limit`).
-    async fn write_mbean(&self, endpoint: &str, attribute: &str, value: u64) -> Result<(), JmxError>;
+    async fn write_mbean(
+        &self,
+        endpoint: &str,
+        attribute: &str,
+        value: u64,
+    ) -> Result<(), JmxError>;
 }
 
 /// The real implementation over Jolokia's HTTP bridge, driven by a TYPED Rust
@@ -143,7 +155,9 @@ impl JolokiaHttpEnv {
     /// the live bridge once Jolokia reachability is verified.
     #[must_use]
     pub fn from_env() -> Self {
-        Self { linked: std::env::var("BREATHE_JMX_LINKED").is_ok_and(|v| v == "1" || v == "true") }
+        Self {
+            linked: std::env::var("BREATHE_JMX_LINKED").is_ok_and(|v| v == "1" || v == "true"),
+        }
     }
     /// Enable the live Jolokia bridge (once reachability is verified).
     #[must_use]
@@ -155,7 +169,13 @@ impl JolokiaHttpEnv {
     /// Build the Jolokia GET URL. Pure + testable.
     /// `<endpoint>/<read|write>/<ObjectName>/<attribute>[/<value>]`.
     #[must_use]
-    pub fn jolokia_url(method: &str, endpoint: &str, object_name: &str, attribute: &str, value: Option<u64>) -> String {
+    pub fn jolokia_url(
+        method: &str,
+        endpoint: &str,
+        object_name: &str,
+        attribute: &str,
+        value: Option<u64>,
+    ) -> String {
         let base = endpoint.trim_end_matches('/');
         let mut url = format!("{base}/{method}/{object_name}/{attribute}");
         if let Some(v) = value {
@@ -173,7 +193,9 @@ impl JolokiaHttpEnv {
             .send()
             .await
             .map_err(|e| JmxError::Io(e.to_string()))?;
-        let resp = resp.error_for_status().map_err(|e| JmxError::Io(e.to_string()))?;
+        let resp = resp
+            .error_for_status()
+            .map_err(|e| JmxError::Io(e.to_string()))?;
         resp.text().await.map_err(|e| JmxError::Io(e.to_string()))
     }
 }
@@ -197,16 +219,22 @@ pub fn parse_jolokia_value(body: &str) -> Result<u64, JmxError> {
         .take_while(char::is_ascii_digit)
         .collect();
     if digits.is_empty() {
-        return Err(JmxError::Parse("Jolokia \"value\" is not an integer".into()));
+        return Err(JmxError::Parse(
+            "Jolokia \"value\" is not an integer".into(),
+        ));
     }
-    digits.parse::<u64>().map_err(|e| JmxError::Parse(e.to_string()))
+    digits
+        .parse::<u64>()
+        .map_err(|e| JmxError::Parse(e.to_string()))
 }
 
 #[async_trait]
 impl JmxEnv for JolokiaHttpEnv {
     async fn read_mbean(&self, endpoint: &str, attribute: &str) -> Result<u64, JmxError> {
         if !self.linked {
-            return Err(JmxError::NotLinked(format!("read {attribute} @ {endpoint}")));
+            return Err(JmxError::NotLinked(format!(
+                "read {attribute} @ {endpoint}"
+            )));
         }
         let (object_name, attr) = split_mbean_command(attribute)?;
         let url = Self::jolokia_url("read", endpoint, object_name, attr, None);
@@ -214,9 +242,16 @@ impl JmxEnv for JolokiaHttpEnv {
         parse_jolokia_value(&body)
     }
 
-    async fn write_mbean(&self, endpoint: &str, attribute: &str, value: u64) -> Result<(), JmxError> {
+    async fn write_mbean(
+        &self,
+        endpoint: &str,
+        attribute: &str,
+        value: u64,
+    ) -> Result<(), JmxError> {
         if !self.linked {
-            return Err(JmxError::NotLinked(format!("write {attribute}={value} @ {endpoint}")));
+            return Err(JmxError::NotLinked(format!(
+                "write {attribute}={value} @ {endpoint}"
+            )));
         }
         let (object_name, attr) = split_mbean_command(attribute)?;
         let url = Self::jolokia_url("write", endpoint, object_name, attr, Some(value));
@@ -279,7 +314,8 @@ impl<E: JmxEnv> Cluster for JmxCluster<E> {
             // Any other layout can never legitimately reach the JMX boundary —
             // typed, never silent (mirrors HostCluster's k8s-layout rejection).
             _ => Err(ProviderError::ApiPermanent(
-                "non-ApiCall layout on JmxCluster (route k8s/host dimensions to their own Cluster)".into(),
+                "non-ApiCall layout on JmxCluster (route k8s/host dimensions to their own Cluster)"
+                    .into(),
             )),
         }
     }
@@ -302,7 +338,11 @@ impl<E: JmxEnv> Cluster for JmxCluster<E> {
     // `Cluster::apply`'s doc) — a caller with a shadow verdict has no witness to
     // pass, so this function is unreachable from one. A witness cannot change what
     // bytes go out, so a leaf actuator has nothing to do with the value itself.
-    async fn apply(&self, _witness: &LiveWitness, patch: &SsaPatch) -> Result<AppliedReceipt, ProviderError> {
+    async fn apply(
+        &self,
+        _witness: &LiveWitness,
+        patch: &SsaPatch,
+    ) -> Result<AppliedReceipt, ProviderError> {
         let LimitLayout::ApiCall { endpoint, command } = &patch.layout else {
             return Err(ProviderError::ApiPermanent(
                 "non-ApiCall layout on JmxCluster apply (route k8s/host dimensions to their own Cluster)".into(),
@@ -310,10 +350,14 @@ impl<E: JmxEnv> Cluster for JmxCluster<E> {
         };
         // SHADOW: decide + report, never mutate the JVM.
         if !self.write_enabled {
-            return Ok(AppliedReceipt { source_hash: [0u8; 16] });
+            return Ok(AppliedReceipt {
+                source_hash: [0u8; 16],
+            });
         }
         self.env.write_mbean(endpoint, command, patch.value).await?;
-        Ok(AppliedReceipt { source_hash: [0u8; 16] })
+        Ok(AppliedReceipt {
+            source_hash: [0u8; 16],
+        })
     }
 }
 
@@ -348,7 +392,10 @@ mod tests {
     impl MockJmxEnv {
         fn with(endpoint: &str, attribute: &str, value: u64) -> Self {
             let env = Self::default();
-            env.mbeans.lock().unwrap().insert((endpoint.into(), attribute.into()), value);
+            env.mbeans
+                .lock()
+                .unwrap()
+                .insert((endpoint.into(), attribute.into()), value);
             env
         }
         fn writes(&self) -> Vec<(String, String, u64)> {
@@ -366,9 +413,20 @@ mod tests {
                 .copied()
                 .ok_or_else(|| JmxError::Parse("no such MBean attribute".into()))
         }
-        async fn write_mbean(&self, endpoint: &str, attribute: &str, value: u64) -> Result<(), JmxError> {
-            self.mbeans.lock().unwrap().insert((endpoint.to_string(), attribute.to_string()), value);
-            self.writes.lock().unwrap().push((endpoint.to_string(), attribute.to_string(), value));
+        async fn write_mbean(
+            &self,
+            endpoint: &str,
+            attribute: &str,
+            value: u64,
+        ) -> Result<(), JmxError> {
+            self.mbeans
+                .lock()
+                .unwrap()
+                .insert((endpoint.to_string(), attribute.to_string()), value);
+            self.writes
+                .lock()
+                .unwrap()
+                .push((endpoint.to_string(), attribute.to_string(), value));
             Ok(())
         }
     }
@@ -386,42 +444,82 @@ mod tests {
         }
     }
     fn hikari_layout() -> LimitLayout {
-        LimitLayout::ApiCall { endpoint: JOLOKIA.into(), command: "HikariPool-1:maximumPoolSize".into() }
+        LimitLayout::ApiCall {
+            endpoint: JOLOKIA.into(),
+            command: "HikariPool-1:maximumPoolSize".into(),
+        }
     }
 
     #[test]
     fn splits_mbean_command_on_the_last_colon() {
         // a plain HikariCP pool attribute.
-        assert_eq!(split_mbean_command("HikariPool-1:maximumPoolSize").unwrap(), ("HikariPool-1", "maximumPoolSize"));
+        assert_eq!(
+            split_mbean_command("HikariPool-1:maximumPoolSize").unwrap(),
+            ("HikariPool-1", "maximumPoolSize")
+        );
         // a Tomcat ObjectName itself contains colons — split on the LAST one.
         assert_eq!(
             split_mbean_command("Catalina:type=ThreadPool,name=http:maxThreads").unwrap(),
             ("Catalina:type=ThreadPool,name=http", "maxThreads")
         );
         // no colon / empty halves ⇒ a typed BadCommand, never a silent guess.
-        assert!(matches!(split_mbean_command("maximumPoolSize"), Err(JmxError::BadCommand(_))));
-        assert!(matches!(split_mbean_command(":maxThreads"), Err(JmxError::BadCommand(_))));
-        assert!(matches!(split_mbean_command("HikariPool-1:"), Err(JmxError::BadCommand(_))));
+        assert!(matches!(
+            split_mbean_command("maximumPoolSize"),
+            Err(JmxError::BadCommand(_))
+        ));
+        assert!(matches!(
+            split_mbean_command(":maxThreads"),
+            Err(JmxError::BadCommand(_))
+        ));
+        assert!(matches!(
+            split_mbean_command("HikariPool-1:"),
+            Err(JmxError::BadCommand(_))
+        ));
     }
 
     #[test]
     fn parses_the_integer_value_out_of_a_jolokia_body() {
-        assert_eq!(parse_jolokia_value(r#"{"request":{},"value":42,"status":200}"#).unwrap(), 42);
-        assert_eq!(parse_jolokia_value(r#"{"value": 1024 ,"status":200}"#).unwrap(), 1024);
+        assert_eq!(
+            parse_jolokia_value(r#"{"request":{},"value":42,"status":200}"#).unwrap(),
+            42
+        );
+        assert_eq!(
+            parse_jolokia_value(r#"{"value": 1024 ,"status":200}"#).unwrap(),
+            1024
+        );
         // missing / non-integer value ⇒ a typed Parse error, never a silent 0.
-        assert!(matches!(parse_jolokia_value(r#"{"status":200}"#), Err(JmxError::Parse(_))));
-        assert!(matches!(parse_jolokia_value(r#"{"value":"big"}"#), Err(JmxError::Parse(_))));
+        assert!(matches!(
+            parse_jolokia_value(r#"{"status":200}"#),
+            Err(JmxError::Parse(_))
+        ));
+        assert!(matches!(
+            parse_jolokia_value(r#"{"value":"big"}"#),
+            Err(JmxError::Parse(_))
+        ));
     }
 
     #[test]
     fn builds_jolokia_url_without_a_shell() {
         // READ: GET <endpoint>/read/<ObjectName>/<attribute> — a typed URL, no shell.
-        let read = JolokiaHttpEnv::jolokia_url("read", JOLOKIA, "HikariPool-1", "maximumPoolSize", None);
-        assert_eq!(read, "http://app:8778/jolokia/read/HikariPool-1/maximumPoolSize");
+        let read =
+            JolokiaHttpEnv::jolokia_url("read", JOLOKIA, "HikariPool-1", "maximumPoolSize", None);
+        assert_eq!(
+            read,
+            "http://app:8778/jolokia/read/HikariPool-1/maximumPoolSize"
+        );
         // WRITE: GET <endpoint>/write/<ObjectName>/<attribute>/<value> (trailing
         // slash on the endpoint is trimmed, not doubled).
-        let write = JolokiaHttpEnv::jolokia_url("write", "http://app:8778/jolokia/", "HikariPool-1", "maximumPoolSize", Some(20));
-        assert_eq!(write, "http://app:8778/jolokia/write/HikariPool-1/maximumPoolSize/20");
+        let write = JolokiaHttpEnv::jolokia_url(
+            "write",
+            "http://app:8778/jolokia/",
+            "HikariPool-1",
+            "maximumPoolSize",
+            Some(20),
+        );
+        assert_eq!(
+            write,
+            "http://app:8778/jolokia/write/HikariPool-1/maximumPoolSize/20"
+        );
     }
 
     #[tokio::test]
@@ -429,10 +527,27 @@ mod tests {
         // Census knob: HikariCP maxPoolSize currently 10.
         let env = MockJmxEnv::with(JOLOKIA, "HikariPool-1:maximumPoolSize", 10);
         let cluster = JmxCluster::shadow(env);
-        let v = cluster.read_limit(&jvm_target(), &hikari_layout(), "cpu").await.unwrap();
-        assert_eq!(v, 10, "read_limit returns the live MBean value via read_mbean");
+        let v = cluster
+            .read_limit(&jvm_target(), &hikari_layout(), "cpu")
+            .await
+            .unwrap();
+        assert_eq!(
+            v, 10,
+            "read_limit returns the live MBean value via read_mbean"
+        );
         // field_owners is always empty — no managedFields on a JVM knob.
-        assert!(cluster.field_owners(&jvm_target(), &hikari_layout(), "cpu", "jmx.hikari.maxPoolSize").await.unwrap().is_empty());
+        assert!(
+            cluster
+                .field_owners(
+                    &jvm_target(),
+                    &hikari_layout(),
+                    "cpu",
+                    "jmx.hikari.maxPoolSize"
+                )
+                .await
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[tokio::test]
@@ -442,7 +557,11 @@ mod tests {
             endpoint: JOLOKIA.into(),
             command: "com.example.cache:type=Caffeine,name=sessions:maximumSize".into(),
         };
-        let env = MockJmxEnv::with(JOLOKIA, "com.example.cache:type=Caffeine,name=sessions:maximumSize", 5000);
+        let env = MockJmxEnv::with(
+            JOLOKIA,
+            "com.example.cache:type=Caffeine,name=sessions:maximumSize",
+            5000,
+        );
         let cluster = JmxCluster::new(env, true); // write-enabled
         let patch = SsaPatch {
             target: jvm_target(),
@@ -455,9 +574,19 @@ mod tests {
         // the write was recorded AND it round-trips back through read_limit.
         assert_eq!(
             cluster.env().writes(),
-            vec![(JOLOKIA.to_string(), "com.example.cache:type=Caffeine,name=sessions:maximumSize".to_string(), 8000)]
+            vec![(
+                JOLOKIA.to_string(),
+                "com.example.cache:type=Caffeine,name=sessions:maximumSize".to_string(),
+                8000
+            )]
         );
-        assert_eq!(cluster.read_limit(&jvm_target(), &layout, "cpu").await.unwrap(), 8000);
+        assert_eq!(
+            cluster
+                .read_limit(&jvm_target(), &layout, "cpu")
+                .await
+                .unwrap(),
+            8000
+        );
     }
 
     #[tokio::test]
@@ -467,7 +596,11 @@ mod tests {
             endpoint: JOLOKIA.into(),
             command: "Catalina:type=ThreadPool,name=http:maxThreads".into(),
         };
-        let env = MockJmxEnv::with(JOLOKIA, "Catalina:type=ThreadPool,name=http:maxThreads", 200);
+        let env = MockJmxEnv::with(
+            JOLOKIA,
+            "Catalina:type=ThreadPool,name=http:maxThreads",
+            200,
+        );
         let cluster = JmxCluster::shadow(env);
         let patch = SsaPatch {
             target: jvm_target(),
@@ -477,7 +610,10 @@ mod tests {
             value: 300,
         };
         cluster.apply(&w(), &patch).await.unwrap();
-        assert!(cluster.env().writes().is_empty(), "shadow mode must not write any MBean");
+        assert!(
+            cluster.env().writes().is_empty(),
+            "shadow mode must not write any MBean"
+        );
     }
 
     #[tokio::test]
@@ -486,8 +622,14 @@ mod tests {
         // it is a wiring error, surfaced typed (never silent), on read AND apply.
         let cluster = JmxCluster::new(MockJmxEnv::default(), true);
         let wrong = LimitLayout::PodTemplate { container: None };
-        let read_err = cluster.read_limit(&jvm_target(), &wrong, "cpu").await.unwrap_err();
-        assert!(matches!(read_err, ProviderError::ApiPermanent(_)), "wrong layout on read_limit is permanent");
+        let read_err = cluster
+            .read_limit(&jvm_target(), &wrong, "cpu")
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(read_err, ProviderError::ApiPermanent(_)),
+            "wrong layout on read_limit is permanent"
+        );
         let patch = SsaPatch {
             target: jvm_target(),
             field_manager: "breathe/jmx".into(),
@@ -496,8 +638,14 @@ mod tests {
             value: 1,
         };
         let apply_err = cluster.apply(&w(), &patch).await.unwrap_err();
-        assert!(matches!(apply_err, ProviderError::ApiPermanent(_)), "wrong layout on apply is permanent");
-        assert!(cluster.env().writes().is_empty(), "a refused apply touches no MBean");
+        assert!(
+            matches!(apply_err, ProviderError::ApiPermanent(_)),
+            "wrong layout on apply is permanent"
+        );
+        assert!(
+            cluster.env().writes().is_empty(),
+            "a refused apply touches no MBean"
+        );
     }
 
     #[tokio::test]
@@ -506,7 +654,11 @@ mod tests {
         // error, surfaced typed (the band reads `used` on its metric Cluster).
         let cluster = JmxCluster::shadow(MockJmxEnv::default());
         let err = cluster
-            .read_used(&MetricSource::PodMetricsMax { resource: "cpu".into(), pod_prefix: "payments".into(), selector: None })
+            .read_used(&MetricSource::PodMetricsMax {
+                resource: "cpu".into(),
+                pod_prefix: "payments".into(),
+                selector: None,
+            })
             .await
             .unwrap_err();
         assert!(matches!(err, ProviderError::ApiPermanent(_)));
@@ -518,10 +670,19 @@ mod tests {
         // ApiPermanent (NotLinked), never a panic/unimplemented/todo, until a
         // deployment verifies Jolokia reachability and flips `linked(true)`.
         let env = JolokiaHttpEnv::default();
-        let read = env.read_mbean(JOLOKIA, "HikariPool-1:maximumPoolSize").await.unwrap_err();
+        let read = env
+            .read_mbean(JOLOKIA, "HikariPool-1:maximumPoolSize")
+            .await
+            .unwrap_err();
         assert!(matches!(read, JmxError::NotLinked(_)));
-        assert!(matches!(ProviderError::from(read), ProviderError::ApiPermanent(_)));
-        let write = env.write_mbean(JOLOKIA, "HikariPool-1:maximumPoolSize", 20).await.unwrap_err();
+        assert!(matches!(
+            ProviderError::from(read),
+            ProviderError::ApiPermanent(_)
+        ));
+        let write = env
+            .write_mbean(JOLOKIA, "HikariPool-1:maximumPoolSize", 20)
+            .await
+            .unwrap_err();
         assert!(matches!(write, JmxError::NotLinked(_)));
     }
 }

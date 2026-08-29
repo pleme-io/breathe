@@ -1,8 +1,8 @@
 //! Unit tests for the `quinhão` hierarchical-vector fair-share allocator.
 
 use super::{
-    allocate_drf, allocate_drf_fabric, allocate_even, allocate_fabric, Demand, DemandVector, Dim, FabricError,
-    GrantVector, PoolCapacity, Quinhao,
+    Demand, DemandVector, Dim, FabricError, GrantVector, PoolCapacity, Quinhao, allocate_drf,
+    allocate_drf_fabric, allocate_even, allocate_fabric,
 };
 
 // ── allocate_even — the single-level kernel ─────────────────────────────────
@@ -30,9 +30,18 @@ fn even_split_is_exact_with_an_indivisible_band() {
 fn weights_split_proportionally() {
     // weights 1:2:1 over a band of 800 → 200:400:200.
     let claims = vec![
-        Demand { weight: 1, ..Demand::even() },
-        Demand { weight: 2, ..Demand::even() },
-        Demand { weight: 1, ..Demand::even() },
+        Demand {
+            weight: 1,
+            ..Demand::even()
+        },
+        Demand {
+            weight: 2,
+            ..Demand::even()
+        },
+        Demand {
+            weight: 1,
+            ..Demand::even()
+        },
     ];
     let g = allocate_even(800, &claims);
     assert_eq!(g, vec![200, 400, 200]);
@@ -43,13 +52,20 @@ fn a_max_clamp_redistributes_surplus_to_siblings() {
     // 3 even claimants over 900 would be 300 each, but #0 caps at 100 → its 200
     // surplus redistributes to #1 and #2 (400 each). Σ still 900.
     let claims = vec![
-        Demand { max: 100, ..Demand::even() },
+        Demand {
+            max: 100,
+            ..Demand::even()
+        },
         Demand::even(),
         Demand::even(),
     ];
     let g = allocate_even(900, &claims);
     assert_eq!(g[0], 100, "capped claimant gets exactly its cap");
-    assert_eq!(g[1] + g[2], 800, "the 800 surplus goes to the hungry siblings");
+    assert_eq!(
+        g[1] + g[2],
+        800,
+        "the 800 surplus goes to the hungry siblings"
+    );
     assert_eq!(g[1], g[2], "the two uncapped siblings split it evenly");
     assert_eq!(g.iter().sum::<u64>(), 900);
 }
@@ -59,7 +75,10 @@ fn a_low_demand_claimant_frees_surplus() {
     // an idle claimant demanding only 50 frees the rest to its siblings — the
     // "shifts accordingly" property at the kernel.
     let claims = vec![
-        Demand { demand: 50, ..Demand::even() },
+        Demand {
+            demand: 50,
+            ..Demand::even()
+        },
         Demand::even(),
         Demand::even(),
     ];
@@ -72,9 +91,18 @@ fn a_low_demand_claimant_frees_surplus() {
 fn floors_are_always_granted_when_they_fit() {
     // every claimant owed a 100 floor; the band 800 covers Σmin=300 with room.
     let claims = vec![
-        Demand { min: 100, ..Demand::even() },
-        Demand { min: 100, ..Demand::even() },
-        Demand { min: 100, ..Demand::even() },
+        Demand {
+            min: 100,
+            ..Demand::even()
+        },
+        Demand {
+            min: 100,
+            ..Demand::even()
+        },
+        Demand {
+            min: 100,
+            ..Demand::even()
+        },
     ];
     let g = allocate_even(800, &claims);
     assert!(g.iter().all(|&x| x >= 100), "every floor honoured");
@@ -86,8 +114,18 @@ fn floors_scale_down_proportionally_when_they_do_not_fit() {
     // Σmin = 1200 > band 600 → floors scale to half. The band is the hard wall
     // (never-over-commit), never breached.
     let claims = vec![
-        Demand { min: 600, weight: 0, max: 600, demand: 600 },
-        Demand { min: 600, weight: 0, max: 600, demand: 600 },
+        Demand {
+            min: 600,
+            weight: 0,
+            max: 600,
+            demand: 600,
+        },
+        Demand {
+            min: 600,
+            weight: 0,
+            max: 600,
+            demand: 600,
+        },
     ];
     let g = allocate_even(600, &claims);
     assert_eq!(g, vec![300, 300]);
@@ -98,7 +136,12 @@ fn floors_scale_down_proportionally_when_they_do_not_fit() {
 fn weight_zero_claimant_gets_only_its_floor() {
     // an inactive (idle) claimant takes no weighted share — only its reserved min.
     let claims = vec![
-        Demand { weight: 0, min: 100, max: u64::MAX, demand: u64::MAX },
+        Demand {
+            weight: 0,
+            min: 100,
+            max: u64::MAX,
+            demand: u64::MAX,
+        },
         Demand::even(),
     ];
     let g = allocate_even(900, &claims);
@@ -116,7 +159,12 @@ fn empty_and_zero_band_are_handled() {
 // ── allocate_fabric — the hierarchical, vector-valued recursion ─────────────
 
 fn storage(weight: u32, min: u64, max: u64, demand: u64) -> DemandVector {
-    DemandVector::storage_only(Demand { weight, min, max, demand })
+    DemandVector::storage_only(Demand {
+        weight,
+        min,
+        max,
+        demand,
+    })
 }
 
 #[test]
@@ -150,9 +198,16 @@ fn groups_split_the_band_then_users_split_their_group() {
     assert_eq!(g.get_dim("groupB", Dim::Storage), 400);
     assert_eq!(g.get_dim("a1", Dim::Storage), 200);
     assert_eq!(g.get_dim("a2", Dim::Storage), 200);
-    assert_eq!(g.get_dim("b1", Dim::Storage), 400, "b1 gets all of group B's grant");
+    assert_eq!(
+        g.get_dim("b1", Dim::Storage),
+        400,
+        "b1 gets all of group B's grant"
+    );
     // tree-respecting: Σ children ≤ parent grant.
-    assert_eq!(g.get_dim("a1", Dim::Storage) + g.get_dim("a2", Dim::Storage), g.get_dim("groupA", Dim::Storage));
+    assert_eq!(
+        g.get_dim("a1", Dim::Storage) + g.get_dim("a2", Dim::Storage),
+        g.get_dim("groupA", Dim::Storage)
+    );
 }
 
 #[test]
@@ -165,13 +220,19 @@ fn rebalance_on_join_never_raises_existing_siblings() {
     let g3 = allocate_fabric(PoolCapacity::storage_only(1000), 0.80, &base).unwrap();
 
     let mut grown = base.clone();
-    grown.push(Quinhao::root("m3", DemandVector::storage_only(Demand::even())));
+    grown.push(Quinhao::root(
+        "m3",
+        DemandVector::storage_only(Demand::even()),
+    ));
     let g4 = allocate_fabric(PoolCapacity::storage_only(1000), 0.80, &grown).unwrap();
 
     for i in 0..3 {
         let before = g3.get_dim(&format!("m{i}"), Dim::Storage);
         let after = g4.get_dim(&format!("m{i}"), Dim::Storage);
-        assert!(after <= before, "member m{i} rose on a join ({before} → {after})");
+        assert!(
+            after <= before,
+            "member m{i} rose on a join ({before} → {after})"
+        );
     }
     assert_eq!(g4.get_dim("m3", Dim::Storage), 200);
 }
@@ -191,7 +252,10 @@ fn rebalance_on_leave_never_lowers_remaining_siblings() {
     for i in 0..3 {
         let before = g4.get_dim(&format!("m{i}"), Dim::Storage);
         let after = g3.get_dim(&format!("m{i}"), Dim::Storage);
-        assert!(after >= before, "member m{i} fell on a leave ({before} → {after})");
+        assert!(
+            after >= before,
+            "member m{i} fell on a leave ({before} → {after})"
+        );
     }
 }
 
@@ -200,12 +264,28 @@ fn an_idle_group_frees_its_band_to_active_groups() {
     // group B goes idle (weight 0, demands nothing) → its band frees to group A.
     let claimants = vec![
         Quinhao::root("groupA", DemandVector::storage_only(Demand::even())),
-        Quinhao::root("groupB", DemandVector::storage_only(Demand { weight: 0, min: 0, max: 0, demand: 0 })),
+        Quinhao::root(
+            "groupB",
+            DemandVector::storage_only(Demand {
+                weight: 0,
+                min: 0,
+                max: 0,
+                demand: 0,
+            }),
+        ),
         Quinhao::child("a1", "groupA", DemandVector::storage_only(Demand::even())),
     ];
     let g = allocate_fabric(PoolCapacity::storage_only(1000), 0.80, &claimants).unwrap();
-    assert_eq!(g.get_dim("groupB", Dim::Storage), 0, "an idle group claims nothing");
-    assert_eq!(g.get_dim("groupA", Dim::Storage), 800, "the active group takes the whole band");
+    assert_eq!(
+        g.get_dim("groupB", Dim::Storage),
+        0,
+        "an idle group claims nothing"
+    );
+    assert_eq!(
+        g.get_dim("groupA", Dim::Storage),
+        800,
+        "the active group takes the whole band"
+    );
     assert_eq!(g.get_dim("a1", Dim::Storage), 800);
 }
 
@@ -215,12 +295,20 @@ fn dimensions_are_independent_a_storage_split_does_not_touch_cpu() {
     // zero cpu grant — the axes never couple.
     let claimants = vec![
         Quinhao::root("m0", storage(1, 0, u64::MAX, u64::MAX)),
-        Quinhao::root("m1", DemandVector::new(
-            Demand::even(),                              // storage: even
-            Demand { weight: 1, min: 0, max: u64::MAX, demand: u64::MAX }, // cpu: even
-            Demand::absent(),
-            Demand::absent(),
-        )),
+        Quinhao::root(
+            "m1",
+            DemandVector::new(
+                Demand::even(), // storage: even
+                Demand {
+                    weight: 1,
+                    min: 0,
+                    max: u64::MAX,
+                    demand: u64::MAX,
+                }, // cpu: even
+                Demand::absent(),
+                Demand::absent(),
+            ),
+        ),
     ];
     let g = allocate_fabric(PoolCapacity::new(1000, 2000, 0, 0), 0.80, &claimants).unwrap();
     // storage band 800 split evenly → 400 each.
@@ -228,7 +316,11 @@ fn dimensions_are_independent_a_storage_split_does_not_touch_cpu() {
     assert_eq!(g.get_dim("m1", Dim::Storage), 400);
     // cpu band 1600: m0 absent (0), m1 takes all 1600.
     assert_eq!(g.get_dim("m0", Dim::Cpu), 0, "m0 is absent on cpu");
-    assert_eq!(g.get_dim("m1", Dim::Cpu), 1600, "m1 takes the whole cpu band");
+    assert_eq!(
+        g.get_dim("m1", Dim::Cpu),
+        1600,
+        "m1 takes the whole cpu band"
+    );
 }
 
 #[test]
@@ -259,7 +351,11 @@ fn duplicate_id_is_refused() {
 
 #[test]
 fn unknown_parent_is_refused() {
-    let claimants = vec![Quinhao::child("u", "ghost-group", DemandVector::storage_only(Demand::even()))];
+    let claimants = vec![Quinhao::child(
+        "u",
+        "ghost-group",
+        DemandVector::storage_only(Demand::even()),
+    )];
     assert!(matches!(
         allocate_fabric(PoolCapacity::storage_only(1000), 0.80, &claimants),
         Err(FabricError::UnknownParent { .. })
@@ -298,8 +394,18 @@ fn dim_round_trips_through_its_wire_string() {
 
 fn cs(storage: u64, cpu: u64) -> DemandVector {
     DemandVector::new(
-        Demand { weight: 1, min: 0, max: u64::MAX, demand: storage },
-        Demand { weight: 1, min: 0, max: u64::MAX, demand: cpu },
+        Demand {
+            weight: 1,
+            min: 0,
+            max: u64::MAX,
+            demand: storage,
+        },
+        Demand {
+            weight: 1,
+            min: 0,
+            max: u64::MAX,
+            demand: cpu,
+        },
         Demand::absent(),
         Demand::absent(),
     )
@@ -326,7 +432,11 @@ fn drf_equalizes_dominant_share_not_raw_units() {
     assert_eq!(g[1].get(Dim::Cpu), 6, "B's cpu grant");
 
     // cpu is the binding resource — saturates exactly.
-    assert_eq!(g[0].get(Dim::Cpu) + g[1].get(Dim::Cpu), 9, "cpu saturates exactly");
+    assert_eq!(
+        g[0].get(Dim::Cpu) + g[1].get(Dim::Cpu),
+        9,
+        "cpu saturates exactly"
+    );
     // storage is non-binding — carries slack (14 < 18).
     assert!(g[0].get(Dim::Storage) + g[1].get(Dim::Storage) <= 18);
 
@@ -335,7 +445,10 @@ fn drf_equalizes_dominant_share_not_raw_units() {
     // yet both represent the same fraction of their respective bottleneck).
     let dom_a = (g[0].get(Dim::Storage) as f64 / 18.0).max(g[0].get(Dim::Cpu) as f64 / 9.0);
     let dom_b = (g[1].get(Dim::Storage) as f64 / 18.0).max(g[1].get(Dim::Cpu) as f64 / 9.0);
-    assert!((dom_a - dom_b).abs() < 1e-9, "dominant shares equalized: {dom_a} vs {dom_b}");
+    assert!(
+        (dom_a - dom_b).abs() < 1e-9,
+        "dominant shares equalized: {dom_a} vs {dom_b}"
+    );
 }
 
 #[test]
@@ -344,7 +457,10 @@ fn drf_never_exceeds_capacity_on_any_axis() {
     let g = allocate_drf(PoolCapacity::new(18, 9, 0, 0), 1.0, &claims);
     let total_storage: u64 = g.iter().map(|gv| gv.get(Dim::Storage)).sum();
     let total_cpu: u64 = g.iter().map(|gv| gv.get(Dim::Cpu)).sum();
-    assert!(total_storage <= 18, "storage never exceeds capacity: {total_storage}");
+    assert!(
+        total_storage <= 18,
+        "storage never exceeds capacity: {total_storage}"
+    );
     assert!(total_cpu <= 9, "cpu never exceeds capacity: {total_cpu}");
 }
 
@@ -370,18 +486,37 @@ fn drf_respects_the_setpoint_band_not_raw_capacity() {
 
 #[test]
 fn drf_empty_and_zero_capacity_are_handled() {
-    assert_eq!(allocate_drf(PoolCapacity::new(0, 0, 0, 0), 1.0, &[]), Vec::<GrantVector>::new());
+    assert_eq!(
+        allocate_drf(PoolCapacity::new(0, 0, 0, 0), 1.0, &[]),
+        Vec::<GrantVector>::new()
+    );
     let g = allocate_drf(PoolCapacity::new(0, 0, 0, 0), 1.0, &[cs(4, 1)]);
-    assert_eq!(g, vec![GrantVector::default()], "zero capacity ⇒ zero grant, never a divide-by-zero panic");
+    assert_eq!(
+        g,
+        vec![GrantVector::default()],
+        "zero capacity ⇒ zero grant, never a divide-by-zero panic"
+    );
 }
 
 #[test]
 fn drf_a_claimant_absent_on_every_axis_gets_nothing_and_does_not_starve_others() {
-    let absent = DemandVector::new(Demand::absent(), Demand::absent(), Demand::absent(), Demand::absent());
+    let absent = DemandVector::new(
+        Demand::absent(),
+        Demand::absent(),
+        Demand::absent(),
+        Demand::absent(),
+    );
     let claims = vec![cs(4, 1), absent];
     let g = allocate_drf(PoolCapacity::new(18, 9, 0, 0), 1.0, &claims);
-    assert_eq!(g[1], GrantVector::default(), "an absent claimant gets nothing");
-    assert!(g[0].get(Dim::Storage) > 0, "the real claimant still gets its DRF share");
+    assert_eq!(
+        g[1],
+        GrantVector::default(),
+        "an absent claimant gets nothing"
+    );
+    assert!(
+        g[0].get(Dim::Storage) > 0,
+        "the real claimant still gets its DRF share"
+    );
 }
 
 // ── allocate_drf_fabric — the hierarchical DRF recursion ────────────────────
@@ -395,8 +530,16 @@ fn drf_fabric_flat_top_level_matches_the_already_verified_flat_drf_result() {
     let flat = allocate_drf(PoolCapacity::new(18, 9, 0, 0), 1.0, &[cs(4, 1), cs(1, 3)]);
     let fabric = allocate_drf_fabric(PoolCapacity::new(18, 9, 0, 0), 1.0, &claimants).unwrap();
 
-    assert_eq!(fabric.get("a"), flat[0], "top-level 'a' matches the flat kernel's claim-0 result exactly");
-    assert_eq!(fabric.get("b"), flat[1], "top-level 'b' matches the flat kernel's claim-1 result exactly");
+    assert_eq!(
+        fabric.get("a"),
+        flat[0],
+        "top-level 'a' matches the flat kernel's claim-0 result exactly"
+    );
+    assert_eq!(
+        fabric.get("b"),
+        flat[1],
+        "top-level 'b' matches the flat kernel's claim-1 result exactly"
+    );
     // The hand-verified numbers from drf_equalizes_dominant_share_not_raw_units.
     assert_eq!(fabric.get_dim("a", Dim::Storage), 12);
     assert_eq!(fabric.get_dim("a", Dim::Cpu), 3);
@@ -422,8 +565,16 @@ fn drf_fabric_is_tree_respecting() {
     for dim in [Dim::Storage, Dim::Cpu] {
         let a_children = g.get_dim("a1", dim) + g.get_dim("a2", dim);
         let b_children = g.get_dim("b1", dim) + g.get_dim("b2", dim);
-        assert!(a_children <= g.get_dim("groupA", dim), "groupA's children ({a_children}) exceed its own grant ({}) on {dim:?}", g.get_dim("groupA", dim));
-        assert!(b_children <= g.get_dim("groupB", dim), "groupB's children ({b_children}) exceed its own grant ({}) on {dim:?}", g.get_dim("groupB", dim));
+        assert!(
+            a_children <= g.get_dim("groupA", dim),
+            "groupA's children ({a_children}) exceed its own grant ({}) on {dim:?}",
+            g.get_dim("groupA", dim)
+        );
+        assert!(
+            b_children <= g.get_dim("groupB", dim),
+            "groupB's children ({b_children}) exceed its own grant ({}) on {dim:?}",
+            g.get_dim("groupB", dim)
+        );
     }
 }
 

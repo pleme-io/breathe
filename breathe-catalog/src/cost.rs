@@ -13,7 +13,7 @@
 //! What is NOT here (tier-honest — a `LiveTODO`, not rounded up): the live spot
 //! **auction** itself (Karpenter/ASG NodePool + the widen loop), `retirada`
 //! drain-ahead, and the nervous-system-grafted interruption sensing. Those need
-//! the `CamelotNodeGroup` — the Pangea isolation floor — which is live infra. The
+//! the `the isolated node-group architecture` — the Pangea isolation floor — which is live infra. The
 //! budget number here is an INTERIM setpoint the live auction tunes; "provably
 //! cheapest" is **attested** (this CostBudget + its OutcomeChain), never
 //! compile-proven.
@@ -39,20 +39,20 @@ pub struct FlexWindow {
 /// reclaim wave can drain the whole footprint — the whole point of the menu.
 pub const MIN_DIVERSIFIED_FAMILIES: usize = 4;
 
-/// The Camelot diversified instance-family menu — general-purpose (`m*`), compute
+/// The private estate diversified instance-family menu — general-purpose (`m*`), compute
 /// (`c*`), and memory (`r*`) families across two Intel/AMD generations, so the
 /// mixed stateless + DB workload set always has a deep interruptible pool. The
 /// live auction widens across this list; a scarcity on one family falls through
 /// to the next. Data (Pillar 12), never a hand-tuned per-workload node group.
-pub const CAMELOT_INSTANCE_FAMILIES: &[&str] =
+pub const SPOT_AGGRESSIVE_INSTANCE_FAMILIES: &[&str] =
     &["m6i", "m6a", "m7i", "m5", "m5a", "c6i", "c6a", "r6i", "r6a"];
 
-/// The Camelot flex-window — the offline-buildable envelope. The variance budget
+/// The private estate flex-window — the offline-buildable envelope. The variance budget
 /// is an INTERIM setpoint (the live auction tunes it); the family menu is the
 /// widen-on-scarcity list.
-pub const CAMELOT_FLEX_WINDOW: FlexWindow = FlexWindow {
+pub const SPOT_AGGRESSIVE_FLEX_WINDOW: FlexWindow = FlexWindow {
     monthly_usd_variance_budget: 400.0,
-    instance_families: CAMELOT_INSTANCE_FAMILIES,
+    instance_families: SPOT_AGGRESSIVE_INSTANCE_FAMILIES,
 };
 
 /// A Viggy `(defpromessa)` template that ATTESTS the 100%-spot cost posture —
@@ -74,11 +74,11 @@ pub struct CostBudget {
     pub attest: &'static str,
 }
 
-/// The Camelot cost-budget promessa — "100% spot within the monthly `$` variance
+/// The private estate cost-budget promessa — "100% spot within the monthly `$` variance
 /// budget", attested on an OutcomeChain. Tier-honest: an ATTESTED promise, never
 /// a compile-time theorem; the reconciling controller is a LiveTODO.
-pub const CAMELOT_COST_BUDGET: CostBudget = CostBudget {
-    name: "camelot-100pct-spot",
+pub const SPOT_AGGRESSIVE_COST_BUDGET: CostBudget = CostBudget {
+    name: "spot-aggressive-100pct-spot",
     promessa_kind: "CostBudget",
     target_monthly_usd_variance: 400.0,
     spot_fraction: 1.0,
@@ -88,7 +88,8 @@ pub const CAMELOT_COST_BUDGET: CostBudget = CostBudget {
 #[cfg(test)]
 mod tests {
     use super::{
-        CAMELOT_COST_BUDGET, CAMELOT_FLEX_WINDOW, CAMELOT_INSTANCE_FAMILIES, MIN_DIVERSIFIED_FAMILIES,
+        MIN_DIVERSIFIED_FAMILIES, SPOT_AGGRESSIVE_COST_BUDGET, SPOT_AGGRESSIVE_FLEX_WINDOW,
+        SPOT_AGGRESSIVE_INSTANCE_FAMILIES,
     };
 
     /// The instance-family menu must be genuinely diversified — a single-family
@@ -96,7 +97,7 @@ mod tests {
     #[test]
     fn instance_families_are_diversified() {
         assert!(
-            CAMELOT_INSTANCE_FAMILIES.len() >= MIN_DIVERSIFIED_FAMILIES,
+            SPOT_AGGRESSIVE_INSTANCE_FAMILIES.len() >= MIN_DIVERSIFIED_FAMILIES,
             "a 100%-spot menu needs at least {MIN_DIVERSIFIED_FAMILIES} families for spot depth"
         );
     }
@@ -104,17 +105,25 @@ mod tests {
     /// No duplicate families (a duplicate is not extra depth; it is a typo).
     #[test]
     fn instance_families_are_unique() {
-        let mut seen: Vec<&str> = CAMELOT_INSTANCE_FAMILIES.to_vec();
+        let mut seen: Vec<&str> = SPOT_AGGRESSIVE_INSTANCE_FAMILIES.to_vec();
         seen.sort_unstable();
         seen.dedup();
-        assert_eq!(seen.len(), CAMELOT_INSTANCE_FAMILIES.len(), "duplicate instance family in the menu");
+        assert_eq!(
+            seen.len(),
+            SPOT_AGGRESSIVE_INSTANCE_FAMILIES.len(),
+            "duplicate instance family in the menu"
+        );
     }
 
     /// The menu must span at least the three general/compute/memory shapes so a
     /// mixed stateless + DB workload set always has a deep pool for its shape.
     #[test]
     fn instance_families_span_the_workload_shapes() {
-        let has = |p: &str| CAMELOT_INSTANCE_FAMILIES.iter().any(|f| f.starts_with(p));
+        let has = |p: &str| {
+            SPOT_AGGRESSIVE_INSTANCE_FAMILIES
+                .iter()
+                .any(|f| f.starts_with(p))
+        };
         assert!(has("m"), "no general-purpose (m*) family");
         assert!(has("c"), "no compute (c*) family");
         assert!(has("r"), "no memory (r*) family");
@@ -123,10 +132,13 @@ mod tests {
     /// The flex-window points at the menu, and its budget is a positive bound.
     #[test]
     fn flex_window_is_well_formed() {
-        assert!(CAMELOT_FLEX_WINDOW.monthly_usd_variance_budget > 0.0, "budget must be a positive $ bound");
+        assert!(
+            SPOT_AGGRESSIVE_FLEX_WINDOW.monthly_usd_variance_budget > 0.0,
+            "budget must be a positive $ bound"
+        );
         assert_eq!(
-            CAMELOT_FLEX_WINDOW.instance_families.len(),
-            CAMELOT_INSTANCE_FAMILIES.len(),
+            SPOT_AGGRESSIVE_FLEX_WINDOW.instance_families.len(),
+            SPOT_AGGRESSIVE_INSTANCE_FAMILIES.len(),
             "the flex-window must carry the diversified menu"
         );
     }
@@ -137,17 +149,17 @@ mod tests {
     #[test]
     fn cost_budget_matches_the_flex_window() {
         assert!(
-            (CAMELOT_COST_BUDGET.target_monthly_usd_variance
-                - CAMELOT_FLEX_WINDOW.monthly_usd_variance_budget)
+            (SPOT_AGGRESSIVE_COST_BUDGET.target_monthly_usd_variance
+                - SPOT_AGGRESSIVE_FLEX_WINDOW.monthly_usd_variance_budget)
                 .abs()
                 < f64::EPSILON,
             "the CostBudget target must mirror the flex-window budget"
         );
         assert!(
-            (CAMELOT_COST_BUDGET.spot_fraction - 1.0).abs() < f64::EPSILON,
+            (SPOT_AGGRESSIVE_COST_BUDGET.spot_fraction - 1.0).abs() < f64::EPSILON,
             "the aggressive posture is 100% spot"
         );
-        assert_eq!(CAMELOT_COST_BUDGET.promessa_kind, "CostBudget");
+        assert_eq!(SPOT_AGGRESSIVE_COST_BUDGET.promessa_kind, "CostBudget");
     }
 
     /// The promessa is honest about its tier — an ATTESTED promise, never a
@@ -155,8 +167,14 @@ mod tests {
     /// edit rounding the claim up).
     #[test]
     fn cost_budget_is_tier_honest() {
-        let a = CAMELOT_COST_BUDGET.attest;
-        assert!(a.contains("attested"), "the CostBudget must name itself attested");
-        assert!(a.contains("never compile-proven"), "the CostBudget must NOT claim a compile-time proof");
+        let a = SPOT_AGGRESSIVE_COST_BUDGET.attest;
+        assert!(
+            a.contains("attested"),
+            "the CostBudget must name itself attested"
+        );
+        assert!(
+            a.contains("never compile-proven"),
+            "the CostBudget must NOT claim a compile-time proof"
+        );
     }
 }

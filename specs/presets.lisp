@@ -13,8 +13,8 @@
 ;;;; applies) plus the shared spot placement + flex-window. The proven
 ;;;; dimension-agnostic band law (breathe-control) still does the deciding.
 ;;;;
-;;;; Canonical (and today only) instance: :camelot — the aggressive 80/20,
-;;;; shadow-first, 100%-spot posture for the Camelot ephemeral SaaS environment.
+;;;; Canonical (and today only) instance: :spot-aggressive — the aggressive 80/20,
+;;;; shadow-first, 100%-spot posture for the private estate ephemeral SaaS environment.
 
 (defmeta-catalog breathe-presets
   :description "Named breathe-posture bundles — one preset reference arms a workload's whole band-set."
@@ -23,13 +23,13 @@
                storage-couples-to-the-stateful-topology
                preset-declared-in-the-lisp))
 
-;;; ── The Camelot preset — aggressive 80/20, shadow-first, 100% spot ───────────
+;;; ── The private estate preset — aggressive 80/20, shadow-first, 100% spot ───────────
 ;;; Born SHADOW-FIRST: every band attests what it WOULD carve (:dry-run t,
 ;;; :mode :shadow) but mutates nothing until explicitly live-applied. Correct +
 ;;; honest with no live cluster; the flex-window auction is a LiveTODO.
 
-(defbreathe-preset :camelot
-  :name        "camelot"
+(defbreathe-preset :spot-aggressive
+  :name        "spot-aggressive"
   ;; The shared posture every armed band inherits.
   :setpoint    0.8                 ; 80% used / 20% headroom — the aggressive band
   :dry-run     t                   ; shadow-first: attest, never carve, until live
@@ -37,10 +37,10 @@
   :ha-replica-floor 2              ; every workload rests at ≥ 2 (HA); a class may raise, never lower
 
   ;; The 100%-spot placement stamped on every armed workload — pins onto the
-  ;; tainted, isolated Camelot node group and auctions it entirely from spot.
+  ;; tainted, isolated the private estate node group and auctions it entirely from spot.
   :placement
-   (:node-selector-role "camelot"  ; nodeSelector role → the Camelot node group
-    :toleration-key      "camelot-only" ; tolerate the taint that isolates Camelot
+   (:node-selector-role "spot"  ; nodeSelector role → the consumer's spot pool
+    :toleration-key      "spot-only" ; tolerate the taint that isolates it
     :spot-fraction       1.0)      ; 100% spot — even the databases
 
   ;; The flex-window cost envelope — the diversified instance-family menu the live
@@ -124,7 +124,7 @@
 ;;; ATTESTS the cost posture on an OutcomeChain — never compile-proven. The
 ;;; reconciling PromessaController is a LiveTODO; this is the authored template.
 
-(defpromessa :camelot-100pct-spot
+(defpromessa :spot-aggressive-100pct-spot
   :kind        :cost-budget
   :target-monthly-usd-variance 400.0
   :spot-fraction 1.0

@@ -9,10 +9,12 @@
 //! the one atomic mutation via the provider. The decision math lives entirely in
 //! `breathe-control`; this crate adds only the I/O orchestration + the typed receipt.
 
-use breathe_control::{plan_tick, BandConfig, BoundIntroduction, CarvePolicy, Decision, Observation, Reclaim, TickPlan};
+use breathe_control::{
+    BandConfig, BoundIntroduction, CarvePolicy, Decision, Observation, Reclaim, TickPlan, plan_tick,
+};
 use breathe_provider::{
-    DisruptionClass, DisruptionPolicy, EdgeTier, EffectiveGate, ProviderError, ResourceProvider, ShadowReason,
-    Target,
+    DisruptionClass, DisruptionPolicy, EdgeTier, EffectiveGate, ProviderError, ResourceProvider,
+    ShadowReason, Target,
 };
 
 /// Everything one tick needs that isn't carried by the provider. The provider
@@ -111,7 +113,11 @@ pub enum TickReceipt {
     /// single-writer guard), so this is what the operator sees instead of a
     /// `Conflict`/`MetricUnrepresentable` red herring produced by the exact
     /// same underlying gap. NEVER carved.
-    CapabilityMissing { volume_expansion: bool, per_volume_metrics: bool, provisioner: String },
+    CapabilityMissing {
+        volume_expansion: bool,
+        per_volume_metrics: bool,
+        provisioner: String,
+    },
     /// A SHRINK was warranted but the workload is still in its WARMUP window (it
     /// (re)started less than `warmup_seconds` ago and hasn't demonstrated a full duty
     /// cycle) — held + surfaced. The idle reading is not yet proof the slack is safe
@@ -135,7 +141,11 @@ pub enum TickReceipt {
     /// cost of the carve (`class`) — the attestation evidence. A `RestartFree`
     /// Applied is a golden carve; a `RestartRequiring` Applied is a witnessed
     /// ceiling crossing (only reachable under an `AllowRestart` policy).
-    Applied { from: u64, to: u64, class: DisruptionClass },
+    Applied {
+        from: u64,
+        to: u64,
+        class: DisruptionClass,
+    },
     /// SHADOW: a mutation would have been applied, and `reason` says WHY it was
     /// not (the shadow attestation).
     ///
@@ -143,14 +153,22 @@ pub enum TickReceipt {
     /// surface used to render this as "dryRun — nothing written", which was
     /// (a) false for every k8s band kind since `76924b0` and (b) unable to
     /// distinguish an operator's deliberate `writeIntent: observe` from a band
-    /// accidentally held by `NotReady`/`Stale`/`Conflict`. Six camelot-eks bands
+    /// accidentally held by `NotReady`/`Stale`/`Conflict`. Six private-estate-eks bands
     /// were in the second state while every surface reported the first.
-    ShadowWouldApply { from: u64, to: u64, reason: ShadowReason },
+    ShadowWouldApply {
+        from: u64,
+        to: u64,
+        reason: ShadowReason,
+    },
     /// The band law warranted a carve, but its restart cost (`class`) is a
     /// ceiling crossing the band's [`DisruptionPolicy`] does not permit — DEFERRED
     /// rather than rolled. The comfortable berth: the workload stays golden
     /// (undisturbed), un-converged, until the operator widens the policy.
-    DeferredWouldRestart { from: u64, to: u64, class: DisruptionClass },
+    DeferredWouldRestart {
+        from: u64,
+        to: u64,
+        class: DisruptionClass,
+    },
     /// An observable, non-mutating outcome (Hold / AtCeiling / NoSafeShrink / NoLimit).
     Observed { decision: Decision },
     /// The band's label-selected pod group is currently EMPTY — the target is
@@ -244,9 +262,17 @@ pub async fn reconcile_one(
         class: DisruptionClass,
     ) -> TickReceipt {
         match gate {
-            EffectiveGate::Shadow { reason } => TickReceipt::ShadowWouldApply { from, to, reason: *reason },
+            EffectiveGate::Shadow { reason } => TickReceipt::ShadowWouldApply {
+                from,
+                to,
+                reason: *reason,
+            },
             EffectiveGate::Live { witness } => match provider.assign(witness, target, to).await {
-                Ok(r) => TickReceipt::Applied { from: r.from, to: r.to, class },
+                Ok(r) => TickReceipt::Applied {
+                    from: r.from,
+                    to: r.to,
+                    class,
+                },
                 Err(error) => TickReceipt::Error { error },
             },
         }
@@ -279,7 +305,9 @@ pub async fn reconcile_one(
         let to = forced.clamp(input.cfg.floor_bytes, input.cfg.ceiling_bytes);
         let from = obs.capacity();
         let receipt = if to == from {
-            TickReceipt::Observed { decision: Decision::Hold } // already pinned
+            TickReceipt::Observed {
+                decision: Decision::Hold,
+            } // already pinned
         } else {
             let class = provider
                 .action_class(input.target, to > from)
@@ -295,10 +323,14 @@ pub async fn reconcile_one(
     // M0: measure the working-set velocity from the prior fresh sample to this one,
     // and (only when the band opted into prediction) feed it to `PredictiveGrow`.
     // `rate` is signed bytes/sec; `None` ⇒ plain reactive carving.
-    let predictive = input.predictive.as_ref().filter(|p| p.dt_secs > 0.0).map(|p| {
-        let rate = (((obs.used as i64) - (p.prior_used as i64)) as f64 / p.dt_secs) as i64;
-        (rate, p.lookahead_secs)
-    });
+    let predictive = input
+        .predictive
+        .as_ref()
+        .filter(|p| p.dt_secs > 0.0)
+        .map(|p| {
+            let rate = (((obs.used as i64) - (p.prior_used as i64)) as f64 / p.dt_secs) as i64;
+            (rate, p.lookahead_secs)
+        });
     // REQUEST FLOOR: fold the target's LIVE declared `requests.<resource>` into the
     // effective config — the inviolable shrink floor (a limit below the request is
     // invalid in k8s + unsafe). `max(spec.requestFloor, live request)` so the
@@ -306,7 +338,10 @@ pub async fn reconcile_one(
     // shared `safety_clamp` already enforces it; this just SOURCES it from the live
     // pod. `0` request (host/node, or none declared) leaves the config unchanged.
     let cfg = if obs.request_floor > input.cfg.request_floor_bytes {
-        &BandConfig { request_floor_bytes: obs.request_floor, ..input.cfg.clone() }
+        &BandConfig {
+            request_floor_bytes: obs.request_floor,
+            ..input.cfg.clone()
+        }
     } else {
         input.cfg
     };
@@ -318,7 +353,10 @@ pub async fn reconcile_one(
     // typed form of the old `hard_plane_grow_only` substitution and reproduces it
     // exactly for memory — including its effect on `plan_tick`'s `GrowOnly`-scoped
     // gates, which was load-bearing and is preserved deliberately.
-    let policy = CarvePolicy { reclaim: input.reclaim, bound_introduction: input.bound_introduction };
+    let policy = CarvePolicy {
+        reclaim: input.reclaim,
+        bound_introduction: input.bound_introduction,
+    };
     let directionality = input.reclaim.narrow(provider.directionality());
     let plan = plan_tick(
         &obs,
@@ -336,10 +374,23 @@ pub async fn reconcile_one(
         TickPlan::Unrepresentable { used, capacity } => {
             TickReceipt::MetricUnrepresentable { used, capacity }
         }
-        TickPlan::CapabilityMissing { volume_expansion, per_volume_metrics, provisioner } => {
-            TickReceipt::CapabilityMissing { volume_expansion, per_volume_metrics, provisioner }
-        }
-        TickPlan::Warmup { observed_for, warmup, .. } => TickReceipt::Warmup { observed_for, warmup },
+        TickPlan::CapabilityMissing {
+            volume_expansion,
+            per_volume_metrics,
+            provisioner,
+        } => TickReceipt::CapabilityMissing {
+            volume_expansion,
+            per_volume_metrics,
+            provisioner,
+        },
+        TickPlan::Warmup {
+            observed_for,
+            warmup,
+            ..
+        } => TickReceipt::Warmup {
+            observed_for,
+            warmup,
+        },
         TickPlan::Throttled { restarting, .. } => TickReceipt::Throttled { restarting },
         TickPlan::Stale { staleness_secs, .. } => TickReceipt::Stale { staleness_secs },
         TickPlan::Cooldown { .. } => TickReceipt::Cooldown,
@@ -374,8 +425,11 @@ pub async fn reconcile_one(
 mod tests {
     use super::*;
     use breathe_control::FieldOwner;
-    use breathe_provider::{mock::MockCluster, BandProvider, DimensionDescriptor, LiveWitness, StorageCapability, Target};
     use breathe_dimensions::{MemoryDescriptor, StorageDescriptor};
+    use breathe_provider::{
+        BandProvider, DimensionDescriptor, LiveWitness, StorageCapability, Target,
+        mock::MockCluster,
+    };
 
     const MEMORY_FIELD: &str = "resources.limits.memory";
     const MEMORY_MANAGER: &str = "breathe/memory";
@@ -391,9 +445,13 @@ mod tests {
     /// cannot be constructed outside `breathe-provider`, so even the tests have to
     /// go through the real resolver. That is the guarantee, exercised.
     fn live() -> EffectiveGate {
-        use breathe_provider::gate::{resolve_gate, ConfirmVerdict, GateInputs, LegacyDecision, WriteIntent};
+        use breathe_provider::gate::{
+            ConfirmVerdict, GateInputs, LegacyDecision, WriteIntent, resolve_gate,
+        };
         resolve_gate(&GateInputs {
-            intent: Some(Ok(WriteIntent::Write { authorized_by: "breathe-core tests".into() })),
+            intent: Some(Ok(WriteIntent::Write {
+                authorized_by: "breathe-core tests".into(),
+            })),
             frozen: false,
             confirm: ConfirmVerdict::NotEvaluated,
             legacy: LegacyDecision::Shadow(ShadowReason::NotReady),
@@ -403,13 +461,17 @@ mod tests {
     fn live_witness() -> LiveWitness {
         match live() {
             EffectiveGate::Live { witness } => witness,
-            EffectiveGate::Shadow { .. } => unreachable!("an explicit authored write resolves live"),
+            EffectiveGate::Shadow { .. } => {
+                unreachable!("an explicit authored write resolves live")
+            }
         }
     }
     /// A SHADOW gate. Freely constructible by design — "do not write" is the safe
     /// value, so nothing is gained by making it privileged.
     fn shadow() -> EffectiveGate {
-        EffectiveGate::Shadow { reason: ShadowReason::ModeShadow }
+        EffectiveGate::Shadow {
+            reason: ShadowReason::ModeShadow,
+        }
     }
 
     fn target() -> Target {
@@ -423,7 +485,10 @@ mod tests {
         }
     }
     fn we_own() -> Vec<FieldOwner> {
-        vec![FieldOwner { manager: MEMORY_MANAGER.into(), field: MEMORY_FIELD.into() }]
+        vec![FieldOwner {
+            manager: MEMORY_MANAGER.into(),
+            field: MEMORY_FIELD.into(),
+        }]
     }
 
     /// TASK #200 — the field-manager double-writer fix, proven end-to-end: binding
@@ -436,12 +501,20 @@ mod tests {
         let mut d = MemoryDescriptor::default();
         d.set_cr_identity("rio".into(), "my-memory-band".into());
         let prov = BandProvider::new(MockCluster::new(950 * MI, 0, GI, Vec::new()), d);
-        assert_eq!(prov.owned_field().manager, "breathe/memory/rio/my-memory-band");
+        assert_eq!(
+            prov.owned_field().manager,
+            "breathe/memory/rio/my-memory-band"
+        );
 
-        prov.assign(&live_witness(), &target(), 2 * GI).await.unwrap();
+        prov.assign(&live_witness(), &target(), 2 * GI)
+            .await
+            .unwrap();
         let applied = prov.cluster().applied();
         assert_eq!(applied.len(), 1);
-        assert_eq!(applied[0].field_manager, "breathe/memory/rio/my-memory-band");
+        assert_eq!(
+            applied[0].field_manager,
+            "breathe/memory/rio/my-memory-band"
+        );
     }
 
     /// The un-bound default is BYTE-IDENTICAL to before this task landed — a
@@ -451,7 +524,9 @@ mod tests {
     async fn an_unbound_descriptor_keeps_the_dimension_wide_manager_unchanged() {
         let prov = provider(MockCluster::new(950 * MI, 0, GI, Vec::new()));
         assert_eq!(prov.owned_field().manager, MEMORY_MANAGER);
-        prov.assign(&live_witness(), &target(), 2 * GI).await.unwrap();
+        prov.assign(&live_witness(), &target(), 2 * GI)
+            .await
+            .unwrap();
         assert_eq!(prov.cluster().applied()[0].field_manager, MEMORY_MANAGER);
     }
 
@@ -465,7 +540,20 @@ mod tests {
         let prov = provider(cluster);
         let cfg = BandConfig::default();
         let t = target();
-        let input = ReconcileInput { target: &t, cfg: &cfg, max_staleness_secs: 60, in_cooldown: false, gate: live(), policy: DisruptionPolicy::AllowRestart, force: None, predictive: None, peak_used: None, observed_for_secs: None, reclaim: Reclaim::Enabled, bound_introduction: BoundIntroduction::Forbidden };
+        let input = ReconcileInput {
+            target: &t,
+            cfg: &cfg,
+            max_staleness_secs: 60,
+            in_cooldown: false,
+            gate: live(),
+            policy: DisruptionPolicy::AllowRestart,
+            force: None,
+            predictive: None,
+            peak_used: None,
+            observed_for_secs: None,
+            reclaim: Reclaim::Enabled,
+            bound_introduction: BoundIntroduction::Forbidden,
+        };
 
         match reconcile_one(&input, &prov).await.receipt {
             TickReceipt::Applied { from, to, .. } => {
@@ -484,13 +572,37 @@ mod tests {
     #[tokio::test]
     async fn reconcile_yields_to_a_competing_owner_without_carving() {
         // VPA owns the memory field → Conflict, and NOTHING is applied.
-        let owners = vec![FieldOwner { manager: "vpa".into(), field: MEMORY_FIELD.into() }];
+        let owners = vec![FieldOwner {
+            manager: "vpa".into(),
+            field: MEMORY_FIELD.into(),
+        }];
         let prov = provider(MockCluster::new(950 * MI, 0, GI, owners));
         let cfg = BandConfig::default();
         let t = target();
-        let input = ReconcileInput { target: &t, cfg: &cfg, max_staleness_secs: 60, in_cooldown: false, gate: live(), policy: DisruptionPolicy::AllowRestart, force: None, predictive: None, peak_used: None, observed_for_secs: None, reclaim: Reclaim::Enabled, bound_introduction: BoundIntroduction::Forbidden };
-        assert_eq!(reconcile_one(&input, &prov).await.receipt, TickReceipt::Conflict { manager: "vpa".into() });
-        assert!(prov.cluster().applied().is_empty(), "must not carve under conflict");
+        let input = ReconcileInput {
+            target: &t,
+            cfg: &cfg,
+            max_staleness_secs: 60,
+            in_cooldown: false,
+            gate: live(),
+            policy: DisruptionPolicy::AllowRestart,
+            force: None,
+            predictive: None,
+            peak_used: None,
+            observed_for_secs: None,
+            reclaim: Reclaim::Enabled,
+            bound_introduction: BoundIntroduction::Forbidden,
+        };
+        assert_eq!(
+            reconcile_one(&input, &prov).await.receipt,
+            TickReceipt::Conflict {
+                manager: "vpa".into()
+            }
+        );
+        assert!(
+            prov.cluster().applied().is_empty(),
+            "must not carve under conflict"
+        );
     }
 
     #[tokio::test]
@@ -499,15 +611,49 @@ mod tests {
         let t = target();
         // stale sample (120s > 60s bound) → Stale, no carve.
         let stale = provider(MockCluster::new(950 * MI, 120, GI, we_own()));
-        let in_stale = ReconcileInput { target: &t, cfg: &cfg, max_staleness_secs: 60, in_cooldown: false, gate: live(), policy: DisruptionPolicy::AllowRestart, force: None, predictive: None, peak_used: None, observed_for_secs: None, reclaim: Reclaim::Enabled, bound_introduction: BoundIntroduction::Forbidden };
-        assert_eq!(reconcile_one(&in_stale, &stale).await.receipt, TickReceipt::Stale { staleness_secs: 120 });
+        let in_stale = ReconcileInput {
+            target: &t,
+            cfg: &cfg,
+            max_staleness_secs: 60,
+            in_cooldown: false,
+            gate: live(),
+            policy: DisruptionPolicy::AllowRestart,
+            force: None,
+            predictive: None,
+            peak_used: None,
+            observed_for_secs: None,
+            reclaim: Reclaim::Enabled,
+            bound_introduction: BoundIntroduction::Forbidden,
+        };
+        assert_eq!(
+            reconcile_one(&in_stale, &stale).await.receipt,
+            TickReceipt::Stale {
+                staleness_secs: 120
+            }
+        );
         assert!(stale.cluster().applied().is_empty());
 
         // dry-run with a real grow signal → DryRunWouldApply, no carve.
         let dry = provider(MockCluster::new(950 * MI, 0, GI, we_own()));
-        let in_dry = ReconcileInput { target: &t, cfg: &cfg, max_staleness_secs: 60, in_cooldown: false, gate: shadow(), policy: DisruptionPolicy::AllowRestart, force: None, predictive: None, peak_used: None, observed_for_secs: None, reclaim: Reclaim::Enabled, bound_introduction: BoundIntroduction::Forbidden };
+        let in_dry = ReconcileInput {
+            target: &t,
+            cfg: &cfg,
+            max_staleness_secs: 60,
+            in_cooldown: false,
+            gate: shadow(),
+            policy: DisruptionPolicy::AllowRestart,
+            force: None,
+            predictive: None,
+            peak_used: None,
+            observed_for_secs: None,
+            reclaim: Reclaim::Enabled,
+            bound_introduction: BoundIntroduction::Forbidden,
+        };
         match reconcile_one(&in_dry, &dry).await.receipt {
-            TickReceipt::ShadowWouldApply { reason: ShadowReason::ModeShadow, .. } => {}
+            TickReceipt::ShadowWouldApply {
+                reason: ShadowReason::ModeShadow,
+                ..
+            } => {}
             other => panic!("expected DryRunWouldApply, got {other:?}"),
         }
         assert!(dry.cluster().applied().is_empty(), "shadow never mutates");
@@ -520,12 +666,25 @@ mod tests {
     #[tokio::test]
     async fn reconcile_maps_empty_pod_group_to_dormant_not_error() {
         use breathe_provider::EdgeTier;
-        let cluster = MockCluster::new(0, 0, 0, we_own())
-            .with_read_used_error(ProviderError::NoTargetPods);
+        let cluster =
+            MockCluster::new(0, 0, 0, we_own()).with_read_used_error(ProviderError::NoTargetPods);
         let prov = provider(cluster);
         let cfg = BandConfig::default();
         let t = target();
-        let input = ReconcileInput { target: &t, cfg: &cfg, max_staleness_secs: 60, in_cooldown: false, gate: live(), policy: DisruptionPolicy::AllowRestart, force: None, predictive: None, peak_used: None, observed_for_secs: None, reclaim: Reclaim::Enabled, bound_introduction: BoundIntroduction::Forbidden };
+        let input = ReconcileInput {
+            target: &t,
+            cfg: &cfg,
+            max_staleness_secs: 60,
+            in_cooldown: false,
+            gate: live(),
+            policy: DisruptionPolicy::AllowRestart,
+            force: None,
+            predictive: None,
+            peak_used: None,
+            observed_for_secs: None,
+            reclaim: Reclaim::Enabled,
+            bound_introduction: BoundIntroduction::Forbidden,
+        };
         let out = reconcile_one(&input, &prov).await;
         assert_eq!(out.receipt, TickReceipt::Dormant);
         assert_eq!(out.receipt.edge_tier(), EdgeTier::GoldenPreserving);
@@ -533,10 +692,14 @@ mod tests {
         assert!(prov.cluster().applied().is_empty(), "dormant never carves");
         // a genuine metric outage (pods exist, usage unreadable) is STILL an Error —
         // only an empty selector group is dormant.
-        let broken = provider(MockCluster::new(0, 0, 0, we_own()).with_read_used_error(ProviderError::MetricsMissing));
+        let broken = provider(
+            MockCluster::new(0, 0, 0, we_own()).with_read_used_error(ProviderError::MetricsMissing),
+        );
         assert_eq!(
             reconcile_one(&input, &broken).await.receipt,
-            TickReceipt::Error { error: ProviderError::MetricsMissing }
+            TickReceipt::Error {
+                error: ProviderError::MetricsMissing
+            }
         );
     }
 
@@ -556,10 +719,25 @@ mod tests {
         );
         let cfg = BandConfig::default();
         let t = target();
-        let input = ReconcileInput { target: &t, cfg: &cfg, max_staleness_secs: 60, in_cooldown: false, gate: live(), policy: DisruptionPolicy::AllowRestart, force: None, predictive: None, peak_used: None, observed_for_secs: None, reclaim: Reclaim::Enabled, bound_introduction: BoundIntroduction::Forbidden };
+        let input = ReconcileInput {
+            target: &t,
+            cfg: &cfg,
+            max_staleness_secs: 60,
+            in_cooldown: false,
+            gate: live(),
+            policy: DisruptionPolicy::AllowRestart,
+            force: None,
+            predictive: None,
+            peak_used: None,
+            observed_for_secs: None,
+            reclaim: Reclaim::Enabled,
+            bound_introduction: BoundIntroduction::Forbidden,
+        };
         assert_eq!(
             reconcile_one(&input, &dangling).await.receipt,
-            TickReceipt::Error { error: ProviderError::TargetNotFound },
+            TickReceipt::Error {
+                error: ProviderError::TargetNotFound
+            },
             "a 404 on the owner GET must surface as TargetNotFound, not the original MetricsMissing"
         );
     }
@@ -577,8 +755,24 @@ mod tests {
         let cfg = BandConfig::default();
         let mut t = target();
         t.pod_selector = Some("app=runner".into());
-        let input = ReconcileInput { target: &t, cfg: &cfg, max_staleness_secs: 60, in_cooldown: false, gate: live(), policy: DisruptionPolicy::AllowRestart, force: None, predictive: None, peak_used: None, observed_for_secs: None, reclaim: Reclaim::Enabled, bound_introduction: BoundIntroduction::Forbidden };
-        assert_eq!(reconcile_one(&input, &prov).await.receipt, TickReceipt::Dormant);
+        let input = ReconcileInput {
+            target: &t,
+            cfg: &cfg,
+            max_staleness_secs: 60,
+            in_cooldown: false,
+            gate: live(),
+            policy: DisruptionPolicy::AllowRestart,
+            force: None,
+            predictive: None,
+            peak_used: None,
+            observed_for_secs: None,
+            reclaim: Reclaim::Enabled,
+            bound_introduction: BoundIntroduction::Forbidden,
+        };
+        assert_eq!(
+            reconcile_one(&input, &prov).await.receipt,
+            TickReceipt::Dormant
+        );
     }
 
     /// The golden-edge gate: a CNPG `Cluster` target carves at `ClusterTopLevel`
@@ -590,7 +784,20 @@ mod tests {
         let prov = provider(MockCluster::new(950 * MI, 0, GI, we_own())); // real Grow signal
         let cfg = BandConfig::default();
         let t = target(); // kind = Cluster ⇒ ClusterTopLevel ⇒ RestartRequiring
-        let input = ReconcileInput { target: &t, cfg: &cfg, max_staleness_secs: 60, in_cooldown: false, gate: live(), policy: DisruptionPolicy::RestartFreeOnly, force: None, predictive: None, peak_used: None, observed_for_secs: None, reclaim: Reclaim::Enabled, bound_introduction: BoundIntroduction::Forbidden };
+        let input = ReconcileInput {
+            target: &t,
+            cfg: &cfg,
+            max_staleness_secs: 60,
+            in_cooldown: false,
+            gate: live(),
+            policy: DisruptionPolicy::RestartFreeOnly,
+            force: None,
+            predictive: None,
+            peak_used: None,
+            observed_for_secs: None,
+            reclaim: Reclaim::Enabled,
+            bound_introduction: BoundIntroduction::Forbidden,
+        };
         match reconcile_one(&input, &prov).await.receipt {
             TickReceipt::DeferredWouldRestart { from, to, class } => {
                 assert_eq!(from, GI);
@@ -599,7 +806,10 @@ mod tests {
             }
             other => panic!("expected DeferredWouldRestart, got {other:?}"),
         }
-        assert!(prov.cluster().applied().is_empty(), "a refused crossing carves NOTHING");
+        assert!(
+            prov.cluster().applied().is_empty(),
+            "a refused crossing carves NOTHING"
+        );
     }
 
     /// The K4 continuity property: under `RestartFreeOnly` EVERY receipt is
@@ -612,14 +822,56 @@ mod tests {
         let t = target(); // CNPG ClusterTopLevel ⇒ RestartRequiring
         // RestartFreeOnly: the carve is refused → the tick stays golden.
         let prov = provider(MockCluster::new(950 * MI, 0, GI, we_own()));
-        let golden = ReconcileInput { target: &t, cfg: &cfg, max_staleness_secs: 60, in_cooldown: false, gate: live(), policy: DisruptionPolicy::RestartFreeOnly, force: None, predictive: None, peak_used: None, observed_for_secs: None, reclaim: Reclaim::Enabled, bound_introduction: BoundIntroduction::Forbidden };
-        assert!(reconcile_one(&golden, &prov).await.receipt.edge_tier().is_golden(), "RestartFreeOnly is golden end-to-end");
+        let golden = ReconcileInput {
+            target: &t,
+            cfg: &cfg,
+            max_staleness_secs: 60,
+            in_cooldown: false,
+            gate: live(),
+            policy: DisruptionPolicy::RestartFreeOnly,
+            force: None,
+            predictive: None,
+            peak_used: None,
+            observed_for_secs: None,
+            reclaim: Reclaim::Enabled,
+            bound_introduction: BoundIntroduction::Forbidden,
+        };
+        assert!(
+            reconcile_one(&golden, &prov)
+                .await
+                .receipt
+                .edge_tier()
+                .is_golden(),
+            "RestartFreeOnly is golden end-to-end"
+        );
         // AllowRestart: the same carve is APPLIED as a witnessed ceiling crossing.
         let prov2 = provider(MockCluster::new(950 * MI, 0, GI, we_own()));
-        let allow = ReconcileInput { target: &t, cfg: &cfg, max_staleness_secs: 60, in_cooldown: false, gate: live(), policy: DisruptionPolicy::AllowRestart, force: None, predictive: None, peak_used: None, observed_for_secs: None, reclaim: Reclaim::Enabled, bound_introduction: BoundIntroduction::Forbidden };
+        let allow = ReconcileInput {
+            target: &t,
+            cfg: &cfg,
+            max_staleness_secs: 60,
+            in_cooldown: false,
+            gate: live(),
+            policy: DisruptionPolicy::AllowRestart,
+            force: None,
+            predictive: None,
+            peak_used: None,
+            observed_for_secs: None,
+            reclaim: Reclaim::Enabled,
+            bound_introduction: BoundIntroduction::Forbidden,
+        };
         let r = reconcile_one(&allow, &prov2).await.receipt;
-        assert!(matches!(r, TickReceipt::Applied { class: DisruptionClass::RestartRequiring, .. }));
-        assert!(!r.edge_tier().is_golden(), "an AllowRestart roll is a witnessed crossing");
+        assert!(matches!(
+            r,
+            TickReceipt::Applied {
+                class: DisruptionClass::RestartRequiring,
+                ..
+            }
+        ));
+        assert!(
+            !r.edge_tier().is_golden(),
+            "an AllowRestart roll is a witnessed crossing"
+        );
     }
 
     // ── Phase 2: resizePolicy-aware shrink — memory breathes DOWN on golden rails ──
@@ -648,20 +900,42 @@ mod tests {
     async fn reconcile_acts_on_a_not_required_memory_shrink_under_restart_free_only() {
         // util 0.20 @ 2Gi (well below shrink_below) ⇒ Act(Shrink); we own the field;
         // the pod's resizePolicy is NotRequired ⇒ the in-place shrink is golden.
-        let cluster = MockCluster::new(400 * MI, 0, 2 * GI, we_own()).with_resize_restart_free(true);
+        let cluster =
+            MockCluster::new(400 * MI, 0, 2 * GI, we_own()).with_resize_restart_free(true);
         let prov = resize_provider(cluster);
         let cfg = BandConfig::default();
         let t = deploy_target();
-        let input = ReconcileInput { target: &t, cfg: &cfg, max_staleness_secs: 60, in_cooldown: false, gate: live(), policy: DisruptionPolicy::RestartFreeOnly, force: None, predictive: None, peak_used: None, observed_for_secs: None, reclaim: Reclaim::Enabled, bound_introduction: BoundIntroduction::Forbidden };
+        let input = ReconcileInput {
+            target: &t,
+            cfg: &cfg,
+            max_staleness_secs: 60,
+            in_cooldown: false,
+            gate: live(),
+            policy: DisruptionPolicy::RestartFreeOnly,
+            force: None,
+            predictive: None,
+            peak_used: None,
+            observed_for_secs: None,
+            reclaim: Reclaim::Enabled,
+            bound_introduction: BoundIntroduction::Forbidden,
+        };
         match reconcile_one(&input, &prov).await.receipt {
             TickReceipt::Applied { from, to, class } => {
                 assert_eq!(from, 2 * GI);
                 assert!(to < from, "a shrink lowers the limit");
-                assert_eq!(class, DisruptionClass::RestartFree, "NotRequired ⇒ the shrink is golden");
+                assert_eq!(
+                    class,
+                    DisruptionClass::RestartFree,
+                    "NotRequired ⇒ the shrink is golden"
+                );
             }
             other => panic!("expected Applied(RestartFree shrink), got {other:?}"),
         }
-        assert_eq!(prov.cluster().applied().len(), 1, "exactly one in-place shrink carved");
+        assert_eq!(
+            prov.cluster().applied().len(),
+            1,
+            "exactly one in-place shrink carved"
+        );
     }
 
     /// The SAME shrink with the default `resizePolicy` (`RestartContainer` ⇒ flag
@@ -674,20 +948,56 @@ mod tests {
         let t = deploy_target();
         // RestartFreeOnly + RestartContainer (flag false) ⇒ DEFER, carve nothing.
         let prov = resize_provider(MockCluster::new(400 * MI, 0, 2 * GI, we_own()));
-        let strict = ReconcileInput { target: &t, cfg: &cfg, max_staleness_secs: 60, in_cooldown: false, gate: live(), policy: DisruptionPolicy::RestartFreeOnly, force: None, predictive: None, peak_used: None, observed_for_secs: None, reclaim: Reclaim::Enabled, bound_introduction: BoundIntroduction::Forbidden };
+        let strict = ReconcileInput {
+            target: &t,
+            cfg: &cfg,
+            max_staleness_secs: 60,
+            in_cooldown: false,
+            gate: live(),
+            policy: DisruptionPolicy::RestartFreeOnly,
+            force: None,
+            predictive: None,
+            peak_used: None,
+            observed_for_secs: None,
+            reclaim: Reclaim::Enabled,
+            bound_introduction: BoundIntroduction::Forbidden,
+        };
         match reconcile_one(&strict, &prov).await.receipt {
             TickReceipt::DeferredWouldRestart { class, .. } => {
-                assert_eq!(class, DisruptionClass::RestartConditional, "a may-restart shrink under the strict policy");
+                assert_eq!(
+                    class,
+                    DisruptionClass::RestartConditional,
+                    "a may-restart shrink under the strict policy"
+                );
             }
             other => panic!("expected DeferredWouldRestart(RestartConditional), got {other:?}"),
         }
-        assert!(prov.cluster().applied().is_empty(), "a deferred conditional shrink carves nothing");
+        assert!(
+            prov.cluster().applied().is_empty(),
+            "a deferred conditional shrink carves nothing"
+        );
         // AllowConditional opts the same RestartConditional shrink in ⇒ Applied.
         let prov2 = resize_provider(MockCluster::new(400 * MI, 0, 2 * GI, we_own()));
-        let allow = ReconcileInput { target: &t, cfg: &cfg, max_staleness_secs: 60, in_cooldown: false, gate: live(), policy: DisruptionPolicy::AllowConditional, force: None, predictive: None, peak_used: None, observed_for_secs: None, reclaim: Reclaim::Enabled, bound_introduction: BoundIntroduction::Forbidden };
+        let allow = ReconcileInput {
+            target: &t,
+            cfg: &cfg,
+            max_staleness_secs: 60,
+            in_cooldown: false,
+            gate: live(),
+            policy: DisruptionPolicy::AllowConditional,
+            force: None,
+            predictive: None,
+            peak_used: None,
+            observed_for_secs: None,
+            reclaim: Reclaim::Enabled,
+            bound_introduction: BoundIntroduction::Forbidden,
+        };
         assert!(matches!(
             reconcile_one(&allow, &prov2).await.receipt,
-            TickReceipt::Applied { class: DisruptionClass::RestartConditional, .. }
+            TickReceipt::Applied {
+                class: DisruptionClass::RestartConditional,
+                ..
+            }
         ));
     }
 
@@ -704,19 +1014,43 @@ mod tests {
         // band CR declares NO requestFloor (cfg.request_floor_bytes == 0), but the
         // live pod declares requests.memory = 1Gi. util 0.05 @ 2Gi ⇒ a hard shrink
         // that, unclamped, would carve well below 1Gi — the live floor must bind.
-        let cfg = BandConfig { request_floor_bytes: 0, ..BandConfig::default() };
-        assert_eq!(cfg.request_floor_bytes, 0, "the band CR declares no request floor");
+        let cfg = BandConfig {
+            request_floor_bytes: 0,
+            ..BandConfig::default()
+        };
+        assert_eq!(
+            cfg.request_floor_bytes, 0,
+            "the band CR declares no request floor"
+        );
         let t = deploy_target();
         let cluster = MockCluster::new(100 * MI, 0, 2 * GI, we_own())
             .with_resize_restart_free(true) // golden in-place shrink so it Acts
             .with_request_floor(GI); // the LIVE pod request the controller must read
         let prov = resize_provider(cluster);
-        let input = ReconcileInput { target: &t, cfg: &cfg, max_staleness_secs: 60, in_cooldown: false, gate: live(), policy: DisruptionPolicy::RestartFreeOnly, force: None, predictive: None, peak_used: None, observed_for_secs: None, reclaim: Reclaim::Enabled, bound_introduction: BoundIntroduction::Forbidden };
+        let input = ReconcileInput {
+            target: &t,
+            cfg: &cfg,
+            max_staleness_secs: 60,
+            in_cooldown: false,
+            gate: live(),
+            policy: DisruptionPolicy::RestartFreeOnly,
+            force: None,
+            predictive: None,
+            peak_used: None,
+            observed_for_secs: None,
+            reclaim: Reclaim::Enabled,
+            bound_introduction: BoundIntroduction::Forbidden,
+        };
         match reconcile_one(&input, &prov).await.receipt {
             TickReceipt::Applied { to, .. } => {
-                assert!(to >= GI, "the live 1Gi request floor must bind: shrank to {to} < 1Gi");
+                assert!(
+                    to >= GI,
+                    "the live 1Gi request floor must bind: shrank to {to} < 1Gi"
+                );
             }
-            TickReceipt::Observed { decision: Decision::NoSafeShrink { .. } } => {} // also acceptable
+            TickReceipt::Observed {
+                decision: Decision::NoSafeShrink { .. },
+            } => {} // also acceptable
             other => panic!("expected a request-floor-bound shrink, got {other:?}"),
         }
     }
@@ -728,19 +1062,75 @@ mod tests {
     #[tokio::test]
     async fn reconcile_holds_a_warming_up_workload_and_carves_nothing() {
         use breathe_provider::EdgeTier;
-        let cfg = BandConfig { warmup_seconds: 600, ..BandConfig::default() };
+        let cfg = BandConfig {
+            warmup_seconds: 600,
+            ..BandConfig::default()
+        };
         let t = deploy_target();
         // util 0.05 @ 2Gi ⇒ a strong shrink signal, but observed for only 60s.
-        let prov = resize_provider(MockCluster::new(100 * MI, 0, 2 * GI, we_own()).with_resize_restart_free(true));
-        let input = ReconcileInput { target: &t, cfg: &cfg, max_staleness_secs: 60, in_cooldown: false, gate: live(), policy: DisruptionPolicy::RestartFreeOnly, force: None, predictive: None, peak_used: None, observed_for_secs: Some(60), reclaim: Reclaim::Enabled, bound_introduction: BoundIntroduction::Forbidden };
+        let prov = resize_provider(
+            MockCluster::new(100 * MI, 0, 2 * GI, we_own()).with_resize_restart_free(true),
+        );
+        let input = ReconcileInput {
+            target: &t,
+            cfg: &cfg,
+            max_staleness_secs: 60,
+            in_cooldown: false,
+            gate: live(),
+            policy: DisruptionPolicy::RestartFreeOnly,
+            force: None,
+            predictive: None,
+            peak_used: None,
+            observed_for_secs: Some(60),
+            reclaim: Reclaim::Enabled,
+            bound_introduction: BoundIntroduction::Forbidden,
+        };
         let out = reconcile_one(&input, &prov).await;
-        assert!(matches!(out.receipt, TickReceipt::Warmup { observed_for: 60, warmup: 600 }), "warming up ⇒ held, got {:?}", out.receipt);
-        assert_eq!(out.receipt.edge_tier(), EdgeTier::GoldenPreserving, "a warmup hold keeps the workload golden");
+        assert!(
+            matches!(
+                out.receipt,
+                TickReceipt::Warmup {
+                    observed_for: 60,
+                    warmup: 600
+                }
+            ),
+            "warming up ⇒ held, got {:?}",
+            out.receipt
+        );
+        assert_eq!(
+            out.receipt.edge_tier(),
+            EdgeTier::GoldenPreserving,
+            "a warmup hold keeps the workload golden"
+        );
         assert!(prov.cluster().applied().is_empty(), "warmup never carves");
         // past warmup (observed_for 601 > 600), the SAME idle workload carves.
-        let prov2 = resize_provider(MockCluster::new(100 * MI, 0, 2 * GI, we_own()).with_resize_restart_free(true));
-        let warm = ReconcileInput { observed_for_secs: Some(601), ..ReconcileInput { target: &t, cfg: &cfg, max_staleness_secs: 60, in_cooldown: false, gate: live(), policy: DisruptionPolicy::RestartFreeOnly, force: None, predictive: None, peak_used: None, observed_for_secs: None, reclaim: Reclaim::Enabled, bound_introduction: BoundIntroduction::Forbidden } };
-        assert!(matches!(reconcile_one(&warm, &prov2).await.receipt, TickReceipt::Applied { .. }), "past warmup the idle workload carves");
+        let prov2 = resize_provider(
+            MockCluster::new(100 * MI, 0, 2 * GI, we_own()).with_resize_restart_free(true),
+        );
+        let warm = ReconcileInput {
+            observed_for_secs: Some(601),
+            ..ReconcileInput {
+                target: &t,
+                cfg: &cfg,
+                max_staleness_secs: 60,
+                in_cooldown: false,
+                gate: live(),
+                policy: DisruptionPolicy::RestartFreeOnly,
+                force: None,
+                predictive: None,
+                peak_used: None,
+                observed_for_secs: None,
+                reclaim: Reclaim::Enabled,
+                bound_introduction: BoundIntroduction::Forbidden,
+            }
+        };
+        assert!(
+            matches!(
+                reconcile_one(&warm, &prov2).await.receipt,
+                TickReceipt::Applied { .. }
+            ),
+            "past warmup the idle workload carves"
+        );
     }
 
     // ── PART 1 (k8s plane): the HARD-plane pin — memory.max is never lowered ───
@@ -759,47 +1149,112 @@ mod tests {
         let t = deploy_target();
         // util 0.05 @ 2Gi ⇒ a STRONG idle shrink signal; resizePolicy NotRequired so
         // it WOULD be a golden in-place shrink — but the hard-plane pin holds it.
-        let prov = resize_provider(MockCluster::new(100 * MI, 0, 2 * GI, we_own()).with_resize_restart_free(true));
+        let prov = resize_provider(
+            MockCluster::new(100 * MI, 0, 2 * GI, we_own()).with_resize_restart_free(true),
+        );
         let pinned = ReconcileInput {
-            target: &t, cfg: &cfg, max_staleness_secs: 60, in_cooldown: false, gate: live(),
-            policy: DisruptionPolicy::RestartFreeOnly, force: None, predictive: None, peak_used: None,
-            observed_for_secs: None, reclaim: Reclaim::ObserveOnly, bound_introduction: BoundIntroduction::Forbidden,
+            target: &t,
+            cfg: &cfg,
+            max_staleness_secs: 60,
+            in_cooldown: false,
+            gate: live(),
+            policy: DisruptionPolicy::RestartFreeOnly,
+            force: None,
+            predictive: None,
+            peak_used: None,
+            observed_for_secs: None,
+            reclaim: Reclaim::ObserveOnly,
+            bound_introduction: BoundIntroduction::Forbidden,
         };
         match reconcile_one(&pinned, &prov).await.receipt {
-            TickReceipt::Observed { decision: Decision::ReclaimWithheld { current, reclaimable } } => {
-                assert_eq!(current, 2 * GI, "the kill ceiling is left exactly where it was");
-                assert!(reclaimable > 0, "and the slack it declined to take is NAMED, not hidden behind 'AtFloor'");
+            TickReceipt::Observed {
+                decision:
+                    Decision::ReclaimWithheld {
+                        current,
+                        reclaimable,
+                    },
+            } => {
+                assert_eq!(
+                    current,
+                    2 * GI,
+                    "the kill ceiling is left exactly where it was"
+                );
+                assert!(
+                    reclaimable > 0,
+                    "and the slack it declined to take is NAMED, not hidden behind 'AtFloor'"
+                );
             }
-            other => panic!("the hard plane must NOT shrink memory.max for efficiency, got {other:?}"),
+            other => {
+                panic!("the hard plane must NOT shrink memory.max for efficiency, got {other:?}")
+            }
         }
-        assert!(prov.cluster().applied().is_empty(), "memory.max is never carved down for efficiency");
+        assert!(
+            prov.cluster().applied().is_empty(),
+            "memory.max is never carved down for efficiency"
+        );
 
         // BYTE-IDENTITY: `Reclaim::Disabled` reproduces the pre-`Reclaim`
         // `hard_plane_grow_only` outcome EXACTLY — same refusal, same
         // `NoSafeShrink` receipt. The prior behaviour stays expressible verbatim,
         // so the change is a widening of the vocabulary, not a replacement of it.
-        let prov_quiet = resize_provider(MockCluster::new(100 * MI, 0, 2 * GI, we_own()).with_resize_restart_free(true));
-        let quiet = ReconcileInput { reclaim: Reclaim::Disabled, ..ReconcileInput {
-            target: &t, cfg: &cfg, max_staleness_secs: 60, in_cooldown: false, gate: live(),
-            policy: DisruptionPolicy::RestartFreeOnly, force: None, predictive: None, peak_used: None,
-            observed_for_secs: None, reclaim: Reclaim::Disabled, bound_introduction: BoundIntroduction::Forbidden,
-        } };
+        let prov_quiet = resize_provider(
+            MockCluster::new(100 * MI, 0, 2 * GI, we_own()).with_resize_restart_free(true),
+        );
+        let quiet = ReconcileInput {
+            reclaim: Reclaim::Disabled,
+            ..ReconcileInput {
+                target: &t,
+                cfg: &cfg,
+                max_staleness_secs: 60,
+                in_cooldown: false,
+                gate: live(),
+                policy: DisruptionPolicy::RestartFreeOnly,
+                force: None,
+                predictive: None,
+                peak_used: None,
+                observed_for_secs: None,
+                reclaim: Reclaim::Disabled,
+                bound_introduction: BoundIntroduction::Forbidden,
+            }
+        };
         match reconcile_one(&quiet, &prov_quiet).await.receipt {
-            TickReceipt::Observed { decision: Decision::NoSafeShrink { current } } => assert_eq!(current, 2 * GI),
-            other => panic!("Reclaim::Disabled must reproduce the old NoSafeShrink verbatim, got {other:?}"),
+            TickReceipt::Observed {
+                decision: Decision::NoSafeShrink { current },
+            } => assert_eq!(current, 2 * GI),
+            other => panic!(
+                "Reclaim::Disabled must reproduce the old NoSafeShrink verbatim, got {other:?}"
+            ),
         }
         assert!(prov_quiet.cluster().applied().is_empty());
 
         // CONTRAST: the SAME idle band WITHOUT the pin (default) DOES carve memory.max
         // down (the legacy single-limit behaviour) — proving the pin is what holds it.
-        let prov2 = resize_provider(MockCluster::new(100 * MI, 0, 2 * GI, we_own()).with_resize_restart_free(true));
-        let unpinned = ReconcileInput { reclaim: Reclaim::Enabled, bound_introduction: BoundIntroduction::Forbidden, ..ReconcileInput {
-            target: &t, cfg: &cfg, max_staleness_secs: 60, in_cooldown: false, gate: live(),
-            policy: DisruptionPolicy::RestartFreeOnly, force: None, predictive: None, peak_used: None,
-            observed_for_secs: None, reclaim: Reclaim::Enabled, bound_introduction: BoundIntroduction::Forbidden,
-        } };
+        let prov2 = resize_provider(
+            MockCluster::new(100 * MI, 0, 2 * GI, we_own()).with_resize_restart_free(true),
+        );
+        let unpinned = ReconcileInput {
+            reclaim: Reclaim::Enabled,
+            bound_introduction: BoundIntroduction::Forbidden,
+            ..ReconcileInput {
+                target: &t,
+                cfg: &cfg,
+                max_staleness_secs: 60,
+                in_cooldown: false,
+                gate: live(),
+                policy: DisruptionPolicy::RestartFreeOnly,
+                force: None,
+                predictive: None,
+                peak_used: None,
+                observed_for_secs: None,
+                reclaim: Reclaim::Enabled,
+                bound_introduction: BoundIntroduction::Forbidden,
+            }
+        };
         assert!(
-            matches!(reconcile_one(&unpinned, &prov2).await.receipt, TickReceipt::Applied { .. }),
+            matches!(
+                reconcile_one(&unpinned, &prov2).await.receipt,
+                TickReceipt::Applied { .. }
+            ),
             "without the pin the legacy path DOES shrink the limit — the pin is load-bearing"
         );
     }
@@ -811,14 +1266,28 @@ mod tests {
         let cfg = BandConfig::default();
         let t = deploy_target();
         // util 0.93 @ 1Gi ⇒ grow; the pin only suppresses shrinks, never grows.
-        let prov = resize_provider(MockCluster::new(950 * MI, 0, GI, we_own()).with_resize_restart_free(true));
+        let prov = resize_provider(
+            MockCluster::new(950 * MI, 0, GI, we_own()).with_resize_restart_free(true),
+        );
         let input = ReconcileInput {
-            target: &t, cfg: &cfg, max_staleness_secs: 60, in_cooldown: false, gate: live(),
-            policy: DisruptionPolicy::RestartFreeOnly, force: None, predictive: None, peak_used: None,
-            observed_for_secs: None, reclaim: Reclaim::ObserveOnly, bound_introduction: BoundIntroduction::Forbidden,
+            target: &t,
+            cfg: &cfg,
+            max_staleness_secs: 60,
+            in_cooldown: false,
+            gate: live(),
+            policy: DisruptionPolicy::RestartFreeOnly,
+            force: None,
+            predictive: None,
+            peak_used: None,
+            observed_for_secs: None,
+            reclaim: Reclaim::ObserveOnly,
+            bound_introduction: BoundIntroduction::Forbidden,
         };
         assert!(
-            matches!(reconcile_one(&input, &prov).await.receipt, TickReceipt::Applied { from: GI, .. }),
+            matches!(
+                reconcile_one(&input, &prov).await.receipt,
+                TickReceipt::Applied { from: GI, .. }
+            ),
             "the hard-plane pin must still let memory.max GROW under pressure"
         );
     }
@@ -826,12 +1295,36 @@ mod tests {
     /// A GROW during warmup STILL acts — refusing headroom at boot would itself OOM.
     #[tokio::test]
     async fn reconcile_warmup_never_blocks_a_grow() {
-        let cfg = BandConfig { warmup_seconds: 600, ..BandConfig::default() };
+        let cfg = BandConfig {
+            warmup_seconds: 600,
+            ..BandConfig::default()
+        };
         let t = deploy_target();
         // util 0.93 @ 1Gi, restarted 5s ago ⇒ STILL grows (in-place, golden).
-        let prov = resize_provider(MockCluster::new(950 * MI, 0, GI, we_own()).with_resize_restart_free(true));
-        let input = ReconcileInput { target: &t, cfg: &cfg, max_staleness_secs: 60, in_cooldown: false, gate: live(), policy: DisruptionPolicy::RestartFreeOnly, force: None, predictive: None, peak_used: None, observed_for_secs: Some(5), reclaim: Reclaim::Enabled, bound_introduction: BoundIntroduction::Forbidden };
-        assert!(matches!(reconcile_one(&input, &prov).await.receipt, TickReceipt::Applied { from: GI, .. }), "a grow at boot must still act");
+        let prov = resize_provider(
+            MockCluster::new(950 * MI, 0, GI, we_own()).with_resize_restart_free(true),
+        );
+        let input = ReconcileInput {
+            target: &t,
+            cfg: &cfg,
+            max_staleness_secs: 60,
+            in_cooldown: false,
+            gate: live(),
+            policy: DisruptionPolicy::RestartFreeOnly,
+            force: None,
+            predictive: None,
+            peak_used: None,
+            observed_for_secs: Some(5),
+            reclaim: Reclaim::Enabled,
+            bound_introduction: BoundIntroduction::Forbidden,
+        };
+        assert!(
+            matches!(
+                reconcile_one(&input, &prov).await.receipt,
+                TickReceipt::Applied { from: GI, .. }
+            ),
+            "a grow at boot must still act"
+        );
     }
 
     // ── CPU-BLINDNESS / NO-STARVE end-to-end (the pangea-operator 2026-06 fix) ────
@@ -847,32 +1340,61 @@ mod tests {
     async fn reconcile_never_starves_an_idle_but_throttled_cpu_workload() {
         use breathe_dimensions::CpuDescriptor;
         const CPU_FIELD: &str = "resources.limits.cpu";
-        let cfg = BandConfig { floor_bytes: 100, ceiling_bytes: 4000, ..BandConfig::default() };
+        let cfg = BandConfig {
+            floor_bytes: 100,
+            ceiling_bytes: 4000,
+            ..BandConfig::default()
+        };
         let t = deploy_target();
         let cpu = CpuDescriptor::with_resize_capability(true);
         // the exact throttle source the descriptor will ask the cluster to read.
         let throttle_src = cpu.throttle_source(&t).expect("cpu has a throttle source");
-        let cpu_owns = vec![FieldOwner { manager: "breathe/cpu".into(), field: CPU_FIELD.into() }];
+        let cpu_owns = vec![FieldOwner {
+            manager: "breathe/cpu".into(),
+            field: CPU_FIELD.into(),
+        }];
         // idle 50m @ 1000m (a STRONG idle shrink signal) BUT actively throttled.
         let cluster = MockCluster::new(50, 0, 1000, cpu_owns.clone())
             .with_resize_restart_free(true)
             .with_throttle_source(throttle_src)
             .with_throttle(5);
         let prov = BandProvider::new(cluster, cpu);
-        let input = ReconcileInput { target: &t, cfg: &cfg, max_staleness_secs: 60, in_cooldown: false, gate: live(), policy: DisruptionPolicy::RestartFreeOnly, force: None, predictive: None, peak_used: None, observed_for_secs: None, reclaim: Reclaim::Enabled, bound_introduction: BoundIntroduction::Forbidden };
+        let input = ReconcileInput {
+            target: &t,
+            cfg: &cfg,
+            max_staleness_secs: 60,
+            in_cooldown: false,
+            gate: live(),
+            policy: DisruptionPolicy::RestartFreeOnly,
+            force: None,
+            predictive: None,
+            peak_used: None,
+            observed_for_secs: None,
+            reclaim: Reclaim::Enabled,
+            bound_introduction: BoundIntroduction::Forbidden,
+        };
         let out = reconcile_one(&input, &prov).await;
         // never a shrink — it grows out of the cap (or holds); both honor no-starve.
         match out.receipt {
             TickReceipt::Applied { from, to, .. } => {
                 assert_eq!(from, 1000);
-                assert!(to > from, "a throttled idle cpu workload must GROW out of the cap, not shrink");
+                assert!(
+                    to > from,
+                    "a throttled idle cpu workload must GROW out of the cap, not shrink"
+                );
             }
             TickReceipt::Throttled { .. } => {}
-            other => panic!("throttled idle cpu workload must grow or hold (never starve), got {other:?}"),
+            other => panic!(
+                "throttled idle cpu workload must grow or hold (never starve), got {other:?}"
+            ),
         }
         // CRUCIAL: nothing was carved DOWN.
         for p in &prov.cluster().applied() {
-            assert!(p.value >= 1000, "a throttled cpu carve must never lower the limit, wrote {}", p.value);
+            assert!(
+                p.value >= 1000,
+                "a throttled cpu carve must never lower the limit, wrote {}",
+                p.value
+            );
         }
 
         // CONTRAST: the SAME idle reading WITHOUT a throttle signal DOES shrink
@@ -883,7 +1405,20 @@ mod tests {
             .with_resize_restart_free(true)
             .with_throttle_source(src2); // registered but throttle_signal stays 0
         let prov2 = BandProvider::new(cluster2, cpu2);
-        let input2 = ReconcileInput { target: &t, cfg: &cfg, max_staleness_secs: 60, in_cooldown: false, gate: live(), policy: DisruptionPolicy::RestartFreeOnly, force: None, predictive: None, peak_used: None, observed_for_secs: None, reclaim: Reclaim::Enabled, bound_introduction: BoundIntroduction::Forbidden };
+        let input2 = ReconcileInput {
+            target: &t,
+            cfg: &cfg,
+            max_staleness_secs: 60,
+            in_cooldown: false,
+            gate: live(),
+            policy: DisruptionPolicy::RestartFreeOnly,
+            force: None,
+            predictive: None,
+            peak_used: None,
+            observed_for_secs: None,
+            reclaim: Reclaim::Enabled,
+            bound_introduction: BoundIntroduction::Forbidden,
+        };
         assert!(
             matches!(reconcile_one(&input2, &prov2).await.receipt, TickReceipt::Applied { from, to, .. } if to < from),
             "without a throttle signal the idle cpu workload shrinks (the signal is load-bearing)"
@@ -904,15 +1439,33 @@ mod tests {
             .with_resize_restart_free(true)
             .with_restarting(true);
         let prov = resize_provider(cluster);
-        let input = ReconcileInput { target: &t, cfg: &cfg, max_staleness_secs: 60, in_cooldown: false, gate: live(), policy: DisruptionPolicy::RestartFreeOnly, force: None, predictive: None, peak_used: None, observed_for_secs: None, reclaim: Reclaim::Enabled, bound_introduction: BoundIntroduction::Forbidden };
+        let input = ReconcileInput {
+            target: &t,
+            cfg: &cfg,
+            max_staleness_secs: 60,
+            in_cooldown: false,
+            gate: live(),
+            policy: DisruptionPolicy::RestartFreeOnly,
+            force: None,
+            predictive: None,
+            peak_used: None,
+            observed_for_secs: None,
+            reclaim: Reclaim::Enabled,
+            bound_introduction: BoundIntroduction::Forbidden,
+        };
         let out = reconcile_one(&input, &prov).await;
         // never a shrink: a crash-looping idle workload grows out (demand lift) or holds.
         assert!(
             !matches!(out.receipt, TickReceipt::Applied { from, to, .. } if to < from),
-            "a crash-looping workload must NEVER be carved down, got {:?}", out.receipt
+            "a crash-looping workload must NEVER be carved down, got {:?}",
+            out.receipt
         );
         for p in &prov.cluster().applied() {
-            assert!(p.value >= 2 * GI, "a crash-loop carve must never lower the limit, wrote {}", p.value);
+            assert!(
+                p.value >= 2 * GI,
+                "a crash-loop carve must never lower the limit, wrote {}",
+                p.value
+            );
         }
     }
 
@@ -929,10 +1482,27 @@ mod tests {
         }
     }
     fn unsupported_cap() -> StorageCapability {
-        StorageCapability { volume_expansion: false, per_volume_metrics: false, provisioner: "rancher.io/local-path".into() }
+        StorageCapability {
+            volume_expansion: false,
+            per_volume_metrics: false,
+            provisioner: "rancher.io/local-path".into(),
+        }
     }
     fn storage_input<'a>(t: &'a Target, cfg: &'a BandConfig) -> ReconcileInput<'a> {
-        ReconcileInput { target: t, cfg, max_staleness_secs: 60, in_cooldown: false, gate: live(), policy: DisruptionPolicy::RestartFreeOnly, force: None, predictive: None, peak_used: None, observed_for_secs: None, reclaim: Reclaim::Enabled, bound_introduction: BoundIntroduction::Forbidden }
+        ReconcileInput {
+            target: t,
+            cfg,
+            max_staleness_secs: 60,
+            in_cooldown: false,
+            gate: live(),
+            policy: DisruptionPolicy::RestartFreeOnly,
+            force: None,
+            predictive: None,
+            peak_used: None,
+            observed_for_secs: None,
+            reclaim: Reclaim::Enabled,
+            bound_introduction: BoundIntroduction::Forbidden,
+        }
     }
 
     /// The `rustfs-data-storage` case: no competing field manager, but `local-path`
@@ -940,31 +1510,43 @@ mod tests {
     /// fix catches this at capability-discovery time — never carved.
     #[tokio::test]
     async fn reconcile_flags_an_unsupported_storage_class_as_capability_missing_never_carving() {
-        let cluster = MockCluster::new(GI, 0, GI, Vec::new()).with_storage_capability(Some(unsupported_cap()));
+        let cluster = MockCluster::new(GI, 0, GI, Vec::new())
+            .with_storage_capability(Some(unsupported_cap()));
         let prov = BandProvider::new(cluster, StorageDescriptor::default());
         let cfg = BandConfig::default();
         let t = pvc_target("rustfs-data-storage");
         let out = reconcile_one(&storage_input(&t, &cfg), &prov).await;
         match out.receipt {
-            TickReceipt::CapabilityMissing { volume_expansion, per_volume_metrics, provisioner } => {
+            TickReceipt::CapabilityMissing {
+                volume_expansion,
+                per_volume_metrics,
+                provisioner,
+            } => {
                 assert!(!volume_expansion);
                 assert!(!per_volume_metrics);
                 assert_eq!(provisioner, "rancher.io/local-path");
             }
             other => panic!("expected CapabilityMissing, got {other:?}"),
         }
-        assert!(prov.cluster().applied().is_empty(), "an unsupported StorageClass must never be carved");
+        assert!(
+            prov.cluster().applied().is_empty(),
+            "an unsupported StorageClass must never be carved"
+        );
     }
 
     /// THE collapse this fix exists for — the `data-mysql-0-storage` case: k3s's own
-    /// controller-manager owns the field (the real Camelot shape). WITHOUT the
+    /// controller-manager owns the field (the real the private estate shape). WITHOUT the
     /// capability gate this would reconcile to `Conflict`; WITH it, the IDENTICAL
     /// StorageClass gap reports the SAME `CapabilityMissing` terminal as the
     /// no-competing-owner case above — never a field-ownership red herring.
     #[tokio::test]
     async fn reconcile_capability_missing_beats_a_competing_field_manager() {
-        let competing = vec![FieldOwner { manager: "k3s".into(), field: "spec.resources.requests.storage".into() }];
-        let cluster = MockCluster::new(GI, 0, GI, competing).with_storage_capability(Some(unsupported_cap()));
+        let competing = vec![FieldOwner {
+            manager: "k3s".into(),
+            field: "spec.resources.requests.storage".into(),
+        }];
+        let cluster =
+            MockCluster::new(GI, 0, GI, competing).with_storage_capability(Some(unsupported_cap()));
         let prov = BandProvider::new(cluster, StorageDescriptor::default());
         let cfg = BandConfig::default();
         let t = pvc_target("data-mysql-0-storage");
@@ -983,7 +1565,7 @@ mod tests {
     /// as "dryRun — nothing written", which since `76924b0` was false for every
     /// k8s band kind, and which could never distinguish an authored
     /// `writeIntent: observe` from a band accidentally held by
-    /// `NotReady`/`Stale`/`Conflict` (six camelot-eks bands were in the second
+    /// `NotReady`/`Stale`/`Conflict` (six private-estate-eks bands were in the second
     /// state while every surface reported the first).
     #[tokio::test]
     async fn a_shadowed_tick_carves_nothing_and_names_the_reason() {
@@ -991,10 +1573,23 @@ mod tests {
         let t = target();
         let prov = provider(MockCluster::new(950 * MI, 0, GI, we_own())); // a real grow signal
         let held = ReconcileInput {
-            target: &t, cfg: &cfg, max_staleness_secs: 60, in_cooldown: false,
-            gate: EffectiveGate::Shadow { reason: ShadowReason::ConfirmPending { held_secs: 400, need_secs: 1800 } },
-            policy: DisruptionPolicy::AllowRestart, force: None, predictive: None, peak_used: None,
-            observed_for_secs: None, reclaim: Reclaim::Enabled, bound_introduction: BoundIntroduction::Forbidden,
+            target: &t,
+            cfg: &cfg,
+            max_staleness_secs: 60,
+            in_cooldown: false,
+            gate: EffectiveGate::Shadow {
+                reason: ShadowReason::ConfirmPending {
+                    held_secs: 400,
+                    need_secs: 1800,
+                },
+            },
+            policy: DisruptionPolicy::AllowRestart,
+            force: None,
+            predictive: None,
+            peak_used: None,
+            observed_for_secs: None,
+            reclaim: Reclaim::Enabled,
+            bound_introduction: BoundIntroduction::Forbidden,
         };
         let out = reconcile_one(&held, &prov).await;
         match out.receipt {
@@ -1003,14 +1598,23 @@ mod tests {
                 assert!(to > from);
                 assert_eq!(
                     reason,
-                    ShadowReason::ConfirmPending { held_secs: 400, need_secs: 1800 },
+                    ShadowReason::ConfirmPending {
+                        held_secs: 400,
+                        need_secs: 1800
+                    },
                     "the operator is told how much longer, not 'dryRun'"
                 );
             }
             other => panic!("expected ShadowWouldApply, got {other:?}"),
         }
-        assert!(prov.cluster().applied().is_empty(), "a shadowed band NEVER writes");
-        assert!(out.dry_run(), "the legacy bool is derived from the gate, never stored beside it");
+        assert!(
+            prov.cluster().applied().is_empty(),
+            "a shadowed band NEVER writes"
+        );
+        assert!(
+            out.dry_run(),
+            "the legacy bool is derived from the gate, never stored beside it"
+        );
     }
 
     /// The break-glass `forceLimit` path goes through the SAME door — a pinned
@@ -1022,22 +1626,37 @@ mod tests {
         let t = target();
         let prov = provider(MockCluster::new(500 * MI, 0, GI, we_own()));
         let pinned = ReconcileInput {
-            target: &t, cfg: &cfg, max_staleness_secs: 60, in_cooldown: false, gate: shadow(),
-            policy: DisruptionPolicy::AllowRestart, force: Some(4 * GI), predictive: None, peak_used: None,
-            observed_for_secs: None, reclaim: Reclaim::Enabled, bound_introduction: BoundIntroduction::Forbidden,
+            target: &t,
+            cfg: &cfg,
+            max_staleness_secs: 60,
+            in_cooldown: false,
+            gate: shadow(),
+            policy: DisruptionPolicy::AllowRestart,
+            force: Some(4 * GI),
+            predictive: None,
+            peak_used: None,
+            observed_for_secs: None,
+            reclaim: Reclaim::Enabled,
+            bound_introduction: BoundIntroduction::Forbidden,
         };
         assert!(
-            matches!(reconcile_one(&pinned, &prov).await.receipt, TickReceipt::ShadowWouldApply { .. }),
+            matches!(
+                reconcile_one(&pinned, &prov).await.receipt,
+                TickReceipt::ShadowWouldApply { .. }
+            ),
             "break-glass is still gated by authorization"
         );
-        assert!(prov.cluster().applied().is_empty(), "a shadowed force pin writes nothing");
+        assert!(
+            prov.cluster().applied().is_empty(),
+            "a shadowed force pin writes nothing"
+        );
     }
 
     // ── S2: THE BOUND-INTRODUCTION GATE (D7) ─────────────────────────────────
 
     /// **The coredns / ebs-csi-controller case.** A target that declares NO limit
     /// for this dimension is REPORTED (`NoLimit`) and left alone — breathe does
-    /// not invent a bound its author never asked for. On camelot-eks this exact
+    /// not invent a bound its author never asked for. On private-estate-eks this exact
     /// path capped cluster DNS (101 carves) and the EBS CSI control plane (162),
     /// neither of which declares a cpu limit; both looked like ordinary
     /// right-sizing because `read_limit` reports the same `0` for "unset" as for
@@ -1048,18 +1667,35 @@ mod tests {
         let t = deploy_target(); // PodResize ⇒ absence of limits.<r> means UNCONSTRAINED
         let prov = resize_provider(MockCluster::new(500 * MI, 0, 0, we_own()));
         let input = ReconcileInput {
-            target: &t, cfg: &cfg, max_staleness_secs: 60, in_cooldown: false, gate: live(),
-            policy: DisruptionPolicy::AllowRestart, force: None, predictive: None, peak_used: None,
-            observed_for_secs: None, reclaim: Reclaim::Enabled, bound_introduction: BoundIntroduction::Forbidden,
+            target: &t,
+            cfg: &cfg,
+            max_staleness_secs: 60,
+            in_cooldown: false,
+            gate: live(),
+            policy: DisruptionPolicy::AllowRestart,
+            force: None,
+            predictive: None,
+            peak_used: None,
+            observed_for_secs: None,
+            reclaim: Reclaim::Enabled,
+            bound_introduction: BoundIntroduction::Forbidden,
         };
         let out = reconcile_one(&input, &prov).await;
         assert_eq!(
             out.receipt,
-            TickReceipt::Observed { decision: Decision::NoLimit },
+            TickReceipt::Observed {
+                decision: Decision::NoLimit
+            },
             "an undeclared bound must be surfaced, not seeded"
         );
-        assert!(prov.cluster().applied().is_empty(), "capping an uncapped workload is a NEW constraint, never a carve");
-        assert!(out.observed.is_some_and(|o| o.bound.is_absent()), "and the provenance is carried, not inferred");
+        assert!(
+            prov.cluster().applied().is_empty(),
+            "capping an uncapped workload is a NEW constraint, never a carve"
+        );
+        assert!(
+            out.observed.is_some_and(|o| o.bound.is_absent()),
+            "and the provenance is carried, not inferred"
+        );
     }
 
     /// The escape hatch is real: a field genuinely CEDED to breathe (the
@@ -1072,14 +1708,26 @@ mod tests {
         let t = deploy_target();
         let prov = resize_provider(MockCluster::new(500 * MI, 0, 0, we_own()));
         let allowed = ReconcileInput {
-            target: &t, cfg: &cfg, max_staleness_secs: 60, in_cooldown: false, gate: live(),
-            policy: DisruptionPolicy::AllowRestart, force: None, predictive: None, peak_used: None,
-            observed_for_secs: None, reclaim: Reclaim::Enabled, bound_introduction: BoundIntroduction::Allowed,
+            target: &t,
+            cfg: &cfg,
+            max_staleness_secs: 60,
+            in_cooldown: false,
+            gate: live(),
+            policy: DisruptionPolicy::AllowRestart,
+            force: None,
+            predictive: None,
+            peak_used: None,
+            observed_for_secs: None,
+            reclaim: Reclaim::Enabled,
+            bound_introduction: BoundIntroduction::Allowed,
         };
         match reconcile_one(&allowed, &prov).await.receipt {
             TickReceipt::Applied { from, to, .. } => {
                 assert_eq!(from, 0);
-                assert_eq!(to, cfg.floor_bytes, "the ceded field seeds to the band floor, exactly as before");
+                assert_eq!(
+                    to, cfg.floor_bytes,
+                    "the ceded field seeds to the band floor, exactly as before"
+                );
             }
             other => panic!("an ALLOWED bound introduction must still seed, got {other:?}"),
         }
@@ -1097,18 +1745,28 @@ mod tests {
             "a volume always has a declared size"
         );
         assert!(
-            !breathe_provider::LimitLayout::Replica { kind: "Deployment".into() }.absence_is_unconstrained(),
+            !breathe_provider::LimitLayout::Replica {
+                kind: "Deployment".into()
+            }
+            .absence_is_unconstrained(),
             "0 replicas is a REAL count — scale-from-zero must keep working"
         );
-        let supported = StorageCapability { volume_expansion: true, per_volume_metrics: true, provisioner: "ebs.csi.aws.com".into() };
-        let cluster = MockCluster::new(0, 0, 0, Vec::new()).with_storage_capability(Some(supported));
+        let supported = StorageCapability {
+            volume_expansion: true,
+            per_volume_metrics: true,
+            provisioner: "ebs.csi.aws.com".into(),
+        };
+        let cluster =
+            MockCluster::new(0, 0, 0, Vec::new()).with_storage_capability(Some(supported));
         let prov = BandProvider::new(cluster, StorageDescriptor::default());
         let cfg = BandConfig::default();
         let t = pvc_target("elastic-data");
         let out = reconcile_one(&storage_input(&t, &cfg), &prov).await;
         assert_ne!(
             out.receipt,
-            TickReceipt::Observed { decision: Decision::NoLimit },
+            TickReceipt::Observed {
+                decision: Decision::NoLimit
+            },
             "a storage band must not be gated by the bound-introduction rule"
         );
     }
@@ -1117,13 +1775,20 @@ mod tests {
     /// the gate is additive, never a tax on the golden path.
     #[tokio::test]
     async fn reconcile_never_gates_a_supported_storage_class() {
-        let supported = StorageCapability { volume_expansion: true, per_volume_metrics: true, provisioner: "ebs.csi.aws.com".into() };
-        let cluster = MockCluster::new(950 * MI, 0, GI, Vec::new()).with_storage_capability(Some(supported));
+        let supported = StorageCapability {
+            volume_expansion: true,
+            per_volume_metrics: true,
+            provisioner: "ebs.csi.aws.com".into(),
+        };
+        let cluster =
+            MockCluster::new(950 * MI, 0, GI, Vec::new()).with_storage_capability(Some(supported));
         let prov = BandProvider::new(cluster, StorageDescriptor::default());
         let cfg = BandConfig::default();
         let t = pvc_target("elastic-data");
         match reconcile_one(&storage_input(&t, &cfg), &prov).await.receipt {
-            TickReceipt::CapabilityMissing { .. } => panic!("a supported StorageClass must never be gated"),
+            TickReceipt::CapabilityMissing { .. } => {
+                panic!("a supported StorageClass must never be gated")
+            }
             _ => {} // Applied / Observed / etc. — whatever the band law decides, just not gated.
         }
     }

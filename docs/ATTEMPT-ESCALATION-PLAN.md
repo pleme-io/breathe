@@ -1,7 +1,7 @@
 # Attempt escalation — implementation plan
 
 The build plan for [`theory/BREATHABILITY-NODE.md` §2.5](../../theory/BREATHABILITY-NODE.md)
-(attempt-scoped escalation), with camelot CI as the first instance. Companion to
+(attempt-scoped escalation), with the private estate CI as the first instance. Companion to
 [`REALLOCATION.md`](REALLOCATION.md) §3, which is where the cost case lives.
 
 **Goal.** An attempt starts on the cheapest capacity its tolerance permits.
@@ -11,7 +11,7 @@ first attempt, guaranteed landing, cost optimized across the attempt chain.
 
 ## 0. The precondition that outranks everything else
 
-**Karpenter's interruption controller is not running on camelot.** Not "reacting
+**Karpenter's interruption controller is not running on one cluster.** Not "reacting
 slowly" — not instantiated. `settings.interruptionQueue` is empty, and the chart
 emits `INTERRUPTION_QUEUE` only inside a `{{- with .Values.settings.interruptionQueue }}`
 guard, so the controller is never constructed. The repo's own note (karpenter
@@ -33,12 +33,12 @@ today**: jobs would die with no drain, no warning, and no way to tell a reclaim
 from a genuine failure.
 
 The queue and EventBridge fan-in are already declared as GitOps
-(`camelot-eks-karpenter-interruption-infrastructuretemplate.yaml`, 10 resources)
+(`private-estate-eks-karpenter-interruption-infrastructuretemplate.yaml`, 10 resources)
 and the controller role's `AllowInterruptionQueueActions` grant is rendered. Both
-are `suspend: true` on a named blocker: `camelot-eks-operator`'s IAM permissions
+are `suspend: true` on a named blocker: `private-estate-eks-operator`'s IAM permissions
 **boundary** allows no `sqs:*` and no `events:*`, so magma cannot create them.
 Widening it needs a human-SSO apply against
-`workspaces/camelot-eks-operator-iam/`.
+`workspaces/private-estate-eks-operator-iam/`.
 
 **Gate 0:** interruption controller live, and a real reclaim observed producing a
 cordon + drain. Nothing downstream ships before this. It is also independently
@@ -83,13 +83,13 @@ docker** — so it also does not need `containerMode: dind`.
 spot pool.
 
 **Sizing is measured, not guessed — done 2026-08-05** against the metric spine
-(`max_over_time`, 24h, `namespace="camelot-ci", container="runner"`):
+(`max_over_time`, 24h, `namespace="builder-ci", container="runner"`):
 
 ```
-camelot-builder-pleme-eks-…-tg58x     0.80 Gi     1.15 cores
-camelot-builder-pleme-eks-…-s8hlp     0.35 Gi
-camelot-builder-eks-…-4f5d2           0.59 Gi     0.96 cores
-camelot-builder-eks-…-b8xsz           5.58 Gi     2.44 cores   ← long-build set
+the self-hosted builder pool-…-tg58x     0.80 Gi     1.15 cores
+the self-hosted builder pool-…-s8hlp     0.35 Gi
+private-estate-builder-eks-…-4f5d2           0.59 Gi     0.96 cores
+private-estate-builder-eks-…-b8xsz           5.58 Gi     2.44 cores   ← long-build set
 ```
 
 The pleme short-job runners peak at **0.28–0.80 Gi**. Against a **24 Gi**
@@ -111,7 +111,7 @@ The correlation chain, each link naming a real object:
 
 ```
 EC2 spot ITN / Rebalance Recommendation
-  → EventBridge → SQS camelot-eks-karpenter-interruption
+  → EventBridge → SQS private-estate-eks-karpenter-interruption
   → Karpenter interruption controller: cordon + drain, events on Node/NodeClaim
   → node name
   → the ephemeral runner pod evicted from it
@@ -121,7 +121,7 @@ EC2 spot ITN / Rebalance Recommendation
 Attribution is a *join*, not a heuristic: an attempt is reclaim-killed **iff** its
 node carries an interruption event whose window contains the pod's termination.
 
-**The receipt for why this matters** (measured 2026-08-05): on camelot,
+**The receipt for why this matters** (measured 2026-08-05): on one cluster,
 `check-x-crypto-advisories` failed twice with exit **130** and
 `The runner has received a shutdown signal` — which reads exactly like a reclaim.
 It was on an **on-demand** node, where reclaim is impossible. An exit-status
@@ -155,7 +155,7 @@ escalation is two mechanisms, both already available:
   retry lands on the stable set:
 
   ```yaml
-  runs-on: ${{ github.run_attempt == 1 && 'camelot-short-pleme-eks' || 'camelot-builder-pleme-eks' }}
+  runs-on: ${{ github.run_attempt == 1 && 'private-estate-short-pleme-eks' || (vars.PRIVATE_BUILDER_RUNNER || 'ubuntu-latest') }}
   ```
 
 This needs no new scheduler. Attempt 1 is cheap; any reclaim-attributed retry is

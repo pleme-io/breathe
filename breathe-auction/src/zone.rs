@@ -18,7 +18,7 @@
 //! own `falls_back_to` graph is scoped to `Forma` (infra shapes — node pools,
 //! IOPS, …) and means something different (substitution on failure, not
 //! ordering on success). Neither catalog crosses into the other, but the
-//! camelot 17-pod incident's root cause is EXACTLY a cross-catalog edge (a
+//! the private estate 17-pod incident's root cause is EXACTLY a cross-catalog edge (a
 //! `Forma` decision — which node-pool shape to run — gates a `DimensionId`
 //! decision — what pod-density a `Cpu`/`Memory` band may assume). [`BreatheZone`]
 //! is that typed bridge: a zone names which `Forma`s and `DimensionId`s
@@ -26,12 +26,14 @@
 
 use std::collections::HashMap;
 
-use breathe_catalog::{lookup, ALL_DIMENSIONS};
+use breathe_catalog::{ALL_DIMENSIONS, lookup};
 use breathe_provider::{DimensionId, Forma};
 use shigoto_dag::Dag;
 use shigoto_types::{JobId, JobKindId, JobScope, JobSubject};
 
-use crate::quinhao::{allocate_drf_fabric, allocate_fabric, FabricError, FabricGrants, PoolCapacity, Quinhao};
+use crate::quinhao::{
+    FabricError, FabricGrants, PoolCapacity, Quinhao, allocate_drf_fabric, allocate_fabric,
+};
 
 /// The typed `JobId` for one dimension's per-tick `decide()` call, scoped to
 /// `scope`. Stable — two calls with the same `(scope, dim)` are `JobId`-equal.
@@ -98,7 +100,7 @@ pub struct BreatheZone {
     /// The cross-catalog bridge: every `Forma` in [`Self::formas`] structurally
     /// gates every dim in `gated_dims` — that dim's `decide()` may not be
     /// trusted until every enrolled `Forma`'s decision has resolved. The
-    /// camelot incident's edge, stated as data: node-pool shape gates the
+    /// the private estate incident's edge, stated as data: node-pool shape gates the
     /// pod-density assumption CPU/Memory bands make.
     pub gated_dims: &'static [DimensionId],
     /// WHICH `quinhao` kernel this zone's claimants are divided by — the
@@ -160,7 +162,10 @@ impl std::fmt::Display for ZoneError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::GatedDimNotEnrolled { dim } => {
-                write!(f, "gated_dims names {dim:?}, which is not in this zone's own dims")
+                write!(
+                    f,
+                    "gated_dims names {dim:?}, which is not in this zone's own dims"
+                )
             }
             Self::DimensionCycle => write!(f, "this zone's dims contain a depends_on cycle"),
         }
@@ -189,7 +194,10 @@ impl BreatheZone {
         // checking the whole catalog's unrelated dimensions. `dims` alone
         // is sufficient — see DimensionCycle's own doc comment for why
         // `formas` can never introduce a cycle.
-        if dimension_tick_dag(&self.scope, self.dims).toposort().is_err() {
+        if dimension_tick_dag(&self.scope, self.dims)
+            .toposort()
+            .is_err()
+        {
             return Err(ZoneError::DimensionCycle);
         }
         Ok(())
@@ -253,7 +261,9 @@ pub fn allocate_for_zone(
 ) -> Result<FabricGrants, FabricError> {
     match zone.allocation_policy {
         AllocationPolicy::PerAxisIndependent => allocate_fabric(capacity, setpoint, claimants),
-        AllocationPolicy::DominantResourceFairness => allocate_drf_fabric(capacity, setpoint, claimants),
+        AllocationPolicy::DominantResourceFairness => {
+            allocate_drf_fabric(capacity, setpoint, claimants)
+        }
     }
 }
 

@@ -8,12 +8,12 @@
 //! aggregate before assert where it aids the operator; every named gate has teeth.
 
 use breathe_spread::axis::{
-    ArchSelection, Interruption, LadderMode, PerfClass, Placement, ResolvedArch, SpotStrategy,
-    StorageBinding, REMOVED_ON_DEMAND_PERF_CLASSES,
+    ArchSelection, Interruption, LadderMode, PerfClass, Placement, REMOVED_ON_DEMAND_PERF_CLASSES,
+    ResolvedArch, SpotStrategy, StorageBinding,
 };
 use breathe_spread::invariant::AuctionClause;
 use breathe_spread::spread::{
-    cost_witness, AuctionSpread, Lane, StrategyWiring, UseCase, BUILD_BURST, MOLDINGS, SAAS_STEADY,
+    AuctionSpread, BUILD_BURST, Lane, MOLDINGS, SAAS_STEADY, StrategyWiring, UseCase, cost_witness,
 };
 use breathe_spread::{AXIS_LEDGER, Maturity};
 
@@ -25,16 +25,28 @@ fn every_use_case_resolves_to_a_valid_permutation() {
     // offending molding with its violated rule-names.
     for m in MOLDINGS {
         let v = m.violations();
-        assert!(v.is_empty(), "{} molding is an invalid permutation: {:?}", m.use_case.as_str(), v);
+        assert!(
+            v.is_empty(),
+            "{} molding is an invalid permutation: {:?}",
+            m.use_case.as_str(),
+            v
+        );
     }
 }
 
 #[test]
 fn matrix_covers_every_use_case() {
     for uc in UseCase::ALL {
-        assert!(MOLDINGS.iter().any(|m| m.use_case == uc), "no molding for {}", uc.as_str());
+        assert!(
+            MOLDINGS.iter().any(|m| m.use_case == uc),
+            "no molding for {}",
+            uc.as_str()
+        );
     }
-    assert!(MOLDINGS.len() >= 3, "the three named use-cases must each mold a permutation");
+    assert!(
+        MOLDINGS.len() >= 3,
+        "the three named use-cases must each mold a permutation"
+    );
 }
 
 // ── row 2: never-on-demand is STRUCTURAL (capacity is not an axis) ──────────────
@@ -43,10 +55,17 @@ fn matrix_covers_every_use_case() {
 fn never_on_demand_is_structural_capacity_is_not_an_axis() {
     // The perf-class axis has EXACTLY the two spot-only arms; the removed on-demand
     // classes are named + genuinely absent from the enum's labels.
-    assert_eq!(PerfClass::ALL.len(), 2, "perf-class is spot-only: exactly cost-floor + time-floor");
+    assert_eq!(
+        PerfClass::ALL.len(),
+        2,
+        "perf-class is spot-only: exactly cost-floor + time-floor"
+    );
     let labels: Vec<&str> = PerfClass::ALL.iter().map(|p| p.as_str()).collect();
     for removed in REMOVED_ON_DEMAND_PERF_CLASSES {
-        assert!(!labels.contains(&removed), "the on-demand perf class {removed} must have no arm");
+        assert!(
+            !labels.contains(&removed),
+            "the on-demand perf class {removed} must have no arm"
+        );
     }
     // And the never-on-demand clause is the strongest (truly-unrep library + parse-wire).
     assert_eq!(
@@ -63,11 +82,17 @@ fn anti_posture_strategies_are_unrepresentable() {
     assert_eq!(SpotStrategy::ALL.len(), 3);
     let labels: Vec<&str> = SpotStrategy::ALL.iter().map(|s| s.as_str()).collect();
     for anti in ["lowest-price", "capacity-optimized-prioritized"] {
-        assert!(!labels.contains(&anti), "the anti-posture strategy {anti} must not be an arm");
+        assert!(
+            !labels.contains(&anti),
+            "the anti-posture strategy {anti} must not be an arm"
+        );
     }
     // Arch has exactly the cost-optimized default + the two justified pins.
     assert_eq!(ArchSelection::ALL.len(), 3);
-    assert_eq!(ArchSelection::default_selection(), ArchSelection::CostOptimized);
+    assert_eq!(
+        ArchSelection::default_selection(),
+        ArchSelection::CostOptimized
+    );
 }
 
 // ── row 4: every molding is DUAL-PURPOSE (cost AND resiliency) ──────────────────
@@ -75,8 +100,16 @@ fn anti_posture_strategies_are_unrepresentable() {
 #[test]
 fn every_molding_is_dual_purpose() {
     for m in MOLDINGS {
-        assert!(!m.cost_effect.is_empty(), "{}: cost_effect must be named", m.use_case.as_str());
-        assert!(!m.resiliency_effect.is_empty(), "{}: resiliency_effect must be named", m.use_case.as_str());
+        assert!(
+            !m.cost_effect.is_empty(),
+            "{}: cost_effect must be named",
+            m.use_case.as_str()
+        );
+        assert!(
+            !m.resiliency_effect.is_empty(),
+            "{}: resiliency_effect must be named",
+            m.use_case.as_str()
+        );
     }
 }
 
@@ -85,8 +118,16 @@ fn every_molding_is_dual_purpose() {
 #[test]
 fn every_molding_carries_inline_cost_justification() {
     for m in MOLDINGS {
-        assert!(!m.cost_rationale.rationale.is_empty(), "{}: rationale must be named", m.use_case.as_str());
-        assert!(!m.cost_rationale.auto_flip_when.is_empty(), "{}: auto-flip trigger must be named (self-adjusting)", m.use_case.as_str());
+        assert!(
+            !m.cost_rationale.rationale.is_empty(),
+            "{}: rationale must be named",
+            m.use_case.as_str()
+        );
+        assert!(
+            !m.cost_rationale.auto_flip_when.is_empty(),
+            "{}: auto-flip trigger must be named (self-adjusting)",
+            m.use_case.as_str()
+        );
     }
 }
 
@@ -96,13 +137,22 @@ fn arm_losing_is_always_loud() {
     // — the operator's "be vocal where arm is not winning" made a build gate.
     for m in MOLDINGS {
         if m.cost_rationale.chosen_arch == ResolvedArch::Amd64 {
-            let ci = m
-                .cost_rationale
-                .counterintuitive
-                .unwrap_or_else(|| panic!("{}: an x86 cost choice must carry a LOUD counter-intuitive note", m.use_case.as_str()));
-            assert!(ci.contains('%'), "{}: the loud note must name the % delta", m.use_case.as_str());
+            let ci = m.cost_rationale.counterintuitive.unwrap_or_else(|| {
+                panic!(
+                    "{}: an x86 cost choice must carry a LOUD counter-intuitive note",
+                    m.use_case.as_str()
+                )
+            });
             assert!(
-                ci.contains("loses") || ci.contains("LOSES") || ci.contains("pricier") || ci.contains("PRICIER"),
+                ci.contains('%'),
+                "{}: the loud note must name the % delta",
+                m.use_case.as_str()
+            );
+            assert!(
+                ci.contains("loses")
+                    || ci.contains("LOSES")
+                    || ci.contains("pricier")
+                    || ci.contains("PRICIER"),
                 "{}: the loud note must plainly say arm loses / is pricier",
                 m.use_case.as_str()
             );
@@ -120,12 +170,22 @@ fn every_molding_arch_flips_with_the_price_signal() {
     use breathe_spread::axis::ArchCostSignal;
     for m in MOLDINGS {
         let w = cost_witness(m.use_case).expect("witness");
-        assert_eq!(m.resolved_arch(w.signal), m.cost_rationale.chosen_arch, "{}: arch must equal the cost resolution", m.use_case.as_str());
+        assert_eq!(
+            m.resolved_arch(w.signal),
+            m.cost_rationale.chosen_arch,
+            "{}: arch must equal the cost resolution",
+            m.use_case.as_str()
+        );
         let flipped = ArchCostSignal {
             arm64_effective_cost: w.signal.amd64_effective_cost,
             amd64_effective_cost: w.signal.arm64_effective_cost,
         };
-        assert_ne!(m.resolved_arch(flipped), m.resolved_arch(w.signal), "{}: flipping price must flip arch", m.use_case.as_str());
+        assert_ne!(
+            m.resolved_arch(flipped),
+            m.resolved_arch(w.signal),
+            "{}: flipping price must flip arch",
+            m.use_case.as_str()
+        );
     }
 }
 
@@ -142,13 +202,19 @@ fn the_managed_ng_strategy_gap_is_expressible_and_enforced() {
         strategy_wiring: StrategyWiring::Effective,
         ..BUILD_BURST
     };
-    assert!(!dishonest.is_valid(), "a dropped strategy claimed effective must be rejected");
+    assert!(
+        !dishonest.is_valid(),
+        "a dropped strategy claimed effective must be rejected"
+    );
 
     let honest = AuctionSpread {
         strategy_wiring: StrategyWiring::IgnoredOnManagedNg,
         ..dishonest
     };
-    assert!(honest.is_valid(), "marking the gap ignored-on-managed-ng is honest + valid");
+    assert!(
+        honest.is_valid(),
+        "marking the gap ignored-on-managed-ng is honest + valid"
+    );
 }
 
 // ── row 7b: the standalone-single-instance lane has NO strategy axis to bind ────
@@ -165,7 +231,10 @@ fn the_standalone_instance_lane_has_no_strategy_axis_and_is_expressible() {
         strategy_wiring: StrategyWiring::Effective,
         ..BUILD_BURST
     };
-    assert!(!claims_effective.is_valid(), "a standalone instance has nothing to wire the strategy through");
+    assert!(
+        !claims_effective.is_valid(),
+        "a standalone instance has nothing to wire the strategy through"
+    );
 
     let conflates_with_managed_ng_gap = AuctionSpread {
         lane: Lane::StandaloneEc2Instance,
@@ -182,7 +251,10 @@ fn the_standalone_instance_lane_has_no_strategy_axis_and_is_expressible() {
         strategy_wiring: StrategyWiring::NotApplicableSingleInstance,
         ..BUILD_BURST
     };
-    assert!(honest.is_valid(), "not-applicable-single-instance is the one honest wiring for this lane");
+    assert!(
+        honest.is_valid(),
+        "not-applicable-single-instance is the one honest wiring for this lane"
+    );
 }
 
 // ── row 8: placement-safe (single-instance-EBS ⇒ single-AZ) ─────────────────────
@@ -191,7 +263,12 @@ fn the_standalone_instance_lane_has_no_strategy_axis_and_is_expressible() {
 fn single_instance_ebs_moldings_are_single_az() {
     for m in MOLDINGS {
         if m.storage_binding == StorageBinding::SingleInstanceEbs {
-            assert_eq!(m.placement, Placement::SingleAz, "{}: single-instance-EBS must be single-AZ", m.use_case.as_str());
+            assert_eq!(
+                m.placement,
+                Placement::SingleAz,
+                "{}: single-instance-EBS must be single-AZ",
+                m.use_case.as_str()
+            );
         }
     }
 }
@@ -208,10 +285,24 @@ fn axis_ledger_partitions_and_names_the_gaps() {
     assert_eq!(names.len(), n, "axis ledger names must be unique");
     assert!(n >= 7, "every permutation axis + capacity has a ledger row");
 
-    let strat = AXIS_LEDGER.iter().find(|r| r.axis == "spot-strategy").expect("spot-strategy row");
-    assert_eq!(strat.maturity, Maturity::Design, "the managed-NG strategy gap keeps spot-strategy at Design");
-    let retirada = AXIS_LEDGER.iter().find(|r| r.axis == "interruption (retirada)").expect("retirada row");
-    assert_eq!(retirada.maturity, Maturity::Design, "retirada agent is a LiveTODO, not shipped");
+    let strat = AXIS_LEDGER
+        .iter()
+        .find(|r| r.axis == "spot-strategy")
+        .expect("spot-strategy row");
+    assert_eq!(
+        strat.maturity,
+        Maturity::Design,
+        "the managed-NG strategy gap keeps spot-strategy at Design"
+    );
+    let retirada = AXIS_LEDGER
+        .iter()
+        .find(|r| r.axis == "interruption (retirada)")
+        .expect("retirada row");
+    assert_eq!(
+        retirada.maturity,
+        Maturity::Design,
+        "retirada agent is a LiveTODO, not shipped"
+    );
 }
 
 // ── row 10: no clause claims above its honest ceiling ───────────────────────────
@@ -223,7 +314,11 @@ fn no_clause_rounds_up_past_its_ceiling() {
         let t = c.achievable_tier();
         // a ceiling clause never claims a truly-unrep tier it cannot reach.
         if matches!(t, UnrepTier::CeilingC1 | UnrepTier::CeilingC2) {
-            assert!(t.rank() < UnrepTier::ParseTimeRejected.rank(), "{}: a ceiling must not out-rank parse-time", c.rule_name());
+            assert!(
+                t.rank() < UnrepTier::ParseTimeRejected.rank(),
+                "{}: a ceiling must not out-rank parse-time",
+                c.rule_name()
+            );
         }
     }
 }
@@ -233,17 +328,40 @@ fn no_clause_rounds_up_past_its_ceiling() {
 #[test]
 fn the_moldings_are_declared_in_the_lisp() {
     const AUCTION_LISP: &str = include_str!("../specs/auction.lisp");
-    assert!(AUCTION_LISP.contains("defauction-spread"), "the lisp must declare the (defauction-spread) form");
+    assert!(
+        AUCTION_LISP.contains("defauction-spread"),
+        "the lisp must declare the (defauction-spread) form"
+    );
     for m in MOLDINGS {
-        assert!(AUCTION_LISP.contains(m.use_case.as_str()), "the lisp is missing the {} molding", m.use_case.as_str());
+        assert!(
+            AUCTION_LISP.contains(m.use_case.as_str()),
+            "the lisp is missing the {} molding",
+            m.use_case.as_str()
+        );
     }
     // the six axes' vocabulary is present.
-    for tok in ["cost-optimized", "capacity-optimized", "evolving-degrade", "time-floor", "single-az", "retirada"] {
-        assert!(AUCTION_LISP.contains(tok), "the lisp is missing the axis token {tok}");
+    for tok in [
+        "cost-optimized",
+        "capacity-optimized",
+        "evolving-degrade",
+        "time-floor",
+        "single-az",
+        "retirada",
+    ] {
+        assert!(
+            AUCTION_LISP.contains(tok),
+            "the lisp is missing the axis token {tok}"
+        );
     }
     // the never-on-demand hard law + the loud floor case are named in the lisp.
-    assert!(AUCTION_LISP.contains("never-on-demand"), "the lisp must name the never-on-demand law");
-    assert!(AUCTION_LISP.contains("arm-loses") || AUCTION_LISP.contains("arm loses"), "the lisp must name the loud floor case");
+    assert!(
+        AUCTION_LISP.contains("never-on-demand"),
+        "the lisp must name the never-on-demand law"
+    );
+    assert!(
+        AUCTION_LISP.contains("arm-loses") || AUCTION_LISP.contains("arm loses"),
+        "the lisp must name the loud floor case"
+    );
 }
 
 // ── row 12: the interruption axis is honest about the retirada LiveTODO ─────────
@@ -251,7 +369,10 @@ fn the_moldings_are_declared_in_the_lisp() {
 #[test]
 fn builder_uses_retry_on_reclaim_no_agent_needed() {
     assert_eq!(BUILD_BURST.interruption, Interruption::RetryOnReclaim);
-    assert!(!BUILD_BURST.interruption.uses_retirada(), "the builder needs no drain agent (idempotent + cache-backed)");
+    assert!(
+        !BUILD_BURST.interruption.uses_retirada(),
+        "the builder needs no drain agent (idempotent + cache-backed)"
+    );
     // the ladder mode is evolving-degrade for the builder, flat-pool only for the tiny eyes.
     assert_eq!(BUILD_BURST.ladder, LadderMode::EvolvingDegrade);
 }

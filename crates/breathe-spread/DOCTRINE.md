@@ -47,7 +47,7 @@ seven-clause invariant + the verification matrix keep every combination honest.
 
 **Capacity is NOT an axis.** 100 % spot is an invariant, not a knob — there is no
 on-demand arm (truly-unrep in Rust; parse-rejected at the Ruby boundary via
-`CamelotBuilderNodeGroup::reject_on_demand!`).
+`the builder node-group architecture::reject_on_demand!`).
 
 ## Arch is cost-optimized — and LOUD where the cost answer is surprising
 
@@ -56,7 +56,7 @@ the ladder picks the cheaper arch. The current cost answer resolves to a genuine
 three-way split (proven not a hardcode — flip the price signal, the arch flips):
 
 - **builder → arm** — −37 %/build-hr + ~18 % faster wall-clock (proven; CGO=0 pure-Go, arm-native). Expected win.
-- **floor → x86** — the shipped CamelotNodeGroup DEFAULTS are already `m5/m5a/m6i/m6a`. **ARM LOSES HERE** — Graviton m7g/m8g large-spot is **+19 % pricier** than the cheap 2019-gen m5a x86 large-spot NOW. The spread SAYS SO loudly + inline, with the auto-flip trigger.
+- **floor → x86** — the shipped the isolated node-group architecture DEFAULTS are already `m5/m5a/m6i/m6a`. **ARM LOSES HERE** — Graviton m7g/m8g large-spot is **+19 % pricier** than the cheap 2019-gen m5a x86 large-spot NOW. The spread SAYS SO loudly + inline, with the auto-flip trigger.
 - **eyes → arm** — t4g burstable < t3 x86 at tiny sizes. Expected.
 
 The `CostRationale` (number + why + `auto_flip_when`) travels WITH each decision;
@@ -78,7 +78,7 @@ arm loses) — the operator's "be vocal where arm is not winning" as a CI gate.
 ## Reference note (for the contextualizify surfaces)
 
 The BREATHABILITY doctrine's 100 %-spot / flex-window section
-(`theory/BREATHABILITY.md` §II.6) and the `/breathability` + `/camelot` skills
+(`theory/BREATHABILITY.md` §II.6) and the `/breathability` + `/the private estate` skills
 should point at **`pleme-io/breathe/crates/breathe-spread`** as the CANONICAL LOCK
 of the arch × auction × spot spread — the compute peer of the `breathe-invariant`
 dimension lock. The doctrine PROSE is the model; this crate is the typed contract

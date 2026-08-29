@@ -15,14 +15,14 @@ use std::{sync::Arc, time::Duration};
 mod app_band;
 mod eks_nodegroup_provedor;
 mod karpenter_provedor;
+mod kube_param;
 mod nats_trigger;
 mod node_forma;
 mod origin_guard;
-mod kube_param;
-mod quinhao;
 mod pod_memory_high;
 mod policy_controller;
 mod portao;
+mod quinhao;
 mod replica_band;
 
 /// The two Tier-B authorization verdicts this crate's tests actuate under,
@@ -41,7 +41,10 @@ pub(crate) mod test_gate {
     /// A LIVE verdict (`dryRun: false`, not frozen) — the provedor actuates.
     pub(crate) fn live_gate() -> EffectiveGate {
         let g = breathe_provider::legacy_two_state_gate(false, false);
-        assert!(g.is_live(), "an unfrozen, non-dryRun Tier-B pool must resolve live");
+        assert!(
+            g.is_live(),
+            "an unfrozen, non-dryRun Tier-B pool must resolve live"
+        );
         g
     }
 
@@ -54,34 +57,39 @@ pub(crate) mod test_gate {
     }
 }
 
-use breathe_core::{reconcile_one, PredictiveInput, ReconcileInput};
+use breathe_config::{CacheConfig, CoordinationConfig, ScaleConfig, StoreConfig};
+use breathe_core::{PredictiveInput, ReconcileInput, reconcile_one};
 use breathe_crd::{
-    AppBand, ArcBand, Band, BandSummary, BreatheCloudPool, BreatheConfig, BreatheConfigSpec, BreatheOverview,
-    BreathePosture, CgroupBand, CgroupCpuBand, CpuBand, Densa, HostParamBand, IsolationBand, KubeParamBand,
-    MemoryBand, OverviewStatus, QuinhaoPool, ReplicaBand, RequestBand, StorageBand, BreathePolicy};
+    AppBand, ArcBand, Band, BandSummary, BreatheCloudPool, BreatheConfig, BreatheConfigSpec,
+    BreatheOverview, BreathePolicy, BreathePosture, CgroupBand, CgroupCpuBand, CpuBand, Densa,
+    HostParamBand, IsolationBand, KubeParamBand, MemoryBand, OverviewStatus, QuinhaoPool,
+    ReplicaBand, RequestBand, StorageBand,
+};
 use breathe_dimensions::{CpuDescriptor, MemoryDescriptor, StorageDescriptor};
 use breathe_kube::KubeCluster;
-use breathe_provider::{BandProvider, ClassCooldowns, DimensionDescriptor, ResourceProvider, Target};
+use breathe_provider::{
+    BandProvider, ClassCooldowns, DimensionDescriptor, ResourceProvider, Target,
+};
 use breathe_runtime::{
-    apply_env_context, counters_from_status, entry_for, error_status, event_for, health_verdict, metrics_for,
-    next_requeue, now_rfc3339, now_secs, patch_status, patch_status_if_changed, rfc3339_in_future, should_emit_event,
-    should_emit_health_event, health_event_for, status_for, suspended_status, STUCK_AFTER_SECS,
-    BandLabels, CumulativeCounters, EnvContext, EventKind,
+    BandLabels, CumulativeCounters, EnvContext, EventKind, STUCK_AFTER_SECS, apply_env_context,
+    counters_from_status, entry_for, error_status, event_for, health_event_for, health_verdict,
+    metrics_for, next_requeue, now_rfc3339, now_secs, patch_status, patch_status_if_changed,
+    rfc3339_in_future, should_emit_event, should_emit_health_event, status_for, suspended_status,
 };
 use breathe_store::{
     BandRef, DecisionLog, GatedDecisionLog, InMemDecisionLog, InMemSampleCache, Sample, SampleCache,
 };
-use breathe_config::{CacheConfig, CoordinationConfig, ScaleConfig, StoreConfig};
-use k8s_openapi::api::core::v1::Namespace;
 use futures::StreamExt;
+use k8s_openapi::api::core::v1::Namespace;
 use kube::{
+    Client, ResourceExt,
     api::{Api, Patch, PatchParams},
     runtime::{
+        Controller, WatchStreamExt,
         controller::Action,
         events::{Event, EventType, Recorder, Reporter},
-        predicates, reflector, watcher, Controller, WatchStreamExt,
+        predicates, reflector, watcher,
     },
-    Client, ResourceExt,
 };
 use serde_json::json;
 use tracing::{error, info, warn};
@@ -127,7 +135,9 @@ struct Ctx {
     /// `LinearTrendPrevisor` is stateful (it accumulates a sample window across
     /// ticks), so it must outlive a single reconcile — it lives here, fetched +
     /// fed once per reconcile when the pool sets `spec.predictive`.
-    forecasters: std::sync::Mutex<std::collections::HashMap<String, Arc<breathe_auction::LinearTrendPrevisor>>>,
+    forecasters: std::sync::Mutex<
+        std::collections::HashMap<String, Arc<breathe_auction::LinearTrendPrevisor>>,
+    >,
     /// The durable-store seam (M0; docs/BREATHE-MICROSERVICE.md). `decisions` is
     /// the single counter-accumulation point + the append-only decision feed;
     /// `samples` is the predictive prior-sample cache. Held behind `&dyn` so the
@@ -148,7 +158,7 @@ struct Ctx {
     /// declare an `eksManagedNodegroup` pool.
     eks_client: aws_sdk_eks::Client,
     /// The `EksManagedNodegroup` backend's SECOND AWS boundary (added
-    /// 2026-07-23, the Camelot runner-instability incident) —
+    /// 2026-07-23, the private estate runner-instability incident) —
     /// `SetInstanceProtection`/`DescribeAutoScalingInstances` against the
     /// nodegroup's underlying ASG, orthogonal to `eks_client` above (see
     /// eks_nodegroup_provedor.rs's module doc's "Instance scale-in
@@ -175,10 +185,16 @@ impl Ctx {
     /// lookahead in reconcile intervals (`reliefLatency / requeue`); a pool's
     /// forecaster is created once with the horizon current at first sight — a
     /// horizon change takes effect on the next controller restart (documented).
-    fn forecaster_for(&self, pool: &str, horizon_ticks: u64) -> Arc<breathe_auction::LinearTrendPrevisor> {
+    fn forecaster_for(
+        &self,
+        pool: &str,
+        horizon_ticks: u64,
+    ) -> Arc<breathe_auction::LinearTrendPrevisor> {
         let mut map = self.forecasters.lock().expect("forecasters poisoned");
         map.entry(pool.to_string())
-            .or_insert_with(|| Arc::new(breathe_auction::LinearTrendPrevisor::new(6, horizon_ticks)))
+            .or_insert_with(|| {
+                Arc::new(breathe_auction::LinearTrendPrevisor::new(6, horizon_ticks))
+            })
             .clone()
     }
 }
@@ -229,8 +245,16 @@ pub(crate) async fn fold_counters(
 /// Publish a k8s Event for this tick onto `obj`, transition-gated so a resting
 /// band emits ~0 events. Non-fatal: a failed publish is logged, never propagated
 /// (an event is observability, not the reconcile's job).
-async fn emit_event<B: Band>(ctx: &Ctx, obj: &B, receipt: &breathe_core::TickReceipt, new_phase: Option<&str>, prior_phase: Option<&str>) {
-    let Some((kind, reason, note)) = event_for(receipt) else { return };
+async fn emit_event<B: Band>(
+    ctx: &Ctx,
+    obj: &B,
+    receipt: &breathe_core::TickReceipt,
+    new_phase: Option<&str>,
+    prior_phase: Option<&str>,
+) {
+    let Some((kind, reason, note)) = event_for(receipt) else {
+        return;
+    };
     if !should_emit_event(receipt, new_phase, prior_phase) {
         return;
     }
@@ -238,8 +262,18 @@ async fn emit_event<B: Band>(ctx: &Ctx, obj: &B, receipt: &breathe_core::TickRec
         EventKind::Normal => EventType::Normal,
         EventKind::Warning => EventType::Warning,
     };
-    let recorder = Recorder::new(ctx.client.clone(), ctx.reporter.clone(), obj.object_ref(&()));
-    let ev = Event { type_, reason: reason.to_string(), note: Some(note), action: "Reconcile".to_string(), secondary: None };
+    let recorder = Recorder::new(
+        ctx.client.clone(),
+        ctx.reporter.clone(),
+        obj.object_ref(&()),
+    );
+    let ev = Event {
+        type_,
+        reason: reason.to_string(),
+        note: Some(note),
+        action: "Reconcile".to_string(),
+        secondary: None,
+    };
     if let Err(e) = recorder.publish(ev).await {
         warn!(error = %e, "event publish failed (non-fatal)");
     }
@@ -260,17 +294,34 @@ async fn emit_health_event<B: Band>(
     prior_health: Option<&str>,
     effective_dry_run: bool,
 ) {
-    let verdict = health_verdict(conditions, &now_rfc3339(), STUCK_AFTER_SECS, effective_dry_run);
+    let verdict = health_verdict(
+        conditions,
+        &now_rfc3339(),
+        STUCK_AFTER_SECS,
+        effective_dry_run,
+    );
     if !should_emit_health_event(&verdict, prior_health) {
         return;
     }
-    let Some((kind, reason, note)) = health_event_for(&verdict) else { return };
+    let Some((kind, reason, note)) = health_event_for(&verdict) else {
+        return;
+    };
     let type_ = match kind {
         EventKind::Normal => EventType::Normal,
         EventKind::Warning => EventType::Warning,
     };
-    let recorder = Recorder::new(ctx.client.clone(), ctx.reporter.clone(), obj.object_ref(&()));
-    let ev = Event { type_, reason: reason.to_string(), note: Some(note), action: "Reconcile".to_string(), secondary: None };
+    let recorder = Recorder::new(
+        ctx.client.clone(),
+        ctx.reporter.clone(),
+        obj.object_ref(&()),
+    );
+    let ev = Event {
+        type_,
+        reason: reason.to_string(),
+        note: Some(note),
+        action: "Reconcile".to_string(),
+        secondary: None,
+    };
     if let Err(e) = recorder.publish(ev).await {
         warn!(error = %e, "health event publish failed (non-fatal)");
     }
@@ -296,11 +347,17 @@ async fn resolve_posture<B: Band>(ctx: &Ctx, obj: &B) -> Option<Arc<BreathePostu
     }
     let band_name = obj.name_any();
     warn!(posture_ref = name, band = %band_name, "BreathePosture reference not found — falling back to compiled defaults");
-    let recorder = Recorder::new(ctx.client.clone(), ctx.reporter.clone(), obj.object_ref(&()));
+    let recorder = Recorder::new(
+        ctx.client.clone(),
+        ctx.reporter.clone(),
+        obj.object_ref(&()),
+    );
     let ev = Event {
         type_: EventType::Warning,
         reason: "PostureNotFound".to_string(),
-        note: Some(format!("postureRef {name:?} does not exist — using compiled defaults")),
+        note: Some(format!(
+            "postureRef {name:?} does not exist — using compiled defaults"
+        )),
         action: "Reconcile".to_string(),
         secondary: None,
     };
@@ -314,7 +371,11 @@ async fn resolve_posture<B: Band>(ctx: &Ctx, obj: &B) -> Option<Arc<BreathePostu
 async fn detect_resize_capable(client: &Client) -> bool {
     match client.apiserver_version().await {
         Ok(info) => {
-            let digits = |s: &str| s.trim_matches(|c: char| !c.is_ascii_digit()).parse::<u32>().unwrap_or(0);
+            let digits = |s: &str| {
+                s.trim_matches(|c: char| !c.is_ascii_digit())
+                    .parse::<u32>()
+                    .unwrap_or(0)
+            };
             let (major, minor) = (digits(&info.major), digits(&info.minor));
             major > 1 || (major == 1 && minor >= 33)
         }
@@ -395,14 +456,21 @@ async fn detect_environment(client: &Client, resize_capable: bool) -> Environmen
         .list(&ListParams::default().limit(1))
         .await
     {
-        Ok(list) => list.items.first().map_or((Cloud::None, CapacityType::Unknown), |node| {
-            let provider = node.spec.as_ref().and_then(|s| s.provider_id.as_deref()).unwrap_or_default();
-            let cap = node.metadata.labels.as_ref().and_then(|l| {
-                l.get("karpenter.sh/capacity-type")
-                    .or_else(|| l.get("eks.amazonaws.com/capacityType"))
-            });
-            classify_node(provider, cap.map(String::as_str))
-        }),
+        Ok(list) => list
+            .items
+            .first()
+            .map_or((Cloud::None, CapacityType::Unknown), |node| {
+                let provider = node
+                    .spec
+                    .as_ref()
+                    .and_then(|s| s.provider_id.as_deref())
+                    .unwrap_or_default();
+                let cap = node.metadata.labels.as_ref().and_then(|l| {
+                    l.get("karpenter.sh/capacity-type")
+                        .or_else(|| l.get("eks.amazonaws.com/capacityType"))
+                });
+                classify_node(provider, cap.map(String::as_str))
+            }),
         Err(e) => {
             warn!(error = %e, "node list failed during environment detection; assuming conservative");
             (Cloud::None, CapacityType::Unknown)
@@ -413,7 +481,13 @@ async fn detect_environment(client: &Client, resize_capable: bool) -> Environmen
         Some(false) => Tenancy::Foreign,
         None => Tenancy::Unknown,
     };
-    EnvironmentProfile { orchestrator: Orchestrator::Kubernetes, cloud, tenancy, capacity, resize_capable }
+    EnvironmentProfile {
+        orchestrator: Orchestrator::Kubernetes,
+        cloud,
+        tenancy,
+        capacity,
+        resize_capable,
+    }
 }
 
 /// The namespace label carrying a band's `EphemeralEnvId` (the ephemeral-env binding).
@@ -442,7 +516,10 @@ async fn read_env_context(client: &Client, namespace: &str) -> EnvContext {
         .and_then(|l| l.into_iter().next())
         .and_then(|d| d.status)
         .and_then(|s| s.cost_remaining_cents);
-    EnvContext { env_id, cost_remaining_cents }
+    EnvContext {
+        env_id,
+        cost_remaining_cents,
+    }
 }
 
 /// **The per-dimension RECLAIM policy** — may this dimension's band write
@@ -533,14 +610,20 @@ async fn reconcile<B: Band, D: DimensionDescriptor + Default>(
     let cfg = match obj.band_config_with_posture(posture_spec) {
         Ok(c) => c,
         Err(e) => {
-            patch_status::<B>(&ctx.client, &ns, &name, &error_status(obj.status(), e.to_string())).await?;
+            patch_status::<B>(
+                &ctx.client,
+                &ns,
+                &name,
+                &error_status(obj.status(), e.to_string()),
+            )
+            .await?;
             return Ok(Action::requeue(ctx.requeue));
         }
     };
 
-    let in_cooldown = obj
-        .last_change_epoch()
-        .is_some_and(|last| now_secs().saturating_sub(last) < obj.cooldown_seconds_with_posture(posture_spec) as i64);
+    let in_cooldown = obj.last_change_epoch().is_some_and(|last| {
+        now_secs().saturating_sub(last) < obj.cooldown_seconds_with_posture(posture_spec) as i64
+    });
 
     // Bind the descriptor to THIS CR's own identity (namespace/name of the Band
     // CR itself, NOT `target` — the k8s object it carves) so its SSA field
@@ -556,7 +639,9 @@ async fn reconcile<B: Band, D: DimensionDescriptor + Default>(
         descriptor,
     );
     // BREAK-GLASS forceLimit: active iff set AND (no expiry OR expiry in the future).
-    let force = obj.force_limit_value().filter(|_| obj.force_limit_expiry().map_or(true, rfc3339_in_future));
+    let force = obj
+        .force_limit_value()
+        .filter(|_| obj.force_limit_expiry().map_or(true, rfc3339_in_future));
     // M0 PREDICTIVE: when the band opts in, feed the prior observed `used` + the
     // reconcile cadence so `reconcile_one` can measure the working-set velocity and
     // pre-grow via PredictiveGrow. Skipped (None) on the first tick (no prior used)
@@ -564,7 +649,11 @@ async fn reconcile<B: Band, D: DimensionDescriptor + Default>(
     let predictive = obj.predictive().and_then(|lookahead_secs| {
         let prior_used = u64::try_from(obj.status()?.observed_used?).ok()?;
         let dt_secs = ctx.requeue.as_secs_f64();
-        (dt_secs > 0.0).then_some(PredictiveInput { prior_used, dt_secs, lookahead_secs })
+        (dt_secs > 0.0).then_some(PredictiveInput {
+            prior_used,
+            dt_secs,
+            lookahead_secs,
+        })
     });
     // NEVER-OOM-FROM-CARVE: carry the trailing-window PEAK working set across ticks.
     // Pass the DECAYED prior peak as the hint; `reconcile_one` folds in the current
@@ -583,9 +672,16 @@ async fn reconcile<B: Band, D: DimensionDescriptor + Default>(
     // WARMUP: how long this target has been observed since its last (re)start, and
     // the (possibly restart-reset) warmup-start epoch to carry forward. A shrink is
     // HELD while observed_for < warmup_seconds (the un-observed-boot-spike OOM fix).
-    let prior_capacity = obj.status().and_then(|s| s.observed_capacity).and_then(|c| u64::try_from(c).ok());
-    let (observed_for_secs, warmup_start_epoch) =
-        breathe_runtime::warmup_state(obj.status(), prior_capacity, obj.warmup_seconds(), now_secs());
+    let prior_capacity = obj
+        .status()
+        .and_then(|s| s.observed_capacity)
+        .and_then(|c| u64::try_from(c).ok());
+    let (observed_for_secs, warmup_start_epoch) = breathe_runtime::warmup_state(
+        obj.status(),
+        prior_capacity,
+        obj.warmup_seconds(),
+        now_secs(),
+    );
     // Resolve the tick's authorization verdict ONCE: `writeIntent` > the
     // retired `mode` > the compiled ShadowConfirmEffect default. Carries WHY a
     // band is held (authored `observe` vs an accidental NotReady/Stale/
@@ -623,7 +719,7 @@ async fn reconcile<B: Band, D: DimensionDescriptor + Default>(
         // `ObserveOnly` rather than `Disabled`: the WRITES are identical (neither ever
         // lowers the limit — see `Reclaim`), but the band now REPORTS the slack it
         // declined to take, instead of the `AtFloor` it is nowhere near. That phase was
-        // wrong on 36 camelot-eks MemoryBands sitting at 4–25% utilization.
+        // wrong on 36 private-estate-eks MemoryBands sitting at 4–25% utilization.
         reclaim: reclaim_for(provider.id()),
         // May this band cap a workload whose author declared no limit? Default
         // `forbidden`; a band opts in per-CR (`spec.boundIntroduction: allowed`) for
@@ -632,8 +728,14 @@ async fn reconcile<B: Band, D: DimensionDescriptor + Default>(
     };
 
     let outcome = reconcile_one(&input, &provider).await;
-    let prior_phase = obj.status().and_then(|s| s.phase.as_deref()).map(String::from);
-    let prior_health = obj.status().and_then(|s| s.health.as_deref()).map(String::from);
+    let prior_phase = obj
+        .status()
+        .and_then(|s| s.phase.as_deref())
+        .map(String::from);
+    let prior_health = obj
+        .status()
+        .and_then(|s| s.health.as_deref())
+        .map(String::from);
     let kind = <B as kube::Resource>::kind(&());
     let band_ref = BandRef::new(&kind, &ns, &name);
     let counters = fold_counters(&ctx, &band_ref, obj.status(), &outcome).await;
@@ -643,10 +745,22 @@ async fn reconcile<B: Band, D: DimensionDescriptor + Default>(
     if let Some(obs) = outcome.observed.as_ref() {
         let _ = ctx
             .samples
-            .record(&band_ref, Sample { used: obs.used, at_epoch: now_secs() })
+            .record(
+                &band_ref,
+                Sample {
+                    used: obs.used,
+                    at_epoch: now_secs(),
+                },
+            )
             .await;
     }
-    let mut status = status_for(&outcome, obj.status(), obj.cooldown_seconds_with_posture(posture_spec), obj.generation(), counters);
+    let mut status = status_for(
+        &outcome,
+        obj.status(),
+        obj.cooldown_seconds_with_posture(posture_spec),
+        obj.generation(),
+        counters,
+    );
     // Dual-write: the typed verdict AND the legacy bool, from the one `gate`
     // value that drove the carve above. `status.effectiveGate.state` is the
     // `Gate` printcolumn — the first time `kubectl get` can answer "is this
@@ -661,10 +775,28 @@ async fn reconcile<B: Band, D: DimensionDescriptor + Default>(
     let env_ctx = read_env_context(&ctx.client, &ns).await;
     apply_env_context(&mut status, &env_ctx);
     info!(dim = %provider.id(), band = %name, target = %target.name, phase = ?status.phase, health = ?status.health, "reconciled");
-    emit_event(&ctx, obj.as_ref(), &outcome.receipt, status.phase.as_deref(), prior_phase.as_deref()).await;
-    emit_health_event(&ctx, obj.as_ref(), &status.conditions, prior_health.as_deref(), outcome.dry_run()).await;
+    emit_event(
+        &ctx,
+        obj.as_ref(),
+        &outcome.receipt,
+        status.phase.as_deref(),
+        prior_phase.as_deref(),
+    )
+    .await;
+    emit_health_event(
+        &ctx,
+        obj.as_ref(),
+        &status.conditions,
+        prior_health.as_deref(),
+        outcome.dry_run(),
+    )
+    .await;
     metrics_for(
-        &BandLabels { dim: provider.id().to_string(), namespace: ns.clone(), name: name.clone() },
+        &BandLabels {
+            dim: provider.id().to_string(),
+            namespace: ns.clone(),
+            name: name.clone(),
+        },
         &outcome,
         &cfg,
         status.cooldown_remaining_seconds.unwrap_or(0),
@@ -678,7 +810,10 @@ async fn reconcile<B: Band, D: DimensionDescriptor + Default>(
     // `prior_health`/`fold_counters` above) — reused here, not re-fetched.
     patch_status_if_changed::<B>(&ctx.client, &ns, &name, obj.status(), &status).await?;
     // requeue keyed on the action class just taken — golden carves re-tick fast.
-    Ok(Action::requeue(next_requeue(&outcome.receipt, &ctx.cooldowns)))
+    Ok(Action::requeue(next_requeue(
+        &outcome.receipt,
+        &ctx.cooldowns,
+    )))
 }
 
 fn error_policy<B: Band>(_obj: Arc<B>, err: &Error, ctx: Arc<Ctx>) -> Action {
@@ -714,7 +849,10 @@ async fn reconcile_memory(obj: Arc<MemoryBand>, ctx: Arc<Ctx>) -> Result<Action,
     if obj.suspended() {
         return Ok(action);
     }
-    let band = match Api::<MemoryBand>::all(ctx.client.clone()).get_opt(&obj.name_any()).await {
+    let band = match Api::<MemoryBand>::all(ctx.client.clone())
+        .get_opt(&obj.name_any())
+        .await
+    {
         Ok(Some(b)) => b,
         _ => return Ok(action), // can't re-read ⇒ skip the soft dispatch this tick
     };
@@ -736,7 +874,9 @@ async fn reconcile_memory(obj: Arc<MemoryBand>, ctx: Arc<Ctx>) -> Result<Action,
     // The live pod memory.high is unknown to the controller (it has no node access);
     // pass `u64::MAX` (unset) so the planner snaps it down to the routed soft target —
     // the host-agent's read of the live cgroup file is the authoritative current value.
-    let Some(soft_bytes) = pod_memory_high::soft_target_for(used, peak, hard_current, u64::MAX, &cfg) else {
+    let Some(soft_bytes) =
+        pod_memory_high::soft_target_for(used, peak, hard_current, u64::MAX, &cfg)
+    else {
         return Ok(action); // in-band hold / refused shrink ⇒ no soft dispatch
     };
 
@@ -764,9 +904,13 @@ async fn reconcile_memory(obj: Arc<MemoryBand>, ctx: Arc<Ctx>) -> Result<Action,
     )
     .await
     {
-        Ok(n) if n > 0 => info!(band = %band.name_any(), dispatches = n, soft_bytes, dry_run, "routed soft memory.high carve to the host-agent"),
+        Ok(n) if n > 0 => {
+            info!(band = %band.name_any(), dispatches = n, soft_bytes, dry_run, "routed soft memory.high carve to the host-agent")
+        }
         Ok(_) => {}
-        Err(e) => warn!(band = %band.name_any(), error = %e, "soft memory.high dispatch failed (non-fatal — HARD plane still held the kill ceiling)"),
+        Err(e) => {
+            warn!(band = %band.name_any(), error = %e, "soft memory.high dispatch failed (non-fatal — HARD plane still held the kill ceiling)")
+        }
     }
     Ok(action)
 }
@@ -838,7 +982,12 @@ async fn reconcile_overview(obj: Arc<BreatheOverview>, ctx: Arc<Ctx>) -> Result<
     summarize::<RequestBand>(&ctx.client, "RequestBand", &mut bands).await;
     bands.sort_by(|a, b| (&a.kind, &a.namespace, &a.name).cmp(&(&b.kind, &b.namespace, &b.name)));
 
-    let count = |ps: &[&str]| bands.iter().filter(|b| b.phase.as_deref().is_some_and(|x| ps.contains(&x))).count() as i64;
+    let count = |ps: &[&str]| {
+        bands
+            .iter()
+            .filter(|b| b.phase.as_deref().is_some_and(|x| ps.contains(&x)))
+            .count() as i64
+    };
     let total = bands.len() as i64;
     // `ReclaimWithheld` is at REST (the band decided; the decision was "leave it"),
     // so it counts as converged — otherwise every idle memory band would silently
@@ -860,7 +1009,13 @@ async fn reconcile_overview(obj: Arc<BreatheOverview>, ctx: Arc<Ctx>) -> Result<
         .iter()
         .filter(|b| b.phase.as_deref() == Some("Dormant") && !b.ever_governed)
         .count() as i64;
-    let converged = count(&["Holding", "AtFloor", "AtCeiling", "Dormant", "ReclaimWithheld"]) - unproven;
+    let converged = count(&[
+        "Holding",
+        "AtFloor",
+        "AtCeiling",
+        "Dormant",
+        "ReclaimWithheld",
+    ]) - unproven;
     let carving = count(&["Growing", "Shrinking"]);
     let deferred = count(&["DeferredWouldRestart"]);
     let suspended = count(&["Suspended"]);
@@ -897,8 +1052,12 @@ async fn reconcile_overview(obj: Arc<BreatheOverview>, ctx: Arc<Ctx>) -> Result<
         bands,
     };
     let api: Api<BreatheOverview> = Api::all(ctx.client.clone());
-    api.patch_status(&obj.name_any(), &PatchParams::default(), &Patch::Merge(&json!({ "status": status })))
-        .await?;
+    api.patch_status(
+        &obj.name_any(),
+        &PatchParams::default(),
+        &Patch::Merge(&json!({ "status": status })),
+    )
+    .await?;
     info!(overview = %obj.name_any(), total, "fleet overview changed");
     Ok(Action::requeue(refresh))
 }
@@ -960,30 +1119,32 @@ async fn build_stores(
     // its 64-entry depth on identical Holds otherwise, and gating before the
     // Postgres tier is switched on is what keeps the first month from being
     // ~7 GB of near-identical Holding rows.
-    let decisions: Arc<dyn DecisionLog> =
-        Arc::new(GatedDecisionLog::new(backend, scale.decision_heartbeat_seconds));
+    let decisions: Arc<dyn DecisionLog> = Arc::new(GatedDecisionLog::new(
+        backend,
+        scale.decision_heartbeat_seconds,
+    ));
     let samples: Arc<dyn SampleCache> = match &scale.cache {
         CacheConfig::None => Arc::new(InMemSampleCache::new()),
         CacheConfig::Redis(_) => {
             return Err(StartupError::UnsupportedScale(
                 "scale.cache=redis — the cache tier ships at M3; set `cache: none`".into(),
             )
-            .into())
+            .into());
         }
     };
     match &scale.coordination {
         CoordinationConfig::SingleReplica => {}
-        CoordinationConfig::LeaderElection(_) => {
-            return Err(StartupError::UnsupportedScale(
-                "scale.coordination=leaderElection — ships at M3; set `coordination: singleReplica`".into(),
-            )
-            .into())
-        }
+        CoordinationConfig::LeaderElection(_) => return Err(StartupError::UnsupportedScale(
+            "scale.coordination=leaderElection — ships at M3; set `coordination: singleReplica`"
+                .into(),
+        )
+        .into()),
         CoordinationConfig::Sharded(_) => {
             return Err(StartupError::UnsupportedScale(
-                "scale.coordination=sharded — ships at M4; set `coordination: singleReplica`".into(),
+                "scale.coordination=sharded — ships at M4; set `coordination: singleReplica`"
+                    .into(),
             )
-            .into())
+            .into());
         }
     }
     Ok((decisions, samples))
@@ -1019,7 +1180,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // network I/O and resolves no credentials until the first real EKS call
     // — so this line is safe to run unconditionally, even on clusters (or
     // this dev machine) with no AWS credentials present at all.
-    let aws_config = aws_config::defaults(aws_config::BehaviorVersion::latest()).load().await;
+    let aws_config = aws_config::defaults(aws_config::BehaviorVersion::latest())
+        .load()
+        .await;
     let eks_client = aws_sdk_eks::Client::new(&aws_config);
     let autoscaling_client = aws_sdk_autoscaling::Client::new(&aws_config);
 
@@ -1051,16 +1214,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .prometheus_url
         .unwrap_or_else(|| std::env::var("BREATHE_PROMETHEUS_URL").unwrap_or_default());
     let requeue = Duration::from_secs(bcfg.base_requeue_seconds.unwrap_or_else(|| {
-        std::env::var("BREATHE_REQUEUE_SECONDS").ok().and_then(|s| s.parse().ok()).unwrap_or(60)
+        std::env::var("BREATHE_REQUEUE_SECONDS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(60)
     }));
     // `.max(1)`: a user-supplied cooldown of 0 would make a golden carve return
     // `Action::requeue(Duration::ZERO)` → a CPU-spinning reconcile with no backoff.
     // Clamp every class to ≥1s so a misconfigured BreatheConfig can't busy-loop.
-    let cooldowns = bcfg.class_cooldowns.map_or_else(ClassCooldowns::default, |c| ClassCooldowns {
-        restart_free: c.restart_free.max(1),
-        restart_conditional: c.restart_conditional.max(1),
-        restart_requiring: c.restart_requiring.max(1),
-    });
+    let cooldowns = bcfg
+        .class_cooldowns
+        .map_or_else(ClassCooldowns::default, |c| ClassCooldowns {
+            restart_free: c.restart_free.max(1),
+            restart_conditional: c.restart_conditional.max(1),
+            restart_requiring: c.restart_requiring.max(1),
+        });
 
     // ── M1: the shikumi service config selects the elasticity tier. ─────────
     // prescribed_default = VERY-SMALL (in-memory / no cache / single replica) =
@@ -1091,14 +1259,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         // quantiles are the thing an operator would read first.
         //
         // Buckets chosen against the number this measurement exists to
-        // challenge: both camelot pools declare reliefLatencySeconds: 180,
+        // challenge: both self-hosted pools declare reliefLatencySeconds: 180,
         // so the range has to resolve well on either side of it rather than
         // bunch everything into one bucket that says "yes, about 180".
         .set_buckets_for_metric(
             metrics_exporter_prometheus::Matcher::Full(
                 "breathe_portao_time_to_ready_seconds".to_owned(),
             ),
-            &[15.0, 30.0, 45.0, 60.0, 90.0, 120.0, 180.0, 240.0, 300.0, 600.0, 900.0],
+            &[
+                15.0, 30.0, 45.0, 60.0, 90.0, 120.0, 180.0, 240.0, 300.0, 600.0, 900.0,
+            ],
         )
         .expect("static bucket list is non-empty and finite")
         .install()
@@ -1107,7 +1277,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     metrics::gauge!("breathe_build_info", "binary" => "breathe-controller", "version" => env!("CARGO_PKG_VERSION")).set(1.0);
 
-    let reporter = Reporter { controller: "breathe-controller".into(), instance: std::env::var("POD_NAME").ok() };
+    let reporter = Reporter {
+        controller: "breathe-controller".into(),
+        instance: std::env::var("POD_NAME").ok(),
+    };
 
     // ── BreathePosture reflector — a live, continuously-refreshed cache of
     // every named posture (a cluster-scoped reference CRD, mirroring
@@ -1216,7 +1389,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     info!(
         resize_capable,
-        carve = if resize_capable { "in-place (pods/resize, zero-restart)" } else { "rolling (template)" },
+        carve = if resize_capable {
+            "in-place (pods/resize, zero-restart)"
+        } else {
+            "rolling (template)"
+        },
         "breathe-controller starting — golden-edge gate active, per-band DisruptionPolicy (default RestartFreeOnly)"
     );
 
@@ -1238,7 +1415,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // SOONER, never instead-of.
     let nats_url = std::env::var("BREATHE_NATS_URL").ok();
     let nats_enabled = std::env::var("BREATHE_NATS_RECONCILE_ENABLED").as_deref() == Ok("true");
-    let nats_client: Option<nats_trigger::LiveNats> = if let (Some(url), true) = (&nats_url, nats_enabled) {
+    let nats_client: Option<nats_trigger::LiveNats> = if let (Some(url), true) =
+        (&nats_url, nats_enabled)
+    {
         match async_nats::connect(url).await {
             Ok(c) => Some(nats_trigger::LiveNats(c)),
             Err(e) => {
@@ -1252,7 +1431,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mem_ctrl = gen_controller!(Api::<MemoryBand>::all(client.clone()));
     let mem_ctrl = match &nats_client {
-        Some(nc) => match nats_trigger::resolve_trigger(nats_url.clone(), nats_enabled, nc, "escuta.*.memoryband.>").await {
+        Some(nc) => match nats_trigger::resolve_trigger(
+            nats_url.clone(),
+            nats_enabled,
+            nc,
+            "escuta.*.memoryband.>",
+        )
+        .await
+        {
             Some(trigger) => mem_ctrl.reconcile_all_on(trigger),
             None => mem_ctrl,
         },
@@ -1264,20 +1450,35 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let cpu_ctrl = gen_controller!(Api::<CpuBand>::all(client.clone()));
     let cpu_ctrl = match &nats_client {
-        Some(nc) => match nats_trigger::resolve_trigger(nats_url.clone(), nats_enabled, nc, "escuta.*.cpuband.>").await {
+        Some(nc) => match nats_trigger::resolve_trigger(
+            nats_url.clone(),
+            nats_enabled,
+            nc,
+            "escuta.*.cpuband.>",
+        )
+        .await
+        {
             Some(trigger) => cpu_ctrl.reconcile_all_on(trigger),
             None => cpu_ctrl,
         },
         None => cpu_ctrl,
     };
     let cpu = cpu_ctrl
-        .run(reconcile::<CpuBand, CpuDescriptor>, error_policy::<CpuBand>, ctx.clone())
+        .run(
+            reconcile::<CpuBand, CpuDescriptor>,
+            error_policy::<CpuBand>,
+            ctx.clone(),
+        )
         .for_each(|_| async {});
 
     // StorageBand is NOT wired to the NATS trigger — a named follow-up (a
     // one-line addition identical in shape to mem/cpu above), not scoped here.
     let sto = gen_controller!(Api::<StorageBand>::all(client.clone()))
-        .run(reconcile::<StorageBand, StorageDescriptor>, error_policy::<StorageBand>, ctx.clone())
+        .run(
+            reconcile::<StorageBand, StorageDescriptor>,
+            error_policy::<StorageBand>,
+            ctx.clone(),
+        )
         .for_each(|_| async {});
     // The fleet-overview reconciler — keeps every BreatheOverview's status current.
     let overview = gen_controller!(Api::<BreatheOverview>::all(client.clone()))
@@ -1298,7 +1499,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // special-casing needed here vs the two namespaced kinds above.
     let cloud_pools_ctrl = gen_controller!(Api::<BreatheCloudPool>::all(client.clone()));
     let cloud_pools_ctrl = match &nats_client {
-        Some(nc) => match nats_trigger::resolve_trigger(nats_url.clone(), nats_enabled, nc, "escuta.*.breathecloudpool.>").await {
+        Some(nc) => match nats_trigger::resolve_trigger(
+            nats_url.clone(),
+            nats_enabled,
+            nc,
+            "escuta.*.breathecloudpool.>",
+        )
+        .await
+        {
             Some(trigger) => cloud_pools_ctrl.reconcile_all_on(trigger),
             None => cloud_pools_ctrl,
         },
@@ -1318,41 +1526,68 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // REACTION SPEED, not a new predictor. This subject re-triggers the exact
     // same, already-correct reconcile loop sooner, nothing more.
     let cloud_pools_ctrl = match &nats_client {
-        Some(nc) => match nats_trigger::resolve_trigger(nats_url.clone(), nats_enabled, nc, "escuta.*.event.>").await {
+        Some(nc) => match nats_trigger::resolve_trigger(
+            nats_url.clone(),
+            nats_enabled,
+            nc,
+            "escuta.*.event.>",
+        )
+        .await
+        {
             Some(trigger) => cloud_pools_ctrl.reconcile_all_on(trigger),
             None => cloud_pools_ctrl,
         },
         None => cloud_pools_ctrl,
     };
     let cloud_pools = cloud_pools_ctrl
-        .run(node_forma::reconcile_cloud_pool, node_forma::error_policy_cloud_pool, ctx.clone())
+        .run(
+            node_forma::reconcile_cloud_pool,
+            node_forma::error_policy_cloud_pool,
+            ctx.clone(),
+        )
         .for_each(|_| async {});
     // The membership-CLOSING peer of the correnteza claim path above: watches
     // IsolationBand CRs, keeping every declared target node tainted against
-    // everything but its allowlist (Camelot's origin node is the first
+    // everything but its allowlist (the private estate's origin node is the first
     // consumer) and observing unauthorized occupants. Reconciles every tick,
     // unconditionally — a standing PROTECT posture, not a Grew-gated reaction.
     let isolation_bands = gen_controller!(Api::<IsolationBand>::all(client.clone()))
-        .run(origin_guard::reconcile_isolation_band, origin_guard::error_policy_isolation_band, ctx.clone())
+        .run(
+            origin_guard::reconcile_isolation_band,
+            origin_guard::error_policy_isolation_band,
+            ctx.clone(),
+        )
         .for_each(|_| async {});
     // Step-6/8/12: the generic k8s-CR / app band — reconciled via KubeCluster's
     // generic CR-path SSA. Additive; the mem/cpu/storage reconcile is untouched.
     let kube_params = gen_controller!(Api::<KubeParamBand>::all(client.clone()))
-        .run(kube_param::reconcile_kube_param, kube_param::error_policy_kube_param, ctx.clone())
+        .run(
+            kube_param::reconcile_kube_param,
+            kube_param::error_policy_kube_param,
+            ctx.clone(),
+        )
         .for_each(|_| async {});
     // The hierarchical-vector fair-share allocator — watches QuinhaoPool CRs,
     // divides the band among the claimant forest (groups → users) per dimension,
     // publishes the grant ledger to status. ADVISORY: status-only, carves nothing
     // (the pool's StorageBand still holds the 80%). The grant ledger gaveta reads.
     let quinhao_pools = gen_controller!(Api::<QuinhaoPool>::all(client.clone()))
-        .run(quinhao::reconcile_quinhao_pool, quinhao::error_policy_quinhao_pool, ctx.clone())
+        .run(
+            quinhao::reconcile_quinhao_pool,
+            quinhao::error_policy_quinhao_pool,
+            ctx.clone(),
+        )
         .for_each(|_| async {});
 
     // Step-9/13: the generic app-plane actuator band — reconciled via the
     // ActuatorCluster sum type (ConfigFile/ApiCall → ConfigReload/redis/JMX/app-RPC),
     // `used` from the metric KubeCluster. Additive; every other reconcile untouched.
     let app_bands = gen_controller!(Api::<AppBand>::all(client.clone()))
-        .run(app_band::reconcile_app_band, app_band::error_policy_app_band, ctx.clone())
+        .run(
+            app_band::reconcile_app_band,
+            app_band::error_policy_app_band,
+            ctx.clone(),
+        )
         .for_each(|_| async {});
 
     // The HORIZONTAL band — ReplicaBand holds a workload's `.spec.replicas` at a
@@ -1361,7 +1596,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // `.spec.replicas` SSA actuator + the SAME status machinery. Additive; every other
     // reconcile is untouched.
     let replica_bands = gen_controller!(Api::<ReplicaBand>::all(client.clone()))
-        .run(replica_band::reconcile_replica_band, replica_band::error_policy_replica_band, ctx.clone())
+        .run(
+            replica_band::reconcile_replica_band,
+            replica_band::error_policy_replica_band,
+            ctx.clone(),
+        )
         .for_each(|_| async {});
 
     // BreathePolicy — selector-based band auto-enrollment. Owns no carve of its
@@ -1379,13 +1618,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
         .for_each(|_| async {});
 
-    tokio::join!(mem, cpu, sto, overview, cloud_pools, isolation_bands, kube_params, quinhao_pools, app_bands, replica_bands, policies);
+    tokio::join!(
+        mem,
+        cpu,
+        sto,
+        overview,
+        cloud_pools,
+        isolation_bands,
+        kube_params,
+        quinhao_pools,
+        app_bands,
+        replica_bands,
+        policies
+    );
     Ok(())
 }
 
 #[cfg(test)]
 mod env_detect_tests {
-    use super::{classify_node, CapacityType, Cloud};
+    use super::{CapacityType, Cloud, classify_node};
 
     #[test]
     fn classify_node_maps_provider_prefix_and_capacity_label() {
@@ -1397,12 +1648,18 @@ mod env_detect_tests {
             classify_node("gce://proj/zone/inst", Some("on-demand")),
             (Cloud::Gcp, CapacityType::OnDemand)
         );
-        assert_eq!(classify_node("azure:///subs/x", Some("SPOT")), (Cloud::Azure, CapacityType::Spot));
+        assert_eq!(
+            classify_node("azure:///subs/x", Some("SPOT")),
+            (Cloud::Azure, CapacityType::Spot)
+        );
         // kind / bare / no label → no cloud, unknown capacity (fail-safe).
         assert_eq!(
             classify_node("kind://podman/kind/control-plane", None),
             (Cloud::None, CapacityType::Unknown)
         );
-        assert_eq!(classify_node("", None), (Cloud::None, CapacityType::Unknown));
+        assert_eq!(
+            classify_node("", None),
+            (Cloud::None, CapacityType::Unknown)
+        );
     }
 }

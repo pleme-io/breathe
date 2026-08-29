@@ -1,5 +1,5 @@
 //! REAL, READ-ONLY, TERMINATE-INCAPABLE proof that `OrphanTracker` correctly
-//! classifies Camelot's known real orphan against the live AWS account Camelot
+//! classifies the private estate's known real orphan against the live AWS account the private estate
 //! runs in (us-east-2).
 //!
 //! # Why an integration test, not a live in-cluster controller
@@ -9,7 +9,7 @@
 //! independent, verified-live blockers make a real in-cluster deployment
 //! of this specific piece premature today, not merely inconvenient:
 //!
-//! 1. **The Camelot cluster carries no working GitOps path.** Every workload
+//! 1. **The private estate cluster carries no working GitOps path.** Every workload
 //!    on the cluster today (`pangea-operator` itself included) was installed
 //!    via hand-run `helm install` — confirmed live via that cluster's own
 //!    GitOps tree README, which documents the *entire* tree as
@@ -22,12 +22,12 @@
 //!    INFRASTRUCTURE).
 //! 2. **No AWS credential surface exists in-cluster for this purpose.** The
 //!    one CR that already declares the intended shape,
-//!    `apps/camelot/camelot-agent-node-infrastructuretemplate.yaml`, names its
-//!    own missing prerequisite explicitly: the `camelot-agent-node-operator`
+//!    `apps/the private estate/private-estate-agent-node-infrastructuretemplate.yaml`, names its
+//!    own missing prerequisite explicitly: the `private-estate-agent-node-operator`
 //!    Secret it points `providerCredentials.aws.secretRef` at does not exist,
-//!    and no ServiceAccount in the `camelot` namespace carries an IRSA
+//!    and no ServiceAccount in the `the private estate` namespace carries an IRSA
 //!    `role-arn` annotation either. There is no sanctioned, typed way for an
-//!    in-cluster process to read real AWS state on Camelot today.
+//!    in-cluster process to read real AWS state on the private estate today.
 //!
 //! Per this task's own instructions, both being genuinely blocked (not
 //! merely effortful) is the documented trigger for the fallback: prove the
@@ -47,7 +47,7 @@
 //! `consecutive_ticks` can never reach the sweep threshold even if the
 //! refusal above were somehow bypassed — belt-and-suspenders, not the sole
 //! guard. Credentials come from the standard AWS SDK credential chain
-//! (`AWS_PROFILE=<the SSO profile for Camelot's account>` — see
+//! (`AWS_PROFILE=<the SSO profile for the private estate's account>` — see
 //! `~/.aws/config`), never a hardcoded key.
 //!
 //! # Running it
@@ -56,8 +56,8 @@
 //! session against the real account:
 //!
 //! ```text
-//! AWS_PROFILE=<your-sso-profile> RUN_CAMELOT_AWS_INTEGRATION=1 \
-//!   cargo test --test camelot_shadow_integration -- --nocapture
+//! AWS_PROFILE=<your-sso-profile> RUN_AWS_INTEGRATION=1 \
+//!   cargo test --test aws_shadow_integration -- --nocapture
 //! ```
 
 use std::collections::BTreeSet;
@@ -78,7 +78,7 @@ struct ShadowOnlyAwsEnvironment {
 #[async_trait::async_trait]
 impl DriftEnvironment for ShadowOnlyAwsEnvironment {
     /// A real, read-only `DescribeInstances` call, filtered to instances
-    /// tagged `project=camelot` (this reconciler's own scope, per the
+    /// tagged `project=the private estate` (this reconciler's own scope, per the
     /// module doc on `crate::drift`) in a live, non-terminal state.
     async fn observe_tagged_instances(&self) -> Result<Vec<ObservedInstance>, DriftError> {
         let resp = self
@@ -87,7 +87,7 @@ impl DriftEnvironment for ShadowOnlyAwsEnvironment {
             .filters(
                 Filter::builder()
                     .name("tag:project")
-                    .values("camelot")
+                    .values("isolated")
                     .build(),
             )
             .filters(
@@ -110,7 +110,7 @@ impl DriftEnvironment for ShadowOnlyAwsEnvironment {
                 let lifecycle_id = instance
                     .tags()
                     .iter()
-                    .find(|t| t.key() == Some("camelot.pleme.io/lifecycle-id"))
+                    .find(|t| t.key() == Some("isolated.pleme.io/lifecycle-id"))
                     .and_then(|t| t.value())
                     .map(NodeId::new);
                 out.push(ObservedInstance {
@@ -124,7 +124,7 @@ impl DriftEnvironment for ShadowOnlyAwsEnvironment {
 
     /// The honest real answer, not a stub chosen to force an outcome: no
     /// `breathe-lifecycle::fsm::Node<P>` record store has ever been deployed
-    /// for Camelot (`theory/CORRENTEZA.md` §10.2 names this FSM↔claim wiring
+    /// for the private estate (`theory/CORRENTEZA.md` §10.2 names this FSM↔claim wiring
     /// as a named, unbuilt future integration point). There is no declared-
     /// live registry anywhere in the fleet today, so the true state — right
     /// now, for real — is the empty set.
@@ -146,11 +146,11 @@ impl DriftEnvironment for ShadowOnlyAwsEnvironment {
 }
 
 #[tokio::test]
-async fn camelot_known_orphan_is_flagged_against_real_aws() {
-    if std::env::var("RUN_CAMELOT_AWS_INTEGRATION").ok().as_deref() != Some("1") {
+async fn isolated_known_orphan_is_flagged_against_real_aws() {
+    if std::env::var("RUN_AWS_INTEGRATION").ok().as_deref() != Some("1") {
         eprintln!(
-            "skipped (default): set RUN_CAMELOT_AWS_INTEGRATION=1 and a live \
-             AWS_PROFILE SSO session for Camelot's account to run this against real AWS"
+            "skipped (default): set RUN_AWS_INTEGRATION=1 and a live \
+             AWS_PROFILE SSO session for isolated's account to run this against real AWS"
         );
         return;
     }
@@ -173,16 +173,16 @@ async fn camelot_known_orphan_is_flagged_against_real_aws() {
 
     eprintln!("real tick report against live us-east-2: {report:?}");
 
-    // The known hand-launched orphan: i-019af78a72a51590e, Name=camelot-dev-k3s,
-    // tagged project=camelot / owner=luis / posture=spot-breathable, launched
+    // The known hand-launched orphan: i-019af78a72a51590e, Name=dev-k3s,
+    // tagged project=the private estate / owner=luis / posture=spot-breathable, launched
     // via a bare RunInstances call (confirmed via CloudTrail) — never through
-    // any declarative record. It carries no camelot.pleme.io/lifecycle-id tag,
+    // any declarative record. It carries no the private estate.pleme.io/lifecycle-id tag,
     // so it must be flagged newly-marked on this, its first-ever
     // OrphanTracker tick.
     let known_orphan = InstanceId::new("i-019af78a72a51590e");
     assert!(
         report.newly_marked.contains(&known_orphan),
-        "expected the known hand-launched camelot-dev-k3s instance to be flagged as a newly \
+        "expected the known hand-launched dev-k3s instance to be flagged as a newly \
          marked orphan on this tick; got: {report:?}"
     );
 

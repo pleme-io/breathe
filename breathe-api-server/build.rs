@@ -26,7 +26,9 @@ fn main() {
     let manifest = std::env::var("CARGO_MANIFEST_DIR").unwrap_or_default();
     let candidates = [
         PathBuf::from(&manifest).join("proto"), // cargo: crate dir
-        PathBuf::from(&manifest).join("breathe-api-server").join("proto"), // gen: workspace root
+        PathBuf::from(&manifest)
+            .join("breathe-api-server")
+            .join("proto"), // gen: workspace root
         PathBuf::from("proto"),                 // fallback: CWD == crate dir
         PathBuf::from("breathe-api-server").join("proto"), // fallback: CWD == workspace root
     ];

@@ -63,7 +63,17 @@ use breathe_provider::Forma;
 /// The closed legal-state set of a candidate resource's lifecycle. This is the
 /// *serializable* label (the CRD `status.phase`); the in-Rust typestate ([`Phase`]
 /// markers + [`Recurso<P>`]) is the compile-time enforcement of the same FSM.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Hash,
+    serde::Serialize,
+    serde::Deserialize,
+    schemars::JsonSchema,
+)]
 #[serde(rename_all = "kebab-case")]
 pub enum FaseRecurso {
     /// A candidate the predictor wants but that does not yet exist.
@@ -248,7 +258,9 @@ pub struct Recurso<P: Phase> {
 }
 
 /// A candidate's stable identity (a node name, an instance id).
-#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+)]
 pub struct ResourceId(pub String);
 
 impl ResourceId {
@@ -261,13 +273,20 @@ impl<P: Phase> Recurso<P> {
     /// PRIVATE — the only way to move phase is the legal per-phase methods, so an
     /// illegal jump cannot be expressed by an external caller.
     fn advance<Q: Phase>(self) -> Recurso<Q> {
-        Recurso { id: self.id, forma: self.forma, evidence: self.evidence, _p: PhantomData }
+        Recurso {
+            id: self.id,
+            forma: self.forma,
+            evidence: self.evidence,
+            _p: PhantomData,
+        }
     }
 
     fn into_rejected(mut self, reason: impl Into<String>) -> Recurso<Rejeitado> {
         self.evidence.push(ReciboGate {
             kind: PortaoKind::ConformanceBinding,
-            decision: GateDecision::Reject { reason: reason.into() },
+            decision: GateDecision::Reject {
+                reason: reason.into(),
+            },
         });
         self.advance()
     }
@@ -295,7 +314,12 @@ impl Recurso<Descoberto> {
     /// Discover a candidate — the FSM's only entry point.
     #[must_use]
     pub fn discover(id: ResourceId, forma: Forma) -> Self {
-        Recurso { id, forma, evidence: Vec::new(), _p: PhantomData }
+        Recurso {
+            id,
+            forma,
+            evidence: Vec::new(),
+            _p: PhantomData,
+        }
     }
     /// Descoberto → Provisionando.
     #[must_use]
@@ -374,7 +398,13 @@ impl Recurso<Pronto> {
     /// the only path that mints the wrapper the pool accepts.
     #[must_use]
     pub fn admit<T>(self, inner: T) -> Admitido<T> {
-        Admitido { inner, id: self.id, forma: self.forma, evidence: self.evidence, _seal: () }
+        Admitido {
+            inner,
+            id: self.id,
+            forma: self.forma,
+            evidence: self.evidence,
+            _seal: (),
+        }
     }
 }
 
@@ -441,7 +471,9 @@ pub struct Viveiro<T> {
 
 impl<T> Default for Viveiro<T> {
     fn default() -> Self {
-        Self { admitted: std::collections::BTreeMap::new() }
+        Self {
+            admitted: std::collections::BTreeMap::new(),
+        }
     }
 }
 
@@ -481,7 +513,17 @@ impl<T> Viveiro<T> {
 // ============================================================================
 
 /// The nine admission-gate kinds (docs/PROVISIONING.md §2.3).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Hash,
+    serde::Serialize,
+    serde::Deserialize,
+    schemars::JsonSchema,
+)]
 #[serde(rename_all = "kebab-case")]
 pub enum PortaoKind {
     /// Real at M1: the node's allocatable capacity proves it can host the floor.
@@ -530,15 +572,28 @@ pub struct ReciboGate {
 impl ReciboGate {
     #[must_use]
     pub fn pass(kind: PortaoKind) -> Self {
-        Self { kind, decision: GateDecision::Pass }
+        Self {
+            kind,
+            decision: GateDecision::Pass,
+        }
     }
     #[must_use]
     pub fn reject(kind: PortaoKind, reason: impl Into<String>) -> Self {
-        Self { kind, decision: GateDecision::Reject { reason: reason.into() } }
+        Self {
+            kind,
+            decision: GateDecision::Reject {
+                reason: reason.into(),
+            },
+        }
     }
     #[must_use]
     pub fn defer(kind: PortaoKind, reason: impl Into<String>) -> Self {
-        Self { kind, decision: GateDecision::Defer { reason: reason.into() } }
+        Self {
+            kind,
+            decision: GateDecision::Defer {
+                reason: reason.into(),
+            },
+        }
     }
 }
 
@@ -572,15 +627,24 @@ pub enum ValidationStep {
 /// load-bearing:** any `Reject` is terminal first (fail-closed); else any `Defer`
 /// requeues until the budget hits zero, then `Expired`; else (all `Pass`) `Ready`.
 #[must_use]
-pub fn classify(candidate: Recurso<Validando>, receipts: &[ReciboGate], defer_budget: u32) -> ValidationStep {
-    if let Some(r) = receipts.iter().find(|r| matches!(r.decision, GateDecision::Reject { .. })) {
+pub fn classify(
+    candidate: Recurso<Validando>,
+    receipts: &[ReciboGate],
+    defer_budget: u32,
+) -> ValidationStep {
+    if let Some(r) = receipts
+        .iter()
+        .find(|r| matches!(r.decision, GateDecision::Reject { .. }))
+    {
         let reason = match &r.decision {
             GateDecision::Reject { reason } => format!("{}: {reason}", kind_str(r.kind)),
             _ => unreachable!(),
         };
         return ValidationStep::Rejected(candidate.reject(reason));
     }
-    let deferred = receipts.iter().any(|r| matches!(r.decision, GateDecision::Defer { .. }));
+    let deferred = receipts
+        .iter()
+        .any(|r| matches!(r.decision, GateDecision::Defer { .. }));
     if deferred {
         if defer_budget == 0 {
             return ValidationStep::Expired(candidate.expire());
@@ -643,7 +707,11 @@ impl<T: Allocatable + Send + Sync> Portao<T> for CapacidadeProof {
         } else {
             ReciboGate::reject(
                 PortaoKind::CapacidadeProof,
-                format!("allocatable {} < required floor {}", inner.allocatable(), self.required_floor),
+                format!(
+                    "allocatable {} < required floor {}",
+                    inner.allocatable(),
+                    self.required_floor
+                ),
             )
         }
     }
@@ -651,7 +719,7 @@ impl<T: Allocatable + Send + Sync> Portao<T> for CapacidadeProof {
 
 // ── ConformanceBinding: no node is usable before it is BREATHED ────────────
 //
-// The gap this closes, measured on camelot 2026-08-08: a Karpenter node joins,
+// The gap this closes, measured on one cluster 2026-08-08: a Karpenter node joins,
 // goes `Ready`, and the scheduler places workload on it *immediately* — while
 // `breathe-host-agent` is still a DaemonSet pod being pulled. The window is
 // small and it is real, and during it the node hosts work that no band governs.
@@ -681,8 +749,11 @@ pub enum ComponenteExigido {
 }
 
 impl ComponenteExigido {
-    pub const ALL: [Self; 3] =
-        [Self::BreatheHostAgent, Self::ContainerNetwork, Self::StorageDriver];
+    pub const ALL: [Self; 3] = [
+        Self::BreatheHostAgent,
+        Self::ContainerNetwork,
+        Self::StorageDriver,
+    ];
 
     #[must_use]
     pub const fn as_str(self) -> &'static str {
@@ -708,7 +779,7 @@ impl ComponenteExigido {
 /// (how long a pod has *been* Ready — bigger is healthier) was fed into
 /// `last_report_age` (how *stale* a heartbeat is — smaller is healthier) and
 /// compared against a 90 s ceiling. The host-agent DaemonSet has no
-/// readinessProbe, so `Ready` never re-transitions: measured on camelot, every
+/// readinessProbe, so `Ready` never re-transitions: measured on one cluster, every
 /// healthy agent read 6 004–20 959 s and would have **deferred to `Expirado`,
 /// releasing no node at all**, while a *freshly restarted* agent passed. The
 /// suite could not catch it because every case used `ready_for(5)`.
@@ -727,7 +798,9 @@ pub enum EstadoComponente {
     /// self-written signal can carry this, so it is stronger evidence than
     /// `Present`: it survives the "registered at boot, died an hour ago" case
     /// that `Present` cannot see.
-    Reporting { last_report_age: core::time::Duration },
+    Reporting {
+        last_report_age: core::time::Duration,
+    },
     /// Definitively not on the node yet.
     Absent,
     /// The observation itself failed. Never a pass — see the impl.
@@ -874,15 +947,13 @@ impl<T: Conformant + Send + Sync> Portao<T> for ConformanceBinding {
                 // measure against a staleness ceiling) is the exact inversion
                 // this enum's doc records, and it deferred every healthy node.
                 EstadoComponente::Present { ready_for }
-                    if *prova == ProvaExigida::PresenteOuMelhor
-                        && ready_for >= self.min_stable => {}
+                    if *prova == ProvaExigida::PresenteOuMelhor && ready_for >= self.min_stable => {
+                }
 
                 // Present, stable enough, but this component demands a real
                 // heartbeat. Stability is not liveness, and saying so is the
                 // whole reason ProvaExigida exists.
-                EstadoComponente::Present { .. }
-                    if *prova == ProvaExigida::ApenasReportando =>
-                {
+                EstadoComponente::Present { .. } if *prova == ProvaExigida::ApenasReportando => {
                     return ReciboGate::defer(
                         PortaoKind::ConformanceBinding,
                         format!(
@@ -957,7 +1028,7 @@ pub struct ObservacaoPod {
     /// staleness and got wired to a staleness ceiling. It is the opposite: a
     /// STABILITY measure where bigger is healthier. The host-agent DaemonSet
     /// carries no readinessProbe, so this only ever grows — measured 6 004–
-    /// 20 959 s across camelot's healthy agents.
+    /// 20 959 s across the private estate's healthy agents.
     ///
     /// `None` when the API gave a Ready pod with no parsable timestamp — not
     /// evidence of anything, so it classifies as indeterminate, never as zero.
@@ -1034,7 +1105,10 @@ impl Conformant for VistaNo {
     /// a required component from the gather is a bug in the gatherer, and the
     /// safe reading of a bug is "cannot tell".
     fn component_state(&self, c: ComponenteExigido) -> EstadoComponente {
-        self.estados.get(&c).copied().unwrap_or(EstadoComponente::Indeterminate)
+        self.estados
+            .get(&c)
+            .copied()
+            .unwrap_or(EstadoComponente::Indeterminate)
     }
 }
 
@@ -1042,7 +1116,7 @@ impl Conformant for VistaNo {
 //
 // This is the join between a seal that was airtight in Rust and a cluster that
 // never asked it. Everything above decides; nothing above ACTS. A node in
-// camelot goes `Ready` and takes work regardless of any verdict here.
+// the private estate goes `Ready` and takes work regardless of any verdict here.
 //
 // The mechanism is a Karpenter `startupTaint` that only this projection lifts:
 // a node is born unschedulable and is released against evidence. The property
@@ -1095,15 +1169,15 @@ impl AcaoPortao {
 pub fn acao_para(step: &ValidationStep) -> AcaoPortao {
     match step {
         ValidationStep::Ready(_) => AcaoPortao::Liberar,
-        ValidationStep::Deferred(_, orcamento) => {
-            AcaoPortao::Reter { orcamento_restante: *orcamento }
-        }
-        ValidationStep::Rejected(_) => {
-            AcaoPortao::Devolver { motivo: MotivoDevolucao::Rejeitado }
-        }
-        ValidationStep::Expired(_) => {
-            AcaoPortao::Devolver { motivo: MotivoDevolucao::Expirado }
-        }
+        ValidationStep::Deferred(_, orcamento) => AcaoPortao::Reter {
+            orcamento_restante: *orcamento,
+        },
+        ValidationStep::Rejected(_) => AcaoPortao::Devolver {
+            motivo: MotivoDevolucao::Rejeitado,
+        },
+        ValidationStep::Expired(_) => AcaoPortao::Devolver {
+            motivo: MotivoDevolucao::Expirado,
+        },
     }
 }
 

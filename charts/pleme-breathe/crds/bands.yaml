@@ -54,7 +54,7 @@ spec:
                 description: |-
                   **May breathe create a bound this target's author never declared?** Default `forbidden`.
 
-                  Right-sizing an existing limit and newly capping a workload that was deliberately left uncapped look identical to a controller reading `limit == 0` — and breathe was doing the second while believing it did the first. On camelot-eks it introduced a cpu limit onto `coredns` and `ebs-csi-controller`, neither of which declares one.
+                  Right-sizing an existing limit and newly capping a workload that was deliberately left uncapped look identical to a controller reading `limit == 0` — and breathe was doing the second while believing it did the first. On isolated-eks it introduced a cpu limit onto `coredns` and `ebs-csi-controller`, neither of which declares one.
 
                   * `forbidden` (default) — a target with no declared bound reports phase `NoLimit` and is left alone. * `allowed` — breathe may seed a bound. This is the CEDED-FIELD case (a CNPG/Flux manager relinquishing `limits.memory` for breathe to take over) and the deliberate "cap this noisy neighbour" case. It has to be said out loud now, rather than inferred from a zero.
 
@@ -313,7 +313,7 @@ spec:
                 description: |-
                   **The typed authorization verdict for the last tick** — shadow with a named reason, or live with a named witness.
 
-                  This is the field that answers, from the CR alone, the two questions `effectiveDryRun` could not: *why is this band held?* (an authored `observe`, or an accidental `NotReady`/`Stale`/`Conflict` — a distinction that mattered on camelot-eks, where six bands were shadowed by accident while every surface reported "dryRun") and *what authorizes this band to write?* A `witness` of `legacyDefault` means the write rests on a pre-2026-07 resolution path rather than an authored `spec.writeIntent` — i.e. migration debt, and the burn-down metric.
+                  This is the field that answers, from the CR alone, the two questions `effectiveDryRun` could not: *why is this band held?* (an authored `observe`, or an accidental `NotReady`/`Stale`/`Conflict` — a distinction that mattered on one cluster-eks, where six bands were shadowed by accident while every surface reported "dryRun") and *what authorizes this band to write?* A `witness` of `legacyDefault` means the write rests on a pre-2026-07 resolution path rather than an authored `spec.writeIntent` — i.e. migration debt, and the burn-down metric.
                 nullable: true
                 properties:
                   authorizedBy:
@@ -570,7 +570,7 @@ spec:
                 description: |-
                   **May breathe create a bound this target's author never declared?** Default `forbidden`.
 
-                  Right-sizing an existing limit and newly capping a workload that was deliberately left uncapped look identical to a controller reading `limit == 0` — and breathe was doing the second while believing it did the first. On camelot-eks it introduced a cpu limit onto `coredns` and `ebs-csi-controller`, neither of which declares one.
+                  Right-sizing an existing limit and newly capping a workload that was deliberately left uncapped look identical to a controller reading `limit == 0` — and breathe was doing the second while believing it did the first. On isolated-eks it introduced a cpu limit onto `coredns` and `ebs-csi-controller`, neither of which declares one.
 
                   * `forbidden` (default) — a target with no declared bound reports phase `NoLimit` and is left alone. * `allowed` — breathe may seed a bound. This is the CEDED-FIELD case (a CNPG/Flux manager relinquishing `limits.memory` for breathe to take over) and the deliberate "cap this noisy neighbour" case. It has to be said out loud now, rather than inferred from a zero.
 
@@ -829,7 +829,7 @@ spec:
                 description: |-
                   **The typed authorization verdict for the last tick** — shadow with a named reason, or live with a named witness.
 
-                  This is the field that answers, from the CR alone, the two questions `effectiveDryRun` could not: *why is this band held?* (an authored `observe`, or an accidental `NotReady`/`Stale`/`Conflict` — a distinction that mattered on camelot-eks, where six bands were shadowed by accident while every surface reported "dryRun") and *what authorizes this band to write?* A `witness` of `legacyDefault` means the write rests on a pre-2026-07 resolution path rather than an authored `spec.writeIntent` — i.e. migration debt, and the burn-down metric.
+                  This is the field that answers, from the CR alone, the two questions `effectiveDryRun` could not: *why is this band held?* (an authored `observe`, or an accidental `NotReady`/`Stale`/`Conflict` — a distinction that mattered on one cluster-eks, where six bands were shadowed by accident while every surface reported "dryRun") and *what authorizes this band to write?* A `witness` of `legacyDefault` means the write rests on a pre-2026-07 resolution path rather than an authored `spec.writeIntent` — i.e. migration debt, and the burn-down metric.
                 nullable: true
                 properties:
                   authorizedBy:
@@ -1086,7 +1086,7 @@ spec:
                 description: |-
                   **May breathe create a bound this target's author never declared?** Default `forbidden`.
 
-                  Right-sizing an existing limit and newly capping a workload that was deliberately left uncapped look identical to a controller reading `limit == 0` — and breathe was doing the second while believing it did the first. On camelot-eks it introduced a cpu limit onto `coredns` and `ebs-csi-controller`, neither of which declares one.
+                  Right-sizing an existing limit and newly capping a workload that was deliberately left uncapped look identical to a controller reading `limit == 0` — and breathe was doing the second while believing it did the first. On isolated-eks it introduced a cpu limit onto `coredns` and `ebs-csi-controller`, neither of which declares one.
 
                   * `forbidden` (default) — a target with no declared bound reports phase `NoLimit` and is left alone. * `allowed` — breathe may seed a bound. This is the CEDED-FIELD case (a CNPG/Flux manager relinquishing `limits.memory` for breathe to take over) and the deliberate "cap this noisy neighbour" case. It has to be said out loud now, rather than inferred from a zero.
 
@@ -1345,7 +1345,7 @@ spec:
                 description: |-
                   **The typed authorization verdict for the last tick** — shadow with a named reason, or live with a named witness.
 
-                  This is the field that answers, from the CR alone, the two questions `effectiveDryRun` could not: *why is this band held?* (an authored `observe`, or an accidental `NotReady`/`Stale`/`Conflict` — a distinction that mattered on camelot-eks, where six bands were shadowed by accident while every surface reported "dryRun") and *what authorizes this band to write?* A `witness` of `legacyDefault` means the write rests on a pre-2026-07 resolution path rather than an authored `spec.writeIntent` — i.e. migration debt, and the burn-down metric.
+                  This is the field that answers, from the CR alone, the two questions `effectiveDryRun` could not: *why is this band held?* (an authored `observe`, or an accidental `NotReady`/`Stale`/`Conflict` — a distinction that mattered on one cluster-eks, where six bands were shadowed by accident while every surface reported "dryRun") and *what authorizes this band to write?* A `witness` of `legacyDefault` means the write rests on a pre-2026-07 resolution path rather than an authored `spec.writeIntent` — i.e. migration debt, and the burn-down metric.
                 nullable: true
                 properties:
                   authorizedBy:
@@ -1871,7 +1871,7 @@ spec:
                 description: |-
                   **The typed authorization verdict for the last tick** — shadow with a named reason, or live with a named witness.
 
-                  This is the field that answers, from the CR alone, the two questions `effectiveDryRun` could not: *why is this band held?* (an authored `observe`, or an accidental `NotReady`/`Stale`/`Conflict` — a distinction that mattered on camelot-eks, where six bands were shadowed by accident while every surface reported "dryRun") and *what authorizes this band to write?* A `witness` of `legacyDefault` means the write rests on a pre-2026-07 resolution path rather than an authored `spec.writeIntent` — i.e. migration debt, and the burn-down metric.
+                  This is the field that answers, from the CR alone, the two questions `effectiveDryRun` could not: *why is this band held?* (an authored `observe`, or an accidental `NotReady`/`Stale`/`Conflict` — a distinction that mattered on one cluster-eks, where six bands were shadowed by accident while every surface reported "dryRun") and *what authorizes this band to write?* A `witness` of `legacyDefault` means the write rests on a pre-2026-07 resolution path rather than an authored `spec.writeIntent` — i.e. migration debt, and the burn-down metric.
                 nullable: true
                 properties:
                   authorizedBy:
@@ -2128,7 +2128,7 @@ spec:
                 description: |-
                   **May breathe create a bound this target's author never declared?** Default `forbidden`.
 
-                  Right-sizing an existing limit and newly capping a workload that was deliberately left uncapped look identical to a controller reading `limit == 0` — and breathe was doing the second while believing it did the first. On camelot-eks it introduced a cpu limit onto `coredns` and `ebs-csi-controller`, neither of which declares one.
+                  Right-sizing an existing limit and newly capping a workload that was deliberately left uncapped look identical to a controller reading `limit == 0` — and breathe was doing the second while believing it did the first. On isolated-eks it introduced a cpu limit onto `coredns` and `ebs-csi-controller`, neither of which declares one.
 
                   * `forbidden` (default) — a target with no declared bound reports phase `NoLimit` and is left alone. * `allowed` — breathe may seed a bound. This is the CEDED-FIELD case (a CNPG/Flux manager relinquishing `limits.memory` for breathe to take over) and the deliberate "cap this noisy neighbour" case. It has to be said out loud now, rather than inferred from a zero.
 
@@ -2387,7 +2387,7 @@ spec:
                 description: |-
                   **The typed authorization verdict for the last tick** — shadow with a named reason, or live with a named witness.
 
-                  This is the field that answers, from the CR alone, the two questions `effectiveDryRun` could not: *why is this band held?* (an authored `observe`, or an accidental `NotReady`/`Stale`/`Conflict` — a distinction that mattered on camelot-eks, where six bands were shadowed by accident while every surface reported "dryRun") and *what authorizes this band to write?* A `witness` of `legacyDefault` means the write rests on a pre-2026-07 resolution path rather than an authored `spec.writeIntent` — i.e. migration debt, and the burn-down metric.
+                  This is the field that answers, from the CR alone, the two questions `effectiveDryRun` could not: *why is this band held?* (an authored `observe`, or an accidental `NotReady`/`Stale`/`Conflict` — a distinction that mattered on one cluster-eks, where six bands were shadowed by accident while every surface reported "dryRun") and *what authorizes this band to write?* A `witness` of `legacyDefault` means the write rests on a pre-2026-07 resolution path rather than an authored `spec.writeIntent` — i.e. migration debt, and the burn-down metric.
                 nullable: true
                 properties:
                   authorizedBy:
@@ -2644,7 +2644,7 @@ spec:
                 description: |-
                   **May breathe create a bound this target's author never declared?** Default `forbidden`.
 
-                  Right-sizing an existing limit and newly capping a workload that was deliberately left uncapped look identical to a controller reading `limit == 0` — and breathe was doing the second while believing it did the first. On camelot-eks it introduced a cpu limit onto `coredns` and `ebs-csi-controller`, neither of which declares one.
+                  Right-sizing an existing limit and newly capping a workload that was deliberately left uncapped look identical to a controller reading `limit == 0` — and breathe was doing the second while believing it did the first. On isolated-eks it introduced a cpu limit onto `coredns` and `ebs-csi-controller`, neither of which declares one.
 
                   * `forbidden` (default) — a target with no declared bound reports phase `NoLimit` and is left alone. * `allowed` — breathe may seed a bound. This is the CEDED-FIELD case (a CNPG/Flux manager relinquishing `limits.memory` for breathe to take over) and the deliberate "cap this noisy neighbour" case. It has to be said out loud now, rather than inferred from a zero.
 
@@ -2903,7 +2903,7 @@ spec:
                 description: |-
                   **The typed authorization verdict for the last tick** — shadow with a named reason, or live with a named witness.
 
-                  This is the field that answers, from the CR alone, the two questions `effectiveDryRun` could not: *why is this band held?* (an authored `observe`, or an accidental `NotReady`/`Stale`/`Conflict` — a distinction that mattered on camelot-eks, where six bands were shadowed by accident while every surface reported "dryRun") and *what authorizes this band to write?* A `witness` of `legacyDefault` means the write rests on a pre-2026-07 resolution path rather than an authored `spec.writeIntent` — i.e. migration debt, and the burn-down metric.
+                  This is the field that answers, from the CR alone, the two questions `effectiveDryRun` could not: *why is this band held?* (an authored `observe`, or an accidental `NotReady`/`Stale`/`Conflict` — a distinction that mattered on one cluster-eks, where six bands were shadowed by accident while every surface reported "dryRun") and *what authorizes this band to write?* A `witness` of `legacyDefault` means the write rests on a pre-2026-07 resolution path rather than an authored `spec.writeIntent` — i.e. migration debt, and the burn-down metric.
                 nullable: true
                 properties:
                   authorizedBy:
@@ -3160,7 +3160,7 @@ spec:
                 description: |-
                   **May breathe create a bound this target's author never declared?** Default `forbidden`.
 
-                  Right-sizing an existing limit and newly capping a workload that was deliberately left uncapped look identical to a controller reading `limit == 0` — and breathe was doing the second while believing it did the first. On camelot-eks it introduced a cpu limit onto `coredns` and `ebs-csi-controller`, neither of which declares one.
+                  Right-sizing an existing limit and newly capping a workload that was deliberately left uncapped look identical to a controller reading `limit == 0` — and breathe was doing the second while believing it did the first. On isolated-eks it introduced a cpu limit onto `coredns` and `ebs-csi-controller`, neither of which declares one.
 
                   * `forbidden` (default) — a target with no declared bound reports phase `NoLimit` and is left alone. * `allowed` — breathe may seed a bound. This is the CEDED-FIELD case (a CNPG/Flux manager relinquishing `limits.memory` for breathe to take over) and the deliberate "cap this noisy neighbour" case. It has to be said out loud now, rather than inferred from a zero.
 
@@ -3419,7 +3419,7 @@ spec:
                 description: |-
                   **The typed authorization verdict for the last tick** — shadow with a named reason, or live with a named witness.
 
-                  This is the field that answers, from the CR alone, the two questions `effectiveDryRun` could not: *why is this band held?* (an authored `observe`, or an accidental `NotReady`/`Stale`/`Conflict` — a distinction that mattered on camelot-eks, where six bands were shadowed by accident while every surface reported "dryRun") and *what authorizes this band to write?* A `witness` of `legacyDefault` means the write rests on a pre-2026-07 resolution path rather than an authored `spec.writeIntent` — i.e. migration debt, and the burn-down metric.
+                  This is the field that answers, from the CR alone, the two questions `effectiveDryRun` could not: *why is this band held?* (an authored `observe`, or an accidental `NotReady`/`Stale`/`Conflict` — a distinction that mattered on one cluster-eks, where six bands were shadowed by accident while every surface reported "dryRun") and *what authorizes this band to write?* A `witness` of `legacyDefault` means the write rests on a pre-2026-07 resolution path rather than an authored `spec.writeIntent` — i.e. migration debt, and the burn-down metric.
                 nullable: true
                 properties:
                   authorizedBy:
@@ -3977,7 +3977,7 @@ spec:
                 description: |-
                   **The typed authorization verdict for the last tick** — shadow with a named reason, or live with a named witness.
 
-                  This is the field that answers, from the CR alone, the two questions `effectiveDryRun` could not: *why is this band held?* (an authored `observe`, or an accidental `NotReady`/`Stale`/`Conflict` — a distinction that mattered on camelot-eks, where six bands were shadowed by accident while every surface reported "dryRun") and *what authorizes this band to write?* A `witness` of `legacyDefault` means the write rests on a pre-2026-07 resolution path rather than an authored `spec.writeIntent` — i.e. migration debt, and the burn-down metric.
+                  This is the field that answers, from the CR alone, the two questions `effectiveDryRun` could not: *why is this band held?* (an authored `observe`, or an accidental `NotReady`/`Stale`/`Conflict` — a distinction that mattered on one cluster-eks, where six bands were shadowed by accident while every surface reported "dryRun") and *what authorizes this band to write?* A `witness` of `legacyDefault` means the write rests on a pre-2026-07 resolution path rather than an authored `spec.writeIntent` — i.e. migration debt, and the burn-down metric.
                 nullable: true
                 properties:
                   authorizedBy:
@@ -4506,7 +4506,7 @@ spec:
                 description: |-
                   **The typed authorization verdict for the last tick** — shadow with a named reason, or live with a named witness.
 
-                  This is the field that answers, from the CR alone, the two questions `effectiveDryRun` could not: *why is this band held?* (an authored `observe`, or an accidental `NotReady`/`Stale`/`Conflict` — a distinction that mattered on camelot-eks, where six bands were shadowed by accident while every surface reported "dryRun") and *what authorizes this band to write?* A `witness` of `legacyDefault` means the write rests on a pre-2026-07 resolution path rather than an authored `spec.writeIntent` — i.e. migration debt, and the burn-down metric.
+                  This is the field that answers, from the CR alone, the two questions `effectiveDryRun` could not: *why is this band held?* (an authored `observe`, or an accidental `NotReady`/`Stale`/`Conflict` — a distinction that mattered on one cluster-eks, where six bands were shadowed by accident while every surface reported "dryRun") and *what authorizes this band to write?* A `witness` of `legacyDefault` means the write rests on a pre-2026-07 resolution path rather than an authored `spec.writeIntent` — i.e. migration debt, and the burn-down metric.
                 nullable: true
                 properties:
                   authorizedBy:
@@ -5024,7 +5024,7 @@ spec:
                 description: |-
                   **The typed authorization verdict for the last tick** — shadow with a named reason, or live with a named witness.
 
-                  This is the field that answers, from the CR alone, the two questions `effectiveDryRun` could not: *why is this band held?* (an authored `observe`, or an accidental `NotReady`/`Stale`/`Conflict` — a distinction that mattered on camelot-eks, where six bands were shadowed by accident while every surface reported "dryRun") and *what authorizes this band to write?* A `witness` of `legacyDefault` means the write rests on a pre-2026-07 resolution path rather than an authored `spec.writeIntent` — i.e. migration debt, and the burn-down metric.
+                  This is the field that answers, from the CR alone, the two questions `effectiveDryRun` could not: *why is this band held?* (an authored `observe`, or an accidental `NotReady`/`Stale`/`Conflict` — a distinction that mattered on one cluster-eks, where six bands were shadowed by accident while every surface reported "dryRun") and *what authorizes this band to write?* A `witness` of `legacyDefault` means the write rests on a pre-2026-07 resolution path rather than an authored `spec.writeIntent` — i.e. migration debt, and the burn-down metric.
                 nullable: true
                 properties:
                   authorizedBy:
@@ -5390,10 +5390,10 @@ spec:
                 nullable: true
                 properties:
                   marker:
-                    description: The marker id anchoring the exact scalar, e.g. `camelot-build/sui-request`.
+                    description: The marker id anchoring the exact scalar, e.g. `isolated-build/sui-request`.
                     type: string
                   path:
-                    description: Repo-relative path to the manifest, e.g. `clusters/camelot/apps/sui/release.yaml`.
+                    description: Repo-relative path to the manifest, e.g. `clusters/isolated/apps/sui/release.yaml`.
                     type: string
                 required:
                 - marker
@@ -5604,7 +5604,7 @@ spec:
                 description: |-
                   **The typed authorization verdict for the last tick** — shadow with a named reason, or live with a named witness.
 
-                  This is the field that answers, from the CR alone, the two questions `effectiveDryRun` could not: *why is this band held?* (an authored `observe`, or an accidental `NotReady`/`Stale`/`Conflict` — a distinction that mattered on camelot-eks, where six bands were shadowed by accident while every surface reported "dryRun") and *what authorizes this band to write?* A `witness` of `legacyDefault` means the write rests on a pre-2026-07 resolution path rather than an authored `spec.writeIntent` — i.e. migration debt, and the burn-down metric.
+                  This is the field that answers, from the CR alone, the two questions `effectiveDryRun` could not: *why is this band held?* (an authored `observe`, or an accidental `NotReady`/`Stale`/`Conflict` — a distinction that mattered on one cluster-eks, where six bands were shadowed by accident while every surface reported "dryRun") and *what authorizes this band to write?* A `witness` of `legacyDefault` means the write rests on a pre-2026-07 resolution path rather than an authored `spec.writeIntent` — i.e. migration debt, and the burn-down metric.
                 nullable: true
                 properties:
                   authorizedBy:
@@ -6099,7 +6099,7 @@ spec:
                     description: |-
                       The `writeIntent` stamped on newly materialized bands.
 
-                      Defaults to `calibrateThenWrite`, NOT `observe`, and the difference is the entire point. Observe never promotes itself: camelot ran 115 bands at `mode: shadow` with `writeIntent: None` indefinitely, deciding correctly every tick and applying none of it, while the cluster sat at 30% requested and 13% used. Safety comes from the calibration gate — a band still refuses to write until its own observation window is clean — not from never arming at all.
+                      Defaults to `calibrateThenWrite`, NOT `observe`, and the difference is the entire point. Observe never promotes itself: isolated ran 115 bands at `mode: shadow` with `writeIntent: None` indefinitely, deciding correctly every tick and applying none of it, while the cluster sat at 30% requested and 13% used. Safety comes from the calibration gate — a band still refuses to write until its own observation window is clean — not from never arming at all.
                     type: string
                   neverArm:
                     description: |-
@@ -6845,9 +6845,9 @@ spec:
                 description: |-
                   The node(s) this band protects, BY LABEL — resolved fresh every tick. The pool-scoped peer of `targetNodes`, and the field that lets ONE band express "this whole pool is reserved for X" on infrastructure whose node identities churn.
 
-                  WHY THIS EXISTS (a real, measured gap — 2026-07-27): the placement pathology "workload W is running on pool P, which is not for W" had NO detector at the scope the pathology lives at. `IsolationBand` shipped and was registered, but its only node-naming surface was a static hostname list, so on Camelot's Karpenter-managed builder pools there was no way to *say* "this pool". The pathology was therefore only ever found by a human reading a cost report — the exact audit-detected-instead-of-self-detected shape the taxonomy exists to eliminate. One selector field converts this CRD from a pet-protector into the pool-scoped tenancy detector the taxonomy already assumed.
+                  WHY THIS EXISTS (a real, measured gap — 2026-07-27): the placement pathology "workload W is running on pool P, which is not for W" had NO detector at the scope the pathology lives at. `IsolationBand` shipped and was registered, but its only node-naming surface was a static hostname list, so on isolated's Karpenter-managed builder pools there was no way to *say* "this pool". The pathology was therefore only ever found by a human reading a cost report — the exact audit-detected-instead-of-self-detected shape the taxonomy exists to eliminate. One selector field converts this CRD from a pet-protector into the pool-scoped tenancy detector the taxonomy already assumed.
 
-                  Semantics: an equality-based label selector (the `nodeSelector` convention — ALL pairs must match), e.g. `{"karpenter.sh/nodepool": "camelot-builder-amd64"}`. Resolved against live Nodes each reconcile and UNIONed with `targetNodes` (see `origin_guard::merge_target_nodes`), so a band may use either surface or both.
+                  Semantics: an equality-based label selector (the `nodeSelector` convention — ALL pairs must match), e.g. `{"karpenter.sh/nodepool": "isolated-builder-amd64"}`. Resolved against live Nodes each reconcile and UNIONed with `targetNodes` (see `origin_guard::merge_target_nodes`), so a band may use either surface or both.
 
                   TIER-HONEST: this is still OBSERVATION + a taint, never admission enforcement — same C2 ceiling `unauthorizedPods` already names for itself. A pod carrying a wildcard toleration still lands on a selector-matched node exactly as it does on a hostname-matched one; this field widens WHAT CAN BE WATCHED, it does not change what a taint can enforce.
                 nullable: true

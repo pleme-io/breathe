@@ -118,10 +118,18 @@ pub struct Densa {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DensaError {
     /// A floor exceeds its own ceiling — the band could never satisfy it.
-    FloorAboveCeiling { forma: Forma, floor: u64, ceiling: u64 },
+    FloorAboveCeiling {
+        forma: Forma,
+        floor: u64,
+        ceiling: u64,
+    },
     /// Σ floors + reserve exceeds the pool capacity — the never-swap breach
     /// (the cluster-scale `OOM`): the floors are not guaranteed to fit.
-    DoesNotFit { sum_floors: u64, reserve: u64, capacity: u64 },
+    DoesNotFit {
+        sum_floors: u64,
+        reserve: u64,
+        capacity: u64,
+    },
 }
 
 impl Densa {
@@ -133,14 +141,22 @@ impl Densa {
     pub fn fits(&self) -> Result<(), DensaError> {
         for b in &self.bounds {
             if b.floor > b.ceiling {
-                return Err(DensaError::FloorAboveCeiling { forma: b.forma, floor: b.floor, ceiling: b.ceiling });
+                return Err(DensaError::FloorAboveCeiling {
+                    forma: b.forma,
+                    floor: b.floor,
+                    ceiling: b.ceiling,
+                });
             }
         }
         let sum_floors: u64 = self.bounds.iter().map(|b| b.floor).sum();
         if sum_floors.saturating_add(self.reserve) <= self.pool_capacity {
             Ok(())
         } else {
-            Err(DensaError::DoesNotFit { sum_floors, reserve: self.reserve, capacity: self.pool_capacity })
+            Err(DensaError::DoesNotFit {
+                sum_floors,
+                reserve: self.reserve,
+                capacity: self.pool_capacity,
+            })
         }
     }
 
@@ -148,20 +164,27 @@ impl Densa {
     /// within. `None` if the shape is not in this envelope.
     #[must_use]
     pub fn ceiling(&self, forma: Forma) -> Option<u64> {
-        self.bounds.iter().find(|b| b.forma == forma).map(|b| b.ceiling)
+        self.bounds
+            .iter()
+            .find(|b| b.forma == forma)
+            .map(|b| b.ceiling)
     }
 
     /// The provisioned-from-peak floor for a shape.
     #[must_use]
     pub fn floor(&self, forma: Forma) -> Option<u64> {
-        self.bounds.iter().find(|b| b.forma == forma).map(|b| b.floor)
+        self.bounds
+            .iter()
+            .find(|b| b.forma == forma)
+            .map(|b| b.floor)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        cascata_is_acyclic, lookup_forma, Densa, DensaError, FormaBound, FormaSpec, ALL_FORMAS, FLORESTA,
+        ALL_FORMAS, Densa, DensaError, FLORESTA, FormaBound, FormaSpec, cascata_is_acyclic,
+        lookup_forma,
     };
     use breathe_provider::Forma;
 
@@ -178,7 +201,10 @@ mod tests {
     fn floresta_authoring_keywords_are_unique() {
         for (i, a) in FLORESTA.iter().enumerate() {
             for b in &FLORESTA[i + 1..] {
-                assert_ne!(a.authoring_keyword, b.authoring_keyword, "keyword collision");
+                assert_ne!(
+                    a.authoring_keyword, b.authoring_keyword,
+                    "keyword collision"
+                );
             }
         }
     }
@@ -186,7 +212,11 @@ mod tests {
     #[test]
     fn floresta_relief_latencies_are_positive() {
         for s in FLORESTA {
-            assert!(s.relief_latency_secs > 0, "{}: relief_latency must be > 0 (P8 dead-time)", s.name);
+            assert!(
+                s.relief_latency_secs > 0,
+                "{}: relief_latency must be > 0 (P8 dead-time)",
+                s.name
+            );
         }
     }
 
@@ -194,7 +224,11 @@ mod tests {
     fn floresta_fallbacks_reference_known_formas() {
         for s in FLORESTA {
             for &fb in s.falls_back_to {
-                assert!(lookup_forma(fb).is_some(), "{} falls back to a missing forma", s.name);
+                assert!(
+                    lookup_forma(fb).is_some(),
+                    "{} falls back to a missing forma",
+                    s.name
+                );
             }
         }
     }
@@ -219,13 +253,20 @@ mod tests {
             ok
         }
         let edges = |f: u8| if f == 0 { vec![1] } else { vec![0] };
-        assert!(!cyclic(0, &mut Vec::new(), &edges), "a→b→a must be detected as cyclic");
+        assert!(
+            !cyclic(0, &mut Vec::new(), &edges),
+            "a→b→a must be detected as cyclic"
+        );
     }
 
     #[test]
     fn densa_fits_accepts_a_valid_envelope() {
         let d = Densa {
-            bounds: vec![FormaBound { forma: Forma::NodeOnDemand, floor: 2, ceiling: 10 }],
+            bounds: vec![FormaBound {
+                forma: Forma::NodeOnDemand,
+                floor: 2,
+                ceiling: 10,
+            }],
             reserve: 1,
             pool_capacity: 20,
         };
@@ -237,23 +278,38 @@ mod tests {
     #[test]
     fn densa_refuses_floor_above_ceiling() {
         let d = Densa {
-            bounds: vec![FormaBound { forma: Forma::NodeOnDemand, floor: 12, ceiling: 10 }],
+            bounds: vec![FormaBound {
+                forma: Forma::NodeOnDemand,
+                floor: 12,
+                ceiling: 10,
+            }],
             reserve: 0,
             pool_capacity: 100,
         };
-        assert!(matches!(d.fits(), Err(DensaError::FloorAboveCeiling { .. })));
+        assert!(matches!(
+            d.fits(),
+            Err(DensaError::FloorAboveCeiling { .. })
+        ));
     }
 
     #[test]
     fn densa_refuses_oversubscribed_floors() {
         // Σ floors (8) + reserve (5) = 13 > capacity 10 → never-swap breach.
         let d = Densa {
-            bounds: vec![FormaBound { forma: Forma::NodeOnDemand, floor: 8, ceiling: 9 }],
+            bounds: vec![FormaBound {
+                forma: Forma::NodeOnDemand,
+                floor: 8,
+                ceiling: 9,
+            }],
             reserve: 5,
             pool_capacity: 10,
         };
         match d.fits() {
-            Err(DensaError::DoesNotFit { sum_floors, reserve, capacity }) => {
+            Err(DensaError::DoesNotFit {
+                sum_floors,
+                reserve,
+                capacity,
+            }) => {
                 assert_eq!((sum_floors, reserve, capacity), (8, 5, 10));
             }
             other => panic!("expected DoesNotFit, got {other:?}"),

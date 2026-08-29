@@ -24,7 +24,7 @@ pub mod cost;
 /// `AppParam` instances (BREATHABILITY §II.5). See [`db_matrix`].
 pub mod db_matrix;
 
-/// The breathe-posture PRESET (`CamelotBreatheDefaults`) — a named bundle that
+/// The breathe-posture PRESET (`BreatheDefaults`) — a named bundle that
 /// arms a whole fleet's band-set from one typed row (Pillar 12). See [`preset`].
 pub mod preset;
 
@@ -83,8 +83,11 @@ pub enum ResourceClass {
 /// (the L2 partition consumer is named in its doc but not yet wired), so adding
 /// a member here is a declaration for a future consumer, not a change in live
 /// behaviour. Said plainly so the entry is not mistaken for a shipped effect.
-pub const STATIC_FLOOR_DIMENSIONS: [DimensionId; 3] =
-    [DimensionId::Memory, DimensionId::Storage, DimensionId::Request];
+pub const STATIC_FLOOR_DIMENSIONS: [DimensionId; 3] = [
+    DimensionId::Memory,
+    DimensionId::Storage,
+    DimensionId::Request,
+];
 
 impl ResourceClass {
     /// True when this class needs a peak-derived static floor (not an anti-flap
@@ -275,7 +278,9 @@ pub const CATALOG: &[DimensionSpec] = &[
         resource_class: ResourceClass::Soft, // a mis-sized app knob throttles/queues/evicts; rarely an OOM
         suppressed_demand: SuppressedDemand::WorkingSetExceedsSoftLimit,
         purpose: "hold any application-actuator knob at the band via the ConfigFile/ApiCall layouts, dispatched by the ActuatorCluster sum type (ConfigReload/redis-CLI/JMX/app-admin-RPC); used read from the metrics plane (Step-9/13: one descriptor, data-driven)",
-        upstream_mirror: Some("config files · redis/kafka/nats CONFIG · JMX MBeans · app admin RPC"),
+        upstream_mirror: Some(
+            "config files · redis/kafka/nats CONFIG · JMX MBeans · app admin RPC",
+        ),
         depends_on: &[],
     },
     // ── THE RESERVATION dimension — the one that decides SURVIVAL ──
@@ -462,32 +467,137 @@ use DisruptionClass::{RestartConditional, RestartFree, RestartRequiring};
 /// reflection tests fail the build if a `RestartFree` action is not tickable.
 pub const ACTIONS: &[ActionSpec] = &[
     // ── RESTART-FREE — the real-time set (no workload disturbance, ever) ────────
-    ActionSpec { name: "arc-max",            knob: "zfs_arc_max",          plane: Plane::Host, class: RestartFree, tickable: true, note: "sysfs write; ARC re-sizes live" },
-    ActionSpec { name: "cgroup-memory-high", knob: "MemoryHigh",           plane: Plane::Host, class: RestartFree, tickable: true, note: "systemd transient set-property; soft reclaim throttle" },
-    ActionSpec { name: "cgroup-cpu-quota",   knob: "CPUQuota",             plane: Plane::Host, class: RestartFree, tickable: true, note: "EXPLOIT: live cpu bandwidth cap on a host unit" },
-    ActionSpec { name: "cgroup-cpu-weight",  knob: "CPUWeight",            plane: Plane::Host, class: RestartFree, tickable: true, note: "EXPLOIT: live cpu share under contention" },
-    ActionSpec { name: "cgroup-io-weight",   knob: "IOWeight",             plane: Plane::Host, class: RestartFree, tickable: true, note: "EXPLOIT: live io share (blkio) under contention" },
-    ActionSpec { name: "pod-cpu-resize",     knob: "pods/resize cpu",      plane: Plane::Pod,  class: RestartFree, tickable: true, note: "in-place both directions; cpu never restarts" },
-    ActionSpec { name: "pod-memory-grow",    knob: "pods/resize memory↑",  plane: Plane::Pod,  class: RestartFree, tickable: true, note: "in-place; a memory GROW never restarts" },
-    ActionSpec { name: "pvc-expand",         knob: "CSI ExpandVolume",     plane: Plane::Pvc,  class: RestartFree, tickable: true, note: "online grow-only; no remount" },
-    ActionSpec { name: "node-add",           knob: "NodePool/Karpenter",   plane: Plane::Node, class: RestartFree, tickable: true, note: "EXPLOIT (K2): grow the envelope; existing pods undisturbed" },
-    ActionSpec { name: "replica-scale-up",   knob: "spec.replicas ↑",      plane: Plane::Workload, class: RestartFree, tickable: true, note: "HORIZONTAL scale-OUT: adds a pod; every survivor is undisturbed (the retirada pre-drain path)" },
-
+    ActionSpec {
+        name: "arc-max",
+        knob: "zfs_arc_max",
+        plane: Plane::Host,
+        class: RestartFree,
+        tickable: true,
+        note: "sysfs write; ARC re-sizes live",
+    },
+    ActionSpec {
+        name: "cgroup-memory-high",
+        knob: "MemoryHigh",
+        plane: Plane::Host,
+        class: RestartFree,
+        tickable: true,
+        note: "systemd transient set-property; soft reclaim throttle",
+    },
+    ActionSpec {
+        name: "cgroup-cpu-quota",
+        knob: "CPUQuota",
+        plane: Plane::Host,
+        class: RestartFree,
+        tickable: true,
+        note: "EXPLOIT: live cpu bandwidth cap on a host unit",
+    },
+    ActionSpec {
+        name: "cgroup-cpu-weight",
+        knob: "CPUWeight",
+        plane: Plane::Host,
+        class: RestartFree,
+        tickable: true,
+        note: "EXPLOIT: live cpu share under contention",
+    },
+    ActionSpec {
+        name: "cgroup-io-weight",
+        knob: "IOWeight",
+        plane: Plane::Host,
+        class: RestartFree,
+        tickable: true,
+        note: "EXPLOIT: live io share (blkio) under contention",
+    },
+    ActionSpec {
+        name: "pod-cpu-resize",
+        knob: "pods/resize cpu",
+        plane: Plane::Pod,
+        class: RestartFree,
+        tickable: true,
+        note: "in-place both directions; cpu never restarts",
+    },
+    ActionSpec {
+        name: "pod-memory-grow",
+        knob: "pods/resize memory↑",
+        plane: Plane::Pod,
+        class: RestartFree,
+        tickable: true,
+        note: "in-place; a memory GROW never restarts",
+    },
+    ActionSpec {
+        name: "pvc-expand",
+        knob: "CSI ExpandVolume",
+        plane: Plane::Pvc,
+        class: RestartFree,
+        tickable: true,
+        note: "online grow-only; no remount",
+    },
+    ActionSpec {
+        name: "node-add",
+        knob: "NodePool/Karpenter",
+        plane: Plane::Node,
+        class: RestartFree,
+        tickable: true,
+        note: "EXPLOIT (K2): grow the envelope; existing pods undisturbed",
+    },
+    ActionSpec {
+        name: "replica-scale-up",
+        knob: "spec.replicas ↑",
+        plane: Plane::Workload,
+        class: RestartFree,
+        tickable: true,
+        note: "HORIZONTAL scale-OUT: adds a pod; every survivor is undisturbed (the retirada pre-drain path)",
+    },
     // ── RESTART-CONDITIONAL — restart-gated in one direction ───────────────────
-    ActionSpec { name: "pod-memory-shrink",  knob: "pods/resize memory↓",  plane: Plane::Pod,  class: RestartConditional, tickable: true, note: "in-place iff resizePolicy memory == NotRequired, else restarts" },
-
+    ActionSpec {
+        name: "pod-memory-shrink",
+        knob: "pods/resize memory↓",
+        plane: Plane::Pod,
+        class: RestartConditional,
+        tickable: true,
+        note: "in-place iff resizePolicy memory == NotRequired, else restarts",
+    },
     // ── RESTART-REQUIRING — useful, but disruptive; gated by DisruptionPolicy ──
-    ActionSpec { name: "pod-template-carve", knob: "template resources",   plane: Plane::Workload, class: RestartRequiring, tickable: false, note: "USE when k8s <1.33 (no resize) or a QoS-class change needs a roll" },
-    ActionSpec { name: "cnpg-cluster-carve", knob: "CNPG spec.resources",  plane: Plane::Workload, class: RestartRequiring, tickable: false, note: "USE: the only way to resize a CNPG instance; the operator rolls it safely" },
-    ActionSpec { name: "replica-scale-down", knob: "terminate a pod",      plane: Plane::Workload, class: RestartRequiring, tickable: false, note: "USE: shed load (HPA-class); survivors undisturbed, the shed pod is lost" },
-    ActionSpec { name: "reschedule",         knob: "drain + reschedule",   plane: Plane::Node,     class: RestartRequiring, tickable: false, note: "USE: NUMA/CCD re-placement, bin-packing, escape a degraded node, maintenance" },
+    ActionSpec {
+        name: "pod-template-carve",
+        knob: "template resources",
+        plane: Plane::Workload,
+        class: RestartRequiring,
+        tickable: false,
+        note: "USE when k8s <1.33 (no resize) or a QoS-class change needs a roll",
+    },
+    ActionSpec {
+        name: "cnpg-cluster-carve",
+        knob: "CNPG spec.resources",
+        plane: Plane::Workload,
+        class: RestartRequiring,
+        tickable: false,
+        note: "USE: the only way to resize a CNPG instance; the operator rolls it safely",
+    },
+    ActionSpec {
+        name: "replica-scale-down",
+        knob: "terminate a pod",
+        plane: Plane::Workload,
+        class: RestartRequiring,
+        tickable: false,
+        note: "USE: shed load (HPA-class); survivors undisturbed, the shed pod is lost",
+    },
+    ActionSpec {
+        name: "reschedule",
+        knob: "drain + reschedule",
+        plane: Plane::Node,
+        class: RestartRequiring,
+        tickable: false,
+        note: "USE: NUMA/CCD re-placement, bin-packing, escape a degraded node, maintenance",
+    },
 ];
 
 /// True when every dimension's carve plane has at least one restart-free action —
 /// the keystone's promise that the live workload can be held without disturbance.
 #[must_use]
 pub fn restart_free_actions() -> impl Iterator<Item = &'static ActionSpec> {
-    ACTIONS.iter().filter(|a| a.class == DisruptionClass::RestartFree)
+    ACTIONS
+        .iter()
+        .filter(|a| a.class == DisruptionClass::RestartFree)
 }
 
 /// True when the `depends_on` DAG is acyclic (topological order solvable).
@@ -532,7 +642,11 @@ mod tests {
     /// inventory. Fails the build if a dimension is added without a row.
     #[test]
     fn catalog_is_a_bijection_with_dimension_ids() {
-        assert_eq!(CATALOG.len(), ALL_DIMENSIONS.len(), "row count == dimension count");
+        assert_eq!(
+            CATALOG.len(),
+            ALL_DIMENSIONS.len(),
+            "row count == dimension count"
+        );
         for &id in &ALL_DIMENSIONS {
             let n = CATALOG.iter().filter(|d| d.id == id).count();
             assert_eq!(n, 1, "exactly one row for {id}");
@@ -544,7 +658,10 @@ mod tests {
     fn authoring_keywords_are_unique() {
         for (i, a) in CATALOG.iter().enumerate() {
             for b in &CATALOG[i + 1..] {
-                assert_ne!(a.authoring_keyword, b.authoring_keyword, "keyword collision");
+                assert_ne!(
+                    a.authoring_keyword, b.authoring_keyword,
+                    "keyword collision"
+                );
             }
         }
     }
@@ -560,7 +677,11 @@ mod tests {
     fn dependency_edges_resolve() {
         for d in CATALOG {
             for &dep in d.depends_on {
-                assert!(lookup(dep).is_some(), "{} depends on a missing dimension", d.name);
+                assert!(
+                    lookup(dep).is_some(),
+                    "{} depends on a missing dimension",
+                    d.name
+                );
             }
         }
     }
@@ -568,10 +689,15 @@ mod tests {
     /// The maturity histogram partitions the catalog (sum == size).
     #[test]
     fn maturity_histogram_partitions_the_catalog() {
-        let counts = [Maturity::Working, Maturity::M2Typed, Maturity::M3Typed, Maturity::Informational]
-            .iter()
-            .map(|m| CATALOG.iter().filter(|d| d.maturity == *m).count())
-            .sum::<usize>();
+        let counts = [
+            Maturity::Working,
+            Maturity::M2Typed,
+            Maturity::M3Typed,
+            Maturity::Informational,
+        ]
+        .iter()
+        .map(|m| CATALOG.iter().filter(|d| d.maturity == *m).count())
+        .sum::<usize>();
         assert_eq!(counts, CATALOG.len());
     }
 
@@ -579,24 +705,50 @@ mod tests {
     /// contract (memory/cpu/replica bidirectional, storage grow-only).
     #[test]
     fn directionality_matches_dimension_semantics() {
-        assert_eq!(lookup(DimensionId::Memory).unwrap().directionality, Directionality::Bidirectional);
-        assert_eq!(lookup(DimensionId::Storage).unwrap().directionality, Directionality::GrowOnly);
-        assert_eq!(lookup(DimensionId::Cpu).unwrap().directionality, Directionality::Bidirectional);
+        assert_eq!(
+            lookup(DimensionId::Memory).unwrap().directionality,
+            Directionality::Bidirectional
+        );
+        assert_eq!(
+            lookup(DimensionId::Storage).unwrap().directionality,
+            Directionality::GrowOnly
+        );
+        assert_eq!(
+            lookup(DimensionId::Cpu).unwrap().directionality,
+            Directionality::Bidirectional
+        );
         // Replica is now a first-class HORIZONTAL carve (scales spec.replicas both ways).
-        assert_eq!(lookup(DimensionId::Replica).unwrap().directionality, Directionality::Bidirectional);
-        assert_eq!(lookup(DimensionId::Arc).unwrap().directionality, Directionality::Bidirectional);
-        assert_eq!(lookup(DimensionId::Cgroup).unwrap().directionality, Directionality::Bidirectional);
+        assert_eq!(
+            lookup(DimensionId::Replica).unwrap().directionality,
+            Directionality::Bidirectional
+        );
+        assert_eq!(
+            lookup(DimensionId::Arc).unwrap().directionality,
+            Directionality::Bidirectional
+        );
+        assert_eq!(
+            lookup(DimensionId::Cgroup).unwrap().directionality,
+            Directionality::Bidirectional
+        );
     }
 
     /// Every dimension declares a recovery class (the partition the floor logic
     /// keys off). Fails the build if a new dimension lands without one.
     #[test]
     fn resource_class_partitions_the_catalog() {
-        let counts = [ResourceClass::Soft, ResourceClass::HardDownSoftUp, ResourceClass::Hard]
-            .iter()
-            .map(|rc| CATALOG.iter().filter(|d| d.resource_class == *rc).count())
-            .sum::<usize>();
-        assert_eq!(counts, CATALOG.len(), "every dimension has exactly one ResourceClass");
+        let counts = [
+            ResourceClass::Soft,
+            ResourceClass::HardDownSoftUp,
+            ResourceClass::Hard,
+        ]
+        .iter()
+        .map(|rc| CATALOG.iter().filter(|d| d.resource_class == *rc).count())
+        .sum::<usize>();
+        assert_eq!(
+            counts,
+            CATALOG.len(),
+            "every dimension has exactly one ResourceClass"
+        );
     }
 
     /// A `GrowOnly` dimension is EXACTLY a `HardDownSoftUp` one and vice-versa:
@@ -608,7 +760,11 @@ mod tests {
         for d in CATALOG {
             let grow_only = d.directionality == Directionality::GrowOnly;
             let hd_su = d.resource_class == ResourceClass::HardDownSoftUp;
-            assert_eq!(grow_only, hd_su, "{}: GrowOnly ⟺ HardDownSoftUp must hold", d.name);
+            assert_eq!(
+                grow_only, hd_su,
+                "{}: GrowOnly ⟺ HardDownSoftUp must hold",
+                d.name
+            );
         }
     }
 
@@ -625,7 +781,11 @@ mod tests {
         for id in STATIC_FLOOR_DIMENSIONS {
             assert!(derived.contains(&id), "{id} should need a static floor");
         }
-        assert_eq!(derived.len(), STATIC_FLOOR_DIMENSIONS.len(), "static-floor set must match exactly");
+        assert_eq!(
+            derived.len(),
+            STATIC_FLOOR_DIMENSIONS.len(),
+            "static-floor set must match exactly"
+        );
     }
 
     /// `Hard` (OOM) dimensions must be `Bidirectional` — a hard resource has to be
@@ -636,7 +796,12 @@ mod tests {
     fn hard_resources_are_bidirectional() {
         for d in CATALOG {
             if d.resource_class == ResourceClass::Hard {
-                assert_eq!(d.directionality, Directionality::Bidirectional, "{} is Hard ⇒ must be Bidirectional", d.name);
+                assert_eq!(
+                    d.directionality,
+                    Directionality::Bidirectional,
+                    "{} is Hard ⇒ must be Bidirectional",
+                    d.name
+                );
             }
         }
     }
@@ -670,10 +835,14 @@ mod tests {
 
     #[test]
     fn restart_cost_partitions_the_action_catalog() {
-        let n = [DisruptionClass::RestartFree, DisruptionClass::RestartConditional, DisruptionClass::RestartRequiring]
-            .iter()
-            .map(|c| ACTIONS.iter().filter(|a| a.class == *c).count())
-            .sum::<usize>();
+        let n = [
+            DisruptionClass::RestartFree,
+            DisruptionClass::RestartConditional,
+            DisruptionClass::RestartRequiring,
+        ]
+        .iter()
+        .map(|c| ACTIONS.iter().filter(|a| a.class == *c).count())
+        .sum::<usize>();
         assert_eq!(n, ACTIONS.len());
     }
 
@@ -684,10 +853,19 @@ mod tests {
     #[test]
     fn both_host_and_pod_planes_have_a_restart_free_action() {
         let free_planes: Vec<Plane> = restart_free_actions().map(|a| a.plane).collect();
-        assert!(free_planes.contains(&Plane::Host), "host plane needs a restart-free action");
-        assert!(free_planes.contains(&Plane::Pod), "pod plane needs a restart-free action");
+        assert!(
+            free_planes.contains(&Plane::Host),
+            "host plane needs a restart-free action"
+        );
+        assert!(
+            free_planes.contains(&Plane::Pod),
+            "pod plane needs a restart-free action"
+        );
         let free = restart_free_actions().count();
-        assert!(free * 2 > ACTIONS.len(), "restart-free should be the majority (converging)");
+        assert!(
+            free * 2 > ACTIONS.len(),
+            "restart-free should be the majority (converging)"
+        );
     }
 
     /// Every restart-requiring action MUST justify itself (a non-empty `note`
@@ -696,7 +874,11 @@ mod tests {
     fn restart_requiring_actions_justify_the_roll() {
         for a in ACTIONS {
             if a.class == DisruptionClass::RestartRequiring {
-                assert!(a.note.contains("USE"), "{} must say when the roll is worth it", a.name);
+                assert!(
+                    a.note.contains("USE"),
+                    "{} must say when the roll is worth it",
+                    a.name
+                );
             }
         }
     }
@@ -718,9 +900,18 @@ mod tests {
             SuppressedDemand::NotApplicable,
         ]
         .iter()
-        .map(|sd| CATALOG.iter().filter(|d| d.suppressed_demand == *sd).count())
+        .map(|sd| {
+            CATALOG
+                .iter()
+                .filter(|d| d.suppressed_demand == *sd)
+                .count()
+        })
         .sum::<usize>();
-        assert_eq!(n, CATALOG.len(), "every dimension declares exactly one SuppressedDemand");
+        assert_eq!(
+            n,
+            CATALOG.len(),
+            "every dimension declares exactly one SuppressedDemand"
+        );
 
         for d in CATALOG {
             match d.suppressed_demand {
@@ -728,29 +919,37 @@ mod tests {
                 // dimension has no shrink to ratchet, so its suppressed demand is a
                 // non-issue by construction — and ONLY a grow-only dimension may say so.
                 SuppressedDemand::GrowOnly => assert_eq!(
-                    d.directionality, Directionality::GrowOnly,
-                    "{}: GrowOnly suppressed-demand requires GrowOnly directionality", d.name
+                    d.directionality,
+                    Directionality::GrowOnly,
+                    "{}: GrowOnly suppressed-demand requires GrowOnly directionality",
+                    d.name
                 ),
                 // NotApplicable ⟺ ObserveOnly: never mutated ⇒ no carve to suppress.
                 SuppressedDemand::NotApplicable => assert_eq!(
-                    d.directionality, Directionality::ObserveOnly,
-                    "{}: NotApplicable suppressed-demand requires ObserveOnly directionality", d.name
+                    d.directionality,
+                    Directionality::ObserveOnly,
+                    "{}: NotApplicable suppressed-demand requires ObserveOnly directionality",
+                    d.name
                 ),
                 // CfsThrottling is the hard-capped-SOFT case: usage is capped at the
                 // limit (the cgroup throttles), so demand shows up ONLY as throttling.
                 // A Hard (OOM) resource is NOT CFS-throttled — over-limit kills, it
                 // doesn't throttle — so CfsThrottling must be a Soft resource.
                 SuppressedDemand::CfsThrottling => assert_eq!(
-                    d.resource_class, ResourceClass::Soft,
-                    "{}: CfsThrottling is the hard-capped-Soft case (over-limit throttles, never OOMs)", d.name
+                    d.resource_class,
+                    ResourceClass::Soft,
+                    "{}: CfsThrottling is the hard-capped-Soft case (over-limit throttles, never OOMs)",
+                    d.name
                 ),
                 // WorkingSetExceedsSoftLimit: the spike-above-the-soft-limit case
                 // (memory/host-memory) — visible in the primary peak path, no throttle
                 // read. Must NOT be a grow-only/observe-only dimension (those have their
                 // own variants) — i.e. it is a genuinely bidirectional carved dimension.
                 SuppressedDemand::WorkingSetExceedsSoftLimit => assert_ne!(
-                    d.directionality, Directionality::ObserveOnly,
-                    "{}: WorkingSetExceedsSoftLimit is for a carved dimension, not observe-only", d.name
+                    d.directionality,
+                    Directionality::ObserveOnly,
+                    "{}: WorkingSetExceedsSoftLimit is for a carved dimension, not observe-only",
+                    d.name
                 ),
             }
         }
@@ -766,12 +965,28 @@ mod tests {
             .filter(|d| d.suppressed_demand == SuppressedDemand::CfsThrottling)
             .map(|d| d.id)
             .collect();
-        assert!(cfs.contains(&DimensionId::Cpu), "the k8s cpu dimension is CFS-throttled");
-        assert!(cfs.contains(&DimensionId::CgroupCpu), "the host cpu dimension is CFS-throttled");
-        assert_eq!(cfs.len(), 2, "exactly the two cpu dimensions are CFS-throttled, got {cfs:?}");
+        assert!(
+            cfs.contains(&DimensionId::Cpu),
+            "the k8s cpu dimension is CFS-throttled"
+        );
+        assert!(
+            cfs.contains(&DimensionId::CgroupCpu),
+            "the host cpu dimension is CFS-throttled"
+        );
+        assert_eq!(
+            cfs.len(),
+            2,
+            "exactly the two cpu dimensions are CFS-throttled, got {cfs:?}"
+        );
         // and memory/storage are NOT CFS-throttled (memory OOMs, storage is grow-only).
-        assert_eq!(lookup(DimensionId::Memory).unwrap().suppressed_demand, SuppressedDemand::WorkingSetExceedsSoftLimit);
-        assert_eq!(lookup(DimensionId::Storage).unwrap().suppressed_demand, SuppressedDemand::GrowOnly);
+        assert_eq!(
+            lookup(DimensionId::Memory).unwrap().suppressed_demand,
+            SuppressedDemand::WorkingSetExceedsSoftLimit
+        );
+        assert_eq!(
+            lookup(DimensionId::Storage).unwrap().suppressed_demand,
+            SuppressedDemand::GrowOnly
+        );
     }
 
     /// The host dimensions route to the HostCluster boundary, not the k8s API.
@@ -783,7 +998,11 @@ mod tests {
         assert!(!DimensionId::Cpu.is_host());
         for d in CATALOG {
             if d.id.is_host() {
-                assert!(d.upstream_mirror.is_some(), "{} must name its host upstream", d.name);
+                assert!(
+                    d.upstream_mirror.is_some(),
+                    "{} must name its host upstream",
+                    d.name
+                );
             }
         }
     }
@@ -802,10 +1021,17 @@ mod tests {
     #[test]
     fn topology_axis_labels_are_unique_and_four() {
         assert_eq!(REPLICA_TOPOLOGY_AXIS.len(), 4);
-        let mut labels: Vec<&str> = REPLICA_TOPOLOGY_AXIS.iter().map(|a| a.control_label).collect();
+        let mut labels: Vec<&str> = REPLICA_TOPOLOGY_AXIS
+            .iter()
+            .map(|a| a.control_label)
+            .collect();
         labels.sort_unstable();
         labels.dedup();
-        assert_eq!(labels.len(), 4, "duplicate control_label in the topology axis");
+        assert_eq!(
+            labels.len(),
+            4,
+            "duplicate control_label in the topology axis"
+        );
         let mut kinds: Vec<&str> = REPLICA_TOPOLOGY_AXIS.iter().map(|a| a.crd_kind).collect();
         kinds.sort_unstable();
         kinds.dedup();
@@ -818,22 +1044,33 @@ mod tests {
         // covers Topology::ALL_LABELS exactly — a new arm can't be added to the enum
         // without a catalog row, or vice versa.
         use breathe_control::replica::Topology;
-        let mut catalog: Vec<&str> = REPLICA_TOPOLOGY_AXIS.iter().map(|a| a.control_label).collect();
+        let mut catalog: Vec<&str> = REPLICA_TOPOLOGY_AXIS
+            .iter()
+            .map(|a| a.control_label)
+            .collect();
         catalog.sort_unstable();
         let mut border = Topology::ALL_LABELS.to_vec();
         border.sort_unstable();
-        assert_eq!(catalog, border, "REPLICA_TOPOLOGY_AXIS must mirror breathe_control::Topology::ALL_LABELS");
+        assert_eq!(
+            catalog, border,
+            "REPLICA_TOPOLOGY_AXIS must mirror breathe_control::Topology::ALL_LABELS"
+        );
     }
 
     #[test]
     fn topology_axis_target_coupling_matches_the_border() {
         // The catalog's requires_target agrees with the border's requires_statefulset:
         // exactly the three stateful arms require a StatefulSet; non-persistent is Any.
-        use breathe_control::replica::{Topology, STATEFULSET_KIND};
+        use breathe_control::replica::{STATEFULSET_KIND, Topology};
         // An explicit (label → border value) table — no panic arm, no fallthrough.
         let table = [
             ("non-persistent", Topology::NonPersistent),
-            ("persistent", Topology::Persistent { replication_factor: 1 }),
+            (
+                "persistent",
+                Topology::Persistent {
+                    replication_factor: 1,
+                },
+            ),
             ("master-slave", Topology::MasterSlave { primaries: 1 }),
             ("fully-distributed", Topology::FullyDistributed),
         ];
@@ -855,7 +1092,10 @@ mod tests {
                         "{} requires a Kind but the border says Any",
                         arm.control_label
                     );
-                    assert_eq!(k, STATEFULSET_KIND, "the only stateful target is StatefulSet");
+                    assert_eq!(
+                        k, STATEFULSET_KIND,
+                        "the only stateful target is StatefulSet"
+                    );
                 }
             }
         }
@@ -866,7 +1106,10 @@ mod tests {
         // Lisp ↔ catalog: the :topology-axis form names every arm's crd-kind. The
         // crd_kind tokens are mutually non-substring (nonPersistent has capital P), so
         // a bare `contains` is unambiguous — no format! needed.
-        assert!(DIMENSIONS_LISP.contains(":topology-axis"), "the replica dimension must declare :topology-axis");
+        assert!(
+            DIMENSIONS_LISP.contains(":topology-axis"),
+            "the replica dimension must declare :topology-axis"
+        );
         for arm in &REPLICA_TOPOLOGY_AXIS {
             assert!(
                 DIMENSIONS_LISP.contains(arm.crd_kind),

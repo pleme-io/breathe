@@ -219,7 +219,9 @@ impl ReplicationTopology {
             // A single-writer with no reader is still a master-slave shape at rest
             // (zero readers) — its class is masterSlave (Persistent is a distinct
             // discovered shape only when the engine matrix says so).
-            Self::SingleWriter { .. } | Self::PrimaryReaders { .. } => ReplicationClass::MasterSlave,
+            Self::SingleWriter { .. } | Self::PrimaryReaders { .. } => {
+                ReplicationClass::MasterSlave
+            }
             Self::Quorum { .. } => ReplicationClass::FullyDistributed,
         }
     }
@@ -313,7 +315,10 @@ impl PromotionReceipt {
     /// transition calls this, so a receipt cannot be forged by a caller.
     #[must_use]
     const fn issue(new_primary: ReplicaId, demoted: ReplicaId) -> Self {
-        Self { new_primary, demoted }
+        Self {
+            new_primary,
+            demoted,
+        }
     }
 
     /// The replica that is now the writable primary.
@@ -431,7 +436,10 @@ pub enum FailoverEvent {
     /// The cloud/scheduler signals the primary's node WILL be reclaimed (spot
     /// interruption notice / a scale-down that would hit the primary). Carries the
     /// current primary + a chosen promotion candidate (the reader/voter to promote).
-    PrimaryReclaimSignal { primary: ReplicaId, candidate: ReplicaId },
+    PrimaryReclaimSignal {
+        primary: ReplicaId,
+        candidate: ReplicaId,
+    },
     /// Discovery confirms a healthy promotable target exists (a lag-safe reader, or
     /// a quorum majority) — proceed with the promotion.
     PromotableTargetAvailable,
@@ -459,7 +467,9 @@ pub enum FailoverAction {
     /// Authorize the OLD primary's node reclaim — carries the authorization witness
     /// (constructible only from a promotion receipt). The ONLY action that reclaims
     /// a former-primary node, and it exists only after a successful promotion.
-    ReclaimOldPrimary { authorization: PrimaryReclaimAuthorization },
+    ReclaimOldPrimary {
+        authorization: PrimaryReclaimAuthorization,
+    },
     /// Block the reclaim + escalate (no safe failover target). `retirada` holds the
     /// node; the primary is never reclaimed.
     BlockReclaimEscalate,
@@ -520,16 +530,24 @@ pub fn failover_step(
             // The chosen candidate was carried on the signal; the actuator promotes
             // it. (A production shell threads the candidate through; the FSM emits
             // the intent.)
-            (S::PromotingReplica, FailoverAction::PromoteReplica { candidate: ReplicaId(u32::MAX) })
+            (
+                S::PromotingReplica,
+                FailoverAction::PromoteReplica {
+                    candidate: ReplicaId(u32::MAX),
+                },
+            )
         }
         (S::PrimaryReclaimSignaled, E::NoPromotableTarget) => {
             (S::ReclaimBlocked, FailoverAction::BlockReclaimEscalate)
         }
         // A blocked reclaim can still proceed if a target becomes healthy (a
         // lagging reader caught up / the quorum recovered).
-        (S::ReclaimBlocked, E::PromotableTargetAvailable) => {
-            (S::PromotingReplica, FailoverAction::PromoteReplica { candidate: ReplicaId(u32::MAX) })
-        }
+        (S::ReclaimBlocked, E::PromotableTargetAvailable) => (
+            S::PromotingReplica,
+            FailoverAction::PromoteReplica {
+                candidate: ReplicaId(u32::MAX),
+            },
+        ),
         // ★ THE LOAD-BEARING EDGE. The promotion succeeded — mint the receipt and
         // authorize the OLD primary's reclaim. This is the ONLY place a
         // ReclaimOldPrimary action (and a PromotionReceipt) is constructed.
@@ -563,7 +581,9 @@ pub struct FailoverMachine {
 
 impl Default for FailoverMachine {
     fn default() -> Self {
-        Self { state: FailoverState::Steady }
+        Self {
+            state: FailoverState::Steady,
+        }
     }
 }
 
@@ -659,8 +679,11 @@ impl ReplicaScalePolicy {
             Self::QuorumOddSteps => "quorum-odd-steps",
         }
     }
-    pub const ALL: [ReplicaScalePolicy; 3] =
-        [Self::NeverScale, Self::ScaleReadersFreely, Self::QuorumOddSteps];
+    pub const ALL: [ReplicaScalePolicy; 3] = [
+        Self::NeverScale,
+        Self::ScaleReadersFreely,
+        Self::QuorumOddSteps,
+    ];
 }
 
 /// The FAILOVER policy for a database tier — how a primary loss is handled.
@@ -687,8 +710,11 @@ impl FailoverPolicy {
             Self::QuorumReElect => "quorum-re-elect",
         }
     }
-    pub const ALL: [FailoverPolicy; 3] =
-        [Self::NoFailover, Self::PromoteBeforeReclaim, Self::QuorumReElect];
+    pub const ALL: [FailoverPolicy; 3] = [
+        Self::NoFailover,
+        Self::PromoteBeforeReclaim,
+        Self::QuorumReElect,
+    ];
 
     /// Does this policy make a primary reclaim SAFE (there is a failover path)?
     /// `NoFailover` does not — so it cannot pair with `SpotEvenPrimary`.
@@ -824,7 +850,13 @@ pub fn legal_permutations() -> Vec<DatabasePermutation> {
             for spot in SpotPosture::ALL {
                 for replica in ReplicaScalePolicy::ALL {
                     for failover in FailoverPolicy::ALL {
-                        let p = DatabasePermutation { class, placement, spot, replica, failover };
+                        let p = DatabasePermutation {
+                            class,
+                            placement,
+                            spot,
+                            replica,
+                            failover,
+                        };
                         if p.is_legal() {
                             out.push(p);
                         }
@@ -940,8 +972,13 @@ impl DbEngine {
     }
 
     /// Every engine the matrix covers — the domain side of the 5/5 coverage check.
-    pub const ALL: [DbEngine; 5] =
-        [Self::MySql, Self::Postgres, Self::Redis, Self::Mongo, Self::Neo4j];
+    pub const ALL: [DbEngine; 5] = [
+        Self::MySql,
+        Self::Postgres,
+        Self::Redis,
+        Self::Mongo,
+        Self::Neo4j,
+    ];
 }
 
 /// One engine's ARCHITECTURE row — the topology class it breathes under, its
@@ -1062,17 +1099,34 @@ mod tests {
     #[test]
     fn every_engine_has_an_architecture_row() {
         for e in DbEngine::ALL {
-            assert!(architecture_for(e).is_some(), "no architecture row for {}", e.as_str());
+            assert!(
+                architecture_for(e).is_some(),
+                "no architecture row for {}",
+                e.as_str()
+            );
         }
-        assert_eq!(DB_ARCHITECTURES.len(), DbEngine::ALL.len(), "matrix ⇄ engine drift");
-        assert_eq!(DbEngine::ALL.len(), 5, "the matrix codes 5/5 engines, not 2/5");
+        assert_eq!(
+            DB_ARCHITECTURES.len(),
+            DbEngine::ALL.len(),
+            "matrix ⇄ engine drift"
+        );
+        assert_eq!(
+            DbEngine::ALL.len(),
+            5,
+            "the matrix codes 5/5 engines, not 2/5"
+        );
     }
 
     #[test]
     fn engine_rows_are_unique() {
         for (i, a) in DB_ARCHITECTURES.iter().enumerate() {
             for b in &DB_ARCHITECTURES[i + 1..] {
-                assert_ne!(a.engine, b.engine, "duplicate engine row {}", a.engine.as_str());
+                assert_ne!(
+                    a.engine,
+                    b.engine,
+                    "duplicate engine row {}",
+                    a.engine.as_str()
+                );
             }
         }
     }
@@ -1108,11 +1162,26 @@ mod tests {
 
     #[test]
     fn expected_engine_topologies() {
-        assert_eq!(architecture_for(DbEngine::MySql).unwrap().class, ReplicationClass::MasterSlave);
-        assert_eq!(architecture_for(DbEngine::Postgres).unwrap().class, ReplicationClass::MasterSlave);
-        assert_eq!(architecture_for(DbEngine::Redis).unwrap().class, ReplicationClass::MasterSlave);
-        assert_eq!(architecture_for(DbEngine::Mongo).unwrap().class, ReplicationClass::FullyDistributed);
-        assert_eq!(architecture_for(DbEngine::Neo4j).unwrap().class, ReplicationClass::Persistent);
+        assert_eq!(
+            architecture_for(DbEngine::MySql).unwrap().class,
+            ReplicationClass::MasterSlave
+        );
+        assert_eq!(
+            architecture_for(DbEngine::Postgres).unwrap().class,
+            ReplicationClass::MasterSlave
+        );
+        assert_eq!(
+            architecture_for(DbEngine::Redis).unwrap().class,
+            ReplicationClass::MasterSlave
+        );
+        assert_eq!(
+            architecture_for(DbEngine::Mongo).unwrap().class,
+            ReplicationClass::FullyDistributed
+        );
+        assert_eq!(
+            architecture_for(DbEngine::Neo4j).unwrap().class,
+            ReplicationClass::Persistent
+        );
     }
 
     // ── discovery ───────────────────────────────────────────────────────────────
@@ -1120,27 +1189,43 @@ mod tests {
     #[test]
     fn discovery_reads_a_topology_through_the_seam() {
         let disc = MockReplicationDiscovery {
-            topology: ReplicationTopology::PrimaryReaders { primary: ReplicaId(0), readers: 2 },
+            topology: ReplicationTopology::PrimaryReaders {
+                primary: ReplicaId(0),
+                readers: 2,
+            },
             unreadable: false,
         };
         let topo = disc.discover_topology().unwrap();
-        assert!(topo.has_failover_target(), "a primary with 2 readers has a failover target");
+        assert!(
+            topo.has_failover_target(),
+            "a primary with 2 readers has a failover target"
+        );
         assert_eq!(topo.class(), ReplicationClass::MasterSlave);
     }
 
     #[test]
     fn discovery_error_is_typed_not_a_panic() {
         let disc = MockReplicationDiscovery {
-            topology: ReplicationTopology::SingleWriter { primary: ReplicaId(0) },
+            topology: ReplicationTopology::SingleWriter {
+                primary: ReplicaId(0),
+            },
             unreadable: true,
         };
-        assert!(matches!(disc.discover_topology(), Err(DiscoveryError::Unreadable(_))));
+        assert!(matches!(
+            disc.discover_topology(),
+            Err(DiscoveryError::Unreadable(_))
+        ));
     }
 
     #[test]
     fn single_writer_has_no_failover_target() {
-        let topo = ReplicationTopology::SingleWriter { primary: ReplicaId(0) };
-        assert!(!topo.has_failover_target(), "a single writer has no promotable replica");
+        let topo = ReplicationTopology::SingleWriter {
+            primary: ReplicaId(0),
+        };
+        assert!(
+            !topo.has_failover_target(),
+            "a single writer has no promotable replica"
+        );
     }
 
     #[test]
@@ -1151,7 +1236,10 @@ mod tests {
         assert!(!ReplicationTopology::Quorum { voters: 4 }.has_failover_target());
         assert!(ReplicationTopology::Quorum { voters: 3 }.has_failover_target());
         assert!(ReplicationTopology::Quorum { voters: 5 }.has_failover_target());
-        assert_eq!(ReplicationTopology::Quorum { voters: 5 }.quorum_majority(), 3);
+        assert_eq!(
+            ReplicationTopology::Quorum { voters: 5 }.quorum_majority(),
+            3
+        );
     }
 
     // ── the failover-safe-spot FSM ──────────────────────────────────────────────
@@ -1161,7 +1249,10 @@ mod tests {
         let mut m = FailoverMachine::new();
         // spot reclaim targets the primary → grace window.
         let a = m
-            .on(FailoverEvent::PrimaryReclaimSignal { primary: ReplicaId(0), candidate: ReplicaId(1) })
+            .on(FailoverEvent::PrimaryReclaimSignal {
+                primary: ReplicaId(0),
+                candidate: ReplicaId(1),
+            })
             .unwrap();
         assert_eq!(a, FailoverAction::Hold);
         assert_eq!(m.state(), FailoverState::PrimaryReclaimSignaled);
@@ -1181,8 +1272,11 @@ mod tests {
     #[test]
     fn no_target_blocks_the_reclaim_never_loses_the_primary() {
         let mut m = FailoverMachine::new();
-        m.on(FailoverEvent::PrimaryReclaimSignal { primary: ReplicaId(0), candidate: ReplicaId(1) })
-            .unwrap();
+        m.on(FailoverEvent::PrimaryReclaimSignal {
+            primary: ReplicaId(0),
+            candidate: ReplicaId(1),
+        })
+        .unwrap();
         let a = m.on(FailoverEvent::NoPromotableTarget).unwrap();
         assert_eq!(a, FailoverAction::BlockReclaimEscalate);
         assert_eq!(m.state(), FailoverState::ReclaimBlocked);
@@ -1192,8 +1286,11 @@ mod tests {
     #[test]
     fn a_blocked_reclaim_can_recover_when_a_target_appears() {
         let mut m = FailoverMachine::new();
-        m.on(FailoverEvent::PrimaryReclaimSignal { primary: ReplicaId(0), candidate: ReplicaId(1) })
-            .unwrap();
+        m.on(FailoverEvent::PrimaryReclaimSignal {
+            primary: ReplicaId(0),
+            candidate: ReplicaId(1),
+        })
+        .unwrap();
         m.on(FailoverEvent::NoPromotableTarget).unwrap();
         // a lagging reader caught up.
         let a = m.on(FailoverEvent::PromotableTargetAvailable).unwrap();
@@ -1204,9 +1301,15 @@ mod tests {
     #[test]
     fn a_cleared_reclaim_returns_to_steady_from_any_phase() {
         for start_events in [
-            vec![FailoverEvent::PrimaryReclaimSignal { primary: ReplicaId(0), candidate: ReplicaId(1) }],
+            vec![FailoverEvent::PrimaryReclaimSignal {
+                primary: ReplicaId(0),
+                candidate: ReplicaId(1),
+            }],
             vec![
-                FailoverEvent::PrimaryReclaimSignal { primary: ReplicaId(0), candidate: ReplicaId(1) },
+                FailoverEvent::PrimaryReclaimSignal {
+                    primary: ReplicaId(0),
+                    candidate: ReplicaId(1),
+                },
                 FailoverEvent::NoPromotableTarget,
             ],
         ] {
@@ -1225,7 +1328,10 @@ mod tests {
         // ReclaimOldPrimary action appears ONLY from (PromotingReplica,
         // PromotionSucceeded). No other edge authorizes reclaiming a former primary.
         let events = [
-            FailoverEvent::PrimaryReclaimSignal { primary: ReplicaId(0), candidate: ReplicaId(1) },
+            FailoverEvent::PrimaryReclaimSignal {
+                primary: ReplicaId(0),
+                candidate: ReplicaId(1),
+            },
             FailoverEvent::PromotableTargetAvailable,
             FailoverEvent::NoPromotableTarget,
             FailoverEvent::PromotionSucceeded,
@@ -1254,8 +1360,11 @@ mod tests {
         // e.g. a promotion-success while steady (no failover in flight) is illegal.
         assert!(failover_step(FailoverState::Steady, FailoverEvent::PromotionSucceeded).is_err());
         assert!(
-            failover_step(FailoverState::OldPrimaryReclaimed, FailoverEvent::PromotableTargetAvailable)
-                .is_err()
+            failover_step(
+                FailoverState::OldPrimaryReclaimed,
+                FailoverEvent::PromotableTargetAvailable
+            )
+            .is_err()
         );
     }
 
@@ -1265,7 +1374,10 @@ mod tests {
         // proof): from every state, some event sequence reaches Steady or
         // OldPrimaryReclaimed. BFS over the transition relation.
         let events = [
-            FailoverEvent::PrimaryReclaimSignal { primary: ReplicaId(0), candidate: ReplicaId(1) },
+            FailoverEvent::PrimaryReclaimSignal {
+                primary: ReplicaId(0),
+                candidate: ReplicaId(1),
+            },
             FailoverEvent::PromotableTargetAvailable,
             FailoverEvent::NoPromotableTarget,
             FailoverEvent::PromotionSucceeded,
@@ -1289,7 +1401,11 @@ mod tests {
                     }
                 }
             }
-            assert!(reached_good, "state {} cannot reach a good terminal", start.as_str());
+            assert!(
+                reached_good,
+                "state {} cannot reach a good terminal",
+                start.as_str()
+            );
         }
     }
 
@@ -1315,7 +1431,10 @@ mod tests {
             replica: ReplicaScalePolicy::ScaleReadersFreely,
             failover: FailoverPolicy::NoFailover,
         };
-        assert_eq!(p.validate(), Err(PermutationError::SpotPrimaryWithoutFailover));
+        assert_eq!(
+            p.validate(),
+            Err(PermutationError::SpotPrimaryWithoutFailover)
+        );
     }
 
     #[test]
@@ -1327,7 +1446,10 @@ mod tests {
             replica: ReplicaScalePolicy::ScaleReadersFreely,
             failover: FailoverPolicy::PromoteBeforeReclaim,
         };
-        assert!(p.is_legal(), "100% spot even the primary IS legal WITH a failover policy");
+        assert!(
+            p.is_legal(),
+            "100% spot even the primary IS legal WITH a failover policy"
+        );
     }
 
     #[test]
@@ -1357,9 +1479,15 @@ mod tests {
     #[test]
     fn the_legal_lattice_is_nonempty_and_all_valid() {
         let lattice = legal_permutations();
-        assert!(!lattice.is_empty(), "the permutation lattice must be nonempty");
+        assert!(
+            !lattice.is_empty(),
+            "the permutation lattice must be nonempty"
+        );
         for p in &lattice {
-            assert!(p.is_legal(), "legal_permutations yielded an illegal permutation: {p:?}");
+            assert!(
+                p.is_legal(),
+                "legal_permutations yielded an illegal permutation: {p:?}"
+            );
         }
         // No spot-even-primary permutation in the lattice lacks a failover policy.
         for p in &lattice {
@@ -1385,7 +1513,9 @@ mod tests {
     #[test]
     fn discovery_molds_the_class_then_override_pins_it() {
         // default ← discovered ← override.
-        let default = architecture_for(DbEngine::MySql).unwrap().default_permutation();
+        let default = architecture_for(DbEngine::MySql)
+            .unwrap()
+            .default_permutation();
         // discovery says the live shape is a quorum → class narrows to distributed,
         // but the master-slave replica/failover would then mismatch → override fixes.
         let overlay = ReplicationOverlay {
@@ -1407,7 +1537,9 @@ mod tests {
     fn an_override_that_makes_an_unsafe_carve_is_rejected() {
         // The precedence fold cannot mint an unsafe carve: forcing spot-even-primary
         // with no failover fails resolution (parse-time-rejected).
-        let default = architecture_for(DbEngine::Postgres).unwrap().default_permutation();
+        let default = architecture_for(DbEngine::Postgres)
+            .unwrap()
+            .default_permutation();
         let overlay = ReplicationOverlay {
             spot: Some(SpotPosture::SpotEvenPrimary),
             failover: Some(FailoverPolicy::NoFailover),
@@ -1438,29 +1570,66 @@ mod tests {
         // axis label appears in the authored (defreplication-topology) form, so the
         // Rust border and the (defband-database) lisp vocabulary can never drift.
         const LISP: &str = include_str!("../specs/breathe-invariant.lisp");
-        assert!(LISP.contains("defreplication-topology"), "lisp must declare (defreplication-topology …)");
-        assert!(LISP.contains("defband-database"), "lisp must declare (defband-database …)");
+        assert!(
+            LISP.contains("defreplication-topology"),
+            "lisp must declare (defreplication-topology …)"
+        );
+        assert!(
+            LISP.contains("defband-database"),
+            "lisp must declare (defband-database …)"
+        );
         // maturity promoted to landing (no longer a gap).
-        assert!(LISP.contains(":maturity landing"), "the (defband-database) form must be maturity landing");
+        assert!(
+            LISP.contains(":maturity landing"),
+            "the (defband-database) form must be maturity landing"
+        );
         for e in DbEngine::ALL {
-            assert!(LISP.contains(e.as_str()), "lisp missing engine {}", e.as_str());
+            assert!(
+                LISP.contains(e.as_str()),
+                "lisp missing engine {}",
+                e.as_str()
+            );
         }
         for c in ReplicationClass::ALL {
-            assert!(LISP.contains(c.as_str()), "lisp missing class {}", c.as_str());
-            assert!(LISP.contains(c.crd_kind()), "lisp missing crd_kind {}", c.crd_kind());
+            assert!(
+                LISP.contains(c.as_str()),
+                "lisp missing class {}",
+                c.as_str()
+            );
+            assert!(
+                LISP.contains(c.crd_kind()),
+                "lisp missing crd_kind {}",
+                c.crd_kind()
+            );
         }
         for s in FailoverState::ALL {
-            assert!(LISP.contains(s.as_str()), "lisp missing failover state {}", s.as_str());
+            assert!(
+                LISP.contains(s.as_str()),
+                "lisp missing failover state {}",
+                s.as_str()
+            );
         }
         for s in SpotPosture::ALL {
-            assert!(LISP.contains(s.as_str()), "lisp missing spot posture {}", s.as_str());
+            assert!(
+                LISP.contains(s.as_str()),
+                "lisp missing spot posture {}",
+                s.as_str()
+            );
         }
         for f in FailoverPolicy::ALL {
-            assert!(LISP.contains(f.as_str()), "lisp missing failover policy {}", f.as_str());
+            assert!(
+                LISP.contains(f.as_str()),
+                "lisp missing failover policy {}",
+                f.as_str()
+            );
         }
         // the load-bearing cache/pool knobs appear (couples to the db_matrix actuator).
         for a in DB_ARCHITECTURES {
-            assert!(LISP.contains(a.cache_knob), "lisp missing cache knob {}", a.cache_knob);
+            assert!(
+                LISP.contains(a.cache_knob),
+                "lisp missing cache knob {}",
+                a.cache_knob
+            );
         }
     }
 }

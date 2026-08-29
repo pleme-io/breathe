@@ -47,7 +47,7 @@
 //! ```yaml
 //!         resources:
 //!           requests:
-//!             memory: 512Mi # {"$breathe": "camelot-build/sui-request"}
+//!             memory: 512Mi # {"$breathe": "private-estate-build/sui-request"}
 //!           limits:
 //!             memory: 6Gi
 //! ```
@@ -96,20 +96,25 @@ use crate::request::{ClassTransitionProposal, CommitReceipt, ContentAddr, Writer
 /// (`breathe-invariant`) has no schemars dep; this type is born here, so a
 /// mirror would be a second declaration of one shape, buying nothing and owing
 /// a drift test forever.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+#[derive(
+    Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
+)]
 #[serde(rename_all = "camelCase")]
 pub struct ManifestCoordinate {
     /// Repo-relative path to the manifest, e.g.
-    /// `clusters/camelot/apps/sui/release.yaml`.
+    /// `clusters/the private estate/apps/sui/release.yaml`.
     pub path: String,
-    /// The marker id anchoring the exact scalar, e.g. `camelot-build/sui-request`.
+    /// The marker id anchoring the exact scalar, e.g. `private-estate-build/sui-request`.
     pub marker: String,
 }
 
 impl ManifestCoordinate {
     #[must_use]
     pub fn new(path: impl Into<String>, marker: impl Into<String>) -> Self {
-        Self { path: path.into(), marker: marker.into() }
+        Self {
+            path: path.into(),
+            marker: marker.into(),
+        }
     }
 }
 
@@ -161,13 +166,27 @@ impl AddressedProposal {
     /// A within-class carve: one marker, one value. Infallible — a single
     /// coordinate is exactly what one scalar needs.
     #[must_use]
-    pub fn carve(coord: &ManifestCoordinate, value: impl Into<String>, resource: &str, container: &str) -> Self {
-        let assignments =
-            vec![ScalarAssignment { marker: coord.marker.clone(), value: value.into() }];
-        let origin =
-            ProposalOrigin::Carve { resource: resource.to_owned(), container: container.to_owned() };
+    pub fn carve(
+        coord: &ManifestCoordinate,
+        value: impl Into<String>,
+        resource: &str,
+        container: &str,
+    ) -> Self {
+        let assignments = vec![ScalarAssignment {
+            marker: coord.marker.clone(),
+            value: value.into(),
+        }];
+        let origin = ProposalOrigin::Carve {
+            resource: resource.to_owned(),
+            container: container.to_owned(),
+        };
         let addr = address_of(&coord.path, &assignments, &origin);
-        Self { path: coord.path.clone(), assignments, origin, addr }
+        Self {
+            path: coord.path.clone(),
+            assignments,
+            origin,
+            addr,
+        }
     }
 
     /// A class transition: **one marker per changed scalar**, or nothing.
@@ -196,7 +215,10 @@ impl AddressedProposal {
         for (key, value) in want {
             match markers.iter().find(|(k, _)| *k == key) {
                 Some((_, marker)) => {
-                    assignments.push(ScalarAssignment { marker: marker.clone(), value });
+                    assignments.push(ScalarAssignment {
+                        marker: marker.clone(),
+                        value,
+                    });
                 }
                 None => missing.push(key),
             }
@@ -210,7 +232,12 @@ impl AddressedProposal {
         };
         let path = path.into();
         let addr = address_of(&path, &assignments, &origin);
-        Ok(Self { path, assignments, origin, addr })
+        Ok(Self {
+            path,
+            assignments,
+            origin,
+            addr,
+        })
     }
 
     #[must_use]
@@ -249,7 +276,9 @@ impl CoordinateGap {
     /// The degenerate case: a "transition" whose block changes no scalar.
     #[must_use]
     fn empty() -> Self {
-        Self { missing: Vec::new() }
+        Self {
+            missing: Vec::new(),
+        }
     }
 }
 
@@ -317,14 +346,23 @@ fn render_scalar(into: &mut String, resource: &str, raw: u64) {
 }
 
 /// BLAKE3 over a canonical encoding of `(path, assignments, origin)`.
-fn address_of(path: &str, assignments: &[ScalarAssignment], origin: &ProposalOrigin) -> ContentAddr {
+fn address_of(
+    path: &str,
+    assignments: &[ScalarAssignment],
+    origin: &ProposalOrigin,
+) -> ContentAddr {
     #[derive(serde::Serialize)]
     struct Canonical<'a> {
         path: &'a str,
         assignments: &'a [ScalarAssignment],
         origin: &'a ProposalOrigin,
     }
-    let bytes = serde_json::to_vec(&Canonical { path, assignments, origin }).unwrap_or_default();
+    let bytes = serde_json::to_vec(&Canonical {
+        path,
+        assignments,
+        origin,
+    })
+    .unwrap_or_default();
     ContentAddr::of(&bytes)
 }
 
@@ -382,12 +420,21 @@ impl std::fmt::Display for EditError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::NotUtf8 => f.write_str("manifest is not valid UTF-8"),
-            Self::MarkerNotFound { marker } => write!(f, "no line carries the breathe marker {marker:?}"),
+            Self::MarkerNotFound { marker } => {
+                write!(f, "no line carries the breathe marker {marker:?}")
+            }
             Self::MarkerAmbiguous { marker, lines } => {
-                write!(f, "the breathe marker {marker:?} appears on {} lines ({lines:?}) — refusing to guess", lines.len())
+                write!(
+                    f,
+                    "the breathe marker {marker:?} appears on {} lines ({lines:?}) — refusing to guess",
+                    lines.len()
+                )
             }
             Self::NotAScalarAssignment { marker, line } => {
-                write!(f, "line {line} (marker {marker:?}) is not a `key: value` scalar assignment")
+                write!(
+                    f,
+                    "line {line} (marker {marker:?}) is not a `key: value` scalar assignment"
+                )
             }
         }
     }
@@ -413,7 +460,11 @@ impl std::error::Error for EditError {}
 ///
 /// [`EditError`] — see its arms. Notably an ambiguous marker is *refused*, not
 /// resolved by taking the first match.
-pub fn set_scalar_at_marker(source: &[u8], marker: &str, new_value: &str) -> Result<EditOutcome, EditError> {
+pub fn set_scalar_at_marker(
+    source: &[u8],
+    marker: &str,
+    new_value: &str,
+) -> Result<EditOutcome, EditError> {
     let text = std::str::from_utf8(source).map_err(|_| EditError::NotUtf8)?;
 
     // The quoted form, so marker "sui" never matches marker "sui-cache".
@@ -429,13 +480,17 @@ pub fn set_scalar_at_marker(source: &[u8], marker: &str, new_value: &str) -> Res
         }
     }
     match hits.len() {
-        0 => return Err(EditError::MarkerNotFound { marker: marker.to_owned() }),
+        0 => {
+            return Err(EditError::MarkerNotFound {
+                marker: marker.to_owned(),
+            });
+        }
         1 => {}
         _ => {
             return Err(EditError::MarkerAmbiguous {
                 marker: marker.to_owned(),
                 lines: hits.iter().map(|i| i + 1).collect(),
-            })
+            });
         }
     }
     let hit = hits[0];
@@ -460,13 +515,22 @@ pub fn set_scalar_at_marker(source: &[u8], marker: &str, new_value: &str) -> Res
     // but it is expressed as a total match rather than an `expect`, because a
     // refactor that broke the invariant should be a typed error, not a panic.
     let Some(edited) = edited else {
-        return Err(EditError::MarkerNotFound { marker: marker.to_owned() });
+        return Err(EditError::MarkerNotFound {
+            marker: marker.to_owned(),
+        });
     };
     if edited.from == edited.to {
-        return Ok(EditOutcome::Unchanged { line: hit + 1, value: edited.from });
+        return Ok(EditOutcome::Unchanged {
+            line: hit + 1,
+            value: edited.from,
+        });
     }
     Ok(EditOutcome::Changed {
-        edit: ScalarEdit { line: hit + 1, from: edited.from, to: edited.to },
+        edit: ScalarEdit {
+            line: hit + 1,
+            from: edited.from,
+            to: edited.to,
+        },
         rendered: rendered.into_bytes(),
     })
 }
@@ -478,8 +542,16 @@ struct EditedLine {
     to: String,
 }
 
-fn replace_scalar_in_line(line: &str, marker: &str, line_no: usize, new_value: &str) -> Result<EditedLine, EditError> {
-    let bad = || EditError::NotAScalarAssignment { marker: marker.to_owned(), line: line_no };
+fn replace_scalar_in_line(
+    line: &str,
+    marker: &str,
+    line_no: usize,
+    new_value: &str,
+) -> Result<EditedLine, EditError> {
+    let bad = || EditError::NotAScalarAssignment {
+        marker: marker.to_owned(),
+        line: line_no,
+    };
 
     // The comment starts at the LAST '#' at or before the marker token — walking
     // back from the token rather than taking the first '#' in the line, so a '#'
@@ -511,7 +583,11 @@ fn replace_scalar_in_line(line: &str, marker: &str, line_no: usize, new_value: &
     out.push_str(ws2);
     out.push_str(comment);
 
-    Ok(EditedLine { line: out, from: bare.to_owned(), to: new_value.to_owned() })
+    Ok(EditedLine {
+        line: out,
+        from: bare.to_owned(),
+        to: new_value.to_owned(),
+    })
 }
 
 /// Split `"512Mi"` into `("\"", "512Mi", "\"")`, or `512Mi` into `("", "512Mi", "")`.
@@ -531,8 +607,14 @@ pub enum EditOutcome {
     /// already-correct manifest must not yield a rewritten file, because an
     /// identical-content commit is still a commit, and a reconciler that
     /// commits every tick is a worse failure than one that never commits.
-    Unchanged { line: usize, value: String },
-    Changed { edit: ScalarEdit, rendered: Vec<u8> },
+    Unchanged {
+        line: usize,
+        value: String,
+    },
+    Changed {
+        edit: ScalarEdit,
+        rendered: Vec<u8>,
+    },
 }
 
 /// Apply every assignment to one file, in order, all-or-nothing.
@@ -540,7 +622,10 @@ pub enum EditOutcome {
 /// # Errors
 ///
 /// The first [`EditError`] any assignment hits — no partial render escapes.
-pub fn apply_all(source: &[u8], assignments: &[ScalarAssignment]) -> Result<ApplyOutcome, EditError> {
+pub fn apply_all(
+    source: &[u8],
+    assignments: &[ScalarAssignment],
+) -> Result<ApplyOutcome, EditError> {
     let mut current = source.to_vec();
     let mut changes = Vec::new();
     let mut already_correct = 0usize;
@@ -553,7 +638,11 @@ pub fn apply_all(source: &[u8], assignments: &[ScalarAssignment]) -> Result<Appl
             }
         }
     }
-    Ok(ApplyOutcome { rendered: current, changes, already_correct })
+    Ok(ApplyOutcome {
+        rendered: current,
+        changes,
+        already_correct,
+    })
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -564,11 +653,17 @@ pub fn apply_all(source: &[u8], assignments: &[ScalarAssignment]) -> Result<Appl
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "camelCase", tag = "repoError")]
 pub enum RepoError {
-    NotFound { path: String },
-    Io { detail: String },
+    NotFound {
+        path: String,
+    },
+    Io {
+        detail: String,
+    },
     /// The remote moved under us. The writer surfaces this rather than forcing:
     /// breathe never clobbers a field another writer owns.
-    Conflict { detail: String },
+    Conflict {
+        detail: String,
+    },
 }
 
 impl std::fmt::Display for RepoError {
@@ -609,7 +704,12 @@ pub trait ManifestRepo: Send + Sync {
     ///
     /// # Errors
     /// [`RepoError`] from the underlying transport.
-    async fn commit_file(&self, path: &str, bytes: &[u8], message: &str) -> Result<String, RepoError>;
+    async fn commit_file(
+        &self,
+        path: &str,
+        bytes: &[u8],
+        message: &str,
+    ) -> Result<String, RepoError>;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -625,7 +725,9 @@ pub enum CommitOutcome {
     /// A distinct arm rather than a receipt with an empty sha: re-running a
     /// converged proposal must be observably a no-op, not a commit that looks
     /// real in the audit trail.
-    AlreadyCommitted { addr: ContentAddr },
+    AlreadyCommitted {
+        addr: ContentAddr,
+    },
     Committed(CommitReceipt),
 }
 
@@ -651,10 +753,13 @@ pub struct GitManifestWriter<R: ManifestRepo> {
 impl<R: ManifestRepo> GitManifestWriter<R> {
     /// Bind a writer to one subtree. The prefix is the hard wall: it is fixed
     /// at construction and there is no per-call override, so a writer built for
-    /// `clusters/camelot/` cannot address `clusters/prod/` by any argument.
+    /// `clusters/the private estate/` cannot address `clusters/prod/` by any argument.
     #[must_use]
     pub fn new(repo: R, allowed_prefix: impl Into<String>) -> Self {
-        Self { repo, allowed_prefix: allowed_prefix.into() }
+        Self {
+            repo,
+            allowed_prefix: allowed_prefix.into(),
+        }
     }
 
     /// Commit an addressed proposal.
@@ -663,7 +768,11 @@ impl<R: ManifestRepo> GitManifestWriter<R> {
     ///
     /// [`WriterError`] — blast-radius refusal, a dirty tree, an edit that could
     /// not be anchored, or a transport failure.
-    pub async fn commit(&self, _live: &LiveWitness, p: &AddressedProposal) -> Result<CommitOutcome, WriterError> {
+    pub async fn commit(
+        &self,
+        _live: &LiveWitness,
+        p: &AddressedProposal,
+    ) -> Result<CommitOutcome, WriterError> {
         // 1 — the wall, before anything is read.
         if !within_prefix(p.path(), &self.allowed_prefix) {
             return Err(WriterError::OutsideBlastRadius {
@@ -679,15 +788,21 @@ impl<R: ManifestRepo> GitManifestWriter<R> {
 
         // 3 — read, edit, and decide idempotence BEFORE any write.
         let source = self.repo.read(p.path()).await.map_err(transport)?;
-        let outcome = apply_all(&source, p.assignments())
-            .map_err(|e| WriterError::Unanchorable { detail: e.to_string() })?;
+        let outcome =
+            apply_all(&source, p.assignments()).map_err(|e| WriterError::Unanchorable {
+                detail: e.to_string(),
+            })?;
         if outcome.changes.is_empty() {
             return Ok(CommitOutcome::AlreadyCommitted { addr: p.addr() });
         }
 
         // 4 — one file, one commit.
         let message = commit_message(p, &outcome);
-        let sha = self.repo.commit_file(p.path(), &outcome.rendered, &message).await.map_err(transport)?;
+        let sha = self
+            .repo
+            .commit_file(p.path(), &outcome.rendered, &message)
+            .await
+            .map_err(transport)?;
 
         Ok(CommitOutcome::Committed(CommitReceipt {
             commit_sha: sha,
@@ -700,12 +815,14 @@ impl<R: ManifestRepo> GitManifestWriter<R> {
 fn transport(e: RepoError) -> WriterError {
     match e {
         RepoError::Conflict { detail } => WriterError::Conflict { detail },
-        other => WriterError::Transport { detail: other.to_string() },
+        other => WriterError::Transport {
+            detail: other.to_string(),
+        },
     }
 }
 
 /// Prefix containment on **path segments**, not on raw bytes — so an allowed
-/// prefix of `clusters/camelot` does not admit `clusters/camelot-prod/…`.
+/// prefix of `clusters/the private estate` does not admit `clusters/private-estate-prod/…`.
 fn within_prefix(path: &str, prefix: &str) -> bool {
     let prefix = prefix.trim_end_matches('/');
     if prefix.is_empty() {
@@ -714,7 +831,8 @@ fn within_prefix(path: &str, prefix: &str) -> bool {
     if path == prefix {
         return true;
     }
-    path.strip_prefix(prefix).is_some_and(|rest| rest.starts_with('/'))
+    path.strip_prefix(prefix)
+        .is_some_and(|rest| rest.starts_with('/'))
 }
 
 /// The commit message — the audit trail Flux's own automation taught us to
@@ -723,7 +841,10 @@ fn commit_message(p: &AddressedProposal, outcome: &ApplyOutcome) -> String {
     use std::fmt::Write as _;
     let mut m = String::new();
     match p.origin() {
-        ProposalOrigin::Carve { resource, container } => {
+        ProposalOrigin::Carve {
+            resource,
+            container,
+        } => {
             let _ = write!(m, "breathe: reserve {resource} for {container}");
         }
         ProposalOrigin::Transition { from, to } => {
@@ -755,7 +876,7 @@ spec:
       tag: amd64-r412-9c1f2a # {\"$imagepolicy\": \"flux-system:sui:tag\"}
     resources:
       requests:
-        memory: 512Mi # {\"$breathe\": \"camelot-build/sui-request\"}
+        memory: 512Mi # {\"$breathe\": \"isolated-build/sui-request\"}
         cpu: 200m
       limits:
         memory: 6Gi
@@ -768,7 +889,7 @@ spec:
     #[test]
     fn the_edit_touches_exactly_one_span_and_nothing_else() {
         let EditOutcome::Changed { edit, rendered } =
-            set(MANIFEST, "camelot-build/sui-request", "3Gi").unwrap()
+            set(MANIFEST, "isolated-build/sui-request", "3Gi").unwrap()
         else {
             panic!("512Mi -> 3Gi is a change")
         };
@@ -777,9 +898,16 @@ spec:
 
         let out = String::from_utf8(rendered).unwrap();
         // The ONE difference, proven line-by-line rather than by eyeballing.
-        let diffs: Vec<_> = MANIFEST.lines().zip(out.lines()).filter(|(a, b)| a != b).collect();
+        let diffs: Vec<_> = MANIFEST
+            .lines()
+            .zip(out.lines())
+            .filter(|(a, b)| a != b)
+            .collect();
         assert_eq!(diffs.len(), 1, "exactly one line may differ, got {diffs:?}");
-        assert_eq!(diffs[0].1, "        memory: 3Gi # {\"$breathe\": \"camelot-build/sui-request\"}");
+        assert_eq!(
+            diffs[0].1,
+            "        memory: 3Gi # {\"$breathe\": \"isolated-build/sui-request\"}"
+        );
         assert_eq!(MANIFEST.lines().count(), out.lines().count());
     }
 
@@ -787,19 +915,24 @@ spec:
     fn the_neighbouring_imagepolicy_marker_survives() {
         // The reason serde_yaml is banned here: losing this line's comment
         // silently disables Flux image automation on the same file.
-        let EditOutcome::Changed { rendered, .. } = set(MANIFEST, "camelot-build/sui-request", "3Gi").unwrap() else {
+        let EditOutcome::Changed { rendered, .. } =
+            set(MANIFEST, "isolated-build/sui-request", "3Gi").unwrap()
+        else {
             panic!()
         };
         let out = String::from_utf8(rendered).unwrap();
         assert!(out.contains("# {\"$imagepolicy\": \"flux-system:sui:tag\"}"));
-        assert!(out.contains("  name: sui            # the build cache"), "unrelated comments + spacing survive");
+        assert!(
+            out.contains("  name: sui            # the build cache"),
+            "unrelated comments + spacing survive"
+        );
     }
 
     #[test]
     fn an_already_correct_value_produces_no_bytes() {
         // Idempotence at the source: a converged manifest must not yield a
         // rewritten file, or the reconciler commits every tick forever.
-        let o = set(MANIFEST, "camelot-build/sui-request", "512Mi").unwrap();
+        let o = set(MANIFEST, "isolated-build/sui-request", "512Mi").unwrap();
         assert!(matches!(o, EditOutcome::Unchanged { value, .. } if value == "512Mi"));
     }
 
@@ -807,7 +940,9 @@ spec:
     fn a_missing_marker_is_refused_not_guessed() {
         assert_eq!(
             set(MANIFEST, "nope", "1Gi"),
-            Err(EditError::MarkerNotFound { marker: "nope".into() })
+            Err(EditError::MarkerNotFound {
+                marker: "nope".into()
+            })
         );
     }
 
@@ -827,18 +962,35 @@ b: 2 # {\"$breathe\": \"dup\"}
     fn a_marker_is_matched_whole_never_as_a_prefix() {
         let src = "m: 1 # {\"$breathe\": \"sui-cache\"}\n";
         // "sui" must NOT match "sui-cache" — that is the wrong-resource class.
-        assert!(matches!(set(src, "sui", "2"), Err(EditError::MarkerNotFound { .. })));
-        assert!(matches!(set(src, "sui-cache", "2"), Ok(EditOutcome::Changed { .. })));
+        assert!(matches!(
+            set(src, "sui", "2"),
+            Err(EditError::MarkerNotFound { .. })
+        ));
+        assert!(matches!(
+            set(src, "sui-cache", "2"),
+            Ok(EditOutcome::Changed { .. })
+        ));
     }
 
     #[test]
     fn quoting_style_and_spacing_are_preserved() {
         for (src, want) in [
-            ("  memory:   \"512Mi\"   # {\"$breathe\": \"m\"}\n", "  memory:   \"3Gi\"   # {\"$breathe\": \"m\"}\n"),
-            ("  memory: '512Mi' # {\"$breathe\": \"m\"}\n", "  memory: '3Gi' # {\"$breathe\": \"m\"}\n"),
-            ("\tmemory: 512Mi\t# {\"$breathe\": \"m\"}\n", "\tmemory: 3Gi\t# {\"$breathe\": \"m\"}\n"),
+            (
+                "  memory:   \"512Mi\"   # {\"$breathe\": \"m\"}\n",
+                "  memory:   \"3Gi\"   # {\"$breathe\": \"m\"}\n",
+            ),
+            (
+                "  memory: '512Mi' # {\"$breathe\": \"m\"}\n",
+                "  memory: '3Gi' # {\"$breathe\": \"m\"}\n",
+            ),
+            (
+                "\tmemory: 512Mi\t# {\"$breathe\": \"m\"}\n",
+                "\tmemory: 3Gi\t# {\"$breathe\": \"m\"}\n",
+            ),
         ] {
-            let EditOutcome::Changed { rendered, .. } = set(src, "m", "3Gi").unwrap() else { panic!() };
+            let EditOutcome::Changed { rendered, .. } = set(src, "m", "3Gi").unwrap() else {
+                panic!()
+            };
             assert_eq!(String::from_utf8(rendered).unwrap(), want);
         }
     }
@@ -846,25 +998,39 @@ b: 2 # {\"$breathe\": \"dup\"}
     #[test]
     fn a_file_with_no_trailing_newline_keeps_not_having_one() {
         let src = "memory: 512Mi # {\"$breathe\": \"m\"}";
-        let EditOutcome::Changed { rendered, .. } = set(src, "m", "1Gi").unwrap() else { panic!() };
-        assert_eq!(String::from_utf8(rendered).unwrap(), "memory: 1Gi # {\"$breathe\": \"m\"}");
+        let EditOutcome::Changed { rendered, .. } = set(src, "m", "1Gi").unwrap() else {
+            panic!()
+        };
+        assert_eq!(
+            String::from_utf8(rendered).unwrap(),
+            "memory: 1Gi # {\"$breathe\": \"m\"}"
+        );
     }
 
     #[test]
     fn a_marked_line_that_is_not_an_assignment_is_refused() {
         let src = "- item # {\"$breathe\": \"m\"}\n";
-        assert!(matches!(set(src, "m", "1Gi"), Err(EditError::NotAScalarAssignment { .. })));
+        assert!(matches!(
+            set(src, "m", "1Gi"),
+            Err(EditError::NotAScalarAssignment { .. })
+        ));
     }
 
     #[test]
     fn non_utf8_is_refused_not_lossily_converted() {
-        assert_eq!(set_scalar_at_marker(&[0xff, 0xfe], "m", "1"), Err(EditError::NotUtf8));
+        assert_eq!(
+            set_scalar_at_marker(&[0xff, 0xfe], "m", "1"),
+            Err(EditError::NotUtf8)
+        );
     }
 
     // ── the addressed proposal ───────────────────────────────────────────────
 
     fn coord() -> ManifestCoordinate {
-        ManifestCoordinate::new("clusters/camelot/apps/sui/release.yaml", "camelot-build/sui-request")
+        ManifestCoordinate::new(
+            "clusters/isolated/apps/sui/release.yaml",
+            "isolated-build/sui-request",
+        )
     }
 
     #[test]
@@ -873,7 +1039,11 @@ b: 2 # {\"$breathe\": \"dup\"}
         let b = AddressedProposal::carve(&coord(), "3Gi", "memory", "sui");
         let c = AddressedProposal::carve(&coord(), "4Gi", "memory", "sui");
         assert_eq!(a.addr(), b.addr(), "same inputs, same address");
-        assert_ne!(a.addr(), c.addr(), "a different value is a different proposal");
+        assert_ne!(
+            a.addr(),
+            c.addr(),
+            "a different value is a different proposal"
+        );
         assert_eq!(a.assignments().len(), 1);
     }
 
@@ -910,51 +1080,85 @@ b: 2 # {\"$breathe\": \"dup\"}
                 .iter()
                 .find(|(p, _)| p == path)
                 .map(|(_, b)| b.clone())
-                .ok_or_else(|| RepoError::NotFound { path: path.to_owned() })
+                .ok_or_else(|| RepoError::NotFound {
+                    path: path.to_owned(),
+                })
         }
         async fn is_clean(&self) -> Result<bool, RepoError> {
             Ok(self.clean)
         }
-        async fn commit_file(&self, path: &str, bytes: &[u8], message: &str) -> Result<String, RepoError> {
-            self.commits.lock().unwrap().push((path.to_owned(), bytes.to_vec(), message.to_owned()));
+        async fn commit_file(
+            &self,
+            path: &str,
+            bytes: &[u8],
+            message: &str,
+        ) -> Result<String, RepoError> {
+            self.commits.lock().unwrap().push((
+                path.to_owned(),
+                bytes.to_vec(),
+                message.to_owned(),
+            ));
             Ok("deadbeef".to_owned())
         }
     }
 
     fn witness() -> LiveWitness {
-        crate::gate::authored_write_gate("drzzln: test").witness().expect("an authored write resolves Live").clone()
+        crate::gate::authored_write_gate("drzzln: test")
+            .witness()
+            .expect("an authored write resolves Live")
+            .clone()
     }
 
-    const PATH: &str = "clusters/camelot/apps/sui/release.yaml";
+    const PATH: &str = "clusters/isolated/apps/sui/release.yaml";
 
     #[tokio::test]
     async fn a_carve_lands_as_exactly_one_commit_carrying_the_edited_bytes() {
         let repo = MockRepo::with(PATH, MANIFEST);
-        let w = GitManifestWriter::new(repo, "clusters/camelot");
+        let w = GitManifestWriter::new(repo, "clusters/isolated");
         let p = AddressedProposal::carve(&coord(), "3Gi", "memory", "sui");
 
         let CommitOutcome::Committed(r) = w.commit(&witness(), &p).await.unwrap() else {
             panic!("a real change commits")
         };
         assert_eq!(r.commit_sha, "deadbeef");
-        assert_eq!(r.addr, p.addr(), "the receipt echoes the proposal it discharged");
+        assert_eq!(
+            r.addr,
+            p.addr(),
+            "the receipt echoes the proposal it discharged"
+        );
 
         let commits = w.repo.commits.lock().unwrap();
         assert_eq!(commits.len(), 1);
         let body = String::from_utf8(commits[0].1.clone()).unwrap();
-        assert!(body.contains("memory: 3Gi # {\"$breathe\""), "the committed bytes carry the edit");
-        assert!(body.contains("$imagepolicy"), "and still carry the neighbour's marker");
-        assert!(commits[0].2.contains("512Mi -> 3Gi"), "the message names what moved");
+        assert!(
+            body.contains("memory: 3Gi # {\"$breathe\""),
+            "the committed bytes carry the edit"
+        );
+        assert!(
+            body.contains("$imagepolicy"),
+            "and still carry the neighbour's marker"
+        );
+        assert!(
+            commits[0].2.contains("512Mi -> 3Gi"),
+            "the message names what moved"
+        );
     }
 
     #[tokio::test]
     async fn re_proposing_a_converged_value_commits_nothing() {
         let repo = MockRepo::with(PATH, MANIFEST);
-        let w = GitManifestWriter::new(repo, "clusters/camelot");
+        let w = GitManifestWriter::new(repo, "clusters/isolated");
         let p = AddressedProposal::carve(&coord(), "512Mi", "memory", "sui");
 
-        assert!(matches!(w.commit(&witness(), &p).await.unwrap(), CommitOutcome::AlreadyCommitted { .. }));
-        assert_eq!(w.repo.commits(), 0, "an idempotent tick must not produce a commit");
+        assert!(matches!(
+            w.commit(&witness(), &p).await.unwrap(),
+            CommitOutcome::AlreadyCommitted { .. }
+        ));
+        assert_eq!(
+            w.repo.commits(),
+            0,
+            "an idempotent tick must not produce a commit"
+        );
     }
 
     #[tokio::test]
@@ -963,16 +1167,28 @@ b: 2 # {\"$breathe\": \"dup\"}
         let w = GitManifestWriter::new(repo, "clusters/prod");
         let p = AddressedProposal::carve(&coord(), "3Gi", "memory", "sui");
 
-        assert!(matches!(w.commit(&witness(), &p).await, Err(WriterError::OutsideBlastRadius { .. })));
+        assert!(matches!(
+            w.commit(&witness(), &p).await,
+            Err(WriterError::OutsideBlastRadius { .. })
+        ));
         assert_eq!(w.repo.commits(), 0);
     }
 
     #[test]
     fn the_wall_is_segment_wise_so_a_sibling_prefix_never_slips_through() {
-        assert!(within_prefix("clusters/camelot/a.yaml", "clusters/camelot"));
-        assert!(within_prefix("clusters/camelot/a.yaml", "clusters/camelot/"));
+        assert!(within_prefix(
+            "clusters/isolated/a.yaml",
+            "clusters/isolated"
+        ));
+        assert!(within_prefix(
+            "clusters/isolated/a.yaml",
+            "clusters/isolated/"
+        ));
         // The trap a raw `starts_with` would fall into:
-        assert!(!within_prefix("clusters/camelot-prod/a.yaml", "clusters/camelot"));
+        assert!(!within_prefix(
+            "clusters/isolated-prod/a.yaml",
+            "clusters/isolated"
+        ));
         // An empty wall is refused rather than treated as allow-all.
         assert!(!within_prefix("anything", ""));
     }
@@ -981,18 +1197,24 @@ b: 2 # {\"$breathe\": \"dup\"}
     async fn a_dirty_tree_is_refused_rather_than_committed_on_top_of() {
         let mut repo = MockRepo::with(PATH, MANIFEST);
         repo.clean = false;
-        let w = GitManifestWriter::new(repo, "clusters/camelot");
+        let w = GitManifestWriter::new(repo, "clusters/isolated");
         let p = AddressedProposal::carve(&coord(), "3Gi", "memory", "sui");
-        assert_eq!(w.commit(&witness(), &p).await, Err(WriterError::RepoNotClean));
+        assert_eq!(
+            w.commit(&witness(), &p).await,
+            Err(WriterError::RepoNotClean)
+        );
         assert_eq!(w.repo.commits(), 0);
     }
 
     #[tokio::test]
     async fn an_unanchorable_edit_never_reaches_the_commit_path() {
         let repo = MockRepo::with(PATH, "spec: {}\n"); // no marker at all
-        let w = GitManifestWriter::new(repo, "clusters/camelot");
+        let w = GitManifestWriter::new(repo, "clusters/isolated");
         let p = AddressedProposal::carve(&coord(), "3Gi", "memory", "sui");
-        assert!(matches!(w.commit(&witness(), &p).await, Err(WriterError::Unanchorable { .. })));
+        assert!(matches!(
+            w.commit(&witness(), &p).await,
+            Err(WriterError::Unanchorable { .. })
+        ));
         assert_eq!(w.repo.commits(), 0);
     }
 }

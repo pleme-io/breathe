@@ -22,19 +22,19 @@ use breathe_auction::{BandLeiloeiro, LinearTrendPrevisor, Previsao, Previsor, Re
 // `breathe-auction` with the elasticity engine imported above; the rename
 // resolved the collision, no import-time aliasing needed anymore).
 use breathe_crd::{BreatheCloudPool, CloudPoolStatus};
-use breathe_provider::{Forma, FormaSample, ProviderError, ProvisionReceipt, Provedor};
-use breathe_provision::{reconcile_forma, FormaTick};
+use breathe_provider::{Forma, FormaSample, Provedor, ProviderError, ProvisionReceipt};
+use breathe_provision::{FormaTick, reconcile_forma};
 use breathe_runtime::now_secs;
 use k8s_openapi::api::core::v1::{Node, NodeSpec, NodeStatus, Pod, Taint};
 use k8s_openapi::apimachinery::pkg::api::resource::Quantity;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
 use kube::{
+    Client, Resource, ResourceExt,
     api::{Api, DeleteParams, ListParams, Patch, PatchParams, PostParams},
     runtime::{
         controller::Action,
         events::{Event, EventType, Recorder},
     },
-    Client, Resource, ResourceExt,
 };
 use metrics::{counter, gauge};
 use tracing::{debug, error, info, warn};
@@ -113,9 +113,19 @@ fn node_imbalance(nodes: &[(String, u64, u64)]) -> NodeImbalance {
         }
     }
     if seen == 0 {
-        return NodeImbalance { max_util: 0.0, min_util: 0.0, spread: 0.0, hottest: None };
+        return NodeImbalance {
+            max_util: 0.0,
+            min_util: 0.0,
+            spread: 0.0,
+            hottest: None,
+        };
     }
-    NodeImbalance { max_util, min_util, spread: max_util - min_util, hottest }
+    NodeImbalance {
+        max_util,
+        min_util,
+        spread: max_util - min_util,
+        hottest,
+    }
 }
 
 /// A minted shadow node — the admission `T`. `allocatable` is the mean per-node
@@ -157,7 +167,11 @@ pub(crate) const ARC_SCALE_SET_LABEL: &str = "actions.github.com/scale-set-name"
 /// the way a long-lived, job-picking runner would have.
 pub(crate) fn is_busy_runner_pod(pod: &Pod) -> bool {
     let running = pod.status.as_ref().and_then(|s| s.phase.as_deref()) == Some("Running");
-    let is_runner = pod.metadata.labels.as_ref().is_some_and(|l| l.contains_key(ARC_SCALE_SET_LABEL));
+    let is_runner = pod
+        .metadata
+        .labels
+        .as_ref()
+        .is_some_and(|l| l.contains_key(ARC_SCALE_SET_LABEL));
     running && is_runner
 }
 
@@ -187,7 +201,10 @@ impl KubeNodeProvedor {
     }
     /// The mean per-node allocatable (millicores) — sizes a minted `NodeRef`.
     async fn per_node_alloc_milli(&self) -> u64 {
-        match Api::<Node>::all(self.client.clone()).list(&ListParams::default()).await {
+        match Api::<Node>::all(self.client.clone())
+            .list(&ListParams::default())
+            .await
+        {
             Ok(nodes) => {
                 let mut count = 0u64;
                 let mut total = 0u64;
@@ -196,8 +213,11 @@ impl KubeNodeProvedor {
                         continue;
                     }
                     count += 1;
-                    if let Some(cpu) =
-                        n.status.as_ref().and_then(|s| s.allocatable.as_ref()).and_then(|a| a.get("cpu"))
+                    if let Some(cpu) = n
+                        .status
+                        .as_ref()
+                        .and_then(|s| s.allocatable.as_ref())
+                        .and_then(|a| a.get("cpu"))
                     {
                         total += parse_cpu_milli(&cpu.0);
                     }
@@ -218,7 +238,8 @@ impl Provedor for KubeNodeProvedor {
             .map_err(|e| ProviderError::ApiTransient(e.to_string()))?;
         // Per-Ready-node allocatable, keyed by name — feeds both the aggregate
         // sample and the per-node imbalance projection in one pass.
-        let mut node_alloc: std::collections::HashMap<String, u64> = std::collections::HashMap::new();
+        let mut node_alloc: std::collections::HashMap<String, u64> =
+            std::collections::HashMap::new();
         for n in &nodes.items {
             // Skip kwok FAKE nodes — the real-node pool observes the real fleet
             // only; a KwokProvedor bed's fakes belong to its own pool.
@@ -244,15 +265,22 @@ impl Provedor for KubeNodeProvedor {
         // Requested millicores PLACED on each Ready node — the skew numerator.
         let mut node_req: std::collections::HashMap<String, u64> = std::collections::HashMap::new();
         for p in &pods.items {
-            let phase = p.status.as_ref().and_then(|s| s.phase.as_deref()).unwrap_or("");
+            let phase = p
+                .status
+                .as_ref()
+                .and_then(|s| s.phase.as_deref())
+                .unwrap_or("");
             if phase != "Running" && phase != "Pending" {
                 continue;
             }
             let mut pod_req = 0u64;
             if let Some(spec) = &p.spec {
                 for c in &spec.containers {
-                    if let Some(cpu) =
-                        c.resources.as_ref().and_then(|r| r.requests.as_ref()).and_then(|m| m.get("cpu"))
+                    if let Some(cpu) = c
+                        .resources
+                        .as_ref()
+                        .and_then(|r| r.requests.as_ref())
+                        .and_then(|m| m.get("cpu"))
                     {
                         pod_req += parse_cpu_milli(&cpu.0);
                     }
@@ -272,7 +300,13 @@ impl Provedor for KubeNodeProvedor {
         // binds). Emitted as cluster-level gauges, not a band input.
         let per_node_vec: Vec<(String, u64, u64)> = node_alloc
             .iter()
-            .map(|(name, alloc)| (name.clone(), *alloc, node_req.get(name).copied().unwrap_or(0)))
+            .map(|(name, alloc)| {
+                (
+                    name.clone(),
+                    *alloc,
+                    node_req.get(name).copied().unwrap_or(0),
+                )
+            })
             .collect();
         let imb = node_imbalance(&per_node_vec);
         gauge!("breathe_node_util_ratio_max").set(imb.max_util);
@@ -287,7 +321,10 @@ impl Provedor for KubeNodeProvedor {
         } else {
             u64::from(demand_milli > 0)
         };
-        Ok(FormaSample { used, capacity: node_count })
+        Ok(FormaSample {
+            used,
+            capacity: node_count,
+        })
     }
 
     async fn provision(&self, n: u64) -> Result<ProvisionReceipt, ProviderError> {
@@ -438,7 +475,11 @@ impl Provedor for KwokProvedor {
             .map_err(|e| ProviderError::ApiTransient(e.to_string()))?;
         let mut demand_milli = 0u64;
         for p in &pods.items {
-            let phase = p.status.as_ref().and_then(|s| s.phase.as_deref()).unwrap_or("");
+            let phase = p
+                .status
+                .as_ref()
+                .and_then(|s| s.phase.as_deref())
+                .unwrap_or("");
             if phase != "Running" && phase != "Pending" {
                 continue;
             }
@@ -452,8 +493,11 @@ impl Provedor for KwokProvedor {
                 continue;
             }
             for c in &spec.containers {
-                if let Some(cpu) =
-                    c.resources.as_ref().and_then(|r| r.requests.as_ref()).and_then(|m| m.get("cpu"))
+                if let Some(cpu) = c
+                    .resources
+                    .as_ref()
+                    .and_then(|r| r.requests.as_ref())
+                    .and_then(|m| m.get("cpu"))
                 {
                     demand_milli += parse_cpu_milli(&cpu.0);
                 }
@@ -481,13 +525,18 @@ impl Provedor for KwokProvedor {
             let node = fake_node_object(&self.pool, &name, KWOK_NODE_CPU_MILLI);
             match api.create(&PostParams::default(), &node).await {
                 Ok(_) => created += 1,
-                Err(e) => warn!(pool = %self.pool, node = %name, error = %e, "kwok node create failed (non-fatal; retried next tick)"),
+                Err(e) => {
+                    warn!(pool = %self.pool, node = %name, error = %e, "kwok node create failed (non-fatal; retried next tick)")
+                }
             }
         }
         if created == 0 {
             return Ok(ProvisionReceipt::NoOp);
         }
-        Ok(ProvisionReceipt::Applied { delta: created, plan_id: format!("kwok:provision:{stamp}") })
+        Ok(ProvisionReceipt::Applied {
+            delta: created,
+            plan_id: format!("kwok:provision:{stamp}"),
+        })
     }
 
     async fn deprovision(&self, n: u64) -> Result<ProvisionReceipt, ProviderError> {
@@ -512,13 +561,18 @@ impl Provedor for KwokProvedor {
             let name = node.name_any();
             match api.delete(&name, &DeleteParams::default()).await {
                 Ok(_) => released += 1,
-                Err(e) => warn!(pool = %self.pool, node = %name, error = %e, "kwok node delete failed (non-fatal)"),
+                Err(e) => {
+                    warn!(pool = %self.pool, node = %name, error = %e, "kwok node delete failed (non-fatal)")
+                }
             }
         }
         if released == 0 {
             return Ok(ProvisionReceipt::NoOp);
         }
-        Ok(ProvisionReceipt::Applied { delta: -released, plan_id: format!("kwok:deprovision:{}", self.pool) })
+        Ok(ProvisionReceipt::Applied {
+            delta: -released,
+            plan_id: format!("kwok:deprovision:{}", self.pool),
+        })
     }
 }
 
@@ -625,7 +679,11 @@ enum ClaimOutcome {
 fn is_claim_candidate(node: &Node) -> bool {
     node_ready(node)
         && !is_kwok_fake(node)
-        && !node.metadata.labels.as_ref().is_some_and(|l| l.contains_key(CLAIM_POOL_LABEL))
+        && !node
+            .metadata
+            .labels
+            .as_ref()
+            .is_some_and(|l| l.contains_key(CLAIM_POOL_LABEL))
 }
 
 /// PURE (tested): pick the claim candidate from a node list — the first, by
@@ -655,7 +713,12 @@ fn pick_claim_candidate(nodes: &[Node]) -> Option<String> {
 /// ([`claim_patch`], below) and the membership-CLOSING [`crate::origin_guard`]
 /// reconcile, so the two mechanisms structurally cannot diverge on how a
 /// merge-patch treats a node's existing taints.
-pub(crate) fn upsert_taint(existing: &[Taint], key: &str, value: Option<&str>, effect: &str) -> Vec<serde_json::Value> {
+pub(crate) fn upsert_taint(
+    existing: &[Taint],
+    key: &str,
+    value: Option<&str>,
+    effect: &str,
+) -> Vec<serde_json::Value> {
     let mut taints: Vec<serde_json::Value> = existing
         .iter()
         .filter(|t| t.key != key)
@@ -681,9 +744,12 @@ pub(crate) fn upsert_taint(existing: &[Taint], key: &str, value: Option<&str>, e
 ///   and can never fabricate a shrink.
 ///
 /// Before 2026-08-08 every backend counted every pod for every pool — with six
-/// NodePools live on camelot, no pool could observe its own idleness, and both
+/// NodePools live on one cluster, no pool could observe its own idleness, and both
 /// pools sat pegged `Growing` with `flapDetected`.
-pub(crate) fn demand_attributable(node_name: Option<&str>, owned: &std::collections::HashSet<String>) -> bool {
+pub(crate) fn demand_attributable(
+    node_name: Option<&str>,
+    owned: &std::collections::HashSet<String>,
+) -> bool {
     node_name.is_none_or(|n| owned.contains(n))
 }
 
@@ -740,7 +806,10 @@ async fn claim_unassigned_node_for_pool(
     lane: &str,
     dry_run: bool,
 ) -> ClaimOutcome {
-    let nodes = match Api::<Node>::all(client.clone()).list(&ListParams::default()).await {
+    let nodes = match Api::<Node>::all(client.clone())
+        .list(&ListParams::default())
+        .await
+    {
         Ok(l) => l.items,
         Err(e) => {
             warn!(pool, error = %e, "claim_unassigned_node_for_pool: node list failed (non-fatal; retried next tick)");
@@ -761,7 +830,10 @@ async fn claim_unassigned_node_for_pool(
         .unwrap_or_default();
     let patch = claim_patch(pool, lane, &existing_taints);
     let api = Api::<Node>::all(client.clone());
-    match api.patch(&name, &PatchParams::default(), &Patch::Merge(&patch)).await {
+    match api
+        .patch(&name, &PatchParams::default(), &Patch::Merge(&patch))
+        .await
+    {
         Ok(_) => {
             info!(pool, lane, node = %name, "claimed node into pool (tainted + labelled)");
             ClaimOutcome::Tainted { node: name }
@@ -827,11 +899,18 @@ pub fn cloud_pool_status(
             s.phase = Some("Held".into());
             s.last_decision = Some("in band — held".into());
         }
-        FormaTick::Grew { requested, admitted, rejected, provision_error, .. } => {
+        FormaTick::Grew {
+            requested,
+            admitted,
+            rejected,
+            provision_error,
+            ..
+        } => {
             s.phase = Some("Growing".into());
             s.would_provision = Some(*requested as i64);
-            s.last_decision =
-                Some(format!("would provision {requested} (admitted {admitted}, rejected {rejected})"));
+            s.last_decision = Some(format!(
+                "would provision {requested} (admitted {admitted}, rejected {rejected})"
+            ));
             s.last_provision_error = provision_error.clone();
         }
         FormaTick::Shrank { released, .. } => {
@@ -841,7 +920,9 @@ pub fn cloud_pool_status(
         }
         FormaTick::EnvelopeExhausted { shortfall, .. } => {
             s.phase = Some("EnvelopeExhausted".into());
-            s.last_decision = Some(format!("demand beyond the envelope — short {shortfall} nodes"));
+            s.last_decision = Some(format!(
+                "demand beyond the envelope — short {shortfall} nodes"
+            ));
         }
         FormaTick::ObserveError(e) => {
             s.phase = Some("Error".into());
@@ -864,7 +945,7 @@ fn outcome_of(tick: &FormaTick) -> &'static str {
 
 // ============================================================================
 // Flap/stuck detection (task #51) — a pool can decide `Growing` tick after
-// tick while `observedCapacity` never actually moves (the live Camelot-EKS
+// tick while `observedCapacity` never actually moves (the live private-estate-EKS
 // bug this closes: `phase: Growing`, `lastDecision: "would provision 1
 // (admitted 1, rejected 0)"` held for an extended period with nothing ever
 // landing). Nothing previously distinguished "still climbing toward target"
@@ -958,7 +1039,10 @@ impl Previsor for PoolPrevisor {
 
 /// `reconcile_forma`, map the tick to the CR status, emit metrics, requeue.
 /// Observe-only/DryRun: mutates no infrastructure.
-pub async fn reconcile_cloud_pool(cr: Arc<BreatheCloudPool>, ctx: Arc<Ctx>) -> Result<Action, Error> {
+pub async fn reconcile_cloud_pool(
+    cr: Arc<BreatheCloudPool>,
+    ctx: Arc<Ctx>,
+) -> Result<Action, Error> {
     let name = cr.name_any();
 
     let Some(forma) = forma_from_str(&cr.spec.forma) else {
@@ -1004,7 +1088,9 @@ pub async fn reconcile_cloud_pool(cr: Arc<BreatheCloudPool>, ctx: Arc<Ctx>) -> R
                     warn!(pool = %name, "BreatheCloudPool: eksKarpenter backend requires karpenterNodePoolRef — skipping");
                     let st = CloudPoolStatus {
                         phase: Some("Error".into()),
-                        last_decision: Some("eksKarpenter backend requires spec.karpenterNodePoolRef".into()),
+                        last_decision: Some(
+                            "eksKarpenter backend requires spec.karpenterNodePoolRef".into(),
+                        ),
                         last_seen_epoch: Some(now_secs()),
                         ..Default::default()
                     };
@@ -1023,7 +1109,10 @@ pub async fn reconcile_cloud_pool(cr: Arc<BreatheCloudPool>, ctx: Arc<Ctx>) -> R
                     warn!(pool = %name, "BreatheCloudPool: eksManagedNodegroup backend requires eksManagedNodegroupRef — skipping");
                     let st = CloudPoolStatus {
                         phase: Some("Error".into()),
-                        last_decision: Some("eksManagedNodegroup backend requires spec.eksManagedNodegroupRef".into()),
+                        last_decision: Some(
+                            "eksManagedNodegroup backend requires spec.eksManagedNodegroupRef"
+                                .into(),
+                        ),
                         last_seen_epoch: Some(now_secs()),
                         ..Default::default()
                     };
@@ -1031,7 +1120,11 @@ pub async fn reconcile_cloud_pool(cr: Arc<BreatheCloudPool>, ctx: Arc<Ctx>) -> R
                     return Ok(Action::requeue(ctx.requeue));
                 };
                 PoolProvedor::EksNodegroup(EksNodegroupProvedor::new(
-                    KubeEksNodegroupEnvironment::new(ctx.client.clone(), ctx.eks_client.clone(), ctx.autoscaling_client.clone()),
+                    KubeEksNodegroupEnvironment::new(
+                        ctx.client.clone(),
+                        ctx.eks_client.clone(),
+                        ctx.autoscaling_client.clone(),
+                    ),
                     name.clone(),
                     ng_ref.cluster_name,
                     ng_ref.nodegroup_name,
@@ -1049,15 +1142,20 @@ pub async fn reconcile_cloud_pool(cr: Arc<BreatheCloudPool>, ctx: Arc<Ctx>) -> R
                 ))
             }
         },
-        breathe_crd::ProviderKind::Kwok => {
-            PoolProvedor::Kwok(KwokProvedor::new(ctx.client.clone(), name.clone(), gate.clone()))
-        }
+        breathe_crd::ProviderKind::Kwok => PoolProvedor::Kwok(KwokProvedor::new(
+            ctx.client.clone(),
+            name.clone(),
+            gate.clone(),
+        )),
     };
 
     // Observe once for the gauges + status (reconcile_forma observes again).
     let sample = provedor.observe().await.ok();
     if let Some(s) = &sample {
-        let labels = [("forma", "node-on-demand".to_string()), ("pool", name.clone())];
+        let labels = [
+            ("forma", "node-on-demand".to_string()),
+            ("pool", name.clone()),
+        ];
         gauge!("breathe_forma_used", &labels).set(s.used as f64);
         gauge!("breathe_forma_capacity", &labels).set(s.capacity as f64);
         if s.capacity > 0 {
@@ -1066,7 +1164,8 @@ pub async fn reconcile_cloud_pool(cr: Arc<BreatheCloudPool>, ctx: Arc<Ctx>) -> R
     }
 
     let alloc = provedor.per_node_alloc_milli().await;
-    let gates: Vec<Box<dyn Portao<NodeRef>>> = vec![Box::new(CapacidadeProof { required_floor: 1 })];
+    let gates: Vec<Box<dyn Portao<NodeRef>>> =
+        vec![Box::new(CapacidadeProof { required_floor: 1 })];
     let mut viveiro: Viveiro<NodeRef> = Viveiro::new();
     // Select the demand previsor: monotone-safe forecaster (provisions ahead of
     // the boot dead-time) when `spec.predictive`, else the reactive echo. The
@@ -1078,7 +1177,7 @@ pub async fn reconcile_cloud_pool(cr: Arc<BreatheCloudPool>, ctx: Arc<Ctx>) -> R
     } else {
         PoolPrevisor::Reactive(ReactivePrevisor)
     };
-    // Instance scale-in protection (task #205 follow-up, the Camelot
+    // Instance scale-in protection (task #205 follow-up, the private estate
     // runner-instability incident) — mark every currently-busy owned instance
     // protected, release any that's gone idle, BEFORE this tick's own
     // provision/deprovision decision runs, so a shrink `reconcile_forma`
@@ -1114,10 +1213,19 @@ pub async fn reconcile_cloud_pool(cr: Arc<BreatheCloudPool>, ctx: Arc<Ctx>) -> R
     // Log loudly at ERROR (not the routine INFO reconcile line below) so
     // `kubectl logs` surfaces it independently of anyone reading the CR
     // status.
-    if let FormaTick::Grew { provision_error: Some(e), .. } = &tick {
+    if let FormaTick::Grew {
+        provision_error: Some(e),
+        ..
+    } = &tick
+    {
         error!(pool = %name, error = %e, "BreatheCloudPool: provision() failed -- capacity will NOT grow this tick");
     }
-    let mut status = cloud_pool_status(&tick, sample.as_ref().map(|s| s.used), sample.as_ref().map(|s| s.capacity), &gate);
+    let mut status = cloud_pool_status(
+        &tick,
+        sample.as_ref().map(|s| s.used),
+        sample.as_ref().map(|s| s.capacity),
+        &gate,
+    );
     // BU(fillPolicy): surface the scheduler scoring hint the pool's fillPolicy
     // implies — breathe SETS the posture; the scheduler (profile-configured) binds.
     status.scheduler_scoring = Some(cr.spec.fill_policy.scheduler_scoring().to_string());
@@ -1160,13 +1268,17 @@ pub async fn reconcile_cloud_pool(cr: Arc<BreatheCloudPool>, ctx: Arc<Ctx>) -> R
         status.observed_capacity,
         prior_status.and_then(|s| s.phase.as_deref()),
         prior_status.and_then(|s| s.observed_capacity),
-        prior_status.and_then(|s| s.consecutive_stuck_ticks).unwrap_or(0),
+        prior_status
+            .and_then(|s| s.consecutive_stuck_ticks)
+            .unwrap_or(0),
     );
     status.consecutive_stuck_ticks = Some(consecutive_stuck_ticks);
     status.flap_detected = Some(flap_detected);
     status.flap_reason = flap_reason.clone();
-    counter!("breathe_forma_flap_detected_total", "pool" => name.clone()).increment(u64::from(flap_detected && !prior_flap_detected));
-    gauge!("breathe_forma_consecutive_stuck_ticks", "pool" => name.clone()).set(f64::from(consecutive_stuck_ticks));
+    counter!("breathe_forma_flap_detected_total", "pool" => name.clone())
+        .increment(u64::from(flap_detected && !prior_flap_detected));
+    gauge!("breathe_forma_consecutive_stuck_ticks", "pool" => name.clone())
+        .set(f64::from(consecutive_stuck_ticks));
 
     // Transition-gated k8s Event — the SAME dedup shape `breathe_runtime`'s
     // `should_emit_event` already uses for band ticks (emit on CHANGE, not on
@@ -1219,11 +1331,11 @@ pub fn error_policy_cloud_pool(_cr: Arc<BreatheCloudPool>, err: &Error, ctx: Arc
 #[cfg(test)]
 mod tests {
     use super::{
+        CLAIM_POOL_LABEL, ClaimOutcome, KWOK_MANAGED_LABEL, MAX_CONSECUTIVE_STUCK_TICKS,
         apply_claim_to_status, claim_outcome_label, claim_patch, cloud_pool_status,
-        fake_node_object, flap_status, forma_from_str, is_claim_candidate, is_kwok_managed, node_imbalance,
-        demand_attributable, outcome_of, parse_cpu_milli, pick_claim_candidate, remove_taint,
-        upsert_taint, ClaimOutcome, CLAIM_POOL_LABEL,
-        KWOK_MANAGED_LABEL, MAX_CONSECUTIVE_STUCK_TICKS,
+        demand_attributable, fake_node_object, flap_status, forma_from_str, is_claim_candidate,
+        is_kwok_managed, node_imbalance, outcome_of, parse_cpu_milli, pick_claim_candidate,
+        remove_taint, upsert_taint,
     };
     use breathe_crd::CloudPoolStatus;
     use breathe_provider::Forma;
@@ -1243,8 +1355,15 @@ mod tests {
             labels.insert(CLAIM_POOL_LABEL.to_string(), pool.to_string());
         }
         Node {
-            metadata: ObjectMeta { name: Some(name.to_string()), labels: Some(labels), ..Default::default() },
-            spec: Some(NodeSpec { taints: (!extra_taints.is_empty()).then_some(extra_taints), ..Default::default() }),
+            metadata: ObjectMeta {
+                name: Some(name.to_string()),
+                labels: Some(labels),
+                ..Default::default()
+            },
+            spec: Some(NodeSpec {
+                taints: (!extra_taints.is_empty()).then_some(extra_taints),
+                ..Default::default()
+            }),
             status: Some(NodeStatus {
                 conditions: Some(vec![NodeCondition {
                     type_: "Ready".to_string(),
@@ -1258,7 +1377,10 @@ mod tests {
 
     fn not_ready_node(name: &str) -> Node {
         Node {
-            metadata: ObjectMeta { name: Some(name.to_string()), ..Default::default() },
+            metadata: ObjectMeta {
+                name: Some(name.to_string()),
+                ..Default::default()
+            },
             status: Some(NodeStatus {
                 conditions: Some(vec![NodeCondition {
                     type_: "Ready".to_string(),
@@ -1277,15 +1399,30 @@ mod tests {
             m.insert(KWOK_MANAGED_LABEL.to_string(), v.to_string());
             m
         });
-        Node { metadata: ObjectMeta { labels, ..Default::default() }, ..Default::default() }
+        Node {
+            metadata: ObjectMeta {
+                labels,
+                ..Default::default()
+            },
+            ..Default::default()
+        }
     }
 
     #[test]
     fn kwok_safety_predicate_matches_only_this_pools_fakes() {
         // The load-bearing safety boundary: breathe deletes ONLY its own fakes.
-        assert!(!is_kwok_managed(&node_with_managed(None), "rio-kwok"), "a real node (no label) is never a target");
-        assert!(!is_kwok_managed(&node_with_managed(Some("other-pool")), "rio-kwok"), "another pool's fake is not a target");
-        assert!(is_kwok_managed(&node_with_managed(Some("rio-kwok")), "rio-kwok"), "this pool's own fake matches");
+        assert!(
+            !is_kwok_managed(&node_with_managed(None), "rio-kwok"),
+            "a real node (no label) is never a target"
+        );
+        assert!(
+            !is_kwok_managed(&node_with_managed(Some("other-pool")), "rio-kwok"),
+            "another pool's fake is not a target"
+        );
+        assert!(
+            is_kwok_managed(&node_with_managed(Some("rio-kwok")), "rio-kwok"),
+            "this pool's own fake matches"
+        );
     }
 
     #[test]
@@ -1294,10 +1431,16 @@ mod tests {
         // managed + pool labels present and equal to the pool.
         assert!(is_kwok_managed(&node, "rio-kwok"));
         let labels = node.metadata.labels.as_ref().unwrap();
-        assert_eq!(labels.get("breathe.pleme.io/kwok-pool").map(String::as_str), Some("rio-kwok"));
+        assert_eq!(
+            labels.get("breathe.pleme.io/kwok-pool").map(String::as_str),
+            Some("rio-kwok")
+        );
         // kwok adoption annotation so the fake kubelet takes it over.
         let ann = node.metadata.annotations.as_ref().unwrap();
-        assert_eq!(ann.get("kwok.x-k8s.io/node").map(String::as_str), Some("fake"));
+        assert_eq!(
+            ann.get("kwok.x-k8s.io/node").map(String::as_str),
+            Some("fake")
+        );
         // NoSchedule kwok taint so REAL pods never land on a fake node.
         let taint = &node.spec.as_ref().unwrap().taints.as_ref().unwrap()[0];
         assert_eq!(taint.key, "kwok.x-k8s.io/node");
@@ -1306,8 +1449,14 @@ mod tests {
         let alloc = node.status.as_ref().unwrap().allocatable.as_ref().unwrap();
         assert_eq!(alloc.get("cpu").map(|q| q.0.as_str()), Some("4000m"));
         // The real-node observer treats it as a fake (so it never counts it).
-        assert!(super::is_kwok_fake(&node), "a fake node is detectable by the kwok annotation");
-        assert!(!super::is_kwok_fake(&node_with_managed(Some("rio-kwok"))), "a plain node (no kwok annotation) is not fake");
+        assert!(
+            super::is_kwok_fake(&node),
+            "a fake node is detectable by the kwok annotation"
+        );
+        assert!(
+            !super::is_kwok_fake(&node_with_managed(Some("rio-kwok"))),
+            "a plain node (no kwok annotation) is not fake"
+        );
     }
 
     #[test]
@@ -1334,7 +1483,10 @@ mod tests {
         assert_eq!(node_imbalance(&[]).spread, 0.0);
         let i = node_imbalance(&[n("ghost", 0, 0), n("real", 2000, 1000)]);
         assert!((i.max_util - 0.5).abs() < 1e-9);
-        assert!((i.min_util - 0.5).abs() < 1e-9, "the ghost node must not pull min to 0");
+        assert!(
+            (i.min_util - 0.5).abs() < 1e-9,
+            "the ghost node must not pull min to 0"
+        );
         assert_eq!(i.spread, 0.0);
         assert_eq!(i.hottest.as_deref(), Some("real"));
     }
@@ -1354,7 +1506,7 @@ mod tests {
         assert_eq!(forma_from_str("nonsense"), None);
     }
 
-    /// Regression for the real bug this session's live Camelot-EKS trial
+    /// Regression for the real bug this session's live private-estate-EKS trial
     /// caught: a `BreatheCloudPool` with `spec.forma: node-spot` reconciled
     /// to `phase: Error, lastDecision: "unknown forma \"node-spot\""` even
     /// though `Forma::NodeSpot` (and `Forma::as_str()`'s `"node-spot"`
@@ -1411,33 +1563,66 @@ mod tests {
         assert_eq!(s.observed_used, Some(5));
         assert_eq!(s.observed_capacity, Some(4));
         assert_eq!(s.effective_dry_run, Some(true));
-        assert!(s.last_decision.as_deref().unwrap().contains("would provision 2"));
+        assert!(
+            s.last_decision
+                .as_deref()
+                .unwrap()
+                .contains("would provision 2")
+        );
     }
 
     #[test]
     fn status_maps_held_envelope_and_error() {
-        assert_eq!(cloud_pool_status(&FormaTick::Held, Some(1), Some(2), &live_gate()).phase.as_deref(), Some("Held"));
+        assert_eq!(
+            cloud_pool_status(&FormaTick::Held, Some(1), Some(2), &live_gate())
+                .phase
+                .as_deref(),
+            Some("Held")
+        );
         let env = cloud_pool_status(
-            &FormaTick::EnvelopeExhausted { forma: Forma::NodeOnDemand, shortfall: 3 },
+            &FormaTick::EnvelopeExhausted {
+                forma: Forma::NodeOnDemand,
+                shortfall: 3,
+            },
             None,
             None,
             &shadow_gate(),
         );
         assert_eq!(env.phase.as_deref(), Some("EnvelopeExhausted"));
         assert!(env.last_decision.as_deref().unwrap().contains("short 3"));
-        let err = cloud_pool_status(&FormaTick::ObserveError("boom".into()), None, None, &shadow_gate());
+        let err = cloud_pool_status(
+            &FormaTick::ObserveError("boom".into()),
+            None,
+            None,
+            &shadow_gate(),
+        );
         assert_eq!(err.phase.as_deref(), Some("Error"));
-        assert_eq!(outcome_of(&FormaTick::ObserveError("x".into())), "observe_error");
+        assert_eq!(
+            outcome_of(&FormaTick::ObserveError("x".into())),
+            "observe_error"
+        );
     }
 
     // ── correnteza M0: node-claim tests ─────────────────────────────────────
 
     #[test]
     fn claim_candidate_predicate_excludes_not_ready_kwok_fake_and_already_claimed() {
-        assert!(is_claim_candidate(&ready_node("fresh", None, vec![])), "a bare Ready node is claimable");
-        assert!(!is_claim_candidate(&not_ready_node("booting")), "NotReady is never a candidate");
-        assert!(!is_claim_candidate(&fake_node_object("some-kwok-pool", "kwok-1", 4000)), "a kwok fake is never a real claim candidate");
-        assert!(!is_claim_candidate(&ready_node("owned", Some("other-pool"), vec![])), "already labelled for ANY pool is never re-claimed");
+        assert!(
+            is_claim_candidate(&ready_node("fresh", None, vec![])),
+            "a bare Ready node is claimable"
+        );
+        assert!(
+            !is_claim_candidate(&not_ready_node("booting")),
+            "NotReady is never a candidate"
+        );
+        assert!(
+            !is_claim_candidate(&fake_node_object("some-kwok-pool", "kwok-1", 4000)),
+            "a kwok fake is never a real claim candidate"
+        );
+        assert!(
+            !is_claim_candidate(&ready_node("owned", Some("other-pool"), vec![])),
+            "already labelled for ANY pool is never re-claimed"
+        );
     }
 
     #[test]
@@ -1471,7 +1656,10 @@ mod tests {
     fn a_scheduled_pod_counts_only_for_the_pool_that_owns_its_node() {
         let mine = owned(&["node-a", "node-b"]);
         assert!(demand_attributable(Some("node-a"), &mine));
-        assert!(!demand_attributable(Some("other-pool-node"), &mine), "another pool's node is another pool's demand");
+        assert!(
+            !demand_attributable(Some("other-pool-node"), &mine),
+            "another pool's node is another pool's demand"
+        );
     }
 
     /// An unscheduled pod is counted by EVERY pool. Which pool it lands on is
@@ -1480,7 +1668,10 @@ mod tests {
     #[test]
     fn an_unscheduled_pod_counts_for_every_pool() {
         assert!(demand_attributable(None, &owned(&["node-a"])));
-        assert!(demand_attributable(None, &owned(&[])), "even a pool with no nodes must see pending work");
+        assert!(
+            demand_attributable(None, &owned(&[])),
+            "even a pool with no nodes must see pending work"
+        );
     }
 
     /// The safety property that makes the over-count acceptable: a pool with
@@ -1502,7 +1693,11 @@ mod tests {
     #[test]
     fn remove_taint_drops_only_its_own_key_and_keeps_the_survivors() {
         let existing = vec![
-            Taint { key: "dedicated".into(), effect: "NoSchedule".into(), ..Default::default() },
+            Taint {
+                key: "dedicated".into(),
+                effect: "NoSchedule".into(),
+                ..Default::default()
+            },
             Taint {
                 key: "pleme.io/unbreathed".into(),
                 effect: "NoSchedule".into(),
@@ -1518,8 +1713,11 @@ mod tests {
     /// needs no change, or the audit log stops meaning anything.
     #[test]
     fn remove_taint_is_none_when_the_key_is_absent() {
-        let existing =
-            vec![Taint { key: "dedicated".into(), effect: "NoSchedule".into(), ..Default::default() }];
+        let existing = vec![Taint {
+            key: "dedicated".into(),
+            effect: "NoSchedule".into(),
+            ..Default::default()
+        }];
         assert!(remove_taint(&existing, "pleme.io/unbreathed").is_none());
         assert!(remove_taint(&[], "pleme.io/unbreathed").is_none());
     }
@@ -1529,8 +1727,16 @@ mod tests {
     #[test]
     fn remove_taint_can_only_shrink_the_list() {
         let existing = vec![
-            Taint { key: "a".into(), effect: "NoSchedule".into(), ..Default::default() },
-            Taint { key: "b".into(), effect: "NoSchedule".into(), ..Default::default() },
+            Taint {
+                key: "a".into(),
+                effect: "NoSchedule".into(),
+                ..Default::default()
+            },
+            Taint {
+                key: "b".into(),
+                effect: "NoSchedule".into(),
+                ..Default::default()
+            },
         ];
         for key in ["a", "b"] {
             let out = remove_taint(&existing, key).expect("a write");
@@ -1549,8 +1755,17 @@ mod tests {
             effect: "NoSchedule".to_string(),
             ..Default::default()
         }];
-        let out = upsert_taint(&existing, "breathe.pleme.io/origin-reserved", None, "NoSchedule");
-        assert_eq!(out.len(), 2, "the pre-existing OTHER-key taint is preserved");
+        let out = upsert_taint(
+            &existing,
+            "breathe.pleme.io/origin-reserved",
+            None,
+            "NoSchedule",
+        );
+        assert_eq!(
+            out.len(),
+            2,
+            "the pre-existing OTHER-key taint is preserved"
+        );
         assert_eq!(out[0]["key"], "dedicated");
         assert_eq!(out[1]["key"], "breathe.pleme.io/origin-reserved");
         assert_eq!(out[1]["value"], serde_json::Value::Null);
@@ -1565,10 +1780,26 @@ mod tests {
             effect: "PreferNoSchedule".to_string(),
             ..Default::default()
         }];
-        let out = upsert_taint(&existing, "breathe.pleme.io/origin-reserved", None, "NoSchedule");
-        assert_eq!(out.len(), 1, "re-upserting the SAME key replaces, never duplicates");
-        assert_eq!(out[0]["value"], serde_json::Value::Null, "the stale value is replaced");
-        assert_eq!(out[0]["effect"], "NoSchedule", "the stale effect is replaced");
+        let out = upsert_taint(
+            &existing,
+            "breathe.pleme.io/origin-reserved",
+            None,
+            "NoSchedule",
+        );
+        assert_eq!(
+            out.len(),
+            1,
+            "re-upserting the SAME key replaces, never duplicates"
+        );
+        assert_eq!(
+            out[0]["value"],
+            serde_json::Value::Null,
+            "the stale value is replaced"
+        );
+        assert_eq!(
+            out[0]["effect"], "NoSchedule",
+            "the stale effect is replaced"
+        );
     }
 
     #[test]
@@ -1579,15 +1810,19 @@ mod tests {
             effect: "NoSchedule".to_string(),
             ..Default::default()
         }];
-        let patch = claim_patch("camelot-agents", "standalone-ec2-instance", &existing);
+        let patch = claim_patch("isolated-agents", "standalone-ec2-instance", &existing);
         let labels = &patch["metadata"]["labels"];
-        assert_eq!(labels[CLAIM_POOL_LABEL], "camelot-agents");
+        assert_eq!(labels[CLAIM_POOL_LABEL], "isolated-agents");
         assert_eq!(labels["breathe.pleme.io/lane"], "standalone-ec2-instance");
         let taints = patch["spec"]["taints"].as_array().unwrap();
-        assert_eq!(taints.len(), 2, "the pre-existing taint is PRESERVED, not dropped");
+        assert_eq!(
+            taints.len(),
+            2,
+            "the pre-existing taint is PRESERVED, not dropped"
+        );
         assert_eq!(taints[0]["key"], "dedicated");
         assert_eq!(taints[1]["key"], CLAIM_POOL_LABEL);
-        assert_eq!(taints[1]["value"], "camelot-agents");
+        assert_eq!(taints[1]["value"], "isolated-agents");
         assert_eq!(taints[1]["effect"], "NoSchedule");
     }
 
@@ -1597,13 +1832,17 @@ mod tests {
         // status-patch failure) must not accumulate a duplicate taint entry.
         let existing = vec![Taint {
             key: CLAIM_POOL_LABEL.to_string(),
-            value: Some("camelot-agents".to_string()),
+            value: Some("isolated-agents".to_string()),
             effect: "NoSchedule".to_string(),
             ..Default::default()
         }];
-        let patch = claim_patch("camelot-agents", "standalone-ec2-instance", &existing);
+        let patch = claim_patch("isolated-agents", "standalone-ec2-instance", &existing);
         let taints = patch["spec"]["taints"].as_array().unwrap();
-        assert_eq!(taints.len(), 1, "re-claiming never duplicates the pool taint");
+        assert_eq!(
+            taints.len(),
+            1,
+            "re-claiming never duplicates the pool taint"
+        );
     }
 
     #[test]
@@ -1621,7 +1860,10 @@ mod tests {
         // NoCandidate / ClaimFailed report NOTHING on the CR — a non-event and a
         // logged-but-non-fatal failure are never silently promoted to a status
         // field that would misreport "this WOULD/DID happen".
-        for c in [ClaimOutcome::NoCandidate, ClaimOutcome::ClaimFailed { node: "n3".into() }] {
+        for c in [
+            ClaimOutcome::NoCandidate,
+            ClaimOutcome::ClaimFailed { node: "n3".into() },
+        ] {
             let mut s = CloudPoolStatus::default();
             apply_claim_to_status(&mut s, &c);
             assert_eq!(s.would_taint, None);
@@ -1639,7 +1881,11 @@ mod tests {
         ]
         .into_iter()
         .collect();
-        assert_eq!(labels.len(), 4, "every claim outcome gets a distinct metric label");
+        assert_eq!(
+            labels.len(),
+            4,
+            "every claim outcome gets a distinct metric label"
+        );
     }
 
     // ── task #51: flap/stuck detection ──────────────────────────────────────
@@ -1674,33 +1920,52 @@ mod tests {
     fn flap_never_fires_on_a_pool_that_resolves_within_the_threshold() {
         // Growing for 2 ticks (capacity flat — normal boot latency, well under
         // MAX_CONSECUTIVE_STUCK_TICKS) then resolves to Held. Must never flag.
-        assert!(MAX_CONSECUTIVE_STUCK_TICKS > 2, "test assumes the default threshold leaves headroom");
+        assert!(
+            MAX_CONSECUTIVE_STUCK_TICKS > 2,
+            "test assumes the default threshold leaves headroom"
+        );
         let outcomes = run_ticks(&[
             ("Growing", Some(3)), // fresh entry — no baseline yet
             ("Growing", Some(3)), // capacity hasn't landed yet, 1 no-progress tick
             ("Held", Some(4)),    // capacity landed, band settled
         ]);
-        assert!(outcomes.iter().all(|(_, flap)| !flap), "a pool that resolves within the threshold is never flagged: {outcomes:?}");
-        assert_eq!(outcomes.last().unwrap().0, 0, "leaving Growing resets the counter to 0");
+        assert!(
+            outcomes.iter().all(|(_, flap)| !flap),
+            "a pool that resolves within the threshold is never flagged: {outcomes:?}"
+        );
+        assert_eq!(
+            outcomes.last().unwrap().0,
+            0,
+            "leaving Growing resets the counter to 0"
+        );
     }
 
     #[test]
     fn flap_fires_when_growing_is_genuinely_wedged() {
         // Capacity pinned at 4 for MAX_CONSECUTIVE_STUCK_TICKS+1 consecutive
-        // Growing ticks (the live camelot-eks-pool bug: "would provision 1"
+        // Growing ticks (the live private-estate-eks-pool bug: "would provision 1"
         // forever, nothing ever lands) — must flag before the episode ends.
         let mut ticks: Vec<(&str, Option<i64>)> = vec![("Growing", Some(4))]; // baseline tick
         for _ in 0..(MAX_CONSECUTIVE_STUCK_TICKS as usize + 1) {
             ticks.push(("Growing", Some(4))); // capacity never moves
         }
         let outcomes = run_ticks(&ticks);
-        assert!(outcomes.iter().any(|(_, flap)| *flap), "a genuinely wedged pool must be flagged: {outcomes:?}");
+        assert!(
+            outcomes.iter().any(|(_, flap)| *flap),
+            "a genuinely wedged pool must be flagged: {outcomes:?}"
+        );
         // The FIRST tick to cross the threshold is exactly the
         // MAX_CONSECUTIVE_STUCK_TICKS-th no-progress tick, not earlier.
         let first_flap_index = outcomes.iter().position(|(_, flap)| *flap).unwrap();
-        assert_eq!(outcomes[first_flap_index].0, MAX_CONSECUTIVE_STUCK_TICKS, "flags at exactly the threshold, not before");
+        assert_eq!(
+            outcomes[first_flap_index].0, MAX_CONSECUTIVE_STUCK_TICKS,
+            "flags at exactly the threshold, not before"
+        );
         for (consecutive, flap) in &outcomes[..first_flap_index] {
-            assert!(!flap, "no tick before the threshold crossing may be flagged (consecutive={consecutive})");
+            assert!(
+                !flap,
+                "no tick before the threshold crossing may be flagged (consecutive={consecutive})"
+            );
         }
     }
 
@@ -1713,8 +1978,14 @@ mod tests {
             .map(|c| ("Growing", Some(c)))
             .collect();
         let outcomes = run_ticks(&ticks);
-        assert!(outcomes.iter().all(|(_, flap)| !flap), "monotonically increasing capacity must never be flagged: {outcomes:?}");
-        assert!(outcomes.iter().all(|(consecutive, _)| *consecutive == 0), "every tick resets the counter when progress is real: {outcomes:?}");
+        assert!(
+            outcomes.iter().all(|(_, flap)| !flap),
+            "monotonically increasing capacity must never be flagged: {outcomes:?}"
+        );
+        assert!(
+            outcomes.iter().all(|(consecutive, _)| *consecutive == 0),
+            "every tick resets the counter when progress is real: {outcomes:?}"
+        );
     }
 
     #[test]
@@ -1733,7 +2004,10 @@ mod tests {
         assert_eq!(outcomes[1].0, 1);
         assert_eq!(outcomes[2].0, 2);
         assert_eq!(outcomes[3].0, 0, "a progress tick resets the counter to 0");
-        assert_eq!(outcomes[4].0, 1, "the next stuck run starts counting from 0, not from the pre-reset value");
+        assert_eq!(
+            outcomes[4].0, 1,
+            "the next stuck run starts counting from 0, not from the pre-reset value"
+        );
     }
 
     #[test]
@@ -1741,8 +2015,12 @@ mod tests {
         // Held/Shrinking/EnvelopeExhausted/Error are never flap-detected —
         // the signal is specifically "decided Growing but nothing landed".
         for phase in ["Held", "Shrinking", "EnvelopeExhausted", "Error"] {
-            let (consecutive, flap, reason) = flap_status(Some(phase), Some(5), Some(phase), Some(5), 99);
-            assert_eq!(consecutive, 0, "non-Growing phase {phase} always resets to 0");
+            let (consecutive, flap, reason) =
+                flap_status(Some(phase), Some(5), Some(phase), Some(5), 99);
+            assert_eq!(
+                consecutive, 0,
+                "non-Growing phase {phase} always resets to 0"
+            );
             assert!(!flap, "non-Growing phase {phase} is never flagged");
             assert_eq!(reason, None);
         }
@@ -1753,12 +2031,19 @@ mod tests {
         // Coming FROM a non-Growing phase into Growing (or from no prior
         // status at all — a brand-new pool) must not immediately compare
         // capacity against an unrelated prior phase's value.
-        let (consecutive, flap, _) = flap_status(Some("Growing"), Some(1), Some("Held"), Some(999), 3);
-        assert_eq!(consecutive, 0, "a fresh entry into Growing always starts the counter at 0");
+        let (consecutive, flap, _) =
+            flap_status(Some("Growing"), Some(1), Some("Held"), Some(999), 3);
+        assert_eq!(
+            consecutive, 0,
+            "a fresh entry into Growing always starts the counter at 0"
+        );
         assert!(!flap);
 
         let (consecutive, flap, _) = flap_status(Some("Growing"), Some(1), None, None, 0);
-        assert_eq!(consecutive, 0, "a brand-new pool's first tick is never flagged");
+        assert_eq!(
+            consecutive, 0,
+            "a brand-new pool's first tick is never flagged"
+        );
         assert!(!flap);
     }
 
@@ -1768,19 +2053,37 @@ mod tests {
         // "capacity increased" — that would let a broken observer mask a
         // genuinely wedged pool forever.
         let (consecutive, _, _) = flap_status(Some("Growing"), None, Some("Growing"), Some(5), 2);
-        assert_eq!(consecutive, 3, "missing current capacity counts as no-progress (prior_consecutive + 1)");
+        assert_eq!(
+            consecutive, 3,
+            "missing current capacity counts as no-progress (prior_consecutive + 1)"
+        );
 
         let (consecutive, _, _) = flap_status(Some("Growing"), Some(5), Some("Growing"), None, 2);
-        assert_eq!(consecutive, 3, "missing prior capacity counts as no-progress (prior_consecutive + 1)");
+        assert_eq!(
+            consecutive, 3,
+            "missing prior capacity counts as no-progress (prior_consecutive + 1)"
+        );
     }
 
     #[test]
     fn flap_reason_is_set_iff_flap_detected() {
-        let (_, flap_no, reason_no) = flap_status(Some("Growing"), Some(1), Some("Growing"), Some(1), MAX_CONSECUTIVE_STUCK_TICKS - 2);
+        let (_, flap_no, reason_no) = flap_status(
+            Some("Growing"),
+            Some(1),
+            Some("Growing"),
+            Some(1),
+            MAX_CONSECUTIVE_STUCK_TICKS - 2,
+        );
         assert!(!flap_no);
         assert_eq!(reason_no, None);
 
-        let (_, flap_yes, reason_yes) = flap_status(Some("Growing"), Some(1), Some("Growing"), Some(1), MAX_CONSECUTIVE_STUCK_TICKS);
+        let (_, flap_yes, reason_yes) = flap_status(
+            Some("Growing"),
+            Some(1),
+            Some("Growing"),
+            Some(1),
+            MAX_CONSECUTIVE_STUCK_TICKS,
+        );
         assert!(flap_yes);
         let reason = reason_yes.expect("flapDetected=true must carry a reason");
         assert!(reason.contains("Growing"));

@@ -26,7 +26,7 @@
 //!
 //! ## The worked receipt (the gap in action)
 //!
-//! The staging tendril session found `victoria-logs` STUCK because a
+//! The staging the observability tap session found `victoria-logs` STUCK because a
 //! BestEffort-QoS pod (no requests) hit a `carve_failed` 422 → it had no
 //! isolation floor → evictable / disturbed. A workload with no requests has no
 //! seal. The fix was "add a request" = give it an isolation floor. This module
@@ -138,8 +138,12 @@ impl PlacementIsolation {
         !matches!(self, Self::CoLocate)
     }
 
-    pub const ALL: [PlacementIsolation; 4] =
-        [Self::CoLocate, Self::AntiAffinity, Self::TopologySpread, Self::Dedicated];
+    pub const ALL: [PlacementIsolation; 4] = [
+        Self::CoLocate,
+        Self::AntiAffinity,
+        Self::TopologySpread,
+        Self::Dedicated,
+    ];
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -208,8 +212,7 @@ impl WorkloadClass {
         }
     }
 
-    pub const ALL: [WorkloadClass; 4] =
-        [Self::Critical, Self::Standard, Self::Batch, Self::Noisy];
+    pub const ALL: [WorkloadClass; 4] = [Self::Critical, Self::Standard, Self::Batch, Self::Noisy];
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -346,7 +349,13 @@ impl IsolationPosture {
         if limits_ceiling != 0 && requests_floor > limits_ceiling {
             return Err(SealError::FloorAboveCeiling);
         }
-        Ok(Self { class, qos, requests_floor, limits_ceiling, placement })
+        Ok(Self {
+            class,
+            qos,
+            requests_floor,
+            limits_ceiling,
+            placement,
+        })
     }
 
     /// Build the DEFAULT posture for a class (the best-known variant, §3). The
@@ -449,7 +458,10 @@ impl SealedCarve {
 #[must_use]
 pub fn carve_respecting_seal(raw_carve_target: u64, posture: &IsolationPosture) -> SealedCarve {
     let floor = posture.requests_floor();
-    SealedCarve { target: raw_carve_target.max(floor), floor }
+    SealedCarve {
+        target: raw_carve_target.max(floor),
+        floor,
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -492,7 +504,11 @@ impl IsolationOverlay {
     /// # Errors
     /// [`SealError`] if the composed posture would leave a seal-required
     /// workload unsealed.
-    pub fn apply(&self, base: &IsolationPosture, seal_forced: bool) -> Result<IsolationPosture, SealError> {
+    pub fn apply(
+        &self,
+        base: &IsolationPosture,
+        seal_forced: bool,
+    ) -> Result<IsolationPosture, SealError> {
         IsolationPosture::try_seal(
             self.class.unwrap_or_else(|| base.class()),
             self.qos.unwrap_or_else(|| base.qos()),
@@ -552,7 +568,10 @@ pub fn optimize_reserved(posture: &IsolationPosture, carve_target: u64) -> u64 {
 /// seal, so the total is the minimum-cost SEALED assignment.
 #[must_use]
 pub fn total_reserved_cost(workloads: &[(IsolationPosture, u64)]) -> u64 {
-    workloads.iter().map(|(p, t)| optimize_reserved(p, *t)).sum()
+    workloads
+        .iter()
+        .map(|(p, t)| optimize_reserved(p, *t))
+        .sum()
 }
 
 /// **THE feasibility predicate.** An assignment is feasible iff every
@@ -561,7 +580,9 @@ pub fn total_reserved_cost(workloads: &[(IsolationPosture, u64)]) -> u64 {
 /// runtime peer of the `critical_workload_must_be_sealed` matrix forcing-function.
 #[must_use]
 pub fn all_critical_sealed(postures: &[IsolationPosture]) -> bool {
-    postures.iter().all(|p| !p.class().requires_seal() || p.is_sealed())
+    postures
+        .iter()
+        .all(|p| !p.class().requires_seal() || p.is_sealed())
 }
 
 /// Find any seal-required workload that is NOT sealed — the violation set for a
@@ -587,17 +608,27 @@ mod tests {
     #[test]
     fn each_workload_class_has_its_best_known_posture() {
         assert_eq!(WorkloadClass::Critical.default_qos(), QosClass::Guaranteed);
-        assert_eq!(WorkloadClass::Critical.default_placement(), PlacementIsolation::AntiAffinity);
+        assert_eq!(
+            WorkloadClass::Critical.default_placement(),
+            PlacementIsolation::AntiAffinity
+        );
         assert!(WorkloadClass::Critical.requires_seal());
 
         assert_eq!(WorkloadClass::Standard.default_qos(), QosClass::Burstable);
         assert!(!WorkloadClass::Standard.requires_seal());
 
         assert_eq!(WorkloadClass::Batch.default_qos(), QosClass::BestEffort);
-        assert!(!WorkloadClass::Batch.requires_seal(), "batch is meant to be unsealed");
+        assert!(
+            !WorkloadClass::Batch.requires_seal(),
+            "batch is meant to be unsealed"
+        );
 
         assert_eq!(WorkloadClass::Noisy.default_qos(), QosClass::Burstable);
-        assert_eq!(WorkloadClass::Noisy.default_placement(), PlacementIsolation::AntiAffinity, "noisy is isolated away");
+        assert_eq!(
+            WorkloadClass::Noisy.default_placement(),
+            PlacementIsolation::AntiAffinity,
+            "noisy is isolated away"
+        );
     }
 
     // ── THE per-workload seal (parse-time-rejected) ───────────────────────────
@@ -677,7 +708,11 @@ mod tests {
         // (idle). The seal holds the reservation at 512 — cost cannot strip it.
         let p = IsolationPosture::for_class(WorkloadClass::Critical, 512, 512).unwrap();
         let carved = carve_respecting_seal(64, &p);
-        assert_eq!(carved.target(), 512, "the carve must not go below the isolation floor");
+        assert_eq!(
+            carved.target(),
+            512,
+            "the carve must not go below the isolation floor"
+        );
         assert!(carved.seal_bound(), "the seal bound the carve");
     }
 
@@ -687,7 +722,11 @@ mod tests {
         // right-size down to it — cost AND isolation together (dual-purpose).
         let p = IsolationPosture::for_class(WorkloadClass::Standard, 64, 1024).unwrap();
         let carved = carve_respecting_seal(256, &p);
-        assert_eq!(carved.target(), 256, "above the floor the carve wins (cost)");
+        assert_eq!(
+            carved.target(),
+            256,
+            "above the floor the carve wins (cost)"
+        );
         assert!(!carved.seal_bound());
     }
 
@@ -698,7 +737,10 @@ mod tests {
         let p = IsolationPosture::for_class(WorkloadClass::Critical, 1000, 1000).unwrap();
         for raw in [0u64, 1, 500, 999] {
             let c = carve_respecting_seal(raw, &p);
-            assert!(c.target() >= c.floor(), "SealedCarve target below floor is unrepresentable");
+            assert!(
+                c.target() >= c.floor(),
+                "SealedCarve target below floor is unrepresentable"
+            );
         }
     }
 
@@ -706,9 +748,18 @@ mod tests {
     #[test]
     fn overlay_precedence_folds_left_to_right() {
         let default = IsolationPosture::for_class(WorkloadClass::Standard, 64, 256).unwrap();
-        let discovered = IsolationOverlay { requests_floor: Some(128), ..Default::default() };
-        let contextual = IsolationOverlay { placement: Some(PlacementIsolation::AntiAffinity), ..Default::default() };
-        let over = IsolationOverlay { limits_ceiling: Some(512), ..Default::default() };
+        let discovered = IsolationOverlay {
+            requests_floor: Some(128),
+            ..Default::default()
+        };
+        let contextual = IsolationOverlay {
+            placement: Some(PlacementIsolation::AntiAffinity),
+            ..Default::default()
+        };
+        let over = IsolationOverlay {
+            limits_ceiling: Some(512),
+            ..Default::default()
+        };
         let resolved = resolve_posture(
             &default,
             &discovered,
@@ -718,7 +769,11 @@ mod tests {
         )
         .unwrap();
         assert_eq!(resolved.requests_floor(), 128, "discovered layer applied");
-        assert_eq!(resolved.placement(), PlacementIsolation::AntiAffinity, "contextual layer applied");
+        assert_eq!(
+            resolved.placement(),
+            PlacementIsolation::AntiAffinity,
+            "contextual layer applied"
+        );
         assert_eq!(resolved.limits_ceiling(), 512, "override layer applied");
     }
 
@@ -727,7 +782,11 @@ mod tests {
         // A highly-sensitive workload + a loose override that tries to make it
         // BestEffort → the seal survives (rejected at the fold).
         let default = IsolationPosture::for_class(WorkloadClass::Standard, 128, 256).unwrap();
-        let loose = IsolationOverlay { qos: Some(QosClass::BestEffort), requests_floor: Some(0), ..Default::default() };
+        let loose = IsolationOverlay {
+            qos: Some(QosClass::BestEffort),
+            requests_floor: Some(0),
+            ..Default::default()
+        };
         let resolved = resolve_posture(
             &default,
             &IsolationOverlay::default(),
@@ -735,7 +794,11 @@ mod tests {
             &IsolationOverlay::default(),
             &loose,
         );
-        assert_eq!(resolved, Err(SealError::CriticalIsBestEffort), "a seal-forcing workload cannot be unsealed by an override");
+        assert_eq!(
+            resolved,
+            Err(SealError::CriticalIsBestEffort),
+            "a seal-forcing workload cannot be unsealed by an override"
+        );
     }
 
     #[test]
@@ -758,17 +821,32 @@ mod tests {
         let critical = IsolationPosture::for_class(WorkloadClass::Critical, 512, 512).unwrap();
         let standard = IsolationPosture::for_class(WorkloadClass::Standard, 64, 512).unwrap();
         // critical: carve wants 100, seal holds 512. standard: carve wants 200 > 64.
-        assert_eq!(optimize_reserved(&critical, 100), 512, "seal bounds the critical carve");
-        assert_eq!(optimize_reserved(&standard, 200), 200, "standard carve is free above its floor");
+        assert_eq!(
+            optimize_reserved(&critical, 100),
+            512,
+            "seal bounds the critical carve"
+        );
+        assert_eq!(
+            optimize_reserved(&standard, 200),
+            200,
+            "standard carve is free above its floor"
+        );
         let cost = total_reserved_cost(&[(critical, 100), (standard, 200)]);
-        assert_eq!(cost, 512 + 200, "total reserved is the minimum-cost SEALED assignment");
+        assert_eq!(
+            cost,
+            512 + 200,
+            "total reserved is the minimum-cost SEALED assignment"
+        );
     }
 
     #[test]
     fn all_critical_sealed_is_the_feasibility_predicate() {
         let critical = IsolationPosture::for_class(WorkloadClass::Critical, 512, 512).unwrap();
         let batch = IsolationPosture::for_class(WorkloadClass::Batch, 0, 0).unwrap();
-        assert!(all_critical_sealed(&[critical, batch]), "a sealed critical + an unsealed batch is feasible");
+        assert!(
+            all_critical_sealed(&[critical, batch]),
+            "a sealed critical + an unsealed batch is feasible"
+        );
         assert!(unsealed_critical_workloads(&[critical, batch]).is_empty());
     }
 
@@ -781,13 +859,19 @@ mod tests {
             s.len() == v.len()
         }
         assert!(uniq(&QosClass::ALL.map(QosClass::as_str)));
-        assert!(uniq(&PlacementIsolation::ALL.map(PlacementIsolation::as_str)));
+        assert!(uniq(
+            &PlacementIsolation::ALL.map(PlacementIsolation::as_str)
+        ));
         assert!(uniq(&WorkloadClass::ALL.map(WorkloadClass::as_str)));
     }
 
     #[test]
     fn overlay_round_trips_and_rejects_unknown_fields() {
-        let o = IsolationOverlay { qos: Some(QosClass::Guaranteed), requests_floor: Some(256), ..Default::default() };
+        let o = IsolationOverlay {
+            qos: Some(QosClass::Guaranteed),
+            requests_floor: Some(256),
+            ..Default::default()
+        };
         let js = serde_json::to_string(&o).unwrap();
         let back: IsolationOverlay = serde_json::from_str(&js).unwrap();
         assert_eq!(o, back);

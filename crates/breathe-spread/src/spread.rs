@@ -11,16 +11,16 @@
 //! never re-litigated.
 
 use crate::axis::{
-    resolve_arch, ArchCostSignal, ArchPinReason, ArchSelection, Interruption, LadderMode,
-    PerfClass, Placement, ResolvedArch, SpotStrategy, StorageBinding,
+    ArchCostSignal, ArchPinReason, ArchSelection, Interruption, LadderMode, PerfClass, Placement,
+    ResolvedArch, SpotStrategy, StorageBinding, resolve_arch,
 };
 
 /// The use-case a molding arms — the operator's three named shapes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum UseCase {
-    /// The steady, HA-floored SaaS + gateway pool (CamelotNodeGroup).
+    /// The steady, HA-floored SaaS + gateway pool (the isolated node-group architecture).
     SaasSteady,
-    /// The bursty, floor-0, cache-backed Nix builder pool (CamelotBuilderNodeGroup
+    /// The bursty, floor-0, cache-backed Nix builder pool (the builder node-group architecture
     /// + super-cache-ci).
     BuildBurst,
     /// The tiny observability tap (grafana / victoria / vector — the "eyes").
@@ -56,9 +56,9 @@ pub enum Lane {
     /// does NOT expose `SpotAllocationStrategy`. The operator-flagged gap surface.
     EksManagedNodeGroup,
     /// A single, hand-provisioned EC2 instance running self-managed k3s directly
-    /// — no ASG, no EC2 Fleet, no EKS node group wrapping it (e.g. Camelot's
+    /// — no ASG, no EC2 Fleet, no EKS node group wrapping it (e.g. the private estate's
     /// bootstrap/control-plane node, brought up outside the
-    /// `CamelotNodeGroup`/`CamelotBuilderNodeGroup` EKS-managed-node-group
+    /// `the isolated node-group architecture`/`the builder node-group architecture` EKS-managed-node-group
     /// architectures). Distinct from both pool lanes above: a lone instance has
     /// no *distribution-among-launch-specs* decision to make, so the
     /// spot-strategy axis has no field to bind on this lane at all — see
@@ -76,8 +76,11 @@ impl Lane {
         }
     }
 
-    pub const ALL: [Lane; 3] =
-        [Self::MixedInstancesAsg, Self::EksManagedNodeGroup, Self::StandaloneEc2Instance];
+    pub const ALL: [Lane; 3] = [
+        Self::MixedInstancesAsg,
+        Self::EksManagedNodeGroup,
+        Self::StandaloneEc2Instance,
+    ];
 }
 
 /// How the spot ALLOCATION strategy is wired on this pool's lane — the tier-honest
@@ -345,10 +348,10 @@ impl AuctionSpread {
 // THE MOLDINGS — a spread per use-case (the molding DEFAULTS)
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// **SaaS-steady** — the CamelotNodeGroup posture. Cost-optimized arch resolves to
+/// **SaaS-steady** — the the isolated node-group architecture posture. Cost-optimized arch resolves to
 /// **x86 at the floor** (the LOUD counter-intuitive case: current-gen Graviton
 /// large-spot is +19 % pricier than 2019-gen m5a x86 NOW — the shipped
-/// CamelotNodeGroup DEFAULTS are already `m5/m5a/m6i/m6a`, x86). Steady:
+/// the isolated node-group architecture DEFAULTS are already `m5/m5a/m6i/m6a`, x86). Steady:
 /// capacity-optimized deepest pool, evolving-degrade, cost-floor, per-replica-EBS
 /// stateful tiers → multi-AZ resilient (destination; the shipped pool defaults
 /// single-AZ interim), retirada graceful drain.
@@ -367,7 +370,7 @@ pub const SAAS_STEADY: AuctionSpread = AuctionSpread {
     resiliency_effect: "capacity-optimized deepest pool = rare reclaims; multi-AZ per-replica stateful = survives an AZ loss; retirada drains before reclaim; HA floor 2",
     cost_rationale: CostRationale {
         chosen_arch: ResolvedArch::Amd64,
-        rationale: "floor=x86: 2019-gen m5a.large spot is currently the cheapest deep general-purpose pool for the steady floor (the shipped CamelotNodeGroup DEFAULTS are m5/m5a/m6i/m6a)",
+        rationale: "floor=x86: 2019-gen m5a.large spot is currently the cheapest deep general-purpose pool for the steady floor (the shipped the isolated node-group architecture DEFAULTS are m5/m5a/m6i/m6a)",
         counterintuitive: Some(
             "ARM LOSES HERE (floor): current-gen Graviton m7g/m8g large-spot is +19% PRICIER than the cheap 2019-gen m5a x86 large-spot as of 2026-07; x86 chosen for COST despite the arm push; the multi-arch image makes it free to auto-flip to arm the instant Graviton crosses below m5a",
         ),
@@ -377,13 +380,13 @@ pub const SAAS_STEADY: AuctionSpread = AuctionSpread {
     strategy_wiring: StrategyWiring::Effective, // capacity-optimized aligns with EKS's internal default
     maturity: Maturity::Design,
     pending: Some(
-        "shipped CamelotNodeGroup DEFAULTS single-AZ (conservative, lone-volume-safe); multi-AZ is the destination for the multi-replica per-AZ stateful tiers (mysql primary+replica floor 2, quorum floor 3) — gated on per-AZ volume topology",
+        "shipped the isolated node-group architecture DEFAULTS single-AZ (conservative, lone-volume-safe); multi-AZ is the destination for the multi-replica per-AZ stateful tiers (mysql primary+replica floor 2, quorum floor 3) — gated on per-AZ volume topology",
     ),
-    doctrine_ref: "pangea-architectures::CamelotNodeGroup + breathe-catalog::preset::CAMELOT",
+    doctrine_ref: "pangea-architectures::IsolatedNodeGroup + breathe-catalog::preset::SPOT_AGGRESSIVE",
     note: "the steady SaaS floor; x86 is the current cost answer (shipped), multi-AZ per-replica the resilience destination",
 };
 
-/// **Build-burst** — the CamelotBuilderNodeGroup + super-cache-ci posture.
+/// **Build-burst** — the the builder node-group architecture + super-cache-ci posture.
 /// Cost-optimized arch resolves to **arm at the builder** (the expected win:
 /// −37 %/build-hr + ~18 % faster wall-clock, proven by the arm cross-compile eval;
 /// the whole fleet is CGO=0 pure-Go so arm is native). Bursty: time-floor biggest
@@ -414,7 +417,7 @@ pub const BUILD_BURST: AuctionSpread = AuctionSpread {
     pending: Some(
         "the Tier-B EKS-managed-NG builder lane (in-cluster sui) DROPS the strategy at :deep/:deepest (StrategyWiring::IgnoredOnManagedNg) — EKS managed node groups do not expose SpotAllocationStrategy; the ASG lane (default here) wires it",
     ),
-    doctrine_ref: "pangea-architectures::CamelotBuilderNodeGroup + breathe-catalog::builder::SUPER_CACHE_CI_BUILD",
+    doctrine_ref: "pangea-architectures::the builder node-group architecture + breathe-catalog::builder::SUPER_CACHE_CI_BUILD",
     note: "the bursty builder; arm is the current cost answer (proven), time-floor for best build times",
 };
 
@@ -447,7 +450,7 @@ pub const EYES_TINY: AuctionSpread = AuctionSpread {
     strategy_wiring: StrategyWiring::Effective,
     maturity: Maturity::Shipped,
     pending: None,
-    doctrine_ref: "pangea-architectures::AzTopology (single-AZ stateful) + the tendril observability tap",
+    doctrine_ref: "pangea-architectures::AzTopology (single-AZ stateful) + the the observability tap observability tap",
     note: "the tiny eyes; arm is the current cost answer (tiny burstable), single-AZ for the lone eyes volume",
 };
 
@@ -464,17 +467,26 @@ pub const COST_WITNESSES: &[CostWitness] = &[
     CostWitness {
         use_case: UseCase::SaasSteady,
         // large-spot: Graviton +19% pricier → x86 wins
-        signal: ArchCostSignal { arm64_effective_cost: 1.19, amd64_effective_cost: 1.00 },
+        signal: ArchCostSignal {
+            arm64_effective_cost: 1.19,
+            amd64_effective_cost: 1.00,
+        },
     },
     CostWitness {
         use_case: UseCase::BuildBurst,
         // big-compute per-build: arm −37% + faster → arm wins
-        signal: ArchCostSignal { arm64_effective_cost: 0.63, amd64_effective_cost: 1.00 },
+        signal: ArchCostSignal {
+            arm64_effective_cost: 0.63,
+            amd64_effective_cost: 1.00,
+        },
     },
     CostWitness {
         use_case: UseCase::EyesTiny,
         // tiny burstable: t4g < t3 → arm wins
-        signal: ArchCostSignal { arm64_effective_cost: 0.85, amd64_effective_cost: 1.00 },
+        signal: ArchCostSignal {
+            arm64_effective_cost: 0.85,
+            amd64_effective_cost: 1.00,
+        },
     },
 ];
 
@@ -493,8 +505,8 @@ pub fn cost_witness(use_case: UseCase) -> Option<&'static CostWitness> {
 #[cfg(test)]
 mod tests {
     use super::{
-        cost_witness, AuctionSpread, CostRationale, Lane, StrategyWiring, UseCase, BUILD_BURST,
-        MOLDINGS, SAAS_STEADY,
+        AuctionSpread, BUILD_BURST, CostRationale, Lane, MOLDINGS, SAAS_STEADY, StrategyWiring,
+        UseCase, cost_witness,
     };
     use crate::axis::{
         ArchPinReason, ArchSelection, Placement, ResolvedArch, SpotStrategy, StorageBinding,
@@ -504,7 +516,12 @@ mod tests {
     fn every_molding_is_valid() {
         for m in MOLDINGS {
             let v = m.violations();
-            assert!(v.is_empty(), "{} molding is invalid: {:?}", m.use_case.as_str(), v);
+            assert!(
+                v.is_empty(),
+                "{} molding is invalid: {:?}",
+                m.use_case.as_str(),
+                v
+            );
         }
     }
 
@@ -512,7 +529,11 @@ mod tests {
     fn moldings_are_a_bijection_with_use_cases() {
         assert_eq!(MOLDINGS.len(), UseCase::ALL.len());
         for uc in UseCase::ALL {
-            assert_eq!(MOLDINGS.iter().filter(|m| m.use_case == uc).count(), 1, "one molding per use-case");
+            assert_eq!(
+                MOLDINGS.iter().filter(|m| m.use_case == uc).count(),
+                1,
+                "one molding per use-case"
+            );
         }
     }
 
@@ -525,7 +546,8 @@ mod tests {
             let w = cost_witness(m.use_case).expect("witness");
             let resolved = m.resolved_arch(w.signal);
             assert_eq!(
-                resolved, m.cost_rationale.chosen_arch,
+                resolved,
+                m.cost_rationale.chosen_arch,
                 "{}: stated arch must equal the cost resolution",
                 m.use_case.as_str()
             );
@@ -536,7 +558,8 @@ mod tests {
             };
             let after = m.resolved_arch(flipped);
             assert_ne!(
-                after, resolved,
+                after,
+                resolved,
                 "{}: flipping the price signal must flip the arch (not a hardcode)",
                 m.use_case.as_str()
             );
@@ -547,9 +570,18 @@ mod tests {
     fn saas_floor_is_x86_and_loudly_says_arm_loses() {
         // The operator's exact example: the floor picks x86 and SAYS SO with the %.
         assert_eq!(SAAS_STEADY.cost_rationale.chosen_arch, ResolvedArch::Amd64);
-        let ci = SAAS_STEADY.cost_rationale.counterintuitive.expect("x86 floor must be flagged loud");
-        assert!(ci.contains("19%") || ci.contains("+19%"), "must name the +19% Graviton premium");
-        assert!(ci.contains("LOSES") || ci.contains("loses"), "must plainly say arm loses");
+        let ci = SAAS_STEADY
+            .cost_rationale
+            .counterintuitive
+            .expect("x86 floor must be flagged loud");
+        assert!(
+            ci.contains("19%") || ci.contains("+19%"),
+            "must name the +19% Graviton premium"
+        );
+        assert!(
+            ci.contains("LOSES") || ci.contains("loses"),
+            "must plainly say arm loses"
+        );
     }
 
     #[test]
@@ -579,7 +611,10 @@ mod tests {
         let mut bad = SAAS_STEADY;
         bad.storage_binding = StorageBinding::SingleInstanceEbs;
         bad.placement = Placement::MultiAz;
-        assert!(!bad.is_valid(), "single-instance-EBS + multi-AZ must be rejected (stranded volume)");
+        assert!(
+            !bad.is_valid(),
+            "single-instance-EBS + multi-AZ must be rejected (stranded volume)"
+        );
     }
 
     #[test]
@@ -601,7 +636,7 @@ mod tests {
 
     #[test]
     fn standalone_instance_lane_has_no_strategy_axis_and_is_never_effective_or_ignored() {
-        // A lone hand-launched EC2 instance (Camelot's bootstrap/control-plane
+        // A lone hand-launched EC2 instance (the private estate's bootstrap/control-plane
         // node, or any self-managed-k3s single instance) has no ASG/Fleet
         // distribution decision to make — the strategy axis has no field to bind.
         // Claiming Effective (nothing wired it) OR IgnoredOnManagedNg (that names
@@ -612,21 +647,30 @@ mod tests {
             strategy_wiring: StrategyWiring::Effective,
             ..BUILD_BURST
         };
-        assert!(!claims_effective.is_valid(), "a standalone instance has no strategy axis to be Effective");
+        assert!(
+            !claims_effective.is_valid(),
+            "a standalone instance has no strategy axis to be Effective"
+        );
 
         let claims_ignored = AuctionSpread {
             lane: Lane::StandaloneEc2Instance,
             strategy_wiring: StrategyWiring::IgnoredOnManagedNg,
             ..BUILD_BURST
         };
-        assert!(!claims_ignored.is_valid(), "a standalone instance is not a managed-NG — the gap shape does not apply");
+        assert!(
+            !claims_ignored.is_valid(),
+            "a standalone instance is not a managed-NG — the gap shape does not apply"
+        );
 
         let honest = AuctionSpread {
             lane: Lane::StandaloneEc2Instance,
             strategy_wiring: StrategyWiring::NotApplicableSingleInstance,
             ..BUILD_BURST
         };
-        assert!(honest.is_valid(), "marking the lane not-applicable-single-instance is honest + valid");
+        assert!(
+            honest.is_valid(),
+            "marking the lane not-applicable-single-instance is honest + valid"
+        );
     }
 
     #[test]
@@ -651,8 +695,14 @@ mod tests {
             strategy_wiring: StrategyWiring::Effective, // <- dishonest
             ..BUILD_BURST
         };
-        assert!(!gap.is_valid(), "a dropped strategy claimed effective is invalid");
+        assert!(
+            !gap.is_valid(),
+            "a dropped strategy claimed effective is invalid"
+        );
         gap.strategy_wiring = StrategyWiring::IgnoredOnManagedNg;
-        assert!(gap.is_valid(), "marking the gap ignored-on-managed-ng is honest + valid");
+        assert!(
+            gap.is_valid(),
+            "marking the gap ignored-on-managed-ng is honest + valid"
+        );
     }
 }

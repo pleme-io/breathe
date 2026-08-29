@@ -2,15 +2,15 @@
 //!
 //! [`super`] answers *which dimensions* a workload warrants. This module answers
 //! the three questions that follow, each of which is a measured defect on
-//! camelot-eks:
+//! private-estate-eks:
 //!
-//! 1. **Who owns the band** — 23% of camelot's bands (14 `TargetNotFound` + 12
+//! 1. **Who owns the band** — 23% of the private estate's bands (14 `TargetNotFound` + 12
 //!    `Error`) point at workloads that are absent or scaled to zero. They report
 //!    into the void forever because nothing retires them. Every planned band
 //!    carries an [`OwnerRef`] to its target, so the apiserver garbage-collects it
 //!    when the target dies. A band outliving its target stops being a thing that
 //!    has to be noticed.
-//! 2. **How it is armed** — camelot has `mode: shadow` ×115 and
+//! 2. **How it is armed** — the private estate has `mode: shadow` ×115 and
 //!    `writeIntent: None` ×115. The progressive-arming machinery
 //!    (`calibrateThenWrite`, `confirmAfterSeconds`, `shadowConfirmEffect`) all
 //!    ships in the CRD and *nothing climbs it*. A band that can never leave
@@ -142,7 +142,7 @@ impl ArmingPolicy {
 /// [`OwnerRef::observed`] as the only constructor. That is deliberate and it is
 /// the whole invariant: a Kubernetes `ownerReference` without a UID does not
 /// establish ownership, so a band built from one is exactly the orphan that
-/// produced camelot's 14 `TargetNotFound` + 12 `Error` bands.
+/// produced the private estate's 14 `TargetNotFound` + 12 `Error` bands.
 ///
 /// Because [`BandPlan`] requires an `OwnerRef` by value, and an `OwnerRef` cannot
 /// exist without a UID, **"planned a band that will not be garbage-collected with
@@ -289,17 +289,19 @@ pub fn plan_for(
     let mut out: Vec<BandPlan> = shapes
         .iter()
         .flat_map(|(shape, owner)| {
-            dimensions_for(shape).into_iter().map(move |dimension| BandPlan {
-                namespace: shape.namespace.clone(),
-                name: band_name(&shape.name, dimension),
-                dimension,
-                target_name: shape.name.clone(),
-                target_kind: target_kind(shape.kind),
-                owner: owner.clone(),
-                intent: arming.intent_for(dimension),
-                confirm_after_seconds: arming.confirm_after_seconds,
-                posture_ref: posture_ref.map(String::from),
-            })
+            dimensions_for(shape)
+                .into_iter()
+                .map(move |dimension| BandPlan {
+                    namespace: shape.namespace.clone(),
+                    name: band_name(&shape.name, dimension),
+                    dimension,
+                    target_name: shape.name.clone(),
+                    target_kind: target_kind(shape.kind),
+                    owner: owner.clone(),
+                    intent: arming.intent_for(dimension),
+                    confirm_after_seconds: arming.confirm_after_seconds,
+                    posture_ref: posture_ref.map(String::from),
+                })
         })
         .collect();
     out.sort_by(|a, b| {
@@ -328,7 +330,7 @@ pub enum Action {
     Create(BandPlan),
     /// Adopt an existing unowned band — attach the owner reference it is missing.
     ///
-    /// The migration path for camelot's 115 pre-existing hand-authored bands:
+    /// The migration path for the private estate's 115 pre-existing hand-authored bands:
     /// they are *correct*, merely orphan-prone, so they are adopted rather than
     /// deleted and recreated. Deleting them would drop their accumulated
     /// observation history, which is the one thing a band cannot rebuild quickly.
@@ -395,7 +397,7 @@ mod tests {
     }
 
     fn shape() -> WorkloadShape {
-        let mut s = WorkloadShape::bare("camelot", "pangea-operator", WorkloadKind::Deployment);
+        let mut s = WorkloadShape::bare("isolated", "pangea-operator", WorkloadKind::Deployment);
         s.declares_cpu_request = true;
         s.declares_memory_request = true;
         s
@@ -403,12 +405,19 @@ mod tests {
 
     #[test]
     fn plans_request_bands_for_the_worst_offender() {
-        // pangea-operator: requests 2000m, uses 2m. Measured on camelot 2026-08-05.
-        let plans = plan_for(&[(shape(), owner(Some("uid-1")))], &ArmingPolicy::default(), None);
+        // pangea-operator: requests 2000m, uses 2m. Measured on one cluster 2026-08-05.
+        let plans = plan_for(
+            &[(shape(), owner(Some("uid-1")))],
+            &ArmingPolicy::default(),
+            None,
+        );
         let names: Vec<_> = plans.iter().map(|p| p.name.as_str()).collect();
         assert_eq!(
             names,
-            vec!["pangea-operator-request-cpu", "pangea-operator-request-memory"]
+            vec![
+                "pangea-operator-request-cpu",
+                "pangea-operator-request-memory"
+            ]
         );
     }
 
@@ -460,7 +469,10 @@ mod tests {
     fn never_arm_freezes_just_that_dimension() {
         let mut a = ArmingPolicy::default();
         a.never_arm.insert(BandDimension::RequestMemory);
-        assert_eq!(a.intent_for(BandDimension::RequestMemory), WriteIntent::Frozen);
+        assert_eq!(
+            a.intent_for(BandDimension::RequestMemory),
+            WriteIntent::Frozen
+        );
         assert_eq!(
             a.intent_for(BandDimension::RequestCpu),
             WriteIntent::CalibrateThenWrite
@@ -470,31 +482,49 @@ mod tests {
 
     #[test]
     fn reconcile_creates_what_is_missing() {
-        let desired = plan_for(&[(shape(), owner(Some("u")))], &ArmingPolicy::default(), None);
+        let desired = plan_for(
+            &[(shape(), owner(Some("u")))],
+            &ArmingPolicy::default(),
+            None,
+        );
         let actions = reconcile(&desired, &[]);
         assert_eq!(actions.len(), 2);
         assert!(actions.iter().all(|a| matches!(a, Action::Create(_))));
     }
 
-    /// camelot's 115 existing bands are correct but unowned — adopt, never
+    /// the private estate's 115 existing bands are correct but unowned — adopt, never
     /// delete-and-recreate, because their observation history is not rebuildable.
     #[test]
     fn unowned_existing_bands_are_adopted_not_recreated() {
-        let desired = plan_for(&[(shape(), owner(Some("u")))], &ArmingPolicy::default(), None);
+        let desired = plan_for(
+            &[(shape(), owner(Some("u")))],
+            &ArmingPolicy::default(),
+            None,
+        );
         let actual = vec![ExistingBand {
-            namespace: "camelot".into(),
+            namespace: "isolated".into(),
             name: "pangea-operator-request-cpu".into(),
             dimension: BandDimension::RequestCpu,
             owned: false,
         }];
         let actions = reconcile(&desired, &actual);
-        assert!(actions.iter().any(|a| matches!(a, Action::Adopt(p) if p.name == "pangea-operator-request-cpu")));
-        assert!(!actions.iter().any(|a| matches!(a, Action::Retire { name, .. } if name == "pangea-operator-request-cpu")));
+        assert!(
+            actions
+                .iter()
+                .any(|a| matches!(a, Action::Adopt(p) if p.name == "pangea-operator-request-cpu"))
+        );
+        assert!(!actions.iter().any(
+            |a| matches!(a, Action::Retire { name, .. } if name == "pangea-operator-request-cpu")
+        ));
     }
 
     #[test]
     fn an_already_owned_band_is_left_alone() {
-        let desired = plan_for(&[(shape(), owner(Some("u")))], &ArmingPolicy::default(), None);
+        let desired = plan_for(
+            &[(shape(), owner(Some("u")))],
+            &ArmingPolicy::default(),
+            None,
+        );
         let actual: Vec<_> = desired
             .iter()
             .map(|p| ExistingBand {
@@ -510,9 +540,13 @@ mod tests {
     /// Removing a limit from a workload retires its limit band — the drift arm.
     #[test]
     fn an_unwarranted_dimension_is_retired() {
-        let desired = plan_for(&[(shape(), owner(Some("u")))], &ArmingPolicy::default(), None);
+        let desired = plan_for(
+            &[(shape(), owner(Some("u")))],
+            &ArmingPolicy::default(),
+            None,
+        );
         let actual = vec![ExistingBand {
-            namespace: "camelot".into(),
+            namespace: "isolated".into(),
             name: "pangea-operator-cpu".into(), // a limit band; no limit is declared now
             dimension: BandDimension::Cpu,
             owned: true,
@@ -529,9 +563,13 @@ mod tests {
     /// the cluster over-covered rather than under-covered.
     #[test]
     fn creates_and_adopts_precede_retires() {
-        let desired = plan_for(&[(shape(), owner(Some("u")))], &ArmingPolicy::default(), None);
+        let desired = plan_for(
+            &[(shape(), owner(Some("u")))],
+            &ArmingPolicy::default(),
+            None,
+        );
         let actual = vec![ExistingBand {
-            namespace: "camelot".into(),
+            namespace: "isolated".into(),
             name: "pangea-operator-storage".into(),
             dimension: BandDimension::Storage,
             owned: true,
@@ -576,6 +614,10 @@ mod tests {
         let mut sorted = names.clone();
         sorted.sort_unstable();
         assert_eq!(names, sorted);
-        assert!(plans.iter().all(|p| p.posture_ref.as_deref() == Some("batch")));
+        assert!(
+            plans
+                .iter()
+                .all(|p| p.posture_ref.as_deref() == Some("batch"))
+        );
     }
 }

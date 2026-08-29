@@ -10,7 +10,7 @@
 //! `Option<T>` spec fields.
 //!
 //! **Measured real problem this exists to kill:** 47 of ~50 live band CRs on
-//! Camelot hand-duplicate the identical 7-value tuple
+//! the private estate hand-duplicate the identical 7-value tuple
 //! (0.8/0.85/1.25/0.7/0.9/600/120) verbatim. A `BreathePosture` names that
 //! tuple once; a band opts in with one `postureRef` line instead of
 //! copy-pasting seven.
@@ -86,7 +86,7 @@ pub struct BreathePostureSpec {
     // COMPLETE tuple by construction" rule stated above. That is a deliberate
     // exception with two reasons, both stated rather than glossed:
     //
-    //  1. **Live CRs.** Five `BreathePosture` objects exist on camelot-eks
+    //  1. **Live CRs.** Five `BreathePosture` objects exist on one cluster-eks
     //     (critical, critical-stateful, standard, batch, storage-volume).
     //     Adding REQUIRED fields would make every one of them fail to
     //     deserialize, i.e. a schema change that breaks the running controller

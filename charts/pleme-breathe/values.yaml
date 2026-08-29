@@ -19,7 +19,7 @@ requeueSeconds: 60
 # ENABLED is unset in the pod env, so nats_trigger::resolve_trigger's gate 2
 # is unmet regardless of natsReactiveUrl — the controller stays watch-only,
 # byte-identical to before this feature existed. Flip to true only once
-# Pieces 1 (NATS on Camelot) and 2 (escuta-breathe-bridge deployed) are proven
+# Pieces 1 (NATS on the private estate) and 2 (escuta-breathe-bridge deployed) are proven
 # live — until Piece 2's own named blocker closes there is nothing publishing
 # on these subjects even when this is enabled.
 #
@@ -57,7 +57,7 @@ serviceAccount:
 
 # The HANDS -- templates/daemonset.yaml (gated by agent.enabled, same flag
 # rbac.yaml's narrow host-agent-only ClusterRole/ClusterRoleBinding already
-# gates) + templates/rbac.yaml's ServiceAccount. Off by default; Camelot's
+# gates) + templates/rbac.yaml's ServiceAccount. Off by default; the private estate's
 # HelmRelease already sets agent.enabled: true (previously RBAC-only -- no
 # DaemonSet template existed until this pass closed that gap, task #188).
 agent:
@@ -71,7 +71,7 @@ agent:
   # .Chart.AppVersion, which is NOT a real published AUTOBUMP tag (★
   # AUTOBUMP publishes amd64-r<run>-<sha> exact tags only, never :latest as
   # a deploy source) -- a real deployment overrides agent.image.tag (or
-  # agent.image.digest) exactly the way the live Camelot HelmRelease
+  # agent.image.digest) exactly the way the live the private estate HelmRelease
   # already overrides the controller's image.tag below.
   image:
     repository: ghcr.io/pleme-io/breathe-host-agent
@@ -110,7 +110,7 @@ agent:
   # A per-node DaemonSet's whole job is host management -- correctness
   # depends on scheduling onto EVERY node the fleet enrolls into a
   # BreatheNodePool, INCLUDING nodes carrying scheduling taints for workload
-  # isolation (e.g. Camelot's `breathe.pleme.io/pool` taint) -- those are
+  # isolation (e.g. the private estate's `breathe.pleme.io/pool` taint) -- those are
   # exactly the nodes whose host resources it manages. Unlike the
   # controller (a single reconciler that only needs to land somewhere
   # untainted, see the top-level tolerations below), the agent needs the
@@ -156,8 +156,8 @@ portao:
 # The node-readiness toleration (`pleme.io/unbreathed`) is NOT here and cannot
 # be set here: `templates/deployment.yaml` emits it unconditionally, because a
 # values default would be silently dropped by any consumer that sets this key
-# (Helm replaces list values rather than merging, and camelot already sets
-# `tolerations: [camelot-builder]`). Read that template's comment before
+# (Helm replaces list values rather than merging, and the private estate already sets
+# `tolerations: [private-estate-builder]`). Read that template's comment before
 # touching controller scheduling — an untolerated controller is a permanent
 # cluster-wide deadlock, not a degraded state.
 #
@@ -177,7 +177,7 @@ priorityClassName: ""
 # transient workload (e.g. an ephemeral CI runner pod) can win that gap
 # before the replacement schedules, stalling the rollout for its full
 # timeout on a first-come-first-served race it has no reason to lose.
-# Found live 2026-07-17 on camelot-eks: the upgrade + its own rollback both
+# Found live 2026-07-17 on one cluster-eks: the upgrade + its own rollback both
 # failed repeatedly this exact way. A dedicated PriorityClass (default-on,
 # created by this chart) lets the scheduler prefer -- and if needed, preempt
 # for -- this pod instead of leaving the outcome to timing.

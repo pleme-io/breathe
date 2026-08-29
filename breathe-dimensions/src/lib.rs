@@ -26,12 +26,18 @@ use breathe_provider::{
 /// `in_place` capability flag (a selector group can only be carved this way).
 fn pod_layout(target: &Target, in_place: bool) -> LimitLayout {
     if target.pod_selector.is_some() {
-        return LimitLayout::PodResize { container: target.container.clone() };
+        return LimitLayout::PodResize {
+            container: target.container.clone(),
+        };
     }
     match target.kind.as_str() {
         "Cluster" => LimitLayout::ClusterTopLevel,
-        _ if in_place => LimitLayout::PodResize { container: target.container.clone() },
-        _ => LimitLayout::PodTemplate { container: target.container.clone() },
+        _ if in_place => LimitLayout::PodResize {
+            container: target.container.clone(),
+        },
+        _ => LimitLayout::PodTemplate {
+            container: target.container.clone(),
+        },
     }
 }
 
@@ -54,15 +60,32 @@ pub struct MemoryDescriptor {
 }
 impl DimensionDescriptor for MemoryDescriptor {
     fn with_resize_capability(resize_capable: bool) -> Self {
-        Self { in_place: resize_capable, cr_identity: None }
+        Self {
+            in_place: resize_capable,
+            cr_identity: None,
+        }
     }
-    fn id(&self) -> DimensionId { DimensionId::Memory }
-    fn directionality(&self) -> Directionality { Directionality::Bidirectional }
-    fn field_manager(&self) -> &'static str { "breathe/memory" }
-    fn logical_field(&self) -> &'static str { "resources.limits.memory" }
-    fn resource(&self) -> &'static str { "memory" }
-    fn semantics(&self) -> ApplySemantics { ApplySemantics::Transactional }
-    fn layout(&self, target: &Target) -> LimitLayout { pod_layout(target, self.in_place) }
+    fn id(&self) -> DimensionId {
+        DimensionId::Memory
+    }
+    fn directionality(&self) -> Directionality {
+        Directionality::Bidirectional
+    }
+    fn field_manager(&self) -> &'static str {
+        "breathe/memory"
+    }
+    fn logical_field(&self) -> &'static str {
+        "resources.limits.memory"
+    }
+    fn resource(&self) -> &'static str {
+        "memory"
+    }
+    fn semantics(&self) -> ApplySemantics {
+        ApplySemantics::Transactional
+    }
+    fn layout(&self, target: &Target) -> LimitLayout {
+        pod_layout(target, self.in_place)
+    }
     fn metric_source(&self, target: &Target) -> MetricSource {
         MetricSource::PodMetricsMax {
             resource: "memory".into(),
@@ -80,7 +103,9 @@ impl DimensionDescriptor for MemoryDescriptor {
         self.cr_identity = Some((namespace, name));
     }
     fn field_manager_scope(&self) -> Option<(&str, &str)> {
-        self.cr_identity.as_ref().map(|(ns, name)| (ns.as_str(), name.as_str()))
+        self.cr_identity
+            .as_ref()
+            .map(|(ns, name)| (ns.as_str(), name.as_str()))
     }
 }
 
@@ -103,15 +128,32 @@ pub struct CpuDescriptor {
 }
 impl DimensionDescriptor for CpuDescriptor {
     fn with_resize_capability(resize_capable: bool) -> Self {
-        Self { in_place: resize_capable, cr_identity: None }
+        Self {
+            in_place: resize_capable,
+            cr_identity: None,
+        }
     }
-    fn id(&self) -> DimensionId { DimensionId::Cpu }
-    fn directionality(&self) -> Directionality { Directionality::Bidirectional }
-    fn field_manager(&self) -> &'static str { "breathe/cpu" }
-    fn logical_field(&self) -> &'static str { "resources.limits.cpu" }
-    fn resource(&self) -> &'static str { "cpu" }
-    fn semantics(&self) -> ApplySemantics { ApplySemantics::PartialProgress }
-    fn layout(&self, target: &Target) -> LimitLayout { pod_layout(target, self.in_place) }
+    fn id(&self) -> DimensionId {
+        DimensionId::Cpu
+    }
+    fn directionality(&self) -> Directionality {
+        Directionality::Bidirectional
+    }
+    fn field_manager(&self) -> &'static str {
+        "breathe/cpu"
+    }
+    fn logical_field(&self) -> &'static str {
+        "resources.limits.cpu"
+    }
+    fn resource(&self) -> &'static str {
+        "cpu"
+    }
+    fn semantics(&self) -> ApplySemantics {
+        ApplySemantics::PartialProgress
+    }
+    fn layout(&self, target: &Target) -> LimitLayout {
+        pod_layout(target, self.in_place)
+    }
     fn metric_source(&self, target: &Target) -> MetricSource {
         MetricSource::PodMetricsMax {
             resource: "cpu".into(),
@@ -168,7 +210,9 @@ impl DimensionDescriptor for CpuDescriptor {
         self.cr_identity = Some((namespace, name));
     }
     fn field_manager_scope(&self) -> Option<(&str, &str)> {
-        self.cr_identity.as_ref().map(|(ns, name)| (ns.as_str(), name.as_str()))
+        self.cr_identity
+            .as_ref()
+            .map(|(ns, name)| (ns.as_str(), name.as_str()))
     }
 }
 
@@ -187,12 +231,24 @@ pub struct StorageDescriptor {
     cr_identity: Option<(String, String)>,
 }
 impl DimensionDescriptor for StorageDescriptor {
-    fn id(&self) -> DimensionId { DimensionId::Storage }
-    fn directionality(&self) -> Directionality { Directionality::GrowOnly }
-    fn field_manager(&self) -> &'static str { "breathe/storage" }
-    fn logical_field(&self) -> &'static str { "spec.resources.requests.storage" }
-    fn resource(&self) -> &'static str { "storage" }
-    fn semantics(&self) -> ApplySemantics { ApplySemantics::ContinuousReconciliation }
+    fn id(&self) -> DimensionId {
+        DimensionId::Storage
+    }
+    fn directionality(&self) -> Directionality {
+        Directionality::GrowOnly
+    }
+    fn field_manager(&self) -> &'static str {
+        "breathe/storage"
+    }
+    fn logical_field(&self) -> &'static str {
+        "spec.resources.requests.storage"
+    }
+    fn resource(&self) -> &'static str {
+        "storage"
+    }
+    fn semantics(&self) -> ApplySemantics {
+        ApplySemantics::ContinuousReconciliation
+    }
     fn layout(&self, target: &Target) -> LimitLayout {
         match target.kind.as_str() {
             "Cluster" => LimitLayout::ClusterStorage,
@@ -201,7 +257,10 @@ impl DimensionDescriptor for StorageDescriptor {
     }
     fn metric_source(&self, target: &Target) -> MetricSource {
         let pvc_sel = if target.kind == "Cluster" {
-            format!(r#"persistentvolumeclaim=~"{name}-[0-9]+""#, name = target.name)
+            format!(
+                r#"persistentvolumeclaim=~"{name}-[0-9]+""#,
+                name = target.name
+            )
         } else {
             format!(r#"persistentvolumeclaim="{name}""#, name = target.name)
         };
@@ -219,7 +278,9 @@ impl DimensionDescriptor for StorageDescriptor {
         self.cr_identity = Some((namespace, name));
     }
     fn field_manager_scope(&self) -> Option<(&str, &str)> {
-        self.cr_identity.as_ref().map(|(ns, name)| (ns.as_str(), name.as_str()))
+        self.cr_identity
+            .as_ref()
+            .map(|(ns, name)| (ns.as_str(), name.as_str()))
     }
 }
 
@@ -228,10 +289,24 @@ mod tests {
     use super::*;
 
     fn cnpg() -> Target {
-        Target { namespace: "pangea-system".into(), name: "pangea-database".into(), kind: "Cluster".into(), api_version: "postgresql.cnpg.io/v1".into(), container: None, pod_selector: None }
+        Target {
+            namespace: "pangea-system".into(),
+            name: "pangea-database".into(),
+            kind: "Cluster".into(),
+            api_version: "postgresql.cnpg.io/v1".into(),
+            container: None,
+            pod_selector: None,
+        }
     }
     fn deploy() -> Target {
-        Target { namespace: "x".into(), name: "app".into(), kind: "Deployment".into(), api_version: "apps/v1".into(), container: Some("app".into()), pod_selector: None }
+        Target {
+            namespace: "x".into(),
+            name: "app".into(),
+            kind: "Deployment".into(),
+            api_version: "apps/v1".into(),
+            container: Some("app".into()),
+            pod_selector: None,
+        }
     }
     /// An ARC ephemeral-runner pod group: no resolvable owner, name unstable —
     /// addressed by a label selector. Carved in-place regardless of `in_place`.
@@ -252,9 +327,16 @@ mod tests {
         assert_eq!(d.id(), DimensionId::Memory);
         assert_eq!(d.directionality(), Directionality::Bidirectional);
         assert_eq!(d.layout(&cnpg()), LimitLayout::ClusterTopLevel);
-        assert!(matches!(d.layout(&deploy()), LimitLayout::PodTemplate { .. }));
+        assert!(matches!(
+            d.layout(&deploy()),
+            LimitLayout::PodTemplate { .. }
+        ));
         match d.metric_source(&cnpg()) {
-            MetricSource::PodMetricsMax { resource, pod_prefix, selector } => {
+            MetricSource::PodMetricsMax {
+                resource,
+                pod_prefix,
+                selector,
+            } => {
                 assert_eq!(resource, "memory");
                 assert_eq!(pod_prefix, "pangea-database");
                 assert_eq!(selector, None, "owner-resolved target carries no selector");
@@ -270,17 +352,34 @@ mod tests {
         // with in_place=false — and the metric reads the SAME label selector.
         let r = runner();
         for d in [
-            MemoryDescriptor { in_place: false, ..Default::default() },
-            MemoryDescriptor { in_place: true, ..Default::default() },
+            MemoryDescriptor {
+                in_place: false,
+                ..Default::default()
+            },
+            MemoryDescriptor {
+                in_place: true,
+                ..Default::default()
+            },
         ] {
-            assert!(matches!(d.layout(&r), LimitLayout::PodResize { container: Some(c) } if c == "runner"));
+            assert!(
+                matches!(d.layout(&r), LimitLayout::PodResize { container: Some(c) } if c == "runner")
+            );
             match d.metric_source(&r) {
-                MetricSource::PodMetricsMax { resource, pod_prefix, selector } => {
+                MetricSource::PodMetricsMax {
+                    resource,
+                    pod_prefix,
+                    selector,
+                } => {
                     assert_eq!(resource, "memory");
                     assert_eq!(pod_prefix, "rio-build-01");
-                    assert_eq!(selector.as_deref(), Some("actions.github.com/scale-set-name=rio-build-01"));
+                    assert_eq!(
+                        selector.as_deref(),
+                        Some("actions.github.com/scale-set-name=rio-build-01")
+                    );
                 }
-                other => panic!("runner memory must read metrics-server by selector, got {other:?}"),
+                other => {
+                    panic!("runner memory must read metrics-server by selector, got {other:?}")
+                }
             }
         }
         // a selector carve is never RestartRequiring (it cannot force a roll).
@@ -289,14 +388,20 @@ mod tests {
             MemoryDescriptor::default().layout(&r).disruption_class(),
             DisruptionClass::RestartRequiring
         );
-        assert!(matches!(CpuDescriptor::default().layout(&r), LimitLayout::PodResize { .. }));
+        assert!(matches!(
+            CpuDescriptor::default().layout(&r),
+            LimitLayout::PodResize { .. }
+        ));
     }
 
     #[test]
     fn cpu_reads_metrics_server_bidirectional() {
         let d = CpuDescriptor::default();
         assert_eq!(d.directionality(), Directionality::Bidirectional);
-        assert!(matches!(d.metric_source(&deploy()), MetricSource::PodMetricsMax { .. }));
+        assert!(matches!(
+            d.metric_source(&deploy()),
+            MetricSource::PodMetricsMax { .. }
+        ));
     }
 
     /// THE CPU-BLINDNESS DESCRIPTOR CONTRACT: cpu declares `CfsThrottling` and
@@ -311,24 +416,49 @@ mod tests {
         assert_eq!(d.suppressed_demand(), SuppressedDemand::CfsThrottling);
         match d.throttle_source(&deploy()) {
             Some(MetricSource::Prometheus(q)) => {
-                assert!(q.contains("container_cpu_cfs_throttled_periods_total"), "must read CFS throttling: {q}");
+                assert!(
+                    q.contains("container_cpu_cfs_throttled_periods_total"),
+                    "must read CFS throttling: {q}"
+                );
                 assert!(q.contains("rate("), "a throttle RATE over a window: {q}");
-                assert!(q.contains(r#"namespace="x""#), "scoped to the target namespace: {q}");
+                assert!(
+                    q.contains(r#"namespace="x""#),
+                    "scoped to the target namespace: {q}"
+                );
             }
             other => panic!("cpu must supply a CFS-throttling PromQL source, got {other:?}"),
         }
         // a label-selected (ARC runner) cpu band scopes the throttle query by the SAME labels.
         match d.throttle_source(&runner()) {
             Some(MetricSource::Prometheus(q)) => {
-                assert!(q.contains(r#"actions.github.com/scale-set-name="rio-build-01""#), "selector-scoped throttle: {q}");
+                assert!(
+                    q.contains(r#"actions.github.com/scale-set-name="rio-build-01""#),
+                    "selector-scoped throttle: {q}"
+                );
             }
             other => panic!("runner cpu throttle source must be label-scoped, got {other:?}"),
         }
         // memory + storage declare their own variants and carry NO throttle read.
-        assert_eq!(MemoryDescriptor::default().suppressed_demand(), SuppressedDemand::WorkingSetExceedsSoftLimit);
-        assert!(MemoryDescriptor::default().throttle_source(&deploy()).is_none(), "memory has no separate throttle read");
-        assert_eq!(StorageDescriptor::default().suppressed_demand(), SuppressedDemand::GrowOnly);
-        assert!(StorageDescriptor::default().throttle_source(&deploy()).is_none(), "storage is grow-only — no throttle read");
+        assert_eq!(
+            MemoryDescriptor::default().suppressed_demand(),
+            SuppressedDemand::WorkingSetExceedsSoftLimit
+        );
+        assert!(
+            MemoryDescriptor::default()
+                .throttle_source(&deploy())
+                .is_none(),
+            "memory has no separate throttle read"
+        );
+        assert_eq!(
+            StorageDescriptor::default().suppressed_demand(),
+            SuppressedDemand::GrowOnly
+        );
+        assert!(
+            StorageDescriptor::default()
+                .throttle_source(&deploy())
+                .is_none(),
+            "storage is grow-only — no throttle read"
+        );
     }
 
     #[test]
@@ -341,14 +471,25 @@ mod tests {
         use breathe_provider::DisruptionClass;
         let t = deploy();
         for layout in [
-            MemoryDescriptor { in_place: true, ..Default::default() }.layout(&t),
-            CpuDescriptor { in_place: true, ..Default::default() }.layout(&t),
+            MemoryDescriptor {
+                in_place: true,
+                ..Default::default()
+            }
+            .layout(&t),
+            CpuDescriptor {
+                in_place: true,
+                ..Default::default()
+            }
+            .layout(&t),
             StorageDescriptor::default().layout(&t),
         ] {
             assert_ne!(layout.disruption_class(), DisruptionClass::RestartRequiring);
         }
         // storage is the strongest: fully RestartFree.
-        assert_eq!(StorageDescriptor::default().layout(&t).disruption_class(), DisruptionClass::RestartFree);
+        assert_eq!(
+            StorageDescriptor::default().layout(&t).disruption_class(),
+            DisruptionClass::RestartFree
+        );
     }
 
     #[test]
@@ -367,12 +508,28 @@ mod tests {
         // in_place memory on a Deployment → PodResize (zero-restart); a CNPG
         // Cluster still goes top-level (CNPG owns its own resize). Default
         // (in_place: false) keeps the template-roll behaviour unchanged.
-        let inplace = MemoryDescriptor { in_place: true, ..Default::default() };
-        assert!(matches!(inplace.layout(&deploy()), LimitLayout::PodResize { .. }));
+        let inplace = MemoryDescriptor {
+            in_place: true,
+            ..Default::default()
+        };
+        assert!(matches!(
+            inplace.layout(&deploy()),
+            LimitLayout::PodResize { .. }
+        ));
         assert_eq!(inplace.layout(&cnpg()), LimitLayout::ClusterTopLevel);
-        assert!(matches!(MemoryDescriptor::default().layout(&deploy()), LimitLayout::PodTemplate { .. }));
+        assert!(matches!(
+            MemoryDescriptor::default().layout(&deploy()),
+            LimitLayout::PodTemplate { .. }
+        ));
         // cpu likewise.
-        assert!(matches!(CpuDescriptor { in_place: true, ..Default::default() }.layout(&deploy()), LimitLayout::PodResize { .. }));
+        assert!(matches!(
+            CpuDescriptor {
+                in_place: true,
+                ..Default::default()
+            }
+            .layout(&deploy()),
+            LimitLayout::PodResize { .. }
+        ));
     }
 
     #[test]
@@ -380,12 +537,22 @@ mod tests {
         let d = StorageDescriptor::default();
         assert_eq!(d.directionality(), Directionality::GrowOnly);
         // A raw PVC target carves its own requests.storage, keyed on its exact name.
-        let pvc = Target { namespace: "drive".into(), name: "data-garage-0".into(), kind: "PersistentVolumeClaim".into(), api_version: "v1".into(), container: None, pod_selector: None };
+        let pvc = Target {
+            namespace: "drive".into(),
+            name: "data-garage-0".into(),
+            kind: "PersistentVolumeClaim".into(),
+            api_version: "v1".into(),
+            container: None,
+            pod_selector: None,
+        };
         assert_eq!(d.layout(&pvc), LimitLayout::PvcRequest);
         match d.metric_source(&pvc) {
             MetricSource::Prometheus(q) => {
                 assert!(q.contains("kubelet_volume_stats_used_bytes"));
-                assert!(q.contains(r#"persistentvolumeclaim="data-garage-0""#), "exact PVC name: {q}");
+                assert!(
+                    q.contains(r#"persistentvolumeclaim="data-garage-0""#),
+                    "exact PVC name: {q}"
+                );
             }
             other => panic!("storage uses PromQL, got {other:?}"),
         }
@@ -394,7 +561,10 @@ mod tests {
         assert_eq!(d.layout(&cnpg()), LimitLayout::ClusterStorage);
         match d.metric_source(&cnpg()) {
             MetricSource::Prometheus(q) => {
-                assert!(q.contains(r#"persistentvolumeclaim=~"pangea-database-[0-9]+""#), "regex over instance PVCs: {q}");
+                assert!(
+                    q.contains(r#"persistentvolumeclaim=~"pangea-database-[0-9]+""#),
+                    "regex over instance PVCs: {q}"
+                );
             }
             other => panic!("storage uses PromQL, got {other:?}"),
         }
@@ -411,15 +581,26 @@ mod tests {
     #[test]
     fn cr_identity_scopes_the_field_manager_only_when_bound_and_differs_per_cr() {
         let unbound = CpuDescriptor::default();
-        assert_eq!(unbound.field_manager_scope(), None, "never bound ⇒ dimension-wide manager, unchanged");
+        assert_eq!(
+            unbound.field_manager_scope(),
+            None,
+            "never bound ⇒ dimension-wide manager, unchanged"
+        );
 
         let mut a = CpuDescriptor::default();
         a.set_cr_identity("rio".into(), "pangea-operator".into());
         let mut b = CpuDescriptor::default();
         b.set_cr_identity("rio".into(), "pangea-operator-cpu".into());
         assert_eq!(a.field_manager_scope(), Some(("rio", "pangea-operator")));
-        assert_eq!(b.field_manager_scope(), Some(("rio", "pangea-operator-cpu")));
-        assert_ne!(a.field_manager_scope(), b.field_manager_scope(), "two CRs of the same dimension must scope DIFFERENTLY");
+        assert_eq!(
+            b.field_manager_scope(),
+            Some(("rio", "pangea-operator-cpu"))
+        );
+        assert_ne!(
+            a.field_manager_scope(),
+            b.field_manager_scope(),
+            "two CRs of the same dimension must scope DIFFERENTLY"
+        );
 
         // the SAME mechanism, wired on every dimension prone to the class (not just cpu).
         let mut m = MemoryDescriptor::default();

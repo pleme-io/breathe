@@ -28,7 +28,7 @@
 //!    this surface entirely; `request` landed later still.
 //!
 //! **What a tool RETURNS is a projection, not the CR.** A raw
-//! `breathe_band_list(kind="memory")` against camelot-eks was **428,850 bytes**
+//! `breathe_band_list(kind="memory")` against private-estate-eks was **428,850 bytes**
 //! for 52 bands — larger than the whole org `CLAUDE.md` — overflowing the
 //! caller's result limit and spilling to disk, because a k8s CR is mostly
 //! `managedFields`. Every read tool here now hands back
@@ -39,15 +39,17 @@
 use std::sync::Arc;
 
 use rmcp::{
+    ServerHandler,
     handler::server::{router::tool::ToolRouter, wrapper::Parameters},
     model::{ServerCapabilities, ServerInfo},
-    schemars, tool, tool_handler, tool_router, ServerHandler,
+    schemars, tool, tool_handler, tool_router,
 };
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 pub use breathe_facade::{
-    project, BreatheStore, DimensionId, KubeStore, ProjectionView, StoreError, DEFAULT_HISTORY_LIMIT,
+    BreatheStore, DEFAULT_HISTORY_LIMIT, DimensionId, KubeStore, ProjectionView, StoreError,
+    project,
 };
 pub use breathe_provider::IntentKind;
 
@@ -83,7 +85,9 @@ pub struct ListBandsInput {
     #[schemars(description = VIEW_DESC)]
     pub view: Option<ProjectionView>,
     #[serde(default)]
-    #[schemars(description = "With view=detail, how many of the newest status.history samples to keep. Omitted = 3.")]
+    #[schemars(
+        description = "With view=detail, how many of the newest status.history samples to keep. Omitted = 3."
+    )]
     pub history_limit: Option<usize>,
 }
 
@@ -99,7 +103,9 @@ pub struct BandRef {
     #[schemars(description = VIEW_DESC)]
     pub view: Option<ProjectionView>,
     #[serde(default)]
-    #[schemars(description = "How many of the newest status.history samples to keep. Omitted = 3.")]
+    #[schemars(
+        description = "How many of the newest status.history samples to keep. Omitted = 3."
+    )]
     pub history_limit: Option<usize>,
 }
 
@@ -117,7 +123,9 @@ pub struct PatchBandInput {
     pub kind: DimensionId,
     pub namespace: String,
     pub name: String,
-    #[schemars(description = "Spec fields to merge-patch, e.g. {\"setpoint\":0.8,\"ceiling\":\"6Gi\"}")]
+    #[schemars(
+        description = "Spec fields to merge-patch, e.g. {\"setpoint\":0.8,\"ceiling\":\"6Gi\"}"
+    )]
     pub spec: Value,
 }
 
@@ -169,7 +177,9 @@ pub struct SetWriteIntentInput {
     )]
     pub intent: IntentKind,
     #[serde(default)]
-    #[schemars(description = "Seconds of clean observation before calibrateThenWrite promotes itself. Omitted = 1800.")]
+    #[schemars(
+        description = "Seconds of clean observation before calibrateThenWrite promotes itself. Omitted = 1800."
+    )]
     pub confirm_after_seconds: Option<u64>,
     #[serde(default)]
     #[schemars(
@@ -264,10 +274,11 @@ fn ok(v: &Value) -> String {
 fn err(e: &StoreError) -> String {
     let msg = e.to_string();
     match e {
-        StoreError::BadRequest(_) => {
-            kotae::Answer::refused(msg, ["a request breathe accepts (check kind, namespace, name)"])
-                .render()
-        }
+        StoreError::BadRequest(_) => kotae::Answer::refused(
+            msg,
+            ["a request breathe accepts (check kind, namespace, name)"],
+        )
+        .render(),
         StoreError::Kube(_) | StoreError::Serde(_) => kotae::Answer::blind(msg).render(),
     }
 }
@@ -295,14 +306,19 @@ fn projected(r: Result<Value, StoreError>, project: impl FnOnce(&Value) -> Value
 impl BreatheMcp {
     #[must_use]
     pub fn new(store: Arc<dyn BreatheStore>) -> Self {
-        Self { store, tool_router: Self::tool_router() }
+        Self {
+            store,
+            tool_router: Self::tool_router(),
+        }
     }
 
-    #[tool(description = "List breathe bands of a dimension, optionally namespace-scoped. Returns a COMPACT typed \
+    #[tool(
+        description = "List breathe bands of a dimension, optionally namespace-scoped. Returns a COMPACT typed \
                           projection per band: name, namespace, targetRef, floor/ceiling/setpoint, current limit, \
                           utilization, phase, health, and status.effectiveGate (the resolved authorization verdict \
                           plus, when live, the witness that granted it). Apiserver bookkeeping is dropped — it is \
-                          most of a CR's bytes and answers no question about a band. See `view` to widen.")]
+                          most of a CR's bytes and answers no question about a band. See `view` to widen."
+    )]
     pub async fn breathe_band_list(&self, Parameters(p): Parameters<ListBandsInput>) -> String {
         let view = p.view.unwrap_or_default();
         let limit = p.history_limit.unwrap_or(DEFAULT_HISTORY_LIMIT);
@@ -311,35 +327,55 @@ impl BreatheMcp {
         })
     }
 
-    #[tool(description = "Get one breathe band by kind/namespace/name. Returns the compact typed projection plus \
+    #[tool(
+        description = "Get one breathe band by kind/namespace/name. Returns the compact typed projection plus \
                           the newest condition per type and the last few status.history samples; \
-                          view=full gives the whole CR minus apiserver bookkeeping and view=raw gives it untouched.")]
+                          view=full gives the whole CR minus apiserver bookkeeping and view=raw gives it untouched."
+    )]
     pub async fn breathe_band_get(&self, Parameters(p): Parameters<BandRef>) -> String {
         // A single-object read defaults one rung RICHER than a list: the whole
         // point of naming one band is that you want its trajectory, and one
         // band's bounded history is ~400 bytes where fifty-two bands' is not.
         let view = p.view.unwrap_or(ProjectionView::Detail);
         let limit = p.history_limit.unwrap_or(DEFAULT_HISTORY_LIMIT);
-        projected(self.store.get_band(p.kind, p.namespace, p.name).await, |v| {
-            project::project_band(p.kind, v, view, limit)
-        })
+        projected(
+            self.store.get_band(p.kind, p.namespace, p.name).await,
+            |v| project::project_band(p.kind, v, view, limit),
+        )
     }
 
-    #[tool(description = "Merge-patch a band's spec (setpoint, growAbove, shrinkBelow, growFactor, shrinkFactor, floor, ceiling, cooldownSeconds, maxStalenessSeconds). Tune the homeostasis band.")]
+    #[tool(
+        description = "Merge-patch a band's spec (setpoint, growAbove, shrinkBelow, growFactor, shrinkFactor, floor, ceiling, cooldownSeconds, maxStalenessSeconds). Tune the homeostasis band."
+    )]
     pub async fn breathe_band_patch(&self, Parameters(p): Parameters<PatchBandInput>) -> String {
-        result(self.store.patch_band_spec(p.kind, p.namespace, p.name, p.spec).await)
+        result(
+            self.store
+                .patch_band_spec(p.kind, p.namespace, p.name, p.spec)
+                .await,
+        )
     }
 
-    #[tool(description = "Author a band's spec.writeIntent — THE authorization gate on every band kind. \
+    #[tool(
+        description = "Author a band's spec.writeIntent — THE authorization gate on every band kind. \
                           observe = never write; calibrateThenWrite = shadow, then write once a clean window passes; \
                           write = write now (requires authorizedBy); frozen = never write, keep observing. \
-                          This supersedes dryRun, which is inert on 8 of the 10 kinds.")]
-    pub async fn breathe_band_set_write_intent(&self, Parameters(p): Parameters<SetWriteIntentInput>) -> String {
+                          This supersedes dryRun, which is inert on 8 of the 10 kinds."
+    )]
+    pub async fn breathe_band_set_write_intent(
+        &self,
+        Parameters(p): Parameters<SetWriteIntentInput>,
+    ) -> String {
         // Refuse an unattributed go-live HERE, at the surface, rather than
         // writing a CR that the controller will only ever resolve to a shadow
         // named IntentMalformed. Same verdict, one round-trip earlier, and the
         // operator learns why while they are still holding the decision.
-        if p.intent == IntentKind::Write && p.authorized_by.as_deref().map(str::trim).unwrap_or_default().is_empty() {
+        if p.intent == IntentKind::Write
+            && p.authorized_by
+                .as_deref()
+                .map(str::trim)
+                .unwrap_or_default()
+                .is_empty()
+        {
             return json!({
                 "error": "intent=write requires authorizedBy",
                 "why": "a live carve must name who authorized it; the witness is carried into status.effectiveGate \
@@ -355,24 +391,51 @@ impl BreatheMcp {
         if let Some(by) = p.authorized_by {
             intent["authorizedBy"] = json!(by);
         }
-        result(self.store.patch_band_spec(p.kind, p.namespace, p.name, json!({ "writeIntent": intent })).await)
+        result(
+            self.store
+                .patch_band_spec(
+                    p.kind,
+                    p.namespace,
+                    p.name,
+                    json!({ "writeIntent": intent }),
+                )
+                .await,
+        )
     }
 
-    #[tool(description = "Set or clear breathe.pleme.io/confirmed on a band. true promotes a calibrateThenWrite \
+    #[tool(
+        description = "Set or clear breathe.pleme.io/confirmed on a band. true promotes a calibrateThenWrite \
                           band to writing NOW rather than waiting out its confirm window; false removes it. \
-                          The operator fast-path — previously reachable only from Rust source and kubectl.")]
-    pub async fn breathe_band_confirm(&self, Parameters(p): Parameters<ConfirmBandInput>) -> String {
+                          The operator fast-path — previously reachable only from Rust source and kubectl."
+    )]
+    pub async fn breathe_band_confirm(
+        &self,
+        Parameters(p): Parameters<ConfirmBandInput>,
+    ) -> String {
         // JSON `null` in a merge-patch REMOVES the key — the honest "un-confirm".
-        let value = if p.confirmed { json!("true") } else { Value::Null };
+        let value = if p.confirmed {
+            json!("true")
+        } else {
+            Value::Null
+        };
         let ann = json!({ breathe_provider::CONFIRMED_ANNOTATION: value });
-        result(self.store.annotate_band(p.kind, p.namespace, p.name, ann).await)
+        result(
+            self.store
+                .annotate_band(p.kind, p.namespace, p.name, ann)
+                .await,
+        )
     }
 
-    #[tool(description = "RETIRED for most kinds. Writes spec.dryRun, which is only read by host-param and \
+    #[tool(
+        description = "RETIRED for most kinds. Writes spec.dryRun, which is only read by host-param and \
                           kube-param bands; on every other kind it has had NO EFFECT since 2026-06-19 \
                           (breathe@76924b0) and this call is REFUSED rather than reported as success. \
-                          Use breathe_band_set_write_intent instead.")]
-    pub async fn breathe_band_set_dry_run(&self, Parameters(p): Parameters<SetDryRunInput>) -> String {
+                          Use breathe_band_set_write_intent instead."
+    )]
+    pub async fn breathe_band_set_dry_run(
+        &self,
+        Parameters(p): Parameters<SetDryRunInput>,
+    ) -> String {
         if !p.kind.dry_run_is_honored() {
             return json!({
                 "error": "spec.dryRun has no effect on this band kind",
@@ -387,41 +450,70 @@ impl BreatheMcp {
             })
             .to_string();
         }
-        result(self.store.patch_band_spec(p.kind, p.namespace, p.name, json!({ "dryRun": p.dry_run })).await)
+        result(
+            self.store
+                .patch_band_spec(p.kind, p.namespace, p.name, json!({ "dryRun": p.dry_run }))
+                .await,
+        )
     }
 
-    #[tool(description = "List BreatheNodePools (cluster-scoped enrollment: node, L2 ceilings, master write switch). \
+    #[tool(
+        description = "List BreatheNodePools (cluster-scoped enrollment: node, L2 ceilings, master write switch). \
                           Returns name + labels + the spec and status VERBATIM (a pool's authored content is a \
-                          handful of scalars), with apiserver bookkeeping dropped; view=raw for the untouched CR.")]
+                          handful of scalars), with apiserver bookkeeping dropped; view=raw for the untouched CR."
+    )]
     pub async fn breathe_nodepool_list(&self, Parameters(p): Parameters<ViewInput>) -> String {
         let view = p.view.unwrap_or_default();
-        projected(self.store.list_pools().await, |v| project::project_object_list(v, view))
+        projected(self.store.list_pools().await, |v| {
+            project::project_object_list(v, view)
+        })
     }
 
-    #[tool(description = "Get one BreatheNodePool by name (spec + status verbatim, apiserver bookkeeping dropped; \
-                          view=raw for the untouched CR).")]
+    #[tool(
+        description = "Get one BreatheNodePool by name (spec + status verbatim, apiserver bookkeeping dropped; \
+                          view=raw for the untouched CR)."
+    )]
     pub async fn breathe_nodepool_get(&self, Parameters(p): Parameters<PoolRef>) -> String {
         let view = p.view.unwrap_or_default();
-        projected(self.store.get_pool(p.name).await, |v| project::project_object(v, view))
+        projected(self.store.get_pool(p.name).await, |v| {
+            project::project_object(v, view)
+        })
     }
 
-    #[tool(description = "Flip a BreatheNodePool's writeEnabled master switch. Scope is the HOST plane: it bounds host writes for                           bands enrolled on that pool. It is NOT a cluster-wide kill switch for k8s-plane bands — to stop one of those,                           author writeIntent=frozen (or spec.suspend to stop reconciling it entirely).")]
-    pub async fn breathe_nodepool_set_write_enabled(&self, Parameters(p): Parameters<SetWriteEnabledInput>) -> String {
-        result(self.store.patch_pool_spec(p.name, json!({ "writeEnabled": p.write_enabled })).await)
+    #[tool(
+        description = "Flip a BreatheNodePool's writeEnabled master switch. Scope is the HOST plane: it bounds host writes for                           bands enrolled on that pool. It is NOT a cluster-wide kill switch for k8s-plane bands — to stop one of those,                           author writeIntent=frozen (or spec.suspend to stop reconciling it entirely)."
+    )]
+    pub async fn breathe_nodepool_set_write_enabled(
+        &self,
+        Parameters(p): Parameters<SetWriteEnabledInput>,
+    ) -> String {
+        result(
+            self.store
+                .patch_pool_spec(p.name, json!({ "writeEnabled": p.write_enabled }))
+                .await,
+        )
     }
 
-    #[tool(description = "The self-describing breathe dimension catalog (every dimension, maturity, directionality, host-vs-k8s, dependencies). Zero-I/O — it is compiled in, not read from the cluster.")]
+    #[tool(
+        description = "The self-describing breathe dimension catalog (every dimension, maturity, directionality, host-vs-k8s, dependencies). Zero-I/O — it is compiled in, not read from the cluster."
+    )]
     pub async fn breathe_catalog_list(&self, Parameters(_): Parameters<Empty>) -> String {
         ok(&self.store.catalog())
     }
 
-    #[tool(description = "List every BreathePosture (cluster-scoped named default policy for setpoint/growAbove/growFactor/shrinkBelow/shrinkFactor/cooldownSeconds/maxStalenessSeconds/disruptionPolicy — the 8 fields a band can inherit via spec.postureRef instead of copy-pasting them). Spec + status verbatim, apiserver bookkeeping dropped; view=raw for the untouched CR.")]
+    #[tool(
+        description = "List every BreathePosture (cluster-scoped named default policy for setpoint/growAbove/growFactor/shrinkBelow/shrinkFactor/cooldownSeconds/maxStalenessSeconds/disruptionPolicy — the 8 fields a band can inherit via spec.postureRef instead of copy-pasting them). Spec + status verbatim, apiserver bookkeeping dropped; view=raw for the untouched CR."
+    )]
     pub async fn breathe_posture_list(&self, Parameters(p): Parameters<ViewInput>) -> String {
         let view = p.view.unwrap_or_default();
-        projected(self.store.list_postures().await, |v| project::project_object_list(v, view))
+        projected(self.store.list_postures().await, |v| {
+            project::project_object_list(v, view)
+        })
     }
 
-    #[tool(description = "Get one BreathePosture by name, plus the live-computed list of bands (across every dimension) currently referencing it via spec.postureRef. Spec + status verbatim, apiserver bookkeeping dropped; view=raw for the untouched CR.")]
+    #[tool(
+        description = "Get one BreathePosture by name, plus the live-computed list of bands (across every dimension) currently referencing it via spec.postureRef. Spec + status verbatim, apiserver bookkeeping dropped; view=raw for the untouched CR."
+    )]
     pub async fn breathe_posture_get(&self, Parameters(p): Parameters<PostureRef>) -> String {
         let view = p.view.unwrap_or_default();
         let posture = match self.store.get_posture(p.name.clone()).await {
@@ -433,25 +525,46 @@ impl BreatheMcp {
         // stay fresh; filtering `list_bands` client-side needs none).
         let mut referencing = Vec::new();
         for kind in DimensionId::ALL {
-            let Ok(bands) = self.store.list_bands(kind, None).await else { continue };
-            let Some(items) = bands.as_array() else { continue };
+            let Ok(bands) = self.store.list_bands(kind, None).await else {
+                continue;
+            };
+            let Some(items) = bands.as_array() else {
+                continue;
+            };
             for b in items {
-                let refs_this = b.get("spec").and_then(|s| s.get("postureRef")).and_then(Value::as_str) == Some(p.name.as_str());
+                let refs_this = b
+                    .get("spec")
+                    .and_then(|s| s.get("postureRef"))
+                    .and_then(Value::as_str)
+                    == Some(p.name.as_str());
                 if !refs_this {
                     continue;
                 }
-                let namespace = b.get("metadata").and_then(|m| m.get("namespace")).and_then(Value::as_str).unwrap_or_default();
-                let name = b.get("metadata").and_then(|m| m.get("name")).and_then(Value::as_str).unwrap_or_default();
-                referencing.push(json!({ "kind": kind.as_str(), "namespace": namespace, "name": name }));
+                let namespace = b
+                    .get("metadata")
+                    .and_then(|m| m.get("namespace"))
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                let name = b
+                    .get("metadata")
+                    .and_then(|m| m.get("name"))
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                referencing
+                    .push(json!({ "kind": kind.as_str(), "namespace": namespace, "name": name }));
             }
         }
         ok(&json!({ "posture": posture, "referencingBands": referencing }))
     }
 
-    #[tool(description = "Merge-patch a BreathePosture's spec. dryRun:true previews the change without applying it. The response always carries fanOutWarning (every referencing band picks this up on its NEXT reconcile tick, never instantly) and gitOpsCaveat (a live patch on a Flux-managed object reverts on the next prune:true reconcile unless followed by a git commit).")]
-    pub async fn breathe_posture_patch(&self, Parameters(p): Parameters<PatchPostureInput>) -> String {
-        const FAN_OUT_WARNING: &str =
-            "this patch affects every band referencing this posture on their NEXT reconcile tick, not instantly";
+    #[tool(
+        description = "Merge-patch a BreathePosture's spec. dryRun:true previews the change without applying it. The response always carries fanOutWarning (every referencing band picks this up on its NEXT reconcile tick, never instantly) and gitOpsCaveat (a live patch on a Flux-managed object reverts on the next prune:true reconcile unless followed by a git commit)."
+    )]
+    pub async fn breathe_posture_patch(
+        &self,
+        Parameters(p): Parameters<PatchPostureInput>,
+    ) -> String {
+        const FAN_OUT_WARNING: &str = "this patch affects every band referencing this posture on their NEXT reconcile tick, not instantly";
         const GIT_OPS_CAVEAT: &str = "if this object is Flux-managed with prune:true, this live patch will be \
              reverted on the next reconcile unless followed by a git commit";
         if p.dry_run == Some(true) {
@@ -464,7 +577,9 @@ impl BreatheMcp {
             }));
         }
         match self.store.patch_posture_spec(p.name, p.spec).await {
-            Ok(v) => ok(&json!({ "result": v, "fanOutWarning": FAN_OUT_WARNING, "gitOpsCaveat": GIT_OPS_CAVEAT })),
+            Ok(v) => ok(
+                &json!({ "result": v, "fanOutWarning": FAN_OUT_WARNING, "gitOpsCaveat": GIT_OPS_CAVEAT }),
+            ),
             Err(e) => err(&e),
         }
     }
@@ -534,7 +649,7 @@ mod tests {
     fn meta(name: &str) -> Value {
         let mut m = bookkeeping();
         m["name"] = json!(name);
-        m["namespace"] = json!("camelot");
+        m["namespace"] = json!("isolated");
         m
     }
 
@@ -544,7 +659,11 @@ mod tests {
     }
     #[async_trait]
     impl BreatheStore for MockStore {
-        async fn list_bands(&self, kind: DimensionId, _ns: Option<String>) -> Result<Value, StoreError> {
+        async fn list_bands(
+            &self,
+            kind: DimensionId,
+            _ns: Option<String>,
+        ) -> Result<Value, StoreError> {
             // The "memory" dimension carries one band referencing "platform-default"
             // and one that doesn't — real fixture data for
             // `breathe_posture_get`'s live-computed `referencingBands`.
@@ -565,7 +684,12 @@ mod tests {
             }
             Ok(json!([{ "kind": kind.as_str(), "metadata": meta("b") }]))
         }
-        async fn get_band(&self, kind: DimensionId, ns: String, name: String) -> Result<Value, StoreError> {
+        async fn get_band(
+            &self,
+            kind: DimensionId,
+            ns: String,
+            name: String,
+        ) -> Result<Value, StoreError> {
             let mut m = bookkeeping();
             m["name"] = json!(name);
             m["namespace"] = json!(ns);
@@ -577,29 +701,49 @@ mod tests {
                                          { "time": "t4" }, { "time": "t5" } ] },
             }))
         }
-        async fn patch_band_spec(&self, _k: DimensionId, _ns: String, name: String, spec: Value) -> Result<Value, StoreError> {
+        async fn patch_band_spec(
+            &self,
+            _k: DimensionId,
+            _ns: String,
+            name: String,
+            spec: Value,
+        ) -> Result<Value, StoreError> {
             self.patches.lock().unwrap().push((name, spec.clone()));
             Ok(json!({ "spec": spec }))
         }
-        async fn annotate_band(&self, _k: DimensionId, _ns: String, name: String, ann: Value) -> Result<Value, StoreError> {
+        async fn annotate_band(
+            &self,
+            _k: DimensionId,
+            _ns: String,
+            name: String,
+            ann: Value,
+        ) -> Result<Value, StoreError> {
             self.patches.lock().unwrap().push((name, ann.clone()));
             Ok(json!({ "metadata": { "annotations": ann } }))
         }
         async fn list_pools(&self) -> Result<Value, StoreError> {
-            Ok(json!([{ "kind": "BreatheNodePool", "metadata": meta("rio"), "spec": { "writeEnabled": true } }]))
+            Ok(
+                json!([{ "kind": "BreatheNodePool", "metadata": meta("rio"), "spec": { "writeEnabled": true } }]),
+            )
         }
         async fn get_pool(&self, name: String) -> Result<Value, StoreError> {
-            Ok(json!({ "kind": "BreatheNodePool", "metadata": meta(&name), "spec": { "writeEnabled": true } }))
+            Ok(
+                json!({ "kind": "BreatheNodePool", "metadata": meta(&name), "spec": { "writeEnabled": true } }),
+            )
         }
         async fn patch_pool_spec(&self, name: String, spec: Value) -> Result<Value, StoreError> {
             self.patches.lock().unwrap().push((name, spec.clone()));
             Ok(json!({ "spec": spec }))
         }
         async fn list_postures(&self) -> Result<Value, StoreError> {
-            Ok(json!([{ "kind": "BreathePosture", "metadata": meta("platform-default"), "spec": { "setpoint": 0.8 } }]))
+            Ok(
+                json!([{ "kind": "BreathePosture", "metadata": meta("platform-default"), "spec": { "setpoint": 0.8 } }]),
+            )
         }
         async fn get_posture(&self, name: String) -> Result<Value, StoreError> {
-            Ok(json!({ "kind": "BreathePosture", "metadata": meta(&name), "spec": { "setpoint": 0.8 } }))
+            Ok(
+                json!({ "kind": "BreathePosture", "metadata": meta(&name), "spec": { "setpoint": 0.8 } }),
+            )
         }
         async fn patch_posture_spec(&self, name: String, spec: Value) -> Result<Value, StoreError> {
             self.patches.lock().unwrap().push((name, spec.clone()));
@@ -619,19 +763,28 @@ mod tests {
     async fn set_dry_run_refuses_on_every_kind_that_does_not_read_it() {
         let mock = Arc::new(MockStore::default());
         let mcp = BreatheMcp::new(mock.clone());
-        for kind in DimensionId::ALL.into_iter().filter(|k| !k.dry_run_is_honored()) {
+        for kind in DimensionId::ALL
+            .into_iter()
+            .filter(|k| !k.dry_run_is_honored())
+        {
             let out = mcp
                 .breathe_band_set_dry_run(Parameters(SetDryRunInput {
                     kind,
-                    namespace: "camelot".into(),
+                    namespace: "isolated".into(),
                     name: "b".into(),
                     dry_run: true,
                 }))
                 .await;
             let v: Value = serde_json::from_str(&out).unwrap();
-            assert_eq!(v["wroteNothing"], true, "{kind} must not be told the patch landed");
+            assert_eq!(
+                v["wroteNothing"], true,
+                "{kind} must not be told the patch landed"
+            );
             assert_eq!(v["kind"], kind.as_str());
-            assert!(v["useInstead"].as_str().unwrap().contains("write_intent"), "{kind} must name the replacement");
+            assert!(
+                v["useInstead"].as_str().unwrap().contains("write_intent"),
+                "{kind} must name the replacement"
+            );
         }
         assert!(
             mock.patches.lock().unwrap().is_empty(),
@@ -648,12 +801,16 @@ mod tests {
             let mcp = BreatheMcp::new(mock.clone());
             mcp.breathe_band_set_dry_run(Parameters(SetDryRunInput {
                 kind,
-                namespace: "camelot".into(),
+                namespace: "isolated".into(),
                 name: "b".into(),
                 dry_run: true,
             }))
             .await;
-            assert_eq!(mock.patches.lock().unwrap()[0].1, json!({ "dryRun": true }), "{kind} does read dryRun");
+            assert_eq!(
+                mock.patches.lock().unwrap()[0].1,
+                json!({ "dryRun": true }),
+                "{kind} does read dryRun"
+            );
         }
     }
 
@@ -663,14 +820,17 @@ mod tests {
         let mcp = BreatheMcp::new(mock.clone());
         mcp.breathe_band_set_write_intent(Parameters(SetWriteIntentInput {
             kind: DimensionId::Cpu,
-            namespace: "camelot".into(),
+            namespace: "isolated".into(),
             name: "coredns-cpu".into(),
             intent: IntentKind::Observe,
             confirm_after_seconds: None,
             authorized_by: None,
         }))
         .await;
-        assert_eq!(mock.patches.lock().unwrap()[0].1, json!({ "writeIntent": { "intent": "observe" } }));
+        assert_eq!(
+            mock.patches.lock().unwrap()[0].1,
+            json!({ "writeIntent": { "intent": "observe" } })
+        );
     }
 
     /// An unattributed go-live is refused at the surface, before it becomes a CR
@@ -683,7 +843,7 @@ mod tests {
             let out = mcp
                 .breathe_band_set_write_intent(Parameters(SetWriteIntentInput {
                     kind: DimensionId::Cpu,
-                    namespace: "camelot".into(),
+                    namespace: "isolated".into(),
                     name: "b".into(),
                     intent: IntentKind::Write,
                     confirm_after_seconds: None,
@@ -691,13 +851,16 @@ mod tests {
                 }))
                 .await;
             let v: Value = serde_json::from_str(&out).unwrap();
-            assert_eq!(v["wroteNothing"], true, "authorizedBy={author:?} must not go live");
+            assert_eq!(
+                v["wroteNothing"], true,
+                "authorizedBy={author:?} must not go live"
+            );
         }
         assert!(mock.patches.lock().unwrap().is_empty());
         // …and an attributed one does land, carrying the author verbatim.
         mcp.breathe_band_set_write_intent(Parameters(SetWriteIntentInput {
             kind: DimensionId::Cpu,
-            namespace: "camelot".into(),
+            namespace: "isolated".into(),
             name: "b".into(),
             intent: IntentKind::Write,
             confirm_after_seconds: None,
@@ -720,15 +883,21 @@ mod tests {
         let mcp = BreatheMcp::new(mock.clone());
         let mk = |confirmed| ConfirmBandInput {
             kind: DimensionId::Memory,
-            namespace: "camelot".into(),
+            namespace: "isolated".into(),
             name: "b".into(),
             confirmed,
         };
         mcp.breathe_band_confirm(Parameters(mk(true))).await;
         mcp.breathe_band_confirm(Parameters(mk(false))).await;
         let p = mock.patches.lock().unwrap();
-        assert_eq!(p[0].1, json!({ breathe_provider::CONFIRMED_ANNOTATION: "true" }));
-        assert_eq!(p[1].1, json!({ breathe_provider::CONFIRMED_ANNOTATION: Value::Null }));
+        assert_eq!(
+            p[0].1,
+            json!({ breathe_provider::CONFIRMED_ANNOTATION: "true" })
+        );
+        assert_eq!(
+            p[1].1,
+            json!({ breathe_provider::CONFIRMED_ANNOTATION: Value::Null })
+        );
     }
 
     /// Every dimension is addressable from this surface. The five that were
@@ -748,7 +917,13 @@ mod tests {
                 .await;
             assert!(out.contains(kind.as_str()), "{kind} must be listable");
         }
-        for once_invisible in ["cgroup-cpu", "host-param", "kube-param", "app-param", "replica"] {
+        for once_invisible in [
+            "cgroup-cpu",
+            "host-param",
+            "kube-param",
+            "app-param",
+            "replica",
+        ] {
             assert!(DimensionId::parse(once_invisible).is_some());
         }
     }
@@ -769,13 +944,17 @@ mod tests {
                 IntentKind::CalibrateThenWrite,
                 Some(900),
                 None,
-                WriteIntent::CalibrateThenWrite { confirm_after_seconds: 900 },
+                WriteIntent::CalibrateThenWrite {
+                    confirm_after_seconds: 900,
+                },
             ),
             (
                 IntentKind::Write,
                 None,
                 Some("drzzln 2026-07-26".to_string()),
-                WriteIntent::Write { authorized_by: "drzzln 2026-07-26".into() },
+                WriteIntent::Write {
+                    authorized_by: "drzzln 2026-07-26".into(),
+                },
             ),
         ];
         for (intent, secs, by, expected) in cases {
@@ -783,7 +962,7 @@ mod tests {
             let mcp = BreatheMcp::new(mock.clone());
             mcp.breathe_band_set_write_intent(Parameters(SetWriteIntentInput {
                 kind: DimensionId::Memory,
-                namespace: "camelot".into(),
+                namespace: "isolated".into(),
                 name: "b".into(),
                 intent,
                 confirm_after_seconds: secs,
@@ -791,9 +970,13 @@ mod tests {
             }))
             .await;
             let emitted = mock.patches.lock().unwrap()[0].1["writeIntent"].clone();
-            let spec: WriteIntentSpec =
-                serde_json::from_value(emitted.clone()).unwrap_or_else(|e| panic!("{emitted} must parse: {e}"));
-            assert_eq!(spec.parse().unwrap(), expected, "emitted {emitted} resolved to the wrong intent");
+            let spec: WriteIntentSpec = serde_json::from_value(emitted.clone())
+                .unwrap_or_else(|e| panic!("{emitted} must parse: {e}"));
+            assert_eq!(
+                spec.parse().unwrap(),
+                expected,
+                "emitted {emitted} resolved to the wrong intent"
+            );
         }
     }
 
@@ -803,7 +986,12 @@ mod tests {
     fn intent_schema_offers_exactly_the_canonical_arms() {
         let mut generator = schemars::SchemaGenerator::default();
         let schema = serde_json::to_value(intent_schema(&mut generator)).unwrap();
-        let offered: Vec<&str> = schema["enum"].as_array().unwrap().iter().map(|v| v.as_str().unwrap()).collect();
+        let offered: Vec<&str> = schema["enum"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect();
         let canonical: Vec<&str> = IntentKind::ALL.iter().map(|k| k.as_str()).collect();
         assert_eq!(offered, canonical);
     }
@@ -821,10 +1009,16 @@ mod tests {
         let mock = Arc::new(MockStore::default());
         let mcp = BreatheMcp::new(mock.clone());
         let out = mcp
-            .breathe_nodepool_set_write_enabled(Parameters(SetWriteEnabledInput { name: "rio".into(), write_enabled: true }))
+            .breathe_nodepool_set_write_enabled(Parameters(SetWriteEnabledInput {
+                name: "rio".into(),
+                write_enabled: true,
+            }))
             .await;
         assert!(out.contains("writeEnabled"));
-        assert_eq!(mock.patches.lock().unwrap()[0].1, json!({ "writeEnabled": true }));
+        assert_eq!(
+            mock.patches.lock().unwrap()[0].1,
+            json!({ "writeEnabled": true })
+        );
     }
 
     #[test]
@@ -838,7 +1032,9 @@ mod tests {
     #[tokio::test]
     async fn posture_list_returns_the_store_output() {
         let mcp = BreatheMcp::new(Arc::new(MockStore::default()));
-        let out = mcp.breathe_posture_list(Parameters(ViewInput { view: None })).await;
+        let out = mcp
+            .breathe_posture_list(Parameters(ViewInput { view: None }))
+            .await;
         assert!(out.contains("platform-default"));
     }
 
@@ -846,18 +1042,29 @@ mod tests {
     async fn posture_get_surfaces_the_live_computed_referencing_bands() {
         let mcp = BreatheMcp::new(Arc::new(MockStore::default()));
         let out = mcp
-            .breathe_posture_get(Parameters(PostureRef { name: "platform-default".into(), view: None }))
+            .breathe_posture_get(Parameters(PostureRef {
+                name: "platform-default".into(),
+                view: None,
+            }))
             .await;
         let v: Value = serde_json::from_str(&out).unwrap();
         // The posture arrives PROJECTED — `metadata.name` is lifted to `name`,
         // and the apiserver bookkeeping around it is gone.
         assert_eq!(v["posture"]["name"], "platform-default");
-        assert_eq!(v["posture"]["spec"]["setpoint"], json!(0.8), "a posture's own spec is kept verbatim");
+        assert_eq!(
+            v["posture"]["spec"]["setpoint"],
+            json!(0.8),
+            "a posture's own spec is kept verbatim"
+        );
         let refs = v["referencingBands"].as_array().unwrap();
-        assert_eq!(refs.len(), 1, "only the one memory band that actually sets postureRef:platform-default matches");
+        assert_eq!(
+            refs.len(),
+            1,
+            "only the one memory band that actually sets postureRef:platform-default matches"
+        );
         assert_eq!(refs[0]["kind"], "memory");
         assert_eq!(refs[0]["name"], "app-mem");
-        assert_eq!(refs[0]["namespace"], "camelot");
+        assert_eq!(refs[0]["namespace"], "isolated");
     }
 
     #[tokio::test]
@@ -871,11 +1078,19 @@ mod tests {
                 dry_run: Some(true),
             }))
             .await;
-        assert!(mock.patches.lock().unwrap().is_empty(), "dryRun:true must never call patch_posture_spec");
+        assert!(
+            mock.patches.lock().unwrap().is_empty(),
+            "dryRun:true must never call patch_posture_spec"
+        );
         let v: Value = serde_json::from_str(&out).unwrap();
         assert_eq!(v["dryRun"], true);
         assert_eq!(v["wouldPatch"], json!({ "setpoint": 0.75 }));
-        assert!(v["fanOutWarning"].as_str().unwrap().contains("NEXT reconcile tick"));
+        assert!(
+            v["fanOutWarning"]
+                .as_str()
+                .unwrap()
+                .contains("NEXT reconcile tick")
+        );
         assert!(v["gitOpsCaveat"].as_str().unwrap().contains("Flux"));
     }
 
@@ -890,9 +1105,17 @@ mod tests {
                 dry_run: None,
             }))
             .await;
-        assert_eq!(mock.patches.lock().unwrap()[0], ("platform-default".to_string(), json!({ "setpoint": 0.75 })));
+        assert_eq!(
+            mock.patches.lock().unwrap()[0],
+            ("platform-default".to_string(), json!({ "setpoint": 0.75 }))
+        );
         let v: Value = serde_json::from_str(&out).unwrap();
-        assert!(v["fanOutWarning"].as_str().unwrap().contains("NEXT reconcile tick"));
+        assert!(
+            v["fanOutWarning"]
+                .as_str()
+                .unwrap()
+                .contains("NEXT reconcile tick")
+        );
         assert!(v["gitOpsCaveat"].as_str().unwrap().contains("Flux"));
     }
 
@@ -922,22 +1145,38 @@ mod tests {
                 "breathe_band_get",
                 mcp.breathe_band_get(Parameters(BandRef {
                     kind: DimensionId::Memory,
-                    namespace: "camelot".into(),
+                    namespace: "isolated".into(),
                     name: "app-mem".into(),
                     view: None,
                     history_limit: None,
                 }))
                 .await,
             ),
-            ("breathe_nodepool_list", mcp.breathe_nodepool_list(Parameters(ViewInput { view: None })).await),
+            (
+                "breathe_nodepool_list",
+                mcp.breathe_nodepool_list(Parameters(ViewInput { view: None }))
+                    .await,
+            ),
             (
                 "breathe_nodepool_get",
-                mcp.breathe_nodepool_get(Parameters(PoolRef { name: "rio".into(), view: None })).await,
+                mcp.breathe_nodepool_get(Parameters(PoolRef {
+                    name: "rio".into(),
+                    view: None,
+                }))
+                .await,
             ),
-            ("breathe_posture_list", mcp.breathe_posture_list(Parameters(ViewInput { view: None })).await),
+            (
+                "breathe_posture_list",
+                mcp.breathe_posture_list(Parameters(ViewInput { view: None }))
+                    .await,
+            ),
             (
                 "breathe_posture_get",
-                mcp.breathe_posture_get(Parameters(PostureRef { name: "platform-default".into(), view: None })).await,
+                mcp.breathe_posture_get(Parameters(PostureRef {
+                    name: "platform-default".into(),
+                    view: None,
+                }))
+                .await,
             ),
         ]
     }
@@ -951,9 +1190,18 @@ mod tests {
     async fn no_read_tool_returns_apiserver_bookkeeping_by_default() {
         let mcp = BreatheMcp::new(Arc::new(MockStore::default()));
         for (tool, out) in every_read_tool_output(&mcp).await {
-            assert!(!out.contains("managedFields"), "{tool} returned managedFields by default");
-            assert!(!out.contains("ownerReferences"), "{tool} returned ownerReferences by default");
-            assert!(!out.contains("last-applied-configuration"), "{tool} returned the kubectl spec echo by default");
+            assert!(
+                !out.contains("managedFields"),
+                "{tool} returned managedFields by default"
+            );
+            assert!(
+                !out.contains("ownerReferences"),
+                "{tool} returned ownerReferences by default"
+            );
+            assert!(
+                !out.contains("last-applied-configuration"),
+                "{tool} returned the kubectl spec echo by default"
+            );
             // Not an empty answer, either — a tool that returned nothing would
             // also pass the three assertions above.
             assert!(out.len() > 40, "{tool} returned suspiciously little: {out}");
@@ -975,7 +1223,10 @@ mod tests {
                 history_limit: None,
             }))
             .await;
-        assert!(out.contains("managedFields"), "view=raw must reach managedFields");
+        assert!(
+            out.contains("managedFields"),
+            "view=raw must reach managedFields"
+        );
         assert!(out.contains("ownerReferences"));
         assert!(out.contains("last-applied-configuration"));
 
@@ -984,7 +1235,7 @@ mod tests {
         let full = mcp
             .breathe_band_get(Parameters(BandRef {
                 kind: DimensionId::Memory,
-                namespace: "camelot".into(),
+                namespace: "isolated".into(),
                 name: "app-mem".into(),
                 view: Some(ProjectionView::Full),
                 history_limit: None,
@@ -992,8 +1243,16 @@ mod tests {
             .await;
         let v: Value = serde_json::from_str(&full).unwrap();
         assert_eq!(v["metadata"].get("managedFields"), None);
-        assert_eq!(v["spec"]["floor"], json!("256Mi"), "full keeps the whole spec");
-        assert_eq!(v["status"]["history"].as_array().unwrap().len(), 5, "full does not bound history");
+        assert_eq!(
+            v["spec"]["floor"],
+            json!("256Mi"),
+            "full keeps the whole spec"
+        );
+        assert_eq!(
+            v["status"]["history"].as_array().unwrap().len(),
+            5,
+            "full does not bound history"
+        );
     }
 
     /// `status.history` is bounded on the compact views, and the bound is
@@ -1007,7 +1266,7 @@ mod tests {
                 let out = mcp
                     .breathe_band_get(Parameters(BandRef {
                         kind: DimensionId::Memory,
-                        namespace: "camelot".into(),
+                        namespace: "isolated".into(),
                         name: "app-mem".into(),
                         view: None, // default = detail
                         history_limit: limit,
@@ -1017,15 +1276,31 @@ mod tests {
             }
         };
         let default = get(None).await;
-        assert_eq!(default["view"], json!("detail"), "naming ONE band defaults to the richer view");
+        assert_eq!(
+            default["view"],
+            json!("detail"),
+            "naming ONE band defaults to the richer view"
+        );
         let kept = default["band"]["history"].as_array().unwrap();
         assert_eq!(kept.len(), DEFAULT_HISTORY_LIMIT);
-        assert_eq!(kept.last().unwrap()["time"], json!("t5"), "the NEWEST samples, not the oldest");
-        assert_eq!(default["band"]["truncated"]["historyTotal"], json!(5), "it must say what it dropped");
+        assert_eq!(
+            kept.last().unwrap()["time"],
+            json!("t5"),
+            "the NEWEST samples, not the oldest"
+        );
+        assert_eq!(
+            default["band"]["truncated"]["historyTotal"],
+            json!(5),
+            "it must say what it dropped"
+        );
 
         let widened = get(Some(5)).await;
         assert_eq!(widened["band"]["history"].as_array().unwrap().len(), 5);
-        assert_eq!(widened["band"].get("truncated"), None, "nothing dropped ⇒ nothing to report");
+        assert_eq!(
+            widened["band"].get("truncated"),
+            None,
+            "nothing dropped ⇒ nothing to report"
+        );
     }
 
     /// **The distinction the variants already encoded and the JSON discarded.**
@@ -1039,9 +1314,18 @@ mod tests {
             let v: Value = serde_json::from_str(s).expect("valid JSON");
             v["outcome"].as_str().expect("discriminant").to_owned()
         };
-        assert_eq!(outcome(&err(&StoreError::BadRequest("no such kind".into()))), "refused");
-        assert_eq!(outcome(&err(&StoreError::Kube("connection refused".into()))), "blind");
-        assert_eq!(outcome(&err(&StoreError::Serde("bad utf8".into()))), "blind");
+        assert_eq!(
+            outcome(&err(&StoreError::BadRequest("no such kind".into()))),
+            "refused"
+        );
+        assert_eq!(
+            outcome(&err(&StoreError::Kube("connection refused".into()))),
+            "blind"
+        );
+        assert_eq!(
+            outcome(&err(&StoreError::Serde("bad utf8".into()))),
+            "blind"
+        );
     }
 
     /// A refusal names what would be accepted, so the retry costs one call.
@@ -1071,7 +1355,7 @@ mod tests {
         assert_eq!(v["count"], json!(2));
         let b = &v["bands"][0];
         assert_eq!(b["name"], json!("app-mem"));
-        assert_eq!(b["namespace"], json!("camelot"));
+        assert_eq!(b["namespace"], json!("isolated"));
         assert_eq!(b["target"]["name"], json!("app"));
         assert_eq!(b["floor"], json!("256Mi"));
         assert_eq!(b["ceiling"], json!("4Gi"));
@@ -1079,7 +1363,10 @@ mod tests {
         assert_eq!(b["util"], json!(0.78));
         assert_eq!(b["phase"], json!("AtSetpoint"));
         // …and the envelope says how to get more, once, rather than per band.
-        assert!(v["hint"].as_str().unwrap().contains("view=\"raw\"") || v["hint"].as_str().unwrap().contains("raw"));
+        assert!(
+            v["hint"].as_str().unwrap().contains("view=\"raw\"")
+                || v["hint"].as_str().unwrap().contains("raw")
+        );
     }
 
     /// **The schema budget, at this surface.** `DimensionId` is an input to six
@@ -1108,6 +1395,9 @@ mod tests {
              DimensionId doc-comments stopped being inlined into every tool schema; a long #[doc] on a new \
              tool input or dimension arm is the usual cause. Add #[schemars(description = \"one sentence\")]."
         );
-        assert!(tools.len() >= 13, "a tool disappearing must not be how this budget gets met");
+        assert!(
+            tools.len() >= 13,
+            "a tool disappearing must not be how this budget gets met"
+        );
     }
 }

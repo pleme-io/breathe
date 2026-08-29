@@ -149,8 +149,14 @@ mod tests {
         //     headroom before saturation — util ≤ setpoint, room to absorb a
         //     burst (availability). Not a tradeoff: both hold at once.
         let util = realized_utilization(used, target);
-        assert!(util <= 0.80 + 1e-9, "carve must preserve headroom (resiliency): util {util} > 0.80");
-        assert!(util > 0.0, "a carved target is not zero — the workload is served");
+        assert!(
+            util <= 0.80 + 1e-9,
+            "carve must preserve headroom (resiliency): util {util} > 0.80"
+        );
+        assert!(
+            util > 0.0,
+            "a carved target is not zero — the workload is served"
+        );
     }
 
     #[test]

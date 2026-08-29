@@ -59,12 +59,12 @@ use crate::fsm::{InstanceId, NodeId};
 /// enumeration) it needs — everything else is pure local bookkeeping. A real
 /// implementation wraps an AWS SDK client + the FSM record store; tests wrap
 /// an in-memory fixture. This is the mockable side-effect seam (the same
-/// `Environment`-trait discipline `camelot-bootstrap` and every other
+/// `Environment`-trait discipline `the bootstrap tool` and every other
 /// pleme-io interpreter uses).
 #[async_trait::async_trait]
 pub trait DriftEnvironment: Send + Sync {
     /// Enumerate REAL cloud instances tagged as this controller's own
-    /// (`project=camelot` + the `camelot.pleme.io/lifecycle-id` tag). A C2
+    /// (`project=the private estate` + the `the private estate.pleme.io/lifecycle-id` tag). A C2
     /// external-world read.
     async fn observe_tagged_instances(&self) -> Result<Vec<ObservedInstance>, DriftError>;
 
@@ -83,7 +83,7 @@ pub trait DriftEnvironment: Send + Sync {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ObservedInstance {
     pub instance_id: InstanceId,
-    /// Parsed from the `camelot.pleme.io/lifecycle-id` tag. `None` = untagged
+    /// Parsed from the `the private estate.pleme.io/lifecycle-id` tag. `None` = untagged
     /// — itself an immediate orphan signal (the bluntest case: no FSM record
     /// ever existed for this instance at all, e.g. a hand-launched instance
     /// or a crashed provisioner that died before stamping the tag).

@@ -16,7 +16,7 @@
 //! forecaster has its own stability concerns the band-law proof does not transfer
 //! to (§5.3 — horizon ≥ relief-latency, mispredict asymmetry, cost-thrash).
 
-use breathe_control::{decide, BandConfig, Decision};
+use breathe_control::{BandConfig, Decision, decide};
 use breathe_provider::Forma;
 
 /// `quinhão` — the hierarchical, vector-valued, dynamically-rebalancing
@@ -47,7 +47,11 @@ pub enum DecisaoForma {
     /// Grow this shape by `delta` units (the band law said low headroom).
     Crescer { forma: Forma, delta: u64 },
     /// Shrink this shape by `delta` units; `drain` = cordon→drain first (PDB-aware).
-    Encolher { forma: Forma, delta: u64, drain: bool },
+    Encolher {
+        forma: Forma,
+        delta: u64,
+        drain: bool,
+    },
     /// Replace one shape with another (e.g. spot → on-demand on interruption).
     /// Reserved for M3+; the single-forma `BandLeiloeiro` never emits it.
     Reformar { from: Forma, to: Forma, delta: u64 },
@@ -85,7 +89,10 @@ pub struct ReactivePrevisor;
 
 impl Previsor for ReactivePrevisor {
     fn predict(&self, sample_used: u64, sample_capacity: u64) -> Previsao {
-        Previsao { immediate_used: sample_used, capacity: sample_capacity }
+        Previsao {
+            immediate_used: sample_used,
+            capacity: sample_capacity,
+        }
     }
 }
 
@@ -162,7 +169,10 @@ impl Previsor for LinearTrendPrevisor {
             // trend collapses to the reactive echo — never a premature shrink.
             proj.max(sample_used)
         };
-        Previsao { immediate_used: projected, capacity: sample_capacity }
+        Previsao {
+            immediate_used: projected,
+            capacity: sample_capacity,
+        }
     }
 }
 
@@ -196,21 +206,37 @@ impl Leiloeiro for BandLeiloeiro {
             | Decision::ReclaimWithheld { .. }
             | Decision::Warmup { .. }
             | Decision::Throttled { .. } => DecisaoForma::Manter,
-            Decision::Grow { from, to } => DecisaoForma::Crescer { forma, delta: to.saturating_sub(from) },
-            Decision::Shrink { from, to } => {
-                DecisaoForma::Encolher { forma, delta: from.saturating_sub(to), drain: true }
-            }
+            Decision::Grow { from, to } => DecisaoForma::Crescer {
+                forma,
+                delta: to.saturating_sub(from),
+            },
+            Decision::Shrink { from, to } => DecisaoForma::Encolher {
+                forma,
+                delta: from.saturating_sub(to),
+                drain: true,
+            },
             // At the ceiling and still wanting more ⇒ the envelope is exhausted:
             // escalate, never silently under-provision (the never-over-commit peer
             // of never-OOM). The shortfall is the demand the envelope can't cover:
             // `need = ⌈used / setpoint⌉` (the capacity to keep util ≤ setpoint),
             // minus the ceiling we're stuck at.
             Decision::AtCeiling { current } => {
-                let setpoint = if cfg.setpoint <= 0.0 { 1.0 } else { cfg.setpoint };
-                #[allow(clippy::cast_precision_loss, clippy::cast_sign_loss, clippy::cast_possible_truncation)]
+                let setpoint = if cfg.setpoint <= 0.0 {
+                    1.0
+                } else {
+                    cfg.setpoint
+                };
+                #[allow(
+                    clippy::cast_precision_loss,
+                    clippy::cast_sign_loss,
+                    clippy::cast_possible_truncation
+                )]
                 let need = ((previsao.immediate_used as f64) / setpoint).ceil() as u64;
                 let need = need.max(current);
-                DecisaoForma::EnvelopeExausto { forma, shortfall: need.saturating_sub(current) }
+                DecisaoForma::EnvelopeExausto {
+                    forma,
+                    shortfall: need.saturating_sub(current),
+                }
             }
         }
     }
@@ -466,7 +492,13 @@ impl std::fmt::Display for GrowRationale {
 impl<P: PriceOracle> ParetoOtimizador<P> {
     #[must_use]
     pub fn new(price: P, cfg: BandConfig, pick: PickPolicy) -> Self {
-        Self { price, cfg, pick, interruption: None, latency: None }
+        Self {
+            price,
+            cfg,
+            pick,
+            interruption: None,
+            latency: None,
+        }
     }
 
     /// Attach an [`InterruptionOracle`] — required for
@@ -497,8 +529,10 @@ impl<P: PriceOracle> ParetoOtimizador<P> {
     /// enumeration of instance pools (families × sizes × AZs), never large
     /// enough to need a sweep-line skyline algorithm.
     fn dominates(a: &Proposta, b: &Proposta) -> bool {
-        let no_worse = a.cost_cents <= b.cost_cents && a.relief_latency_secs <= b.relief_latency_secs;
-        let strictly_better = a.cost_cents < b.cost_cents || a.relief_latency_secs < b.relief_latency_secs;
+        let no_worse =
+            a.cost_cents <= b.cost_cents && a.relief_latency_secs <= b.relief_latency_secs;
+        let strictly_better =
+            a.cost_cents < b.cost_cents || a.relief_latency_secs < b.relief_latency_secs;
         no_worse && strictly_better
     }
 
@@ -539,15 +573,22 @@ impl<P: PriceOracle> Otimizador for ParetoOtimizador<P> {
                         // directly). No oracle attached -> falls back to the
                         // SAME duration_secs value as before this fix, byte-
                         // identical to prior behavior.
-                        let relief_latency_secs =
-                            self.latency.as_deref().map_or(duration_secs, |o| o.relief_latency_secs(*forma));
+                        let relief_latency_secs = self
+                            .latency
+                            .as_deref()
+                            .map_or(duration_secs, |o| o.relief_latency_secs(*forma));
                         Some(Proposta {
                             forma: *forma,
                             delta,
                             cost_cents,
                             relief_latency_secs,
-                            rationale: GrowRationale { delta, forma: *forma, cost_cents, duration_secs }
-                                .to_string(),
+                            rationale: GrowRationale {
+                                delta,
+                                forma: *forma,
+                                cost_cents,
+                                duration_secs,
+                            }
+                            .to_string(),
                         })
                     }
                     _ => None,
@@ -578,9 +619,15 @@ impl<P: PriceOracle> Otimizador for ParetoOtimizador<P> {
                 // this is byte-identical to MinCost (never a fabricated
                 // number standing in for a real one — see
                 // ParetoOtimizador::interruption's doc comment).
-                #[allow(clippy::cast_precision_loss, reason = "cost_cents/ppm are bounded fleet-scale counters; a ranking score tolerates f64 rounding")]
+                #[allow(
+                    clippy::cast_precision_loss,
+                    reason = "cost_cents/ppm are bounded fleet-scale counters; a ranking score tolerates f64 rounding"
+                )]
                 let score = |p: &Proposta| -> f64 {
-                    let ppm = self.interruption.as_deref().map_or(0, |o| o.interruption_ppm(p.forma));
+                    let ppm = self
+                        .interruption
+                        .as_deref()
+                        .map_or(0, |o| o.interruption_ppm(p.forma));
                     p.cost_cents as f64 + risk_weight * ppm as f64
                 };
                 frontier.iter().min_by(|a, b| score(a).total_cmp(&score(b)))
@@ -591,15 +638,19 @@ impl<P: PriceOracle> Otimizador for ParetoOtimizador<P> {
                 // an external threshold (unlike MinCostUnderDeadline's fixed
                 // deadline_secs bar). An empty frontier can't reach this arm
                 // (optimize() already early-returns on empty candidates).
-                frontier.iter().map(|p| p.relief_latency_secs).min().and_then(|min_latency| {
-                    // Stage 2: minimize cost ONLY among candidates exactly
-                    // tied at stage 1's optimum -- cost can never buy back
-                    // performance stage 1 already fixed.
-                    frontier
-                        .iter()
-                        .filter(|p| p.relief_latency_secs == min_latency)
-                        .min_by_key(|p| p.cost_cents)
-                })
+                frontier
+                    .iter()
+                    .map(|p| p.relief_latency_secs)
+                    .min()
+                    .and_then(|min_latency| {
+                        // Stage 2: minimize cost ONLY among candidates exactly
+                        // tied at stage 1's optimum -- cost can never buy back
+                        // performance stage 1 already fixed.
+                        frontier
+                            .iter()
+                            .filter(|p| p.relief_latency_secs == min_latency)
+                            .min_by_key(|p| p.cost_cents)
+                    })
             }
         };
 

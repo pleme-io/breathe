@@ -72,8 +72,7 @@ impl ArchSelection {
         matches!(self, Self::PinnedArm64 | Self::PinnedAmd64)
     }
 
-    pub const ALL: [ArchSelection; 3] =
-        [Self::CostOptimized, Self::PinnedArm64, Self::PinnedAmd64];
+    pub const ALL: [ArchSelection; 3] = [Self::CostOptimized, Self::PinnedArm64, Self::PinnedAmd64];
 }
 
 /// The concrete arch a cost evaluation resolves a pool to. An ASG launch template
@@ -116,7 +115,7 @@ impl ResolvedArch {
 pub enum ArchPinReason {
     /// A real cgo/FIPS posture (`GOEXPERIMENT=boringcrypto` needs `CGO_ENABLED=1`,
     /// or a cgo pkcs11/HSM path) that ships a single-arch image — the arm-eval's
-    /// named latent risk. Today camelot is CGO=0/ldflag-FIPS so this does not bite.
+    /// named latent risk. Today the private estate is CGO=0/ldflag-FIPS so this does not bite.
     CgoFipsSingleArch,
     /// The upstream image is genuinely single-arch (a third-party binary published
     /// for one arch only) — no multi-arch image exists to make arch free.
@@ -229,8 +228,11 @@ impl SpotStrategy {
         self.as_str()
     }
 
-    pub const ALL: [SpotStrategy; 3] =
-        [Self::CapacityOptimized, Self::PriceCapacityOptimized, Self::Diversified];
+    pub const ALL: [SpotStrategy; 3] = [
+        Self::CapacityOptimized,
+        Self::PriceCapacityOptimized,
+        Self::Diversified,
+    ];
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -277,7 +279,7 @@ impl LadderMode {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// The perf-class axis — WHAT the pool optimizes FOR. The Rust mirror of
-/// `CamelotBuilderNodeGroup::BUILDER_PERF` and `breathe-catalog::builder
+/// `the builder node-group architecture::BUILDER_PERF` and `breathe-catalog::builder
 /// ::BuilderObjective`. **Exactly two spot-only arms.** The old `guaranteed-wake`
 /// / `dedicated` classes are ABSENT — they introduced on-demand, which the
 /// never-on-demand hard law forbids (see [`REMOVED_ON_DEMAND_PERF_CLASSES`] +
@@ -377,7 +379,7 @@ impl StorageBinding {
 /// THE PLACEMENT DEFAULT — derived from the storage binding (never a free knob).
 /// Single-instance-EBS ⇒ single-AZ (volume-AZ affinity); everything else ⇒
 /// multi-AZ (deeper pools + AZ resilience). This reconciles the operator's
-/// "multi-AZ for resilience where stateful" with the CamelotNodeGroup
+/// "multi-AZ for resilience where stateful" with the the isolated node-group architecture
 /// single-AZ-EBS contract: multi-AZ IS the resilient stateful default WHEN storage
 /// is per-replica; single-AZ is required ONLY for the lone-volume case.
 #[must_use]
@@ -429,26 +431,47 @@ impl Interruption {
         matches!(self, Self::RetiradaGracefulDrain | Self::RetiradaNodeDrain)
     }
 
-    pub const ALL: [Interruption; 3] =
-        [Self::RetiradaGracefulDrain, Self::RetiradaNodeDrain, Self::RetryOnReclaim];
+    pub const ALL: [Interruption; 3] = [
+        Self::RetiradaGracefulDrain,
+        Self::RetiradaNodeDrain,
+        Self::RetryOnReclaim,
+    ];
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        default_placement, resolve_arch, ArchCostSignal, ArchSelection, Interruption, LadderMode,
-        Placement, PerfClass, ResolvedArch, SpotStrategy, StorageBinding,
+        ArchCostSignal, ArchSelection, Interruption, LadderMode, PerfClass, Placement,
+        ResolvedArch, SpotStrategy, StorageBinding, default_placement, resolve_arch,
     };
 
     #[test]
     fn arch_resolves_by_cost_and_a_pin_forces_it() {
-        let arm_cheaper = ArchCostSignal { arm64_effective_cost: 0.63, amd64_effective_cost: 1.00 };
-        let x86_cheaper = ArchCostSignal { arm64_effective_cost: 1.19, amd64_effective_cost: 1.00 };
-        assert_eq!(resolve_arch(ArchSelection::CostOptimized, arm_cheaper), ResolvedArch::Arm64);
-        assert_eq!(resolve_arch(ArchSelection::CostOptimized, x86_cheaper), ResolvedArch::Amd64);
+        let arm_cheaper = ArchCostSignal {
+            arm64_effective_cost: 0.63,
+            amd64_effective_cost: 1.00,
+        };
+        let x86_cheaper = ArchCostSignal {
+            arm64_effective_cost: 1.19,
+            amd64_effective_cost: 1.00,
+        };
+        assert_eq!(
+            resolve_arch(ArchSelection::CostOptimized, arm_cheaper),
+            ResolvedArch::Arm64
+        );
+        assert_eq!(
+            resolve_arch(ArchSelection::CostOptimized, x86_cheaper),
+            ResolvedArch::Amd64
+        );
         // a pin ignores the cost signal
-        assert_eq!(resolve_arch(ArchSelection::PinnedArm64, x86_cheaper), ResolvedArch::Arm64);
-        assert_eq!(resolve_arch(ArchSelection::PinnedAmd64, arm_cheaper), ResolvedArch::Amd64);
+        assert_eq!(
+            resolve_arch(ArchSelection::PinnedArm64, x86_cheaper),
+            ResolvedArch::Arm64
+        );
+        assert_eq!(
+            resolve_arch(ArchSelection::PinnedAmd64, arm_cheaper),
+            ResolvedArch::Amd64
+        );
     }
 
     #[test]
@@ -456,17 +479,40 @@ mod tests {
         // THE self-adjust proof: same CostOptimized selection, flip the signal,
         // get the other arch — the arch choice is cost-driven, never a hardcode.
         let sel = ArchSelection::CostOptimized;
-        let before = ArchCostSignal { arm64_effective_cost: 1.19, amd64_effective_cost: 1.00 };
-        let after = ArchCostSignal { arm64_effective_cost: 0.90, amd64_effective_cost: 1.00 };
-        assert_eq!(resolve_arch(sel, before), ResolvedArch::Amd64, "x86 wins while Graviton is pricier");
-        assert_eq!(resolve_arch(sel, after), ResolvedArch::Arm64, "arm wins the instant Graviton crosses");
+        let before = ArchCostSignal {
+            arm64_effective_cost: 1.19,
+            amd64_effective_cost: 1.00,
+        };
+        let after = ArchCostSignal {
+            arm64_effective_cost: 0.90,
+            amd64_effective_cost: 1.00,
+        };
+        assert_eq!(
+            resolve_arch(sel, before),
+            ResolvedArch::Amd64,
+            "x86 wins while Graviton is pricier"
+        );
+        assert_eq!(
+            resolve_arch(sel, after),
+            ResolvedArch::Arm64,
+            "arm wins the instant Graviton crosses"
+        );
     }
 
     #[test]
     fn placement_default_is_storage_derived() {
-        assert_eq!(default_placement(StorageBinding::SingleInstanceEbs), Placement::SingleAz);
-        assert_eq!(default_placement(StorageBinding::Stateless), Placement::MultiAz);
-        assert_eq!(default_placement(StorageBinding::PerReplicaEbs), Placement::MultiAz);
+        assert_eq!(
+            default_placement(StorageBinding::SingleInstanceEbs),
+            Placement::SingleAz
+        );
+        assert_eq!(
+            default_placement(StorageBinding::Stateless),
+            Placement::MultiAz
+        );
+        assert_eq!(
+            default_placement(StorageBinding::PerReplicaEbs),
+            Placement::MultiAz
+        );
     }
 
     #[test]
@@ -488,8 +534,14 @@ mod tests {
 
     #[test]
     fn spot_strategy_label_is_the_aws_form() {
-        assert_eq!(SpotStrategy::CapacityOptimized.to_aws(), "capacity-optimized");
-        assert_eq!(SpotStrategy::PriceCapacityOptimized.to_aws(), "price-capacity-optimized");
+        assert_eq!(
+            SpotStrategy::CapacityOptimized.to_aws(),
+            "capacity-optimized"
+        );
+        assert_eq!(
+            SpotStrategy::PriceCapacityOptimized.to_aws(),
+            "price-capacity-optimized"
+        );
         assert_eq!(SpotStrategy::Diversified.to_aws(), "diversified");
     }
 

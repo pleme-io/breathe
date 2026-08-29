@@ -9,19 +9,19 @@
 use std::sync::Arc;
 
 use breathe_control::{BoundIntroduction, Reclaim};
-use breathe_core::{reconcile_one, ReconcileInput};
+use breathe_core::{ReconcileInput, reconcile_one};
 use breathe_crd::{Band, KubeParamBand};
-use breathe_provider::{
-    ApplySemantics, BandProvider, DimensionDescriptor, DimensionId, Directionality, LimitLayout, MetricSource,
-    ResourceProvider, Target,
-};
 use breathe_kube::KubeCluster;
-use breathe_runtime::{
-    error_status, metrics_for, next_requeue, now_secs, patch_status, rfc3339_in_future, status_for,
-    suspended_status, BandLabels,
+use breathe_provider::{
+    ApplySemantics, BandProvider, DimensionDescriptor, DimensionId, Directionality, LimitLayout,
+    MetricSource, ResourceProvider, Target,
 };
-use kube::runtime::controller::Action;
+use breathe_runtime::{
+    BandLabels, error_status, metrics_for, next_requeue, now_secs, patch_status, rfc3339_in_future,
+    status_for, suspended_status,
+};
 use kube::ResourceExt;
+use kube::runtime::controller::Action;
 use tracing::{error, info};
 
 use crate::{Ctx, Error};
@@ -72,7 +72,8 @@ pub async fn reconcile_kube_param(obj: Arc<KubeParamBand>, ctx: Arc<Ctx>) -> Res
     let name = obj.name_any();
 
     if obj.suspended() {
-        patch_status::<KubeParamBand>(&ctx.client, &ns, &name, &suspended_status(obj.status())).await?;
+        patch_status::<KubeParamBand>(&ctx.client, &ns, &name, &suspended_status(obj.status()))
+            .await?;
         return Ok(Action::requeue(ctx.requeue));
     }
 
@@ -89,7 +90,13 @@ pub async fn reconcile_kube_param(obj: Arc<KubeParamBand>, ctx: Arc<Ctx>) -> Res
     let cfg = match obj.band_config() {
         Ok(c) => c,
         Err(e) => {
-            patch_status::<KubeParamBand>(&ctx.client, &ns, &name, &error_status(obj.status(), e.to_string())).await?;
+            patch_status::<KubeParamBand>(
+                &ctx.client,
+                &ns,
+                &name,
+                &error_status(obj.status(), e.to_string()),
+            )
+            .await?;
             return Ok(Action::requeue(ctx.requeue));
         }
     };
@@ -103,9 +110,14 @@ pub async fn reconcile_kube_param(obj: Arc<KubeParamBand>, ctx: Arc<Ctx>) -> Res
         metric: obj.spec.provider_metric(),
         dir: obj.spec.provider_directionality(),
     };
-    let provider = BandProvider::new(KubeCluster::new(ctx.client.clone(), ctx.prometheus_url.clone()), descriptor);
+    let provider = BandProvider::new(
+        KubeCluster::new(ctx.client.clone(), ctx.prometheus_url.clone()),
+        descriptor,
+    );
 
-    let force = obj.force_limit_value().filter(|_| obj.force_limit_expiry().map_or(true, rfc3339_in_future));
+    let force = obj
+        .force_limit_value()
+        .filter(|_| obj.force_limit_expiry().map_or(true, rfc3339_in_future));
     // NEVER-OOM-FROM-CARVE: carry the decayed trailing-window peak forward (see
     // the main controller); `reconcile_one` folds in the current `used`.
     let peak_used = obj
@@ -139,18 +151,32 @@ pub async fn reconcile_kube_param(obj: Arc<KubeParamBand>, ctx: Arc<Ctx>) -> Res
     };
 
     let outcome = reconcile_one(&input, &provider).await;
-    let band_ref = breathe_store::BandRef::new(&<KubeParamBand as kube::Resource>::kind(&()), &ns, &name);
+    let band_ref =
+        breathe_store::BandRef::new(&<KubeParamBand as kube::Resource>::kind(&()), &ns, &name);
     let counters = crate::fold_counters(&ctx, &band_ref, obj.status(), &outcome).await;
-    let status = status_for(&outcome, obj.status(), obj.cooldown_seconds(), obj.generation(), counters);
+    let status = status_for(
+        &outcome,
+        obj.status(),
+        obj.cooldown_seconds(),
+        obj.generation(),
+        counters,
+    );
     info!(dim = %provider.id(), band = %name, target = %target.name, phase = ?status.phase, "kube-param reconciled");
     metrics_for(
-        &BandLabels { dim: provider.id().to_string(), namespace: ns.clone(), name: name.clone() },
+        &BandLabels {
+            dim: provider.id().to_string(),
+            namespace: ns.clone(),
+            name: name.clone(),
+        },
         &outcome,
         &cfg,
         status.cooldown_remaining_seconds.unwrap_or(0),
     );
     patch_status::<KubeParamBand>(&ctx.client, &ns, &name, &status).await?;
-    Ok(Action::requeue(next_requeue(&outcome.receipt, &ctx.cooldowns)))
+    Ok(Action::requeue(next_requeue(
+        &outcome.receipt,
+        &ctx.cooldowns,
+    )))
 }
 
 pub fn error_policy_kube_param(_obj: Arc<KubeParamBand>, err: &Error, ctx: Arc<Ctx>) -> Action {

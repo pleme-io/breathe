@@ -50,8 +50,8 @@ spec:
         editing NodePools.
 
         A values DEFAULT cannot carry this. Helm REPLACES list values rather
-        than merging them, and camelot's own HelmRelease already sets
-        `tolerations: [camelot-builder]` — which would silently drop a default
+        than merging them, and isolated's own HelmRelease already sets
+        `tolerations: [isolated-builder]` — which would silently drop a default
         and re-create the deadlock on the one cluster that has the taint. So it
         is emitted by the template, where an override cannot reach it, and
         .Values.tolerations appends rather than replaces.

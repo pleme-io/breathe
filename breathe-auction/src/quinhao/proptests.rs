@@ -10,7 +10,10 @@
 //!  - monotone-remove: removing a sibling never lowers a remaining one's grant.
 //!  - deterministic: the allocation is a pure function (same input ⇒ same output).
 
-use super::{allocate_drf, allocate_even, allocate_fabric, Demand, DemandVector, Dim, GrantVector, PoolCapacity, Quinhao};
+use super::{
+    Demand, DemandVector, Dim, GrantVector, PoolCapacity, Quinhao, allocate_drf, allocate_even,
+    allocate_fabric,
+};
 use proptest::prelude::*;
 
 /// A bounded random `Demand` on the storage axis (values kept small so Σ math
@@ -19,7 +22,12 @@ fn demand_strategy() -> impl Strategy<Value = Demand> {
     (0u32..4, 0u64..50, 1u64..2000, 0u64..2000).prop_map(|(weight, min, max, demand)| {
         // ensure max ≥ min so the clamp window is non-empty
         let max = max.max(min);
-        Demand { weight, min, max, demand }
+        Demand {
+            weight,
+            min,
+            max,
+            demand,
+        }
     })
 }
 
@@ -171,8 +179,18 @@ proptest! {
 fn drf_demand_vector_strategy() -> impl Strategy<Value = DemandVector> {
     (1u64..1000, 1u64..1000).prop_map(|(storage, cpu)| {
         DemandVector::new(
-            Demand { weight: 1, min: 0, max: u64::MAX, demand: storage },
-            Demand { weight: 1, min: 0, max: u64::MAX, demand: cpu },
+            Demand {
+                weight: 1,
+                min: 0,
+                max: u64::MAX,
+                demand: storage,
+            },
+            Demand {
+                weight: 1,
+                min: 0,
+                max: u64::MAX,
+                demand: cpu,
+            },
             Demand::absent(),
             Demand::absent(),
         )
@@ -197,7 +215,11 @@ fn drf_utility(demand: &DemandVector, bundle: GrantVector) -> f64 {
             min_tasks = tasks;
         }
     }
-    if min_tasks.is_finite() { min_tasks } else { 0.0 }
+    if min_tasks.is_finite() {
+        min_tasks
+    } else {
+        0.0
+    }
 }
 
 proptest! {

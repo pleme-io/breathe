@@ -50,8 +50,8 @@
 use async_trait::async_trait;
 use breathe_provider::LiveWitness;
 use breathe_provider::{
-    AppliedReceipt, Cluster, FieldOwner, LimitLayout, MetricSource, ProviderError, Sample, SsaPatch,
-    Target,
+    AppliedReceipt, Cluster, FieldOwner, LimitLayout, MetricSource, ProviderError, Sample,
+    SsaPatch, Target,
 };
 
 // ───────────────────────────── errors ──────────────────────────────
@@ -64,7 +64,11 @@ pub enum AppRpcError {
     /// The admin endpoint's response could not be parsed into the expected shape.
     Parse(String),
     /// The admin `curl` invocation exited non-zero.
-    Command { argv: String, code: Option<i32>, stderr: String },
+    Command {
+        argv: String,
+        code: Option<i32>,
+        stderr: String,
+    },
     /// This app's admin protocol cannot be driven by the dependency-light client
     /// — a typed gap the caller surfaces, never a panic.
     NotLinked(String),
@@ -136,7 +140,9 @@ impl HttpAdminEnv {
     /// `BREATHE_APPRPC_LINKED=1` opts the app into the JSON-over-HTTP client.
     #[must_use]
     pub fn from_env() -> Self {
-        Self { linked: std::env::var("BREATHE_APPRPC_LINKED").ok().as_deref() == Some("1") }
+        Self {
+            linked: std::env::var("BREATHE_APPRPC_LINKED").ok().as_deref() == Some("1"),
+        }
     }
     /// Opt this env into the JSON-over-HTTP admin client (the app speaks the
     /// `GET/POST <endpoint>/<knob>` integer shape).
@@ -163,19 +169,31 @@ impl HttpAdminEnv {
 impl AppRpcEnv for HttpAdminEnv {
     async fn get_knob(&self, endpoint: &str, knob: &str) -> Result<u64, AppRpcError> {
         if !self.linked {
-            return Err(AppRpcError::NotLinked("live admin client not yet linked".into()));
+            return Err(AppRpcError::NotLinked(
+                "live admin client not yet linked".into(),
+            ));
         }
         let url = Self::knob_url(endpoint, knob);
-        let resp = reqwest::get(&url).await.map_err(|e| AppRpcError::Transport(e.to_string()))?;
-        let resp = resp.error_for_status().map_err(|e| AppRpcError::Transport(e.to_string()))?;
-        let body = resp.text().await.map_err(|e| AppRpcError::Transport(e.to_string()))?;
+        let resp = reqwest::get(&url)
+            .await
+            .map_err(|e| AppRpcError::Transport(e.to_string()))?;
+        let resp = resp
+            .error_for_status()
+            .map_err(|e| AppRpcError::Transport(e.to_string()))?;
+        let body = resp
+            .text()
+            .await
+            .map_err(|e| AppRpcError::Transport(e.to_string()))?;
         let body = body.trim();
-        body.parse::<u64>().map_err(|e| AppRpcError::Parse(format!("{knob}={body:?}: {e}")))
+        body.parse::<u64>()
+            .map_err(|e| AppRpcError::Parse(format!("{knob}={body:?}: {e}")))
     }
 
     async fn set_knob(&self, endpoint: &str, knob: &str, value: u64) -> Result<(), AppRpcError> {
         if !self.linked {
-            return Err(AppRpcError::NotLinked("live admin client not yet linked".into()));
+            return Err(AppRpcError::NotLinked(
+                "live admin client not yet linked".into(),
+            ));
         }
         let url = Self::knob_url(endpoint, knob);
         let resp = reqwest::Client::new()
@@ -184,7 +202,8 @@ impl AppRpcEnv for HttpAdminEnv {
             .send()
             .await
             .map_err(|e| AppRpcError::Transport(e.to_string()))?;
-        resp.error_for_status().map_err(|e| AppRpcError::Transport(e.to_string()))?;
+        resp.error_for_status()
+            .map_err(|e| AppRpcError::Transport(e.to_string()))?;
         Ok(())
     }
 }
@@ -243,7 +262,8 @@ impl<E: AppRpcEnv> Cluster for AppRpcCluster<E> {
             // a k8s / host / config-file layout can never legitimately reach the
             // app-RPC boundary — typed, never silent.
             _ => Err(ProviderError::ApiPermanent(
-                "non-ApiCall layout on AppRpcCluster (route k8s/host dimensions to their actuator)".into(),
+                "non-ApiCall layout on AppRpcCluster (route k8s/host dimensions to their actuator)"
+                    .into(),
             )),
         }
     }
@@ -266,7 +286,11 @@ impl<E: AppRpcEnv> Cluster for AppRpcCluster<E> {
     // `Cluster::apply`'s doc) — a caller with a shadow verdict has no witness to
     // pass, so this function is unreachable from one. A witness cannot change what
     // bytes go out, so a leaf actuator has nothing to do with the value itself.
-    async fn apply(&self, _witness: &LiveWitness, patch: &SsaPatch) -> Result<AppliedReceipt, ProviderError> {
+    async fn apply(
+        &self,
+        _witness: &LiveWitness,
+        patch: &SsaPatch,
+    ) -> Result<AppliedReceipt, ProviderError> {
         let LimitLayout::ApiCall { endpoint, command } = &patch.layout else {
             return Err(ProviderError::ApiPermanent(
                 "non-ApiCall layout on AppRpcCluster apply (route k8s/host dimensions to their actuator)".into(),
@@ -274,10 +298,14 @@ impl<E: AppRpcEnv> Cluster for AppRpcCluster<E> {
         };
         // SHADOW: decide + report, never carve the live app.
         if !self.write_enabled {
-            return Ok(AppliedReceipt { source_hash: [0u8; 16] });
+            return Ok(AppliedReceipt {
+                source_hash: [0u8; 16],
+            });
         }
         self.env.set_knob(endpoint, command, patch.value).await?;
-        Ok(AppliedReceipt { source_hash: [0u8; 16] })
+        Ok(AppliedReceipt {
+            source_hash: [0u8; 16],
+        })
     }
 }
 
@@ -333,7 +361,12 @@ mod tests {
                 .copied()
                 .ok_or_else(|| AppRpcError::Parse("no such knob".into()))
         }
-        async fn set_knob(&self, endpoint: &str, knob: &str, value: u64) -> Result<(), AppRpcError> {
+        async fn set_knob(
+            &self,
+            endpoint: &str,
+            knob: &str,
+            value: u64,
+        ) -> Result<(), AppRpcError> {
             self.knobs
                 .lock()
                 .unwrap()
@@ -360,7 +393,10 @@ mod tests {
     const ENDPOINT: &str = "http://127.0.0.1:6060";
 
     fn gomemlimit_layout() -> LimitLayout {
-        LimitLayout::ApiCall { endpoint: ENDPOINT.into(), command: "gomemlimit".into() }
+        LimitLayout::ApiCall {
+            endpoint: ENDPOINT.into(),
+            command: "gomemlimit".into(),
+        }
     }
 
     /// READ: read_limit pulls the live knob through `get_knob`.
@@ -380,7 +416,10 @@ mod tests {
     #[tokio::test]
     async fn apply_round_trips_a_prefetch_carve_through_set_knob() {
         let env = MockAppRpcEnv::default().with_knob(ENDPOINT, "prefetch", 100);
-        let layout = LimitLayout::ApiCall { endpoint: ENDPOINT.into(), command: "prefetch".into() };
+        let layout = LimitLayout::ApiCall {
+            endpoint: ENDPOINT.into(),
+            command: "prefetch".into(),
+        };
         let cluster = AppRpcCluster::new(env, true); // write-enabled
         let patch = SsaPatch {
             target: app_target(),
@@ -397,7 +436,10 @@ mod tests {
             "live apply carves exactly the patch value via set_knob"
         );
         // … and a subsequent read observes the new live value (round-trip).
-        let v = cluster.read_limit(&app_target(), &layout, "memory").await.unwrap();
+        let v = cluster
+            .read_limit(&app_target(), &layout, "memory")
+            .await
+            .unwrap();
         assert_eq!(v, 250, "read after carve sees the new prefetch bound");
     }
 
@@ -405,8 +447,10 @@ mod tests {
     #[tokio::test]
     async fn shadow_mode_decides_but_carves_nothing() {
         let env = MockAppRpcEnv::default().with_knob(ENDPOINT, "max_concurrency", 64);
-        let layout =
-            LimitLayout::ApiCall { endpoint: ENDPOINT.into(), command: "max_concurrency".into() };
+        let layout = LimitLayout::ApiCall {
+            endpoint: ENDPOINT.into(),
+            command: "max_concurrency".into(),
+        };
         let cluster = AppRpcCluster::shadow(env);
         let patch = SsaPatch {
             target: app_target(),
@@ -416,7 +460,10 @@ mod tests {
             value: 128,
         };
         cluster.apply(&w(), &patch).await.unwrap();
-        assert!(cluster.env().writes().is_empty(), "shadow mode must not carve the app");
+        assert!(
+            cluster.env().writes().is_empty(),
+            "shadow mode must not carve the app"
+        );
     }
 
     /// A wrong (non-ApiCall) layout is a TYPED error at both read_limit and apply,
@@ -427,7 +474,11 @@ mod tests {
         let cluster = AppRpcCluster::new(env, true);
         // read_limit with a k8s layout → typed permanent error.
         let read_err = cluster
-            .read_limit(&app_target(), &LimitLayout::PodResize { container: None }, "memory")
+            .read_limit(
+                &app_target(),
+                &LimitLayout::PodResize { container: None },
+                "memory",
+            )
             .await
             .unwrap_err();
         assert!(matches!(read_err, ProviderError::ApiPermanent(_)));
@@ -441,7 +492,10 @@ mod tests {
         };
         let apply_err = cluster.apply(&w(), &patch).await.unwrap_err();
         assert!(matches!(apply_err, ProviderError::ApiPermanent(_)));
-        assert!(cluster.env().writes().is_empty(), "a mis-routed apply touches nothing");
+        assert!(
+            cluster.env().writes().is_empty(),
+            "a mis-routed apply touches nothing"
+        );
     }
 
     /// `read_used` on the app-RPC boundary is a typed gap (the live signal comes
@@ -450,7 +504,9 @@ mod tests {
     async fn read_used_is_a_typed_gap_routing_to_the_metrics_plane() {
         let cluster = AppRpcCluster::shadow(MockAppRpcEnv::default());
         let err = cluster
-            .read_used(&MetricSource::Prometheus("go_memstats_heap_inuse_bytes".into()))
+            .read_used(&MetricSource::Prometheus(
+                "go_memstats_heap_inuse_bytes".into(),
+            ))
             .await
             .unwrap_err();
         assert!(matches!(err, ProviderError::ApiPermanent(_)));
@@ -462,10 +518,18 @@ mod tests {
     async fn field_owners_is_empty_for_app_rpc_knobs() {
         let cluster = AppRpcCluster::shadow(MockAppRpcEnv::default());
         let owners = cluster
-            .field_owners(&app_target(), &gomemlimit_layout(), "memory", "app.rpc.gomemlimit")
+            .field_owners(
+                &app_target(),
+                &gomemlimit_layout(),
+                "memory",
+                "app.rpc.gomemlimit",
+            )
             .await
             .unwrap();
-        assert!(owners.is_empty(), "app-RPC levers have no competing managedFields owner");
+        assert!(
+            owners.is_empty(),
+            "app-RPC levers have no competing managedFields owner"
+        );
     }
 
     /// The dependency-light real env is honest about its gap: an UNLINKED
@@ -476,13 +540,22 @@ mod tests {
         let err = env.get_knob(ENDPOINT, "gomemlimit").await.unwrap_err();
         assert!(matches!(err, AppRpcError::NotLinked(_)));
         // and it maps to the agreed typed ProviderError surface.
-        assert!(matches!(ProviderError::from(err), ProviderError::ApiPermanent(_)));
+        assert!(matches!(
+            ProviderError::from(err),
+            ProviderError::ApiPermanent(_)
+        ));
     }
 
     /// The admin URL builder joins endpoint + knob with exactly one slash.
     #[test]
     fn knob_url_joins_with_one_slash() {
-        assert_eq!(HttpAdminEnv::knob_url("http://h:6060", "gomemlimit"), "http://h:6060/gomemlimit");
-        assert_eq!(HttpAdminEnv::knob_url("http://h:6060/", "/prefetch"), "http://h:6060/prefetch");
+        assert_eq!(
+            HttpAdminEnv::knob_url("http://h:6060", "gomemlimit"),
+            "http://h:6060/gomemlimit"
+        );
+        assert_eq!(
+            HttpAdminEnv::knob_url("http://h:6060/", "/prefetch"),
+            "http://h:6060/prefetch"
+        );
     }
 }

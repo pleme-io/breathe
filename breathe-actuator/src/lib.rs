@@ -25,7 +25,8 @@ use breathe_jmx::{JmxCluster, JolokiaHttpEnv};
 use breathe_kube::KubeCluster;
 use breathe_provider::LiveWitness;
 use breathe_provider::{
-    AppliedReceipt, Cluster, FieldOwner, LimitLayout, MetricSource, ProviderError, Sample, SsaPatch, Target,
+    AppliedReceipt, Cluster, FieldOwner, LimitLayout, MetricSource, ProviderError, Sample,
+    SsaPatch, Target,
 };
 
 /// Which app-plane actuator services the band — picked by the `AppBand` layout's
@@ -75,7 +76,10 @@ impl ActuatorBackend {
     /// the arm without depending on `breathe-configreload` directly.
     #[must_use]
     pub fn config_reload_default(write_enabled: bool) -> Self {
-        Self::ConfigReload(ConfigReloadCluster::new(FileSignalEnv::default(), write_enabled))
+        Self::ConfigReload(ConfigReloadCluster::new(
+            FileSignalEnv::default(),
+            write_enabled,
+        ))
     }
 }
 
@@ -103,7 +107,12 @@ impl Cluster for ActuatorCluster {
         self.metric.read_used(source).await
     }
 
-    async fn read_limit(&self, target: &Target, layout: &LimitLayout, resource: &str) -> Result<u64, ProviderError> {
+    async fn read_limit(
+        &self,
+        target: &Target,
+        layout: &LimitLayout,
+        resource: &str,
+    ) -> Result<u64, ProviderError> {
         match &self.backend {
             ActuatorBackend::ConfigReload(c) => c.read_limit(target, layout, resource).await,
             ActuatorBackend::ApiCall(c) => c.read_limit(target, layout, resource).await,
@@ -122,14 +131,30 @@ impl Cluster for ActuatorCluster {
         // Every actuator returns an empty owner set (no managedFields on this plane);
         // the single-writer guard always proceeds (only-mitigated, as documented).
         match &self.backend {
-            ActuatorBackend::ConfigReload(c) => c.field_owners(target, layout, resource, logical_field).await,
-            ActuatorBackend::ApiCall(c) => c.field_owners(target, layout, resource, logical_field).await,
-            ActuatorBackend::Jmx(c) => c.field_owners(target, layout, resource, logical_field).await,
-            ActuatorBackend::AppRpc(c) => c.field_owners(target, layout, resource, logical_field).await,
+            ActuatorBackend::ConfigReload(c) => {
+                c.field_owners(target, layout, resource, logical_field)
+                    .await
+            }
+            ActuatorBackend::ApiCall(c) => {
+                c.field_owners(target, layout, resource, logical_field)
+                    .await
+            }
+            ActuatorBackend::Jmx(c) => {
+                c.field_owners(target, layout, resource, logical_field)
+                    .await
+            }
+            ActuatorBackend::AppRpc(c) => {
+                c.field_owners(target, layout, resource, logical_field)
+                    .await
+            }
         }
     }
 
-    async fn apply(&self, witness: &LiveWitness, patch: &SsaPatch) -> Result<AppliedReceipt, ProviderError> {
+    async fn apply(
+        &self,
+        witness: &LiveWitness,
+        patch: &SsaPatch,
+    ) -> Result<AppliedReceipt, ProviderError> {
         match &self.backend {
             ActuatorBackend::ConfigReload(c) => c.apply(witness, patch).await,
             ActuatorBackend::ApiCall(c) => c.apply(witness, patch).await,

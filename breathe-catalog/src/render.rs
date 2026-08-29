@@ -1,15 +1,15 @@
 //! `render` — the typed renderer that turns a [`BreatheDefaults`] preset into the
-//! chart's `global.breathe` band values (the SINGLE SOURCE for the Camelot
+//! chart's `global.breathe` band values (the SINGLE SOURCE for the private estate
 //! posture overlay).
 //!
-//! The Camelot breathe posture used to live in TWO uncoupled places: the typed
-//! [`crate::preset::CAMELOT`] preset (Rust) and a hand-authored `global.breathe`
-//! block in the deployment chart's `architectures/camelot.yaml`
+//! The private estate breathe posture used to live in TWO uncoupled places: the typed
+//! [`crate::preset::SPOT_AGGRESSIVE`] preset (Rust) and a hand-authored `global.breathe`
+//! block in the deployment chart's `the deployment chart's architecture values`
 //! (YAML). Two copies, no oracle — a RESOLVE-vs-REPLACE duplication where an edit
 //! to one silently drifted from the other. This module removes the duplication:
 //! the typed preset RENDERS the exact `global.breathe` block, a golden test pins
 //! the render, and the chart carries a verbatim copy of that golden (the kata
-//! parity oracle — the chart's `global.breathe.preset: camelot` names this source,
+//! parity oracle — the chart's `global.breathe.preset: the private estate` names this source,
 //! the explicit bands below it are this render's materialization).
 //!
 //! ## What this ADDS to the typed source
@@ -38,8 +38,8 @@
 //! the vendored `pleme-lib 0.16.0` has no MemoryBand/CpuBand/ReplicaBand template,
 //! so both the preset and the chart block are inert against the live cluster
 //! today. Live band emission (a `pleme-lib` band template that consumes
-//! `global.breathe`, the breathe controller resolving `preset: camelot` directly,
-//! and reaping the LIVE orphan `camelot-rabbitmq` band) are named LiveTODOs, never
+//! `global.breathe`, the breathe controller resolving `preset: the private estate` directly,
+//! and reaping the LIVE orphan `private-estate-rabbitmq` band) are named LiveTODOs, never
 //! rounded up.
 
 use crate::preset::{BreatheDefaults, ResolvedBandPosture, WorkloadClass};
@@ -191,11 +191,7 @@ pub fn render_workload_breathe(
 
 /// Render a bool as the YAML token (`true` / `false`).
 fn yaml_bool(b: bool) -> &'static str {
-    if b {
-        "true"
-    } else {
-        "false"
-    }
+    if b { "true" } else { "false" }
 }
 
 impl fmt::Display for GlobalBreatheValues {
@@ -239,37 +235,41 @@ impl fmt::Display for GlobalBreatheValues {
 
 #[cfg(test)]
 mod tests {
-    use super::{render_global_breathe, render_workload_breathe, GlobalBreatheValues};
-    use crate::preset::{WorkloadClass, CAMELOT};
+    use super::{GlobalBreatheValues, render_global_breathe, render_workload_breathe};
+    use crate::preset::{SPOT_AGGRESSIVE, WorkloadClass};
 
     /// The rendered golden — the canonical `global.breathe` block the chart carries
     /// verbatim. THE KATA PARITY ORACLE: the typed preset render (the source) must
     /// equal the committed golden (the oracle-copy); an edit to the preset that
     /// changes the block fails here until the golden (and the chart) are re-synced.
-    const GOLDEN: &str = include_str!("../goldens/camelot-global-breathe.golden.yaml");
+    const GOLDEN: &str = include_str!("../goldens/spot-aggressive-global-breathe.golden.yaml");
 
-    /// The render of the CAMELOT preset is BYTE-EQUAL to the committed golden. The
+    /// The render of the SPOT_AGGRESSIVE preset is BYTE-EQUAL to the committed golden. The
     /// golden is the exact `global.breathe` value block the chart's
-    /// `architectures/camelot.yaml` carries — so a preset edit that would drift the
+    /// `the deployment chart's architecture values` carries — so a preset edit that would drift the
     /// chart is caught in CI here, not discovered live.
     #[test]
     fn render_matches_the_committed_golden() {
-        let rendered = render_global_breathe(&CAMELOT).to_string();
+        let rendered = render_global_breathe(&SPOT_AGGRESSIVE).to_string();
         assert_eq!(
             rendered.trim_end(),
             GOLDEN.trim_end(),
-            "the CAMELOT preset render drifted from the committed golden — \
-             re-render and re-sync the deployment chart's architectures/camelot.yaml"
+            "the SPOT_AGGRESSIVE preset render drifted from the committed golden — \
+             re-render and re-sync the deployment chart's the deployment chart's architecture values"
         );
     }
 
     /// The rendered block names the preset it came from — the kata binding
-    /// (`global.breathe.preset: camelot`).
+    /// (`global.breathe.preset: the private estate`).
     #[test]
     fn render_names_its_source_preset() {
-        let v = render_global_breathe(&CAMELOT);
-        assert_eq!(v.preset, "camelot");
-        assert!(v.to_string().contains("preset: camelot"));
+        let v = render_global_breathe(&SPOT_AGGRESSIVE);
+        // Derived, not restated — the render must echo the preset's OWN name.
+        assert_eq!(v.preset, SPOT_AGGRESSIVE.name);
+        assert!(
+            v.to_string()
+                .contains(&format!("preset: {}", SPOT_AGGRESSIVE.name))
+        );
     }
 
     /// The vertical bands (memory + cpu) both hold the aggressive 80/20 setpoint,
@@ -277,7 +277,7 @@ mod tests {
     /// now emitted.
     #[test]
     fn both_vertical_bands_hold_the_setpoint() {
-        let v = render_global_breathe(&CAMELOT);
+        let v = render_global_breathe(&SPOT_AGGRESSIVE);
         assert!((v.memory.setpoint - 0.8).abs() < f64::EPSILON);
         assert!((v.cpu.setpoint - 0.8).abs() < f64::EPSILON);
         assert!(v.cpu.enabled, "the cpu band must be enabled");
@@ -291,7 +291,7 @@ mod tests {
     /// `replicaCount`.
     #[test]
     fn replica_band_carries_the_ha_floor_and_topology() {
-        let v = render_global_breathe(&CAMELOT);
+        let v = render_global_breathe(&SPOT_AGGRESSIVE);
         assert!(v.replica.enabled);
         assert_eq!(v.replica.floor, 2, "HA floor");
         assert_eq!(
@@ -306,7 +306,7 @@ mod tests {
     /// a render that would silently emit a live-carving band.
     #[test]
     fn every_rendered_band_is_shadow_first() {
-        let v = render_global_breathe(&CAMELOT);
+        let v = render_global_breathe(&SPOT_AGGRESSIVE);
         for (dry, mode) in [
             (v.memory.dry_run, v.memory.mode),
             (v.cpu.dry_run, v.cpu.mode),
@@ -330,7 +330,7 @@ mod tests {
             (WorkloadClass::QuorumStore, "fullyDistributed", 3),
         ];
         for (class, topology, floor) in cases {
-            let v = render_workload_breathe(&CAMELOT, class)
+            let v = render_workload_breathe(&SPOT_AGGRESSIVE, class)
                 .unwrap_or_else(|| panic!("no render for {}", class.as_str()));
             assert_eq!(v.replica.topology, topology, "{} topology", class.as_str());
             assert_eq!(v.replica.floor, floor, "{} floor", class.as_str());
@@ -343,9 +343,15 @@ mod tests {
     /// block (it is the stateless default).
     #[test]
     fn stateless_default_omits_storage() {
-        let v = render_global_breathe(&CAMELOT);
-        assert!(v.storage.is_none(), "the stateless default has no storage to carve");
-        assert!(!v.to_string().contains("storage:"), "no storage block rendered for stateless");
+        let v = render_global_breathe(&SPOT_AGGRESSIVE);
+        assert!(
+            v.storage.is_none(),
+            "the stateless default has no storage to carve"
+        );
+        assert!(
+            !v.to_string().contains("storage:"),
+            "no storage block rendered for stateless"
+        );
     }
 
     /// EVERY STATEFUL class carves storage by default — provision-minimal (born at
@@ -361,23 +367,42 @@ mod tests {
             WorkloadClass::PersistentStore,
             WorkloadClass::QuorumStore,
         ] {
-            let v = render_workload_breathe(&CAMELOT, class)
+            let v = render_workload_breathe(&SPOT_AGGRESSIVE, class)
                 .unwrap_or_else(|| panic!("no render for {}", class.as_str()));
-            let s = v.storage.unwrap_or_else(|| panic!("{} must carve storage", class.as_str()));
+            let s = v
+                .storage
+                .unwrap_or_else(|| panic!("{} must carve storage", class.as_str()));
             assert!(s.enabled, "{}: storage band enabled", class.as_str());
-            assert_eq!(s.provision_floor, "2Gi", "{}: provision-minimal floor", class.as_str());
-            assert!((s.setpoint - 0.8).abs() < f64::EPSILON, "{}: 80% setpoint", class.as_str());
+            assert_eq!(
+                s.provision_floor,
+                "2Gi",
+                "{}: provision-minimal floor",
+                class.as_str()
+            );
+            assert!(
+                (s.setpoint - 0.8).abs() < f64::EPSILON,
+                "{}: 80% setpoint",
+                class.as_str()
+            );
             assert!(s.dry_run, "{}: storage born shadow-first", class.as_str());
             assert_eq!(s.mode, "shadow", "{}: storage mode shadow", class.as_str());
             let block = v.to_string();
-            assert!(block.contains("storage:"), "{}: storage block rendered", class.as_str());
-            assert!(block.contains("provisionFloor: 2Gi"), "{}: provision floor rendered", class.as_str());
+            assert!(
+                block.contains("storage:"),
+                "{}: storage block rendered",
+                class.as_str()
+            );
+            assert!(
+                block.contains("provisionFloor: 2Gi"),
+                "{}: provision floor rendered",
+                class.as_str()
+            );
         }
     }
 
     /// REAP-THE-RABBIT, offline half: the typed source admits NO message-queue /
     /// rabbit workload class, so a `rabbitmq` breathe band is UNREPRESENTABLE in the
-    /// render — the render can never emit one. (The LIVE orphan `camelot-rabbitmq`
+    /// render — the render can never emit one. (The LIVE orphan `private-estate-rabbitmq`
     /// band stuck in phase Error is a separate live-cluster reap — a LiveTODO, not
     /// something this offline render can close.)
     #[test]
@@ -391,7 +416,7 @@ mod tests {
         }
         // And the concrete render carries no rabbit token anywhere.
         for class in crate::preset::ALL_WORKLOAD_CLASSES {
-            if let Some(v) = render_workload_breathe(&CAMELOT, class) {
+            if let Some(v) = render_workload_breathe(&SPOT_AGGRESSIVE, class) {
                 let s = v.to_string();
                 assert!(!s.contains("rabbit"), "a rendered band names rabbit");
                 assert!(!s.contains("amqp"), "a rendered band names amqp");
@@ -403,7 +428,7 @@ mod tests {
     /// sanity: what the fields say is what the Display emits).
     #[test]
     fn display_reflects_the_struct_fields() {
-        let v: GlobalBreatheValues = render_global_breathe(&CAMELOT);
+        let v: GlobalBreatheValues = render_global_breathe(&SPOT_AGGRESSIVE);
         let s = v.to_string();
         assert!(s.contains(&alloc_line("floor", v.replica.floor)));
         assert!(s.contains("topology: nonPersistent"));

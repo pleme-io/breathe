@@ -1,4 +1,4 @@
-preset: camelot
+preset: spot-aggressive
 enabled: true
 memory:
   setpoint: 0.8

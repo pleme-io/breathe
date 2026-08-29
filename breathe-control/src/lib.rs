@@ -89,7 +89,7 @@ pub enum MetricMissingPolicy {
 /// every possible observation, including a genuine `working_set == 0`
 /// (`0.0 < 0.0` is false). The band still grows normally; it simply never gives
 /// capacity back. That is exactly what a critical-tier workload wants, and it is
-/// how the ~35 live camelot-eks critical bands are authored.
+/// how the ~35 live private-estate-eks critical bands are authored.
 ///
 /// **Named as a constant on 2026-07-26 because it was out of contract.**
 /// [`BandConfig::validate`] required every threshold in `(0, 1]`, so `0.0` was a
@@ -199,7 +199,9 @@ pub enum BandConfigError {
 impl std::fmt::Display for BandConfigError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::BadBand => f.write_str("band thresholds must satisfy 0 < shrink_below ≤ setpoint ≤ grow_above ≤ 1"),
+            Self::BadBand => f.write_str(
+                "band thresholds must satisfy 0 < shrink_below ≤ setpoint ≤ grow_above ≤ 1",
+            ),
             Self::BadFactor => f.write_str("grow_factor must be > 1 and shrink_factor in (0, 1)"),
             Self::EmptyRange => f.write_str("floor_bytes must be ≤ ceiling_bytes"),
         }
@@ -228,8 +230,11 @@ impl BandConfig {
         // `grow_above` stays rejected — neither has any meaning. See
         // [`NEVER_SHRINK`] for the full rationale + the named better encoding.
         let shrink_below_ok = self.shrink_below == NEVER_SHRINK || in_unit(self.shrink_below);
-        if !(shrink_below_ok && in_unit(self.setpoint) && in_unit(self.grow_above)
-            && self.shrink_below <= self.setpoint && self.setpoint <= self.grow_above)
+        if !(shrink_below_ok
+            && in_unit(self.setpoint)
+            && in_unit(self.grow_above)
+            && self.shrink_below <= self.setpoint
+            && self.setpoint <= self.grow_above)
         {
             return Err(BandConfigError::BadBand);
         }
@@ -286,7 +291,10 @@ impl BandConfig {
                 self.warmup_seconds = value.max(0.0) as u64;
             }
         }
-        debug_assert!(self.validate().is_ok(), "with_override must preserve a valid band");
+        debug_assert!(
+            self.validate().is_ok(),
+            "with_override must preserve a valid band"
+        );
         self
     }
 }
@@ -303,29 +311,74 @@ impl BandConfig {
 #[cfg(test)]
 mod never_shrink_tests {
     use super::lapidar::TunedParam;
-    use super::{BandConfig, BandConfigError, BandLaw, ControlLaw, Proposal, NEVER_SHRINK};
+    use super::{BandConfig, BandConfigError, BandLaw, ControlLaw, NEVER_SHRINK, Proposal};
 
     fn never_shrink_cfg() -> BandConfig {
-        BandConfig { shrink_below: NEVER_SHRINK, ..BandConfig::default() }
+        BandConfig {
+            shrink_below: NEVER_SHRINK,
+            ..BandConfig::default()
+        }
     }
 
     /// Trap 1: the value the fleet authors must PARSE.
     #[test]
     fn never_shrink_validates() {
-        assert!(never_shrink_cfg().validate().is_ok(), "shrinkBelow: 0.0 is the never-shrink sentinel, not a malformed band");
+        assert!(
+            never_shrink_cfg().validate().is_ok(),
+            "shrinkBelow: 0.0 is the never-shrink sentinel, not a malformed band"
+        );
     }
 
     /// …without widening the contract for anything else.
     #[test]
     fn only_shrink_below_admits_zero_and_out_of_range_is_still_rejected() {
         // A zero setpoint / growAbove has no meaning and stays rejected.
-        assert_eq!(BandConfig { setpoint: 0.0, shrink_below: 0.0, ..BandConfig::default() }.validate(), Err(BandConfigError::BadBand));
-        assert_eq!(BandConfig { grow_above: 0.0, setpoint: 0.0, shrink_below: 0.0, ..BandConfig::default() }.validate(), Err(BandConfigError::BadBand));
+        assert_eq!(
+            BandConfig {
+                setpoint: 0.0,
+                shrink_below: 0.0,
+                ..BandConfig::default()
+            }
+            .validate(),
+            Err(BandConfigError::BadBand)
+        );
+        assert_eq!(
+            BandConfig {
+                grow_above: 0.0,
+                setpoint: 0.0,
+                shrink_below: 0.0,
+                ..BandConfig::default()
+            }
+            .validate(),
+            Err(BandConfigError::BadBand)
+        );
         // Negative and >1 are still out of contract on every axis.
-        assert_eq!(BandConfig { shrink_below: -0.1, ..BandConfig::default() }.validate(), Err(BandConfigError::BadBand));
-        assert_eq!(BandConfig { shrink_below: 1.5, setpoint: 1.5, ..BandConfig::default() }.validate(), Err(BandConfigError::BadBand));
+        assert_eq!(
+            BandConfig {
+                shrink_below: -0.1,
+                ..BandConfig::default()
+            }
+            .validate(),
+            Err(BandConfigError::BadBand)
+        );
+        assert_eq!(
+            BandConfig {
+                shrink_below: 1.5,
+                setpoint: 1.5,
+                ..BandConfig::default()
+            }
+            .validate(),
+            Err(BandConfigError::BadBand)
+        );
         // The deadband ordering still binds: shrink_below ≤ setpoint ≤ grow_above.
-        assert_eq!(BandConfig { shrink_below: 0.9, ..BandConfig::default() }.validate(), Err(BandConfigError::BadBand));
+        assert_eq!(
+            BandConfig {
+                shrink_below: 0.9,
+                ..BandConfig::default()
+            }
+            .validate(),
+            Err(BandConfigError::BadBand)
+        );
     }
 
     /// **The load-bearing invariant.** `BandLaw::propose` uses a STRICT `<`, and
@@ -340,7 +393,10 @@ mod never_shrink_tests {
         // util 0.000 … 1.200 inclusive, plus the exact zero-working-set case.
         for w in (0..=1200_u64).map(|i| i * limit / 1000) {
             match BandLaw.propose(w, limit, &cfg) {
-                Proposal::Target(to) => assert!(to > limit, "never-shrink band proposed a SHRINK {limit} -> {to} at working_set={w}"),
+                Proposal::Target(to) => assert!(
+                    to > limit,
+                    "never-shrink band proposed a SHRINK {limit} -> {to} at working_set={w}"
+                ),
                 Proposal::Hold => {}
             }
         }
@@ -355,7 +411,10 @@ mod never_shrink_tests {
     fn lapidar_cannot_unfreeze_a_never_shrink_band() {
         for trial in [0.5_f64, 0.01, 0.0, -1.0, f64::NAN] {
             let cfg = never_shrink_cfg().with_override(TunedParam::ShrinkBelow, trial);
-            assert_eq!(cfg.shrink_below, NEVER_SHRINK, "a ShrinkBelow trial of {trial} must leave a frozen band frozen");
+            assert_eq!(
+                cfg.shrink_below, NEVER_SHRINK,
+                "a ShrinkBelow trial of {trial} must leave a frozen band frozen"
+            );
             assert!(cfg.validate().is_ok());
         }
         // A NON-frozen band is still tunable on this axis (behaviour unchanged).
@@ -384,7 +443,10 @@ mod with_override_tests {
     fn stale_override_is_clamped_into_the_current_band() {
         // grow_above default 0.85; a stale setpoint override of 0.99 clamps to 0.85.
         let cfg = BandConfig::default().with_override(TunedParam::Setpoint, 0.99);
-        assert!((cfg.setpoint - cfg.grow_above).abs() < 1e-9, "clamped to grow_above");
+        assert!(
+            (cfg.setpoint - cfg.grow_above).abs() < 1e-9,
+            "clamped to grow_above"
+        );
         assert!(cfg.validate().is_ok(), "clamp preserves validity");
         // a below-floor shrink_below override clamps up, not through 0.
         let cfg2 = BandConfig::default().with_override(TunedParam::ShrinkBelow, -5.0);
@@ -405,14 +467,25 @@ mod with_override_tests {
         let neg = BandConfig::default().with_override(TunedParam::WarmupSeconds, -1.0);
         assert_eq!(neg.warmup_seconds, 0);
         let nan = BandConfig::default().with_override(TunedParam::Setpoint, f64::NAN);
-        assert!((nan.setpoint - BandConfig::default().setpoint).abs() < 1e-9, "NaN inert");
+        assert!(
+            (nan.setpoint - BandConfig::default().setpoint).abs() < 1e-9,
+            "NaN inert"
+        );
     }
 
     #[test]
     fn every_param_override_keeps_a_valid_band() {
-        for p in [TunedParam::Setpoint, TunedParam::GrowAbove, TunedParam::ShrinkBelow, TunedParam::WarmupSeconds] {
+        for p in [
+            TunedParam::Setpoint,
+            TunedParam::GrowAbove,
+            TunedParam::ShrinkBelow,
+            TunedParam::WarmupSeconds,
+        ] {
             for v in [-1.0, 0.0, 0.5, 0.83, 1.0, 5.0, 1e9] {
-                assert!(BandConfig::default().with_override(p, v).validate().is_ok(), "{p:?} {v}");
+                assert!(
+                    BandConfig::default().with_override(p, v).validate().is_ok(),
+                    "{p:?} {v}"
+                );
             }
         }
     }
@@ -449,7 +522,7 @@ pub enum Decision {
     /// looked and there is nothing safe to take" (the band is genuinely at its
     /// floor), while this means "there is `reclaimable` to take and policy says
     /// don't". Reporting the first when the second is true is the `AtFloor` lie
-    /// that made 36 idle camelot-eks MemoryBands look converged.
+    /// that made 36 idle private-estate-eks MemoryBands look converged.
     ReclaimWithheld {
         /// The limit, left exactly as it was.
         current: u64,
@@ -462,7 +535,11 @@ pub enum Decision {
     /// (the un-observed-boot-spike hole). `current` is the held limit; `observed_for`
     /// the seconds the workload has been observed; `warmup` the configured window. A
     /// grow is never held (raising the limit is always safe).
-    Warmup { current: u64, observed_for: u64, warmup: u64 },
+    Warmup {
+        current: u64,
+        observed_for: u64,
+        warmup: u64,
+    },
     /// Would shrink, but the workload's SUPPRESSED DEMAND is non-blind: the resource
     /// is being actively THROTTLED right now (CFS throttling for cpu), or the
     /// workload recently (re)started / is crash-looping. The low observed `used` is
@@ -536,10 +613,18 @@ impl CarveSemantics {
 /// single source of truth for the hard floor both [`safety_clamp`] and the dual
 /// soft/hard planner consume.
 #[must_use]
-#[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+#[allow(
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss
+)]
 pub fn safe_min(peak_working_set: u64, working_set: u64, cfg: &BandConfig) -> u64 {
     let peak = peak_working_set.max(working_set);
-    let setpoint = if cfg.setpoint <= 0.0 { 1.0 } else { cfg.setpoint };
+    let setpoint = if cfg.setpoint <= 0.0 {
+        1.0
+    } else {
+        cfg.setpoint
+    };
     let from_peak = ((peak as f64) / setpoint).ceil() as u64;
     from_peak.max(cfg.request_floor_bytes).max(cfg.floor_bytes)
 }
@@ -554,9 +639,17 @@ pub fn safe_min(peak_working_set: u64, working_set: u64, cfg: &BandConfig) -> u6
 /// whole point: `memory.high` can sit tighter than `memory.max`, so efficiency is
 /// reclaimed without ever lowering the kill ceiling.
 #[must_use]
-#[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+#[allow(
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss
+)]
 pub fn soft_min(working_set: u64, cfg: &BandConfig) -> u64 {
-    let setpoint = if cfg.setpoint <= 0.0 { 1.0 } else { cfg.setpoint };
+    let setpoint = if cfg.setpoint <= 0.0 {
+        1.0
+    } else {
+        cfg.setpoint
+    };
     let from_ws = ((working_set as f64) / setpoint).ceil() as u64;
     from_ws.max(cfg.request_floor_bytes).max(cfg.floor_bytes)
 }
@@ -578,7 +671,7 @@ pub fn soft_min(working_set: u64, cfg: &BandConfig) -> u64 {
 //
 // so a 50 GiB volume holding 890 MiB is a state breathe's OWN carve can never
 // construct: it would have provisioned ~2 GiB and grown only with real data. That
-// exact receipt — 155 GiB provisioned across camelot, ~5 GiB used — is the
+// exact receipt — 155 GiB provisioned across the private estate, ~5 GiB used — is the
 // signature of the missing carve, not a leak to detect after the fact. The carve
 // removes the whole waste class.
 
@@ -608,7 +701,11 @@ pub enum ProvisionVerdict {
     /// `provisioned < target`: demonstrated usage has climbed past what the
     /// current size holds at the setpoint. Grow-on-demand raises it to `target`
     /// this / next tick — the NORMAL grow path, never waste.
-    UnderProvisioned { provisioned: u64, target: u64, deficit: u64 },
+    UnderProvisioned {
+        provisioned: u64,
+        target: u64,
+        deficit: u64,
+    },
     /// `provisioned ≫ target`: more capacity than the carve would EVER set for
     /// this usage — reclaimable waste. UNREACHABLE via breathe's grow-only
     /// actuation (breathe never sets a size above the carve target); only
@@ -616,7 +713,11 @@ pub enum ProvisionVerdict {
     /// hand-provisioned PVC). Grow-only cannot shrink it, so the reclaim is a
     /// one-time recreate — surfaced here so it is a typed, observable anomaly and
     /// never a silent 30×-idle volume.
-    OverProvisioned { provisioned: u64, target: u64, waste: u64 },
+    OverProvisioned {
+        provisioned: u64,
+        target: u64,
+        waste: u64,
+    },
 }
 
 impl ProvisionVerdict {
@@ -642,9 +743,17 @@ impl ProvisionVerdict {
 /// utilization back inside the band). A provisioned size above this ceiling is
 /// slack the carve does not create — the over-provisioning boundary.
 #[must_use]
-#[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+#[allow(
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss
+)]
 fn carve_grow_ceiling(target: u64, cfg: &BandConfig) -> u64 {
-    let factor = if cfg.grow_factor <= 1.0 { 1.0 } else { cfg.grow_factor };
+    let factor = if cfg.grow_factor <= 1.0 {
+        1.0
+    } else {
+        cfg.grow_factor
+    };
     ((target as f64) * factor).ceil() as u64
 }
 
@@ -662,11 +771,22 @@ pub fn classify_provision(
 ) -> ProvisionVerdict {
     let target = provision_target(peak_used, used, cfg);
     if provisioned < target {
-        ProvisionVerdict::UnderProvisioned { provisioned, target, deficit: target - provisioned }
+        ProvisionVerdict::UnderProvisioned {
+            provisioned,
+            target,
+            deficit: target - provisioned,
+        }
     } else if provisioned <= carve_grow_ceiling(target, cfg) {
-        ProvisionVerdict::RightSized { provisioned, target }
+        ProvisionVerdict::RightSized {
+            provisioned,
+            target,
+        }
     } else {
-        ProvisionVerdict::OverProvisioned { provisioned, target, waste: provisioned - target }
+        ProvisionVerdict::OverProvisioned {
+            provisioned,
+            target,
+            waste: provisioned - target,
+        }
     }
 }
 
@@ -706,8 +826,8 @@ pub fn carve_output_verdict(used: u64, cfg: &BandConfig) -> ProvisionVerdict {
 #[cfg(test)]
 mod provision_tests {
     use super::{
-        carve_fixpoint, carve_output_verdict, classify_provision, provision_target, BandConfig,
-        ProvisionVerdict,
+        BandConfig, ProvisionVerdict, carve_fixpoint, carve_output_verdict, classify_provision,
+        provision_target,
     };
 
     const MI: u64 = 1 << 20;
@@ -716,7 +836,11 @@ mod provision_tests {
     /// A provision-minimal storage band: a small 2 GiB floor, a large ceiling, the
     /// aggressive 80% setpoint — the fleet-default `StorageBand` shape.
     fn storage_cfg() -> BandConfig {
-        BandConfig { floor_bytes: 2 * GI, ceiling_bytes: 200 * GI, ..BandConfig::default() }
+        BandConfig {
+            floor_bytes: 2 * GI,
+            ceiling_bytes: 200 * GI,
+            ..BandConfig::default()
+        }
     }
 
     /// The carve target IS the provision-minimal size: for tiny usage it floors at
@@ -737,10 +861,17 @@ mod provision_tests {
     fn a_50gib_volume_holding_890mib_is_over_provisioned() {
         let c = storage_cfg();
         let v = classify_provision(50 * GI, 890 * MI, 890 * MI, &c);
-        assert!(v.is_over_provisioned(), "50GiB/890MiB must be over-provisioned, got {v:?}");
+        assert!(
+            v.is_over_provisioned(),
+            "50GiB/890MiB must be over-provisioned, got {v:?}"
+        );
         match v {
             ProvisionVerdict::OverProvisioned { target, waste, .. } => {
-                assert_eq!(target, 2 * GI, "carve would have provisioned the 2 GiB floor");
+                assert_eq!(
+                    target,
+                    2 * GI,
+                    "carve would have provisioned the 2 GiB floor"
+                );
                 assert_eq!(waste, 50 * GI - 2 * GI, "≈48 GiB reclaimable");
             }
             other => panic!("expected OverProvisioned, got {other:?}"),
@@ -755,7 +886,10 @@ mod provision_tests {
         let c = storage_cfg();
         // 8 GiB used in a 10 GiB volume (80% — exactly the setpoint) → RightSized.
         let v = classify_provision(10 * GI, 8 * GI, 8 * GI, &c);
-        assert!(!v.is_over_provisioned(), "an at-setpoint volume is not waste: {v:?}");
+        assert!(
+            !v.is_over_provisioned(),
+            "an at-setpoint volume is not waste: {v:?}"
+        );
     }
 
     /// A volume that has FILLED past its setpoint is `UnderProvisioned` (grow path),
@@ -783,7 +917,18 @@ mod provision_tests {
         let c = storage_cfg();
         // A dense sweep from sub-floor to well above the floor, plus the awkward
         // just-crossed-a-grow-step usages.
-        let mut usages: Vec<u64> = vec![0, MI, 100 * MI, 890 * MI, GI, 2 * GI, 3 * GI, 7 * GI, 40 * GI, 120 * GI];
+        let mut usages: Vec<u64> = vec![
+            0,
+            MI,
+            100 * MI,
+            890 * MI,
+            GI,
+            2 * GI,
+            3 * GI,
+            7 * GI,
+            40 * GI,
+            120 * GI,
+        ];
         for step in 1..=64u64 {
             usages.push(step * 512 * MI);
         }
@@ -801,8 +946,15 @@ mod provision_tests {
     #[test]
     fn carve_fixpoint_respects_floor_and_ceiling() {
         let c = storage_cfg();
-        assert_eq!(carve_fixpoint(1, &c), c.floor_bytes, "tiny usage stays at the provision floor");
-        assert!(carve_fixpoint(500 * GI, &c) <= c.ceiling_bytes, "huge usage is bounded by the ceiling");
+        assert_eq!(
+            carve_fixpoint(1, &c),
+            c.floor_bytes,
+            "tiny usage stays at the provision floor"
+        );
+        assert!(
+            carve_fixpoint(500 * GI, &c) <= c.ceiling_bytes,
+            "huge usage is bounded by the ceiling"
+        );
     }
 }
 
@@ -870,7 +1022,10 @@ pub fn plan_dual_carve<L: ControlLaw>(
     // a memory.high lever. The soft floor is the gentler `soft_min` (reclaim is safe
     // below the peak), so the soft limit can sit tighter than the hard limit.
     let soft = soft_current.map(|sc| {
-        let soft_cfg = BandConfig { floor_bytes: soft_min(working_set, cfg), ..cfg.clone() };
+        let soft_cfg = BandConfig {
+            floor_bytes: soft_min(working_set, cfg),
+            ..cfg.clone()
+        };
         // The soft plane uses the SAME law + the SAME safety_clamp, but with the
         // gentler soft floor: `safety_clamp`'s shrink floor becomes `soft_min`, so a
         // soft shrink can reclaim down toward the working set (never below the request
@@ -948,7 +1103,14 @@ pub fn plan_k8s_memory_carve<L: ControlLaw>(
     soft_current: u64,
     cfg: &BandConfig,
 ) -> K8sMemoryCarve {
-    let dual = plan_dual_carve(law, working_set, peak_working_set, hard_current, Some(soft_current), cfg);
+    let dual = plan_dual_carve(
+        law,
+        working_set,
+        peak_working_set,
+        hard_current,
+        Some(soft_current),
+        cfg,
+    );
     // HARD: ONLY a grow or an over-ceiling snap-down is a target. An efficiency
     // shrink arrives as NoSafeShrink (the kill ceiling is held) ⇒ None.
     let hard_target = match dual.hard {
@@ -964,7 +1126,10 @@ pub fn plan_k8s_memory_carve<L: ControlLaw>(
         Some(Decision::Grow { to, .. } | Decision::Shrink { to, .. }) => Some(to),
         _ => None,
     };
-    K8sMemoryCarve { hard_target, soft_target }
+    K8sMemoryCarve {
+        hard_target,
+        soft_target,
+    }
 }
 
 /// A pluggable control law: the swap-in decision core of a breathe dimension.
@@ -992,7 +1157,13 @@ pub trait ControlLaw {
     /// pure ADD — it can only ever raise a grow target (asymmetric), and the same
     /// [`safety_clamp`] still contains it (the never-OOM/never-overshoot proof
     /// holds for predictive laws too — see `safety_gate_contains_any_law`).
-    fn propose_with_rate(&self, working_set: u64, current_limit: u64, cfg: &BandConfig, _rate: i64) -> Proposal {
+    fn propose_with_rate(
+        &self,
+        working_set: u64,
+        current_limit: u64,
+        cfg: &BandConfig,
+        _rate: i64,
+    ) -> Proposal {
         self.propose(working_set, current_limit, cfg)
     }
 }
@@ -1032,7 +1203,11 @@ pub trait ControlLaw {
 /// floor by feeding a peak that holds a real spike for a meaningful window (see
 /// [`update_peak`]).
 #[must_use]
-#[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+#[allow(
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss
+)]
 pub fn safety_clamp(
     proposal: Proposal,
     working_set: u64,
@@ -1045,9 +1220,14 @@ pub fn safety_clamp(
         Proposal::Target(raw) if raw > current_limit => {
             let to = raw.min(cfg.ceiling_bytes);
             if to <= current_limit {
-                Decision::AtCeiling { current: current_limit }
+                Decision::AtCeiling {
+                    current: current_limit,
+                }
             } else {
-                Decision::Grow { from: current_limit, to }
+                Decision::Grow {
+                    from: current_limit,
+                    to,
+                }
             }
         }
         Proposal::Target(raw) if raw < current_limit => {
@@ -1063,9 +1243,14 @@ pub fn safety_clamp(
             let safe_min = safe_min(peak_working_set, working_set, cfg);
             let to = raw.max(safe_min);
             if to >= current_limit {
-                Decision::NoSafeShrink { current: current_limit }
+                Decision::NoSafeShrink {
+                    current: current_limit,
+                }
             } else {
-                Decision::Shrink { from: current_limit, to }
+                Decision::Shrink {
+                    from: current_limit,
+                    to,
+                }
             }
         }
         Proposal::Target(_) => Decision::Hold, // raw == current_limit
@@ -1086,7 +1271,11 @@ pub fn safety_clamp(
 /// never produce a value below the sample itself, so the shrink floor it feeds
 /// can never drop under the live working set.
 #[must_use]
-#[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+#[allow(
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss
+)]
 pub fn update_peak(prior_peak: u64, current: u64, decay: f64) -> u64 {
     let decay = decay.clamp(0.0, 0.999);
     let decayed = ((prior_peak as f64) * decay) as u64;
@@ -1112,17 +1301,29 @@ pub fn decide_with<L: ControlLaw>(
     // law from dividing by a zero limit. Lets breathe take over a freshly-ceded
     // field (CNPG/Flux relinquishes limits.memory → unset → seed to floor).
     if current_limit < cfg.floor_bytes {
-        return Decision::Grow { from: current_limit, to: cfg.floor_bytes };
+        return Decision::Grow {
+            from: current_limit,
+            to: cfg.floor_bytes,
+        };
     }
     // Hard-ceiling SNAP: a limit above the ceiling is brought down to it (the
     // directionality clamp turns this into NoSafeShrink for grow-only dims).
     if current_limit > cfg.ceiling_bytes {
-        return Decision::Shrink { from: current_limit, to: cfg.ceiling_bytes };
+        return Decision::Shrink {
+            from: current_limit,
+            to: cfg.ceiling_bytes,
+        };
     }
     if let Some(d) = metric_untrusted_decision(working_set, peak_working_set, current_limit, cfg) {
         return d;
     }
-    safety_clamp(law.propose(working_set, current_limit, cfg), working_set, peak_working_set, current_limit, cfg)
+    safety_clamp(
+        law.propose(working_set, current_limit, cfg),
+        working_set,
+        peak_working_set,
+        current_limit,
+        cfg,
+    )
 }
 
 /// The METRIC-TRUST GATE (the split-brain fail-safe). A `working_set == 0`
@@ -1154,7 +1355,10 @@ pub fn metric_untrusted_decision(
         MetricMissingPolicy::RestoreHeadroom => {
             let safe = safe_min(peak_working_set, 0, cfg);
             if current_limit < safe {
-                Some(Decision::Grow { from: current_limit, to: safe })
+                Some(Decision::Grow {
+                    from: current_limit,
+                    to: safe,
+                })
             } else {
                 Some(Decision::Hold)
             }
@@ -1181,10 +1385,16 @@ pub fn decide_with_rate<L: ControlLaw>(
     rate: i64,
 ) -> Decision {
     if current_limit < cfg.floor_bytes {
-        return Decision::Grow { from: current_limit, to: cfg.floor_bytes };
+        return Decision::Grow {
+            from: current_limit,
+            to: cfg.floor_bytes,
+        };
     }
     if current_limit > cfg.ceiling_bytes {
-        return Decision::Shrink { from: current_limit, to: cfg.ceiling_bytes };
+        return Decision::Shrink {
+            from: current_limit,
+            to: cfg.ceiling_bytes,
+        };
     }
     if let Some(d) = metric_untrusted_decision(working_set, peak_working_set, current_limit, cfg) {
         return d;
@@ -1206,7 +1416,11 @@ pub fn decide_with_rate<L: ControlLaw>(
 pub struct BandLaw;
 
 impl ControlLaw for BandLaw {
-    #[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    #[allow(
+        clippy::cast_precision_loss,
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss
+    )]
     fn propose(&self, working_set: u64, current_limit: u64, cfg: &BandConfig) -> Proposal {
         let util = working_set as f64 / current_limit as f64;
         if util > cfg.grow_above {
@@ -1253,7 +1467,11 @@ impl Default for ProportionalLaw {
 }
 
 impl ControlLaw for ProportionalLaw {
-    #[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    #[allow(
+        clippy::cast_precision_loss,
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss
+    )]
     fn propose(&self, working_set: u64, current_limit: u64, cfg: &BandConfig) -> Proposal {
         let util = working_set as f64 / current_limit as f64;
         if util > cfg.grow_above || util < cfg.shrink_below {
@@ -1278,7 +1496,11 @@ pub struct SlewLimited<L> {
 }
 
 impl<L: ControlLaw> ControlLaw for SlewLimited<L> {
-    #[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    #[allow(
+        clippy::cast_precision_loss,
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss
+    )]
     fn propose(&self, working_set: u64, current_limit: u64, cfg: &BandConfig) -> Proposal {
         match self.inner.propose(working_set, current_limit, cfg) {
             Proposal::Hold => Proposal::Hold,
@@ -1326,9 +1548,21 @@ impl<L: ControlLaw> ControlLaw for PredictiveGrow<L> {
         self.inner.propose(working_set, current_limit, cfg)
     }
 
-    #[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-    fn propose_with_rate(&self, working_set: u64, current_limit: u64, cfg: &BandConfig, rate: i64) -> Proposal {
-        let inner = self.inner.propose_with_rate(working_set, current_limit, cfg, rate);
+    #[allow(
+        clippy::cast_precision_loss,
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss
+    )]
+    fn propose_with_rate(
+        &self,
+        working_set: u64,
+        current_limit: u64,
+        cfg: &BandConfig,
+        rate: i64,
+    ) -> Proposal {
+        let inner = self
+            .inner
+            .propose_with_rate(working_set, current_limit, cfg, rate);
         // project the working set forward at the observed rate (never below 0).
         let predicted_ws = ((working_set as f64) + (rate as f64) * self.lookahead_secs).max(0.0);
         let predicted_util = predicted_ws / current_limit as f64;
@@ -1367,10 +1601,23 @@ pub struct QuantizedSlice<L> {
 
 impl<L: ControlLaw> ControlLaw for QuantizedSlice<L> {
     fn propose(&self, working_set: u64, current_limit: u64, cfg: &BandConfig) -> Proposal {
-        snap_up(self.inner.propose(working_set, current_limit, cfg), self.slice)
+        snap_up(
+            self.inner.propose(working_set, current_limit, cfg),
+            self.slice,
+        )
     }
-    fn propose_with_rate(&self, working_set: u64, current_limit: u64, cfg: &BandConfig, rate: i64) -> Proposal {
-        snap_up(self.inner.propose_with_rate(working_set, current_limit, cfg, rate), self.slice)
+    fn propose_with_rate(
+        &self,
+        working_set: u64,
+        current_limit: u64,
+        cfg: &BandConfig,
+        rate: i64,
+    ) -> Proposal {
+        snap_up(
+            self.inner
+                .propose_with_rate(working_set, current_limit, cfg, rate),
+            self.slice,
+        )
     }
 }
 
@@ -1418,7 +1665,13 @@ impl<L: ControlLaw> ControlLaw for ThrottleAware<L> {
     /// While throttling, suppress any shrink to a Hold (anti-flap); otherwise the
     /// inner law verbatim. A grow is never suppressed — relieving throttle is the
     /// safe move.
-    fn propose_with_rate(&self, working_set: u64, current_limit: u64, cfg: &BandConfig, rate: i64) -> Proposal {
+    fn propose_with_rate(
+        &self,
+        working_set: u64,
+        current_limit: u64,
+        cfg: &BandConfig,
+        rate: i64,
+    ) -> Proposal {
         let inner = self.inner.propose(working_set, current_limit, cfg);
         if rate > 0 {
             match inner {
@@ -1444,11 +1697,19 @@ impl<L: ControlLaw> ControlLaw for ThrottleAware<L> {
 pub struct PercentileBand;
 
 impl ControlLaw for PercentileBand {
-    #[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    #[allow(
+        clippy::cast_precision_loss,
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss
+    )]
     fn propose(&self, working_set: u64, current_limit: u64, cfg: &BandConfig) -> Proposal {
         let util = working_set as f64 / current_limit as f64;
         if util > cfg.grow_above || util < cfg.shrink_below {
-            let setpoint = if cfg.setpoint <= 0.0 { 1.0 } else { cfg.setpoint };
+            let setpoint = if cfg.setpoint <= 0.0 {
+                1.0
+            } else {
+                cfg.setpoint
+            };
             Proposal::Target((working_set as f64 / setpoint).ceil() as u64)
         } else {
             Proposal::Hold
@@ -1533,9 +1794,17 @@ impl RequestLaw {
     /// wrapping. Pure; exposed so the carve planner and the band both compute the
     /// seat through ONE function.
     #[must_use]
-    #[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    #[allow(
+        clippy::cast_precision_loss,
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss
+    )]
     pub fn seat(self, demand: u64) -> u64 {
-        let h = if self.headroom.is_finite() && self.headroom > 0.0 { self.headroom } else { 0.0 };
+        let h = if self.headroom.is_finite() && self.headroom > 0.0 {
+            self.headroom
+        } else {
+            0.0
+        };
         let raw = (demand as f64) * (1.0 + h);
         // `as u64` saturates at u64::MAX for an out-of-range float in Rust 1.45+,
         // and NaN maps to 0 — but `h` is already finite and `demand` is a u64, so
@@ -1575,8 +1844,18 @@ impl ControlLaw for Aimd {
         // no throttle info → additive increase (probe up).
         Proposal::Target(current_limit.saturating_add(self.increment))
     }
-    #[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-    fn propose_with_rate(&self, _working_set: u64, current_limit: u64, _cfg: &BandConfig, rate: i64) -> Proposal {
+    #[allow(
+        clippy::cast_precision_loss,
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss
+    )]
+    fn propose_with_rate(
+        &self,
+        _working_set: u64,
+        current_limit: u64,
+        _cfg: &BandConfig,
+        rate: i64,
+    ) -> Proposal {
         if rate > 0 {
             // throttle / loss detected → multiplicative back-off.
             Proposal::Target((current_limit as f64 * self.decrease_factor) as u64)
@@ -1595,11 +1874,19 @@ impl ControlLaw for Aimd {
 pub struct BurstBudget;
 
 impl ControlLaw for BurstBudget {
-    #[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    #[allow(
+        clippy::cast_precision_loss,
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss
+    )]
     fn propose(&self, working_set: u64, current_limit: u64, cfg: &BandConfig) -> Proposal {
         let util = working_set as f64 / current_limit as f64;
         if util > cfg.grow_above {
-            let setpoint = if cfg.setpoint <= 0.0 { 1.0 } else { cfg.setpoint };
+            let setpoint = if cfg.setpoint <= 0.0 {
+                1.0
+            } else {
+                cfg.setpoint
+            };
             Proposal::Target((working_set as f64 / setpoint).ceil() as u64)
         } else if util < cfg.shrink_below {
             // grow-bias: shrink at HALF the configured aggression.
@@ -1627,11 +1914,22 @@ pub struct SharedBudget<L> {
 
 impl<L: ControlLaw> ControlLaw for SharedBudget<L> {
     fn propose(&self, working_set: u64, current_limit: u64, cfg: &BandConfig) -> Proposal {
-        clamp_grow_to_headroom(self.inner.propose(working_set, current_limit, cfg), current_limit, self.available_headroom)
-    }
-    fn propose_with_rate(&self, working_set: u64, current_limit: u64, cfg: &BandConfig, rate: i64) -> Proposal {
         clamp_grow_to_headroom(
-            self.inner.propose_with_rate(working_set, current_limit, cfg, rate),
+            self.inner.propose(working_set, current_limit, cfg),
+            current_limit,
+            self.available_headroom,
+        )
+    }
+    fn propose_with_rate(
+        &self,
+        working_set: u64,
+        current_limit: u64,
+        cfg: &BandConfig,
+        rate: i64,
+    ) -> Proposal {
+        clamp_grow_to_headroom(
+            self.inner
+                .propose_with_rate(working_set, current_limit, cfg, rate),
             current_limit,
             self.available_headroom,
         )
@@ -1656,7 +1954,12 @@ fn clamp_grow_to_headroom(p: Proposal, current_limit: u64, available_headroom: u
 /// budget before the window closes? The Forma/`Otimizador` layer (Step-14) consumes
 /// it as a Meet-dependency edge into every grow. Pure + dependency-free + testable.
 #[must_use]
-pub fn burn_rate_breaches(spent_cents: u64, budget_cents: u64, burn_rate_cents_per_sec: f64, secs_remaining: u64) -> bool {
+pub fn burn_rate_breaches(
+    spent_cents: u64,
+    budget_cents: u64,
+    burn_rate_cents_per_sec: f64,
+    secs_remaining: u64,
+) -> bool {
     #[allow(clippy::cast_precision_loss)]
     let forecast = spent_cents as f64 + burn_rate_cents_per_sec.max(0.0) * secs_remaining as f64;
     #[allow(clippy::cast_precision_loss)]
@@ -1724,7 +2027,7 @@ pub enum Directionality {
 /// a real safety pin — a k8s `limits.memory` IS the cgroup `memory.max`, a HARD
 /// kill ceiling, so lowering it for efficiency is the carve-induced-OOM path (see
 /// [`CarveSemantics`]) — but as an anonymous boolean it (a) could not be reported,
-/// so 36 camelot-eks MemoryBands sitting at 4–25% utilization reported the phase
+/// so 36 private-estate-eks MemoryBands sitting at 4–25% utilization reported the phase
 /// `AtFloor`, which is a *lie* (they are nowhere near a floor; their reclaim is
 /// structurally withheld), and (b) named neither the policy nor the reason.
 ///
@@ -1770,7 +2073,9 @@ impl Reclaim {
     pub fn narrow(self, dir: Directionality) -> Directionality {
         match (self, dir) {
             (Self::Enabled, d) => d,
-            (Self::Disabled | Self::ObserveOnly, Directionality::Bidirectional) => Directionality::GrowOnly,
+            (Self::Disabled | Self::ObserveOnly, Directionality::Bidirectional) => {
+                Directionality::GrowOnly
+            }
             (Self::Disabled | Self::ObserveOnly, d) => d,
         }
     }
@@ -1792,7 +2097,7 @@ impl Reclaim {
 /// The load-bearing distinction is between *right-sizing an existing limit* and
 /// *newly constraining a workload that was deliberately left unconstrained*. They
 /// look identical to a controller reading `limit == 0`, and breathe has been doing
-/// the second while believing it did the first: on camelot-eks, `coredns` (101
+/// the second while believing it did the first: on one cluster-eks, `coredns` (101
 /// carves) and `ebs-csi-controller` (162 carves) both declare NO cpu limit at all,
 /// and breathe introduced one. That is not homeostasis — it is a new constraint on
 /// cluster DNS and the CSI control plane that no human ever asked for.
@@ -2075,8 +2380,18 @@ pub fn clamp_to_warmup(d: Decision, observed_for_secs: u64, warmup_seconds: u64)
 /// signal (the demand is just the observed `used`, byte-identical to before).
 /// Pure + dependency-free + testable.
 #[must_use]
-#[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-pub fn throttled_demand(used: u64, current_limit: u64, throttle_signal: u64, restarting: bool, cfg: &BandConfig) -> Option<u64> {
+#[allow(
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss
+)]
+pub fn throttled_demand(
+    used: u64,
+    current_limit: u64,
+    throttle_signal: u64,
+    restarting: bool,
+    cfg: &BandConfig,
+) -> Option<u64> {
     if throttle_signal == 0 && !restarting {
         return None;
     }
@@ -2106,7 +2421,10 @@ pub fn clamp_to_throttle(d: Decision, throttle_signal: u64, restarting: bool) ->
         return d;
     }
     match d {
-        Decision::Shrink { from, .. } => Decision::Throttled { current: from, restarting },
+        Decision::Shrink { from, .. } => Decision::Throttled {
+            current: from,
+            restarting,
+        },
         other => other,
     }
 }
@@ -2129,10 +2447,13 @@ pub fn clamp_to_reclaim(d: Decision, reclaim: Reclaim) -> Decision {
         (Reclaim::Enabled, d) => d,
         // Byte-identical to the pre-`Reclaim` `hard_plane_grow_only` path: the
         // directionality clamp would have produced exactly this.
-        (Reclaim::Disabled, Decision::Shrink { from, .. }) => Decision::NoSafeShrink { current: from },
-        (Reclaim::ObserveOnly, Decision::Shrink { from, to }) => {
-            Decision::ReclaimWithheld { current: from, reclaimable: from.saturating_sub(to) }
+        (Reclaim::Disabled, Decision::Shrink { from, .. }) => {
+            Decision::NoSafeShrink { current: from }
         }
+        (Reclaim::ObserveOnly, Decision::Shrink { from, to }) => Decision::ReclaimWithheld {
+            current: from,
+            reclaimable: from.saturating_sub(to),
+        },
         (_, other) => other,
     }
 }
@@ -2185,13 +2506,21 @@ pub enum TickPlan {
     /// manager owns the field, `Unrepresentable` when it doesn't) into one:
     /// the operator sees "this StorageClass is unsupported" instead of
     /// chasing a field-ownership red herring.
-    CapabilityMissing { volume_expansion: bool, per_volume_metrics: bool, provisioner: String },
+    CapabilityMissing {
+        volume_expansion: bool,
+        per_volume_metrics: bool,
+        provisioner: String,
+    },
     /// A SHRINK is warranted but the workload is still in its warmup window — held
     /// + surfaced. The idle reading is not yet proof the slack is safe to reclaim
     /// (the un-observed-boot-spike OOM); the band waits until a full duty cycle has
     /// been observed (so a boot spike folds into the demonstrated peak) before any
     /// carve. A grow during warmup still acts (buying headroom is always safe).
-    Warmup { observed_for: u64, warmup: u64, current: u64 },
+    Warmup {
+        observed_for: u64,
+        warmup: u64,
+        current: u64,
+    },
     /// A SHRINK is warranted by the (CFS-capped) usage metric, but the workload's
     /// SUPPRESSED DEMAND is non-blind — it is being actively THROTTLED, or recently
     /// (re)started / is crash-looping — so the low usage is a symptom, not proof of
@@ -2203,7 +2532,10 @@ pub enum TickPlan {
     Throttled { current: u64, restarting: bool },
     /// A mutation is warranted but the driving sample is too old to trust —
     /// hold + surface (the never-OOM proof requires a fresh metric).
-    Stale { staleness_secs: u64, decision: Decision },
+    Stale {
+        staleness_secs: u64,
+        decision: Decision,
+    },
     /// A mutation is warranted but the target is within its cooldown — skip.
     Cooldown { decision: Decision },
     /// A mutation to apply atomically via the provider.
@@ -2271,7 +2603,9 @@ pub fn plan_tick(
     // REMOVE a write: the path it intercepts is `decide_with`'s floor-seed, which
     // is a Grow.
     if obs.bound.is_absent() && policy.bound_introduction == BoundIntroduction::Forbidden {
-        return TickPlan::Observe { decision: Decision::NoLimit };
+        return TickPlan::Observe {
+            decision: Decision::NoLimit,
+        };
     }
     // PER-ENTITY METRIC INVARIANT (storage / any GrowOnly hard-capped dimension):
     // a real per-entity usage gauge can never exceed the entity's own capacity —
@@ -2283,7 +2617,10 @@ pub fn plan_tick(
     // GrowOnly so a Bidirectional memory/cpu band — where a transient over-limit
     // sample is a legitimate "grow hard" signal — is untouched.
     if dir == Directionality::GrowOnly && obs.used > obs.capacity() {
-        return TickPlan::Unrepresentable { used: obs.used, capacity: obs.capacity() };
+        return TickPlan::Unrepresentable {
+            used: obs.used,
+            capacity: obs.capacity(),
+        };
     }
     // Per-resource law selection (M0): predictive `Some((rate, lookahead))` carves
     // through the proven `PredictiveGrow<BandLaw>` — pre-grows for the burst the
@@ -2305,14 +2642,22 @@ pub fn plan_tick(
     // is the SAME mechanism as a memory spike folding into the peak — it only ever
     // RAISES the inputs, so the never-OOM oracle is untouched. `None` ⇒ no throttle,
     // byte-identical to before.
-    let (law_used, law_peak) =
-        match throttled_demand(obs.used, obs.capacity(), obs.throttle_signal, obs.restarting, cfg) {
-            Some(demand) => (obs.used.max(demand), obs.peak_used.max(demand)),
-            None => (obs.used, obs.peak_used),
-        };
+    let (law_used, law_peak) = match throttled_demand(
+        obs.used,
+        obs.capacity(),
+        obs.throttle_signal,
+        obs.restarting,
+        cfg,
+    ) {
+        Some(demand) => (obs.used.max(demand), obs.peak_used.max(demand)),
+        None => (obs.used, obs.peak_used),
+    };
     let raw = match predictive {
         Some((rate, lookahead_secs)) => decide_with_rate(
-            &PredictiveGrow { inner: BandLaw, lookahead_secs },
+            &PredictiveGrow {
+                inner: BandLaw,
+                lookahead_secs,
+            },
             law_used,
             law_peak,
             obs.capacity(),
@@ -2334,8 +2679,17 @@ pub fn plan_tick(
     // BEFORE freshness/cooldown (a warmup hold is the strongest non-mutating reason).
     // A grow passes through untouched — buying headroom is always safe, even at boot.
     let decision = clamp_to_warmup(decision, obs.observed_for_secs, cfg.warmup_seconds);
-    if let Decision::Warmup { observed_for, warmup, current } = decision {
-        return TickPlan::Warmup { observed_for, warmup, current };
+    if let Decision::Warmup {
+        observed_for,
+        warmup,
+        current,
+    } = decision
+    {
+        return TickPlan::Warmup {
+            observed_for,
+            warmup,
+            current,
+        };
     }
     // NO-STARVE GATE (the explicit, NAMED runtime invariant): a throttled or
     // recently-restarted/crash-looping workload is NEVER shrunk — `throttled ||
@@ -2345,15 +2699,25 @@ pub fn plan_tick(
     // Runs AFTER warmup, BEFORE freshness/cooldown — a throttle hold is a strong
     // non-mutating reason. A grow passes through (relieving throttle is always safe).
     let decision = clamp_to_throttle(decision, obs.throttle_signal, obs.restarting);
-    if let Decision::Throttled { current, restarting } = decision {
-        return TickPlan::Throttled { current, restarting };
+    if let Decision::Throttled {
+        current,
+        restarting,
+    } = decision
+    {
+        return TickPlan::Throttled {
+            current,
+            restarting,
+        };
     }
     let is_mutation = matches!(decision, Decision::Grow { .. } | Decision::Shrink { .. });
     if !is_mutation {
         return TickPlan::Observe { decision };
     }
     if obs.staleness_secs > max_staleness_secs {
-        return TickPlan::Stale { staleness_secs: obs.staleness_secs, decision };
+        return TickPlan::Stale {
+            staleness_secs: obs.staleness_secs,
+            decision,
+        };
     }
     if in_cooldown {
         return TickPlan::Cooldown { decision };
@@ -2497,7 +2861,11 @@ fn parse_millicores(q: &str) -> Option<u64> {
 /// DECIMAL-SI suffix (`1k`→1000, `2M`→2_000_000) — counts are decimal, never
 /// binary (a conntrack/pids/file-max value is a base-10 magnitude, not bytes).
 #[must_use]
-#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss, clippy::cast_precision_loss)]
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::cast_precision_loss
+)]
 fn parse_count(q: &str) -> Option<u64> {
     let q = q.trim();
     if q.is_empty() {
@@ -2506,7 +2874,9 @@ fn parse_count(q: &str) -> Option<u64> {
     if let Ok(n) = q.parse::<u64>() {
         return Some(n);
     }
-    let split = q.find(|c: char| !(c.is_ascii_digit() || c == '.')).unwrap_or(q.len());
+    let split = q
+        .find(|c: char| !(c.is_ascii_digit() || c == '.'))
+        .unwrap_or(q.len());
     let (num, suffix) = q.split_at(split);
     let n: f64 = num.parse().ok()?;
     let mult: f64 = match suffix.trim() {
@@ -2522,7 +2892,11 @@ fn parse_count(q: &str) -> Option<u64> {
 /// Parse a retention/age DURATION to SECONDS. Accepts `d`/`h`/`m`/`s` suffixes
 /// (`10d`, `1h`, `30m`, `60s`) or a bare integer (seconds). `None` on malformed.
 #[must_use]
-#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss, clippy::cast_precision_loss)]
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::cast_precision_loss
+)]
 fn parse_duration_secs(q: &str) -> Option<u64> {
     let q = q.trim();
     if q.is_empty() {
@@ -2531,7 +2905,9 @@ fn parse_duration_secs(q: &str) -> Option<u64> {
     if let Ok(n) = q.parse::<u64>() {
         return Some(n); // bare seconds
     }
-    let split = q.find(|c: char| !(c.is_ascii_digit() || c == '.')).unwrap_or(q.len());
+    let split = q
+        .find(|c: char| !(c.is_ascii_digit() || c == '.'))
+        .unwrap_or(q.len());
     let (num, suffix) = q.split_at(split);
     let n: f64 = num.parse().ok()?;
     let mult: f64 = match suffix.trim() {
@@ -2559,7 +2935,10 @@ fn parse_percent(q: &str) -> Option<u64> {
 fn parse_cents(q: &str) -> Option<u64> {
     let q = q.trim();
     if let Some(dollars) = q.strip_prefix('$') {
-        dollars.parse::<f64>().ok().map(|d| (d * 100.0).round() as u64)
+        dollars
+            .parse::<f64>()
+            .ok()
+            .map(|d| (d * 100.0).round() as u64)
     } else {
         q.parse::<u64>().ok()
     }
@@ -2570,13 +2949,19 @@ fn parse_cents(q: &str) -> Option<u64> {
 /// `breathe-control` dependency-free: split the numeric prefix from the unit
 /// suffix, multiply.
 #[must_use]
-#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss, clippy::cast_precision_loss)]
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::cast_precision_loss
+)]
 fn parse_bytes(q: &str) -> Option<u64> {
     let q = q.trim();
     if q.is_empty() {
         return None;
     }
-    let split = q.find(|c: char| !(c.is_ascii_digit() || c == '.')).unwrap_or(q.len());
+    let split = q
+        .find(|c: char| !(c.is_ascii_digit() || c == '.'))
+        .unwrap_or(q.len());
     let (num, suffix) = q.split_at(split);
     let n: f64 = num.parse().ok()?;
     let mult: f64 = match suffix.trim() {
@@ -2639,7 +3024,9 @@ mod tests {
         let stranded = 300 * MI; // a prior carve left the limit here (above floor 256Mi)
         let safe = (peak as f64 / c.setpoint).ceil() as u64; // ceil(800Mi / 0.80) = 1000Mi
         match decide_with(&BandLaw, 0, peak, stranded, &c) {
-            Decision::Grow { to, .. } => assert_eq!(to, safe, "restore to the durable-peak safe floor"),
+            Decision::Grow { to, .. } => {
+                assert_eq!(to, safe, "restore to the durable-peak safe floor")
+            }
             other => panic!("expected a headroom-restoring grow, got {other:?}"),
         }
     }
@@ -2647,9 +3034,15 @@ mod tests {
     /// The Hold policy freezes the limit exactly on an untrusted reading.
     #[test]
     fn hold_policy_freezes_on_a_zero_reading() {
-        let c = BandConfig { metric_missing_policy: MetricMissingPolicy::Hold, ..cfg() };
+        let c = BandConfig {
+            metric_missing_policy: MetricMissingPolicy::Hold,
+            ..cfg()
+        };
         // even with a durable peak that would justify a restore, Hold freezes.
-        assert_eq!(decide_with(&BandLaw, 0, 800 * MI, 300 * MI, &c), Decision::Hold);
+        assert_eq!(
+            decide_with(&BandLaw, 0, 800 * MI, 300 * MI, &c),
+            Decision::Hold
+        );
     }
 
     /// `Trust` (node-count + any dimension where 0 is real) NEVER gates — a 0
@@ -2657,8 +3050,14 @@ mod tests {
     /// not held/restored as if the metric were broken).
     #[test]
     fn trust_policy_treats_zero_as_a_real_reading() {
-        let c = BandConfig { metric_missing_policy: MetricMissingPolicy::Trust, ..cfg() };
-        assert!(metric_untrusted_decision(0, 0, 1 * GI, &c).is_none(), "Trust must not gate a 0 reading");
+        let c = BandConfig {
+            metric_missing_policy: MetricMissingPolicy::Trust,
+            ..cfg()
+        };
+        assert!(
+            metric_untrusted_decision(0, 0, 1 * GI, &c).is_none(),
+            "Trust must not gate a 0 reading"
+        );
     }
 
     /// A TRUSTED reading is unaffected — the gate only fires on `used == 0`.
@@ -2666,7 +3065,10 @@ mod tests {
     fn a_nonzero_reading_runs_the_normal_law() {
         let c = cfg();
         // util = 0.50 < shrink_below → a normal (clamped) shrink, NOT gated.
-        assert!(matches!(decide_with(&BandLaw, 500 * MI, 500 * MI, 1 * GI, &c), Decision::Shrink { .. }));
+        assert!(matches!(
+            decide_with(&BandLaw, 500 * MI, 500 * MI, 1 * GI, &c),
+            Decision::Shrink { .. }
+        ));
         assert!(metric_untrusted_decision(500 * MI, 500 * MI, 1 * GI, &c).is_none());
     }
 
@@ -2769,23 +3171,47 @@ mod tests {
         // a freshly-ceded (unset = 0) limit is grown straight to the floor,
         // so breathe can take over the field. Independent of working-set.
         let c = cfg(); // floor 256Mi
-        assert_eq!(decide(500 * MI, 0, &c), Decision::Grow { from: 0, to: c.floor_bytes });
+        assert_eq!(
+            decide(500 * MI, 0, &c),
+            Decision::Grow {
+                from: 0,
+                to: c.floor_bytes
+            }
+        );
     }
 
     #[test]
     fn below_floor_grows_to_floor() {
         let c = cfg();
         // current 1Gi but floor is set to 2Gi → snap up to 2Gi regardless of util
-        let c2 = BandConfig { floor_bytes: 2 * GI, ..cfg() };
-        assert_eq!(decide(80 * MI, GI, &c2), Decision::Grow { from: GI, to: 2 * GI });
+        let c2 = BandConfig {
+            floor_bytes: 2 * GI,
+            ..cfg()
+        };
+        assert_eq!(
+            decide(80 * MI, GI, &c2),
+            Decision::Grow {
+                from: GI,
+                to: 2 * GI
+            }
+        );
         let _ = c;
     }
 
     #[test]
     fn above_ceiling_snaps_down() {
-        let c = BandConfig { ceiling_bytes: 4 * GI, ..cfg() };
+        let c = BandConfig {
+            ceiling_bytes: 4 * GI,
+            ..cfg()
+        };
         // current 8Gi > ceiling 4Gi → snap down (a Shrink to the ceiling)
-        assert_eq!(decide(GI, 8 * GI, &c), Decision::Shrink { from: 8 * GI, to: 4 * GI });
+        assert_eq!(
+            decide(GI, 8 * GI, &c),
+            Decision::Shrink {
+                from: 8 * GI,
+                to: 4 * GI
+            }
+        );
         // …but on a GrowOnly dim the directionality clamp forbids the snap-down
         assert_eq!(
             clamp_to_directionality(decide(GI, 8 * GI, &c), Directionality::GrowOnly),
@@ -2829,13 +3255,19 @@ mod tests {
             }
         }
         let util = ws as f64 / limit as f64;
-        assert!(util <= c.grow_above, "converged util {util} must drop to/under the grow edge");
+        assert!(
+            util <= c.grow_above,
+            "converged util {util} must drop to/under the grow edge"
+        );
     }
 
     // ── single-writer invariant ─────────────────────────────────────────────
 
     fn owns(mgr: &str, field: &str) -> FieldOwner {
-        FieldOwner { manager: mgr.into(), field: field.into() }
+        FieldOwner {
+            manager: mgr.into(),
+            field: field.into(),
+        }
     }
 
     #[test]
@@ -2856,13 +3288,19 @@ mod tests {
             owns("pleme-memory-elastic", MEMORY_LIMIT_FIELD),
             owns("flux", "spec.template.spec.containers"),
         ];
-        assert_eq!(competing_memory_manager(&owners, "pleme-memory-elastic"), None);
+        assert_eq!(
+            competing_memory_manager(&owners, "pleme-memory-elastic"),
+            None
+        );
     }
 
     #[test]
     fn no_conflict_when_nobody_owns_the_limit() {
         let owners = vec![owns("flux", "metadata.annotations")];
-        assert_eq!(competing_memory_manager(&owners, "pleme-memory-elastic"), None);
+        assert_eq!(
+            competing_memory_manager(&owners, "pleme-memory-elastic"),
+            None
+        );
     }
 
     #[test]
@@ -2875,7 +3313,10 @@ mod tests {
             None
         );
         // …but a genuine same-field competitor (VPA) is still caught.
-        let owners2 = vec![owns("keda-operator", "spec.replicas"), owns("vpa", MEMORY_LIMIT_FIELD)];
+        let owners2 = vec![
+            owns("keda-operator", "spec.replicas"),
+            owns("vpa", MEMORY_LIMIT_FIELD),
+        ];
         assert_eq!(
             competing_field_manager(&owners2, "breathe-memory", MEMORY_LIMIT_FIELD),
             Some("vpa".into())
@@ -2888,7 +3329,10 @@ mod tests {
     fn growonly_converts_shrink_to_nosafeshrink() {
         assert_eq!(
             clamp_to_directionality(
-                Decision::Shrink { from: 2 * GI, to: 1800 * MI },
+                Decision::Shrink {
+                    from: 2 * GI,
+                    to: 1800 * MI
+                },
                 Directionality::GrowOnly
             ),
             Decision::NoSafeShrink { current: 2 * GI }
@@ -2898,8 +3342,17 @@ mod tests {
     #[test]
     fn growonly_passes_grow_through() {
         assert_eq!(
-            clamp_to_directionality(Decision::Grow { from: GI, to: 2 * GI }, Directionality::GrowOnly),
-            Decision::Grow { from: GI, to: 2 * GI }
+            clamp_to_directionality(
+                Decision::Grow {
+                    from: GI,
+                    to: 2 * GI
+                },
+                Directionality::GrowOnly
+            ),
+            Decision::Grow {
+                from: GI,
+                to: 2 * GI
+            }
         );
     }
 
@@ -2907,10 +3360,16 @@ mod tests {
     fn bidirectional_passes_shrink_through() {
         assert_eq!(
             clamp_to_directionality(
-                Decision::Shrink { from: 2 * GI, to: 1800 * MI },
+                Decision::Shrink {
+                    from: 2 * GI,
+                    to: 1800 * MI
+                },
                 Directionality::Bidirectional
             ),
-            Decision::Shrink { from: 2 * GI, to: 1800 * MI }
+            Decision::Shrink {
+                from: 2 * GI,
+                to: 1800 * MI
+            }
         );
     }
 
@@ -2919,12 +3378,36 @@ mod tests {
     fn obs(used: u64, cap: u64, owners: Vec<FieldOwner>) -> Observation {
         // peak == used: no trailing-window history ⇒ instantaneous-equivalent.
         // observed_for u64::MAX ⇒ past warmup (warmup is exercised in its own tests).
-        Observation { used, peak_used: used, bound: Capacity::Declared(cap), owners, staleness_secs: 0, memory_shrink_restart_free: false, observed_for_secs: u64::MAX, request_floor: 0, throttle_signal: 0, restarting: false, storage_capability: None }
+        Observation {
+            used,
+            peak_used: used,
+            bound: Capacity::Declared(cap),
+            owners,
+            staleness_secs: 0,
+            memory_shrink_restart_free: false,
+            observed_for_secs: u64::MAX,
+            request_floor: 0,
+            throttle_signal: 0,
+            restarting: false,
+            storage_capability: None,
+        }
     }
     /// An observation with an explicit trailing-window peak (peak ≥ used).
     #[allow(dead_code)] // a shared test helper retained for peak-keyed observations.
     fn obs_peak(used: u64, peak: u64, cap: u64, owners: Vec<FieldOwner>) -> Observation {
-        Observation { used, peak_used: peak.max(used), bound: Capacity::Declared(cap), owners, staleness_secs: 0, memory_shrink_restart_free: false, observed_for_secs: u64::MAX, request_floor: 0, throttle_signal: 0, restarting: false, storage_capability: None }
+        Observation {
+            used,
+            peak_used: peak.max(used),
+            bound: Capacity::Declared(cap),
+            owners,
+            staleness_secs: 0,
+            memory_shrink_restart_free: false,
+            observed_for_secs: u64::MAX,
+            request_floor: 0,
+            throttle_signal: 0,
+            restarting: false,
+            storage_capability: None,
+        }
     }
     fn ours() -> Vec<FieldOwner> {
         vec![owns("breathe-memory", MEMORY_LIMIT_FIELD)]
@@ -2936,23 +3419,59 @@ mod tests {
         // util 0.95 would Act, but a competing same-field owner must yield FIRST.
         let owners = vec![owns("vpa", MEMORY_LIMIT_FIELD)];
         assert_eq!(
-            plan_tick(&obs(950 * MI, GI, owners), &cfg(), Directionality::Bidirectional, false, "breathe-memory", MEMORY_LIMIT_FIELD, FRESH, None, CarvePolicy::default()),
-            TickPlan::Conflict { manager: "vpa".into() }
+            plan_tick(
+                &obs(950 * MI, GI, owners),
+                &cfg(),
+                Directionality::Bidirectional,
+                false,
+                "breathe-memory",
+                MEMORY_LIMIT_FIELD,
+                FRESH,
+                None,
+                CarvePolicy::default()
+            ),
+            TickPlan::Conflict {
+                manager: "vpa".into()
+            }
         );
     }
 
     #[test]
     fn plan_acts_when_mutation_and_not_in_cooldown() {
-        match plan_tick(&obs(950 * MI, GI, ours()), &cfg(), Directionality::Bidirectional, false, "breathe-memory", MEMORY_LIMIT_FIELD, FRESH, None, CarvePolicy::default()) {
-            TickPlan::Act { decision: Decision::Grow { .. } } => {}
+        match plan_tick(
+            &obs(950 * MI, GI, ours()),
+            &cfg(),
+            Directionality::Bidirectional,
+            false,
+            "breathe-memory",
+            MEMORY_LIMIT_FIELD,
+            FRESH,
+            None,
+            CarvePolicy::default(),
+        ) {
+            TickPlan::Act {
+                decision: Decision::Grow { .. },
+            } => {}
             p => panic!("expected Act(Grow), got {p:?}"),
         }
     }
 
     #[test]
     fn plan_defers_mutation_in_cooldown() {
-        match plan_tick(&obs(950 * MI, GI, ours()), &cfg(), Directionality::Bidirectional, true, "breathe-memory", MEMORY_LIMIT_FIELD, FRESH, None, CarvePolicy::default()) {
-            TickPlan::Cooldown { decision: Decision::Grow { .. } } => {}
+        match plan_tick(
+            &obs(950 * MI, GI, ours()),
+            &cfg(),
+            Directionality::Bidirectional,
+            true,
+            "breathe-memory",
+            MEMORY_LIMIT_FIELD,
+            FRESH,
+            None,
+            CarvePolicy::default(),
+        ) {
+            TickPlan::Cooldown {
+                decision: Decision::Grow { .. },
+            } => {}
             p => panic!("expected Cooldown(Grow), got {p:?}"),
         }
     }
@@ -2960,8 +3479,20 @@ mod tests {
     #[test]
     fn plan_observes_hold_without_mutation() {
         assert_eq!(
-            plan_tick(&obs(800 * MI, GI, ours()), &cfg(), Directionality::Bidirectional, false, "breathe-memory", MEMORY_LIMIT_FIELD, FRESH, None, CarvePolicy::default()),
-            TickPlan::Observe { decision: Decision::Hold }
+            plan_tick(
+                &obs(800 * MI, GI, ours()),
+                &cfg(),
+                Directionality::Bidirectional,
+                false,
+                "breathe-memory",
+                MEMORY_LIMIT_FIELD,
+                FRESH,
+                None,
+                CarvePolicy::default()
+            ),
+            TickPlan::Observe {
+                decision: Decision::Hold
+            }
         );
     }
 
@@ -2969,8 +3500,20 @@ mod tests {
     fn plan_observes_growonly_shrink_as_nosafeshrink() {
         // storage-like: util 0.20 would Shrink, but GrowOnly turns it into an
         // observable NoSafeShrink — one band law, no storage-specific path.
-        match plan_tick(&obs(200 * MI, GI, ours()), &cfg(), Directionality::GrowOnly, false, "breathe-memory", MEMORY_LIMIT_FIELD, FRESH, None, CarvePolicy::default()) {
-            TickPlan::Observe { decision: Decision::NoSafeShrink { .. } } => {}
+        match plan_tick(
+            &obs(200 * MI, GI, ours()),
+            &cfg(),
+            Directionality::GrowOnly,
+            false,
+            "breathe-memory",
+            MEMORY_LIMIT_FIELD,
+            FRESH,
+            None,
+            CarvePolicy::default(),
+        ) {
+            TickPlan::Observe {
+                decision: Decision::NoSafeShrink { .. },
+            } => {}
             p => panic!("expected Observe(NoSafeShrink), got {p:?}"),
         }
     }
@@ -2981,7 +3524,17 @@ mod tests {
         // (used 2Gi) for a 1Gi volume (capacity). A per-volume gauge can NEVER do
         // this (reserved blocks keep a full fs strictly below capacity), so the
         // metric isn't about this entity — refuse to carve, surface it typed.
-        match plan_tick(&obs(2 * GI, GI, ours()), &cfg(), Directionality::GrowOnly, false, "breathe-memory", MEMORY_LIMIT_FIELD, FRESH, None, CarvePolicy::default()) {
+        match plan_tick(
+            &obs(2 * GI, GI, ours()),
+            &cfg(),
+            Directionality::GrowOnly,
+            false,
+            "breathe-memory",
+            MEMORY_LIMIT_FIELD,
+            FRESH,
+            None,
+            CarvePolicy::default(),
+        ) {
             TickPlan::Unrepresentable { used, capacity } => {
                 assert_eq!((used, capacity), (2 * GI, GI));
             }
@@ -2993,8 +3546,20 @@ mod tests {
     fn plan_does_not_flag_bidirectional_over_limit_as_unrepresentable() {
         // a memory/cpu band reading momentarily ABOVE its limit is a legitimate
         // "grow hard" signal — the guard is scoped to GrowOnly and must not fire.
-        match plan_tick(&obs(2 * GI, GI, ours()), &cfg(), Directionality::Bidirectional, false, "breathe-memory", MEMORY_LIMIT_FIELD, FRESH, None, CarvePolicy::default()) {
-            TickPlan::Act { decision: Decision::Grow { .. } } => {}
+        match plan_tick(
+            &obs(2 * GI, GI, ours()),
+            &cfg(),
+            Directionality::Bidirectional,
+            false,
+            "breathe-memory",
+            MEMORY_LIMIT_FIELD,
+            FRESH,
+            None,
+            CarvePolicy::default(),
+        ) {
+            TickPlan::Act {
+                decision: Decision::Grow { .. },
+            } => {}
             p => panic!("expected Act(Grow) for an over-limit Bidirectional band, got {p:?}"),
         }
     }
@@ -3004,8 +3569,20 @@ mod tests {
         // a genuinely 100%-full GrowOnly volume reads used == capacity (a valid
         // per-volume reading) — it must carve (grow), NOT be flagged unrepresentable.
         // Only used STRICTLY > capacity proves the wrong-entity metric.
-        match plan_tick(&obs(GI, GI, ours()), &cfg(), Directionality::GrowOnly, false, "breathe-memory", MEMORY_LIMIT_FIELD, FRESH, None, CarvePolicy::default()) {
-            TickPlan::Act { decision: Decision::Grow { .. } } => {}
+        match plan_tick(
+            &obs(GI, GI, ours()),
+            &cfg(),
+            Directionality::GrowOnly,
+            false,
+            "breathe-memory",
+            MEMORY_LIMIT_FIELD,
+            FRESH,
+            None,
+            CarvePolicy::default(),
+        ) {
+            TickPlan::Act {
+                decision: Decision::Grow { .. },
+            } => {}
             p => panic!("expected Act(Grow) for a full GrowOnly volume, got {p:?}"),
         }
     }
@@ -3013,10 +3590,18 @@ mod tests {
     // ── STORAGE CAPABILITY GATE (the fail-fast fix — Step 0 of plan_tick) ────────
 
     fn unsupported_cap() -> StorageCapability {
-        StorageCapability { volume_expansion: false, per_volume_metrics: false, provisioner: "rancher.io/local-path".into() }
+        StorageCapability {
+            volume_expansion: false,
+            per_volume_metrics: false,
+            provisioner: "rancher.io/local-path".into(),
+        }
     }
     fn supported_cap() -> StorageCapability {
-        StorageCapability { volume_expansion: true, per_volume_metrics: true, provisioner: "ebs.csi.aws.com".into() }
+        StorageCapability {
+            volume_expansion: true,
+            per_volume_metrics: true,
+            provisioner: "ebs.csi.aws.com".into(),
+        }
     }
 
     #[test]
@@ -3024,8 +3609,22 @@ mod tests {
         assert!(supported_cap().is_supported());
         assert!(!unsupported_cap().is_supported());
         // either property alone missing is still unsupported — no partial credit.
-        assert!(!StorageCapability { volume_expansion: false, per_volume_metrics: true, provisioner: String::new() }.is_supported());
-        assert!(!StorageCapability { volume_expansion: true, per_volume_metrics: false, provisioner: String::new() }.is_supported());
+        assert!(
+            !StorageCapability {
+                volume_expansion: false,
+                per_volume_metrics: true,
+                provisioner: String::new()
+            }
+            .is_supported()
+        );
+        assert!(
+            !StorageCapability {
+                volume_expansion: true,
+                per_volume_metrics: false,
+                provisioner: String::new()
+            }
+            .is_supported()
+        );
     }
 
     #[test]
@@ -3033,9 +3632,26 @@ mod tests {
         // the rustfs-data-storage case: no competing owner, so BEFORE this gate it
         // would fall through to whatever the metric happened to say — now it never
         // reaches that far.
-        let o = Observation { storage_capability: Some(unsupported_cap()), ..obs(GI, GI, ours()) };
-        match plan_tick(&o, &cfg(), Directionality::GrowOnly, false, "breathe-memory", MEMORY_LIMIT_FIELD, FRESH, None, CarvePolicy::default()) {
-            TickPlan::CapabilityMissing { volume_expansion, per_volume_metrics, provisioner } => {
+        let o = Observation {
+            storage_capability: Some(unsupported_cap()),
+            ..obs(GI, GI, ours())
+        };
+        match plan_tick(
+            &o,
+            &cfg(),
+            Directionality::GrowOnly,
+            false,
+            "breathe-memory",
+            MEMORY_LIMIT_FIELD,
+            FRESH,
+            None,
+            CarvePolicy::default(),
+        ) {
+            TickPlan::CapabilityMissing {
+                volume_expansion,
+                per_volume_metrics,
+                provisioner,
+            } => {
                 assert!(!volume_expansion);
                 assert!(!per_volume_metrics);
                 assert_eq!(provisioner, "rancher.io/local-path");
@@ -3052,10 +3668,26 @@ mod tests {
         // StorageClass, both mysql's (Conflict-shaped) and rustfs's
         // (Unrepresentable-shaped) targets must land on the IDENTICAL
         // CapabilityMissing terminal — never Conflict.
-        let competing_owner = vec![owns("k3s-controller-manager", "spec.resources.requests.storage")];
-        let o = Observation { storage_capability: Some(unsupported_cap()), ..obs(GI, GI, competing_owner) };
+        let competing_owner = vec![owns(
+            "k3s-controller-manager",
+            "spec.resources.requests.storage",
+        )];
+        let o = Observation {
+            storage_capability: Some(unsupported_cap()),
+            ..obs(GI, GI, competing_owner)
+        };
         assert_eq!(
-            plan_tick(&o, &cfg(), Directionality::GrowOnly, false, "breathe-storage", "spec.resources.requests.storage", FRESH, None, CarvePolicy::default()),
+            plan_tick(
+                &o,
+                &cfg(),
+                Directionality::GrowOnly,
+                false,
+                "breathe-storage",
+                "spec.resources.requests.storage",
+                FRESH,
+                None,
+                CarvePolicy::default()
+            ),
             TickPlan::CapabilityMissing {
                 volume_expansion: false,
                 per_volume_metrics: false,
@@ -3068,9 +3700,24 @@ mod tests {
     fn plan_never_gates_a_supported_storage_class() {
         // a StorageClass that DOES support both properties must carve normally —
         // the gate is additive, never a regression on the golden path.
-        let o = Observation { storage_capability: Some(supported_cap()), ..obs(GI, GI, ours()) };
-        match plan_tick(&o, &cfg(), Directionality::GrowOnly, false, "breathe-memory", MEMORY_LIMIT_FIELD, FRESH, None, CarvePolicy::default()) {
-            TickPlan::Act { decision: Decision::Grow { .. } } => {}
+        let o = Observation {
+            storage_capability: Some(supported_cap()),
+            ..obs(GI, GI, ours())
+        };
+        match plan_tick(
+            &o,
+            &cfg(),
+            Directionality::GrowOnly,
+            false,
+            "breathe-memory",
+            MEMORY_LIMIT_FIELD,
+            FRESH,
+            None,
+            CarvePolicy::default(),
+        ) {
+            TickPlan::Act {
+                decision: Decision::Grow { .. },
+            } => {}
             p => panic!("expected Act(Grow) for a supported StorageClass, got {p:?}"),
         }
     }
@@ -3080,10 +3727,27 @@ mod tests {
         // defensive scoping: the gate is GrowOnly-only (storage is the only
         // dimension that ever populates storage_capability) — a hypothetical
         // Bidirectional observation carrying `Some` must never be gated.
-        let o = Observation { storage_capability: Some(unsupported_cap()), ..obs(950 * MI, GI, ours()) };
-        match plan_tick(&o, &cfg(), Directionality::Bidirectional, false, "breathe-memory", MEMORY_LIMIT_FIELD, FRESH, None, CarvePolicy::default()) {
-            TickPlan::Act { decision: Decision::Grow { .. } } => {}
-            p => panic!("expected Act(Grow) — the capability gate is scoped to GrowOnly, got {p:?}"),
+        let o = Observation {
+            storage_capability: Some(unsupported_cap()),
+            ..obs(950 * MI, GI, ours())
+        };
+        match plan_tick(
+            &o,
+            &cfg(),
+            Directionality::Bidirectional,
+            false,
+            "breathe-memory",
+            MEMORY_LIMIT_FIELD,
+            FRESH,
+            None,
+            CarvePolicy::default(),
+        ) {
+            TickPlan::Act {
+                decision: Decision::Grow { .. },
+            } => {}
+            p => {
+                panic!("expected Act(Grow) — the capability gate is scoped to GrowOnly, got {p:?}")
+            }
         }
     }
 
@@ -3091,9 +3755,24 @@ mod tests {
     fn plan_never_gates_when_capability_is_unknown() {
         // `None` (every non-storage dimension, and a storage read that couldn't
         // determine the class) is byte-identical to before this gate existed.
-        let o = Observation { storage_capability: None, ..obs(GI, GI, ours()) };
-        match plan_tick(&o, &cfg(), Directionality::GrowOnly, false, "breathe-memory", MEMORY_LIMIT_FIELD, FRESH, None, CarvePolicy::default()) {
-            TickPlan::Act { decision: Decision::Grow { .. } } => {}
+        let o = Observation {
+            storage_capability: None,
+            ..obs(GI, GI, ours())
+        };
+        match plan_tick(
+            &o,
+            &cfg(),
+            Directionality::GrowOnly,
+            false,
+            "breathe-memory",
+            MEMORY_LIMIT_FIELD,
+            FRESH,
+            None,
+            CarvePolicy::default(),
+        ) {
+            TickPlan::Act {
+                decision: Decision::Grow { .. },
+            } => {}
             p => panic!("expected Act(Grow) for an unknown (None) capability, got {p:?}"),
         }
     }
@@ -3102,9 +3781,34 @@ mod tests {
     fn plan_refuses_to_mutate_on_stale_metric() {
         // util 0.95 would Act(Grow), but a sample older than the bound must never
         // carve — the never-OOM proof holds only on a fresh metric.
-        let stale = Observation { used: 950 * MI, peak_used: 950 * MI, bound: Capacity::Declared(GI), owners: ours(), staleness_secs: 120, memory_shrink_restart_free: false, observed_for_secs: u64::MAX, request_floor: 0, throttle_signal: 0, restarting: false, storage_capability: None };
-        match plan_tick(&stale, &cfg(), Directionality::Bidirectional, false, "breathe-memory", MEMORY_LIMIT_FIELD, FRESH, None, CarvePolicy::default()) {
-            TickPlan::Stale { staleness_secs: 120, decision: Decision::Grow { .. } } => {}
+        let stale = Observation {
+            used: 950 * MI,
+            peak_used: 950 * MI,
+            bound: Capacity::Declared(GI),
+            owners: ours(),
+            staleness_secs: 120,
+            memory_shrink_restart_free: false,
+            observed_for_secs: u64::MAX,
+            request_floor: 0,
+            throttle_signal: 0,
+            restarting: false,
+            storage_capability: None,
+        };
+        match plan_tick(
+            &stale,
+            &cfg(),
+            Directionality::Bidirectional,
+            false,
+            "breathe-memory",
+            MEMORY_LIMIT_FIELD,
+            FRESH,
+            None,
+            CarvePolicy::default(),
+        ) {
+            TickPlan::Stale {
+                staleness_secs: 120,
+                decision: Decision::Grow { .. },
+            } => {}
             p => panic!("expected Stale(Grow), got {p:?}"),
         }
     }
@@ -3112,7 +3816,17 @@ mod tests {
     #[test]
     fn plan_observeonly_never_mutates() {
         // a replica-like ObserveOnly dim: even a strong grow signal yields no write.
-        match plan_tick(&obs(950 * MI, GI, ours()), &cfg(), Directionality::ObserveOnly, false, "breathe-memory", MEMORY_LIMIT_FIELD, FRESH, None, CarvePolicy::default()) {
+        match plan_tick(
+            &obs(950 * MI, GI, ours()),
+            &cfg(),
+            Directionality::ObserveOnly,
+            false,
+            "breathe-memory",
+            MEMORY_LIMIT_FIELD,
+            FRESH,
+            None,
+            CarvePolicy::default(),
+        ) {
             TickPlan::Observe { .. } => {}
             p => panic!("expected Observe (no mutation), got {p:?}"),
         }
@@ -3159,11 +3873,17 @@ mod tests {
     #[test]
     fn quantity_renders_unit_correct_k8s_strings() {
         // bytes: bare integer (round-trips through parse).
-        let mem = Quantity { value: 2 * GI, unit: Unit::Bytes };
+        let mem = Quantity {
+            value: 2 * GI,
+            unit: Unit::Bytes,
+        };
         assert_eq!(mem.to_string(), "2147483648");
         assert_eq!(Unit::Bytes.parse(&mem.to_string()), Some(2 * GI));
         // cpu: MUST carry the `m` suffix — "250" would be read as 250 CORES.
-        let cpu = Quantity { value: 250, unit: Unit::Millicores };
+        let cpu = Quantity {
+            value: 250,
+            unit: Unit::Millicores,
+        };
         assert_eq!(cpu.to_string(), "250m");
         assert_eq!(Unit::Millicores.parse(&cpu.to_string()), Some(250));
     }
@@ -3175,18 +3895,36 @@ mod tests {
         // The free `decide` == `decide_with(&BandLaw, …, …)`, so every band-edge
         // test above is also a behaviour-preservation test for the trait lift.
         let c = cfg();
-        for (ws, lim) in [(800 * MI, GI), (950 * MI, GI), (200 * MI, GI), (0, 0), (16 * GI, 16 * GI)] {
+        for (ws, lim) in [
+            (800 * MI, GI),
+            (950 * MI, GI),
+            (200 * MI, GI),
+            (0, 0),
+            (16 * GI, 16 * GI),
+        ] {
             assert_eq!(decide(ws, lim, &c), decide_with(&BandLaw, ws, ws, lim, &c));
         }
     }
 
     #[test]
     fn safety_clamp_caps_grow_at_ceiling() {
-        let c = BandConfig { ceiling_bytes: 4 * GI, ..cfg() };
+        let c = BandConfig {
+            ceiling_bytes: 4 * GI,
+            ..cfg()
+        };
         // a law proposing 100Gi is capped to the ceiling
-        assert_eq!(safety_clamp(Proposal::Target(100 * GI), GI, GI, 2 * GI, &c), Decision::Grow { from: 2 * GI, to: 4 * GI });
+        assert_eq!(
+            safety_clamp(Proposal::Target(100 * GI), GI, GI, 2 * GI, &c),
+            Decision::Grow {
+                from: 2 * GI,
+                to: 4 * GI
+            }
+        );
         // growth with no room → AtCeiling, not an over-ceiling write
-        assert_eq!(safety_clamp(Proposal::Target(100 * GI), GI, GI, 4 * GI, &c), Decision::AtCeiling { current: 4 * GI });
+        assert_eq!(
+            safety_clamp(Proposal::Target(100 * GI), GI, GI, 4 * GI, &c),
+            Decision::AtCeiling { current: 4 * GI }
+        );
     }
 
     #[test]
@@ -3195,7 +3933,11 @@ mod tests {
         let ws = 800 * MI;
         let safe_min = (ws as f64 / c.setpoint).ceil() as u64;
         match safety_clamp(Proposal::Target(1), ws, ws, 2 * GI, &c) {
-            Decision::Shrink { to, .. } => assert_eq!(to, safe_min.max(c.floor_bytes), "shrink lifted to the safe minimum"),
+            Decision::Shrink { to, .. } => assert_eq!(
+                to,
+                safe_min.max(c.floor_bytes),
+                "shrink lifted to the safe minimum"
+            ),
             d => panic!("expected clamped Shrink, got {d:?}"),
         }
     }
@@ -3208,15 +3950,25 @@ mod tests {
     fn safety_gate_contains_any_law() {
         struct GrowToMax;
         impl ControlLaw for GrowToMax {
-            fn propose(&self, _w: u64, _l: u64, _c: &BandConfig) -> Proposal { Proposal::Target(u64::MAX) }
+            fn propose(&self, _w: u64, _l: u64, _c: &BandConfig) -> Proposal {
+                Proposal::Target(u64::MAX)
+            }
         }
         struct ShrinkToZero;
         impl ControlLaw for ShrinkToZero {
-            fn propose(&self, _w: u64, _l: u64, _c: &BandConfig) -> Proposal { Proposal::Target(0) }
+            fn propose(&self, _w: u64, _l: u64, _c: &BandConfig) -> Proposal {
+                Proposal::Target(0)
+            }
         }
         let c = cfg();
         for &ws in &[0u64, 100 * MI, 800 * MI, 4 * GI, 16 * GI, 32 * GI] {
-            for &limit in &[256 * MI, GI, 4 * GI, 16 * GI, 20 * GI /* > ceiling: snap */] {
+            for &limit in &[
+                256 * MI,
+                GI,
+                4 * GI,
+                16 * GI,
+                20 * GI, /* > ceiling: snap */
+            ] {
                 let safe_min = (ws as f64 / c.setpoint).ceil() as u64;
                 for d in [
                     decide_with(&GrowToMax, ws, ws, limit, &c),
@@ -3224,38 +3976,146 @@ mod tests {
                     decide_with(&BandLaw, ws, ws, limit, &c),
                     decide_with(&ProportionalLaw { gain: 1.0 }, ws, ws, limit, &c),
                     decide_with(&ProportionalLaw { gain: 0.5 }, ws, ws, limit, &c),
-                    decide_with(&SlewLimited { inner: GrowToMax, max_step_frac: 0.25 }, ws, ws, limit, &c),
-                    decide_with(&SlewLimited { inner: ShrinkToZero, max_step_frac: 0.25 }, ws, ws, limit, &c),
+                    decide_with(
+                        &SlewLimited {
+                            inner: GrowToMax,
+                            max_step_frac: 0.25,
+                        },
+                        ws,
+                        ws,
+                        limit,
+                        &c,
+                    ),
+                    decide_with(
+                        &SlewLimited {
+                            inner: ShrinkToZero,
+                            max_step_frac: 0.25,
+                        },
+                        ws,
+                        ws,
+                        limit,
+                        &c,
+                    ),
                     // PR-1: QuantizedSlice — snapping a target to a quantum cannot
                     // escape the envelope (the gate still owns floor/ceiling/safe_min).
-                    decide_with(&QuantizedSlice { inner: GrowToMax, slice: 64 }, ws, ws, limit, &c),
-                    decide_with(&QuantizedSlice { inner: ShrinkToZero, slice: 64 }, ws, ws, limit, &c),
-                    decide_with(&QuantizedSlice { inner: BandLaw, slice: 1 }, ws, ws, limit, &c),
+                    decide_with(
+                        &QuantizedSlice {
+                            inner: GrowToMax,
+                            slice: 64,
+                        },
+                        ws,
+                        ws,
+                        limit,
+                        &c,
+                    ),
+                    decide_with(
+                        &QuantizedSlice {
+                            inner: ShrinkToZero,
+                            slice: 64,
+                        },
+                        ws,
+                        ws,
+                        limit,
+                        &c,
+                    ),
+                    decide_with(
+                        &QuantizedSlice {
+                            inner: BandLaw,
+                            slice: 1,
+                        },
+                        ws,
+                        ws,
+                        limit,
+                        &c,
+                    ),
                     // PR-3: ThrottleAware — no-rate path is the inner law verbatim.
                     decide_with(&ThrottleAware { inner: GrowToMax }, ws, ws, limit, &c),
-                    decide_with(&ThrottleAware { inner: ShrinkToZero }, ws, ws, limit, &c),
+                    decide_with(
+                        &ThrottleAware {
+                            inner: ShrinkToZero,
+                        },
+                        ws,
+                        ws,
+                        limit,
+                        &c,
+                    ),
                     // PR-3: ThrottleAware under an ACTIVE throttle signal — a shrink
                     // is suppressed to Hold, a grow still clamps to the ceiling.
                     decide_with_rate(&ThrottleAware { inner: GrowToMax }, ws, ws, limit, &c, 5),
-                    decide_with_rate(&ThrottleAware { inner: ShrinkToZero }, ws, ws, limit, &c, 5),
+                    decide_with_rate(
+                        &ThrottleAware {
+                            inner: ShrinkToZero,
+                        },
+                        ws,
+                        ws,
+                        limit,
+                        &c,
+                        5,
+                    ),
                     // The Step-5..14 law families — each funnels through the SAME gate.
                     decide_with(&PercentileBand, ws, ws, limit, &c),
                     decide_with(&BurstBudget, ws, ws, limit, &c),
-                    decide_with(&Aimd { increment: GI, decrease_factor: 0.5 }, ws, ws, limit, &c),
-                    decide_with_rate(&Aimd { increment: GI, decrease_factor: 0.5 }, ws, ws, limit, &c, 7),
-                    decide_with(&SharedBudget { inner: GrowToMax, available_headroom: GI }, ws, ws, limit, &c),
-                    decide_with(&SharedBudget { inner: ShrinkToZero, available_headroom: GI }, ws, ws, limit, &c),
+                    decide_with(
+                        &Aimd {
+                            increment: GI,
+                            decrease_factor: 0.5,
+                        },
+                        ws,
+                        ws,
+                        limit,
+                        &c,
+                    ),
+                    decide_with_rate(
+                        &Aimd {
+                            increment: GI,
+                            decrease_factor: 0.5,
+                        },
+                        ws,
+                        ws,
+                        limit,
+                        &c,
+                        7,
+                    ),
+                    decide_with(
+                        &SharedBudget {
+                            inner: GrowToMax,
+                            available_headroom: GI,
+                        },
+                        ws,
+                        ws,
+                        limit,
+                        &c,
+                    ),
+                    decide_with(
+                        &SharedBudget {
+                            inner: ShrinkToZero,
+                            available_headroom: GI,
+                        },
+                        ws,
+                        ws,
+                        limit,
+                        &c,
+                    ),
                 ] {
                     match d {
                         Decision::Grow { from, to } => {
-                            assert!(to <= c.ceiling_bytes, "ws={ws} limit={limit}: grew above ceiling to {to}");
+                            assert!(
+                                to <= c.ceiling_bytes,
+                                "ws={ws} limit={limit}: grew above ceiling to {to}"
+                            );
                             assert!(to > from, "a Grow must raise the limit");
                         }
                         Decision::Shrink { from, to } => {
-                            assert!(to >= c.floor_bytes || from > c.ceiling_bytes, "shrank below floor");
+                            assert!(
+                                to >= c.floor_bytes || from > c.ceiling_bytes,
+                                "shrank below floor"
+                            );
                             // never shrink below safe_min (would push live pages over the band) —
                             // the sole exception is the hard ceiling-snap (from > ceiling).
-                            assert!(to >= safe_min || from > c.ceiling_bytes, "ws={ws} limit={limit}: shrank below safe_min to {to}");
+                            assert!(
+                                to >= safe_min || from > c.ceiling_bytes,
+                                "ws={ws} limit={limit}: shrank below safe_min to {to}"
+                            );
                             assert!(to < from, "a Shrink must lower the limit");
                         }
                         _ => {} // Hold / AtCeiling / NoSafeShrink / NoLimit never mutate
@@ -3272,7 +4132,14 @@ mod tests {
         assert_eq!(Unit::Count.parse("2M"), Some(2_000_000));
         assert_eq!(Unit::Count.parse(""), None);
         assert_eq!(Unit::Count.parse("garbage"), None);
-        assert_eq!(Quantity { value: 110, unit: Unit::Count }.to_string(), "110");
+        assert_eq!(
+            Quantity {
+                value: 110,
+                unit: Unit::Count
+            }
+            .to_string(),
+            "110"
+        );
     }
 
     #[test]
@@ -3288,7 +4155,14 @@ mod tests {
         assert_eq!(Unit::Iops.parse("16k"), Some(16_000));
         // all render bare + round-trip.
         for u in [Unit::BitsPerSec, Unit::BytesPerSec, Unit::Iops] {
-            assert_eq!(Quantity { value: 4096, unit: u }.to_string(), "4096");
+            assert_eq!(
+                Quantity {
+                    value: 4096,
+                    unit: u
+                }
+                .to_string(),
+                "4096"
+            );
             assert_eq!(u.parse("4096"), Some(4096));
         }
     }
@@ -3312,7 +4186,14 @@ mod tests {
         assert_eq!(Unit::Cents.parse("$5"), Some(500));
         assert_eq!(Unit::Cents.parse("500"), Some(500));
         // all render bare + round-trip through their base scalar.
-        for u in [Unit::Rps, Unit::Pps, Unit::Duration, Unit::Percent, Unit::Cents, Unit::BurstUsec] {
+        for u in [
+            Unit::Rps,
+            Unit::Pps,
+            Unit::Duration,
+            Unit::Percent,
+            Unit::Cents,
+            Unit::BurstUsec,
+        ] {
             assert_eq!(Quantity { value: 42, unit: u }.to_string(), "42");
         }
     }
@@ -3327,10 +4208,25 @@ mod tests {
         assert_eq!(snap_up(Proposal::Target(7), 1), Proposal::Target(7)); // slice 1 = no-op
         assert_eq!(snap_up(Proposal::Hold, 64), Proposal::Hold);
         // saturates rather than overflowing on a GrowToMax target.
-        assert_eq!(snap_up(Proposal::Target(u64::MAX), 64), Proposal::Target(u64::MAX));
+        assert_eq!(
+            snap_up(Proposal::Target(u64::MAX), 64),
+            Proposal::Target(u64::MAX)
+        );
         // end-to-end: the snapped grow still clamps to the ceiling.
-        let d = decide_with(&QuantizedSlice { inner: BandLaw, slice: 7 }, 950 * MI, 950 * MI, GI, &c);
-        assert!(matches!(d, Decision::Grow { .. } | Decision::AtCeiling { .. }));
+        let d = decide_with(
+            &QuantizedSlice {
+                inner: BandLaw,
+                slice: 7,
+            },
+            950 * MI,
+            950 * MI,
+            GI,
+            &c,
+        );
+        assert!(matches!(
+            d,
+            Decision::Grow { .. } | Decision::AtCeiling { .. }
+        ));
     }
 
     #[test]
@@ -3339,14 +4235,44 @@ mod tests {
         // A low-util sample (would shrink) — but with a live throttle signal,
         // ThrottleAware holds instead of tightening the cap (anti-flap).
         let low_util_ws = 100 * MI; // util 0.1 at 1Gi → BandLaw would shrink
-        let shrink = decide_with(&ThrottleAware { inner: BandLaw }, low_util_ws, low_util_ws, GI, &c);
-        assert!(matches!(shrink, Decision::Shrink { .. }), "no throttle signal ⇒ inner shrink");
-        let held = decide_with_rate(&ThrottleAware { inner: BandLaw }, low_util_ws, low_util_ws, GI, &c, 3);
-        assert_eq!(held, Decision::Hold, "active throttle ⇒ shrink suppressed to Hold");
+        let shrink = decide_with(
+            &ThrottleAware { inner: BandLaw },
+            low_util_ws,
+            low_util_ws,
+            GI,
+            &c,
+        );
+        assert!(
+            matches!(shrink, Decision::Shrink { .. }),
+            "no throttle signal ⇒ inner shrink"
+        );
+        let held = decide_with_rate(
+            &ThrottleAware { inner: BandLaw },
+            low_util_ws,
+            low_util_ws,
+            GI,
+            &c,
+            3,
+        );
+        assert_eq!(
+            held,
+            Decision::Hold,
+            "active throttle ⇒ shrink suppressed to Hold"
+        );
         // A grow is NEVER suppressed — relieving throttle is the safe move.
         let high_util_ws = 950 * MI;
-        let grown = decide_with_rate(&ThrottleAware { inner: BandLaw }, high_util_ws, high_util_ws, GI, &c, 9);
-        assert!(matches!(grown, Decision::Grow { .. }), "throttle + high util ⇒ still grows");
+        let grown = decide_with_rate(
+            &ThrottleAware { inner: BandLaw },
+            high_util_ws,
+            high_util_ws,
+            GI,
+            &c,
+            9,
+        );
+        assert!(
+            matches!(grown, Decision::Grow { .. }),
+            "throttle + high util ⇒ still grows"
+        );
     }
 
     #[test]
@@ -3357,12 +4283,24 @@ mod tests {
         match decide_with(&PercentileBand, ws, ws, GI, &c) {
             Decision::Grow { to, .. } => {
                 let new_util = ws as f64 / to as f64;
-                assert!((new_util - c.setpoint).abs() < 0.02, "lands util at setpoint, got {new_util}");
+                assert!(
+                    (new_util - c.setpoint).abs() < 0.02,
+                    "lands util at setpoint, got {new_util}"
+                );
             }
             d => panic!("expected Grow, got {d:?}"),
         }
         // in-band → hold.
-        assert_eq!(decide_with(&PercentileBand, (0.78 * GI as f64) as u64, (0.78 * GI as f64) as u64, GI, &c), Decision::Hold);
+        assert_eq!(
+            decide_with(
+                &PercentileBand,
+                (0.78 * GI as f64) as u64,
+                (0.78 * GI as f64) as u64,
+                GI,
+                &c
+            ),
+            Decision::Hold
+        );
     }
 
     // ═══════════════ RequestLaw — the RESERVATION law ═══════════════════════
@@ -3376,7 +4314,11 @@ mod tests {
         // Negative / NaN / infinite are inert — never a shrink-by-headroom, never
         // a NaN-derived 0, never a saturated max.
         for bad in [-1.0, f64::NAN, f64::NEG_INFINITY] {
-            assert_eq!(RequestLaw { headroom: bad }.seat(1000), 1000, "headroom {bad} must be inert");
+            assert_eq!(
+                RequestLaw { headroom: bad }.seat(1000),
+                1000,
+                "headroom {bad} must be inert"
+            );
         }
         // The compiled default matches DemandSignalSpec::headroom (0.15).
         assert_eq!(RequestLaw::default().seat(1000), 1150);
@@ -3422,7 +4364,10 @@ mod tests {
         let c = cfg();
         let demand = 800 * MI;
         let seat = RequestLaw::default().seat(demand);
-        assert_eq!(decide_with(&RequestLaw::default(), demand, demand, seat, &c), Decision::Hold);
+        assert_eq!(
+            decide_with(&RequestLaw::default(), demand, demand, seat, &c),
+            Decision::Hold
+        );
     }
 
     /// I3 — a DOWNWARD move is never written. It surfaces as a withheld
@@ -3438,7 +4383,10 @@ mod tests {
         let raw = decide_with(&RequestLaw::default(), demand, demand, current, &c);
         let withheld = clamp_to_reclaim(raw, Reclaim::ObserveOnly);
         match withheld {
-            Decision::ReclaimWithheld { current: c0, reclaimable } => {
+            Decision::ReclaimWithheld {
+                current: c0,
+                reclaimable,
+            } => {
                 assert_eq!(c0, current);
                 assert!(reclaimable > 0, "a withheld reclaim must NAME the slack");
             }
@@ -3462,10 +4410,24 @@ mod tests {
         let current = GI;
         // Integer fractions of the reservation, so the sweep needs no float cast:
         // 0, 1/100, 1/10, … 4× — from "metric collapsed" to "far over-demand".
-        for (num, den) in [(0u64, 1u64), (1, 100), (1, 10), (1, 2), (9, 10), (99, 100), (1, 1), (101, 100), (3, 2), (4, 1)] {
+        for (num, den) in [
+            (0u64, 1u64),
+            (1, 100),
+            (1, 10),
+            (1, 2),
+            (9, 10),
+            (99, 100),
+            (1, 1),
+            (101, 100),
+            (3, 2),
+            (4, 1),
+        ] {
             let demand = current / den * num;
             let d = clamp_to_directionality(
-                clamp_to_reclaim(decide_with(&RequestLaw::default(), demand, demand, current, &c), Reclaim::ObserveOnly),
+                clamp_to_reclaim(
+                    decide_with(&RequestLaw::default(), demand, demand, current, &c),
+                    Reclaim::ObserveOnly,
+                ),
                 Directionality::GrowOnly,
             );
             assert!(
@@ -3497,12 +4459,18 @@ mod tests {
         // below the deadband, so the ONLY move a MemoryBand has is downward —
         // and memory's grow-only reclaim posture withholds it. There is no
         // MemoryBand setting that raises anything the kernel ranks on.
-        let mem = clamp_to_reclaim(decide_with(&BandLaw, high_water, high_water, limit, &c), Reclaim::ObserveOnly);
+        let mem = clamp_to_reclaim(
+            decide_with(&BandLaw, high_water, high_water, limit, &c),
+            Reclaim::ObserveOnly,
+        );
         assert!(
             !matches!(mem, Decision::Grow { .. }),
             "a MemoryBand must have NO upward move here — that is why 34 OOMKills happened under a 1Gi limit: {mem:?}"
         );
-        assert!(!matches!(mem, Decision::Shrink { .. }), "and its downward move is withheld: {mem:?}");
+        assert!(
+            !matches!(mem, Decision::Shrink { .. }),
+            "and its downward move is withheld: {mem:?}"
+        );
 
         // (b) THE REQUEST BAND FIXES IT. The reservation is raised toward the
         // demonstrated demand plus headroom — the field oom_score_adj is derived
@@ -3533,7 +4501,10 @@ mod tests {
         match decide_with(&law, high_water, high_water, request, &c) {
             Decision::Grow { from, to } => {
                 assert_eq!(from, request);
-                assert_eq!(to, c.floor_bytes, "the floor-seed governs when the floor exceeds the seat");
+                assert_eq!(
+                    to, c.floor_bytes,
+                    "the floor-seed governs when the floor exceeds the seat"
+                );
                 assert!(to > request, "either way the reservation RISES");
             }
             d => panic!("the request band must GROW the reservation, got {d:?}"),
@@ -3543,24 +4514,46 @@ mod tests {
     #[test]
     fn aimd_additively_increases_and_multiplicatively_decreases() {
         let c = cfg();
-        let law = Aimd { increment: 256 * MI, decrease_factor: 0.5 };
+        let law = Aimd {
+            increment: 256 * MI,
+            decrease_factor: 0.5,
+        };
         // no throttle → additive increase by `increment`.
         match decide_with(&law, 500 * MI, 500 * MI, GI, &c) {
-            Decision::Grow { from, to } => { assert_eq!(from, GI); assert_eq!(to, GI + 256 * MI); }
+            Decision::Grow { from, to } => {
+                assert_eq!(from, GI);
+                assert_eq!(to, GI + 256 * MI);
+            }
             d => panic!("expected additive-increase Grow, got {d:?}"),
         }
         // throttle (rate>0) → multiplicative decrease to half (clamped to safe-min).
         let d = decide_with_rate(&law, 100 * MI, 100 * MI, 4 * GI, &c, 9);
-        assert!(matches!(d, Decision::Shrink { to, .. } if to <= 2 * GI), "multiplicative back-off, got {d:?}");
+        assert!(
+            matches!(d, Decision::Shrink { to, .. } if to <= 2 * GI),
+            "multiplicative back-off, got {d:?}"
+        );
     }
 
     #[test]
     fn shared_budget_clamps_a_grow_to_the_available_headroom() {
         let c = cfg();
         // GrowToMax wants u64::MAX, but only 512Mi of shared budget is free → cap there.
-        let law = SharedBudget { inner: { struct G; impl ControlLaw for G { fn propose(&self,_:u64,l:u64,_:&BandConfig)->Proposal{Proposal::Target(l*100)} } G }, available_headroom: 512 * MI };
+        let law = SharedBudget {
+            inner: {
+                struct G;
+                impl ControlLaw for G {
+                    fn propose(&self, _: u64, l: u64, _: &BandConfig) -> Proposal {
+                        Proposal::Target(l * 100)
+                    }
+                }
+                G
+            },
+            available_headroom: 512 * MI,
+        };
         match decide_with(&law, 950 * MI, 950 * MI, GI, &c) {
-            Decision::Grow { to, .. } => assert_eq!(to, GI + 512 * MI, "grow clamped to current + headroom"),
+            Decision::Grow { to, .. } => {
+                assert_eq!(to, GI + 512 * MI, "grow clamped to current + headroom")
+            }
             d => panic!("expected headroom-clamped Grow, got {d:?}"),
         }
     }
@@ -3589,11 +4582,19 @@ mod tests {
         let c = cfg();
         // in-range: grows by a floor-step, capped at ceiling
         match decide_with(&StepUp, 800 * MI, 800 * MI, GI, &c) {
-            Decision::Grow { from, to } => { assert_eq!(from, GI); assert_eq!(to, GI + c.floor_bytes); }
+            Decision::Grow { from, to } => {
+                assert_eq!(from, GI);
+                assert_eq!(to, GI + c.floor_bytes);
+            }
             d => panic!("expected Grow, got {d:?}"),
         }
         // and it STILL can't breach the ceiling — the shared gate owns that
-        assert_eq!(decide_with(&StepUp, GI, GI, c.ceiling_bytes, &c), Decision::AtCeiling { current: c.ceiling_bytes });
+        assert_eq!(
+            decide_with(&StepUp, GI, GI, c.ceiling_bytes, &c),
+            Decision::AtCeiling {
+                current: c.ceiling_bytes
+            }
+        );
     }
 
     #[test]
@@ -3604,7 +4605,10 @@ mod tests {
         match decide_with(&ProportionalLaw { gain: 1.0 }, ws, ws, GI, &c) {
             Decision::Grow { to, .. } => {
                 let new_util = ws as f64 / to as f64;
-                assert!((new_util - c.setpoint).abs() < 0.02, "util {new_util} should land at setpoint");
+                assert!(
+                    (new_util - c.setpoint).abs() < 0.02,
+                    "util {new_util} should land at setpoint"
+                );
             }
             d => panic!("expected Grow, got {d:?}"),
         }
@@ -3622,7 +4626,10 @@ mod tests {
             Decision::Grow { from, to } => to - from,
             _ => 0,
         };
-        assert!(far > near, "a larger deviance must produce a larger corrective step ({far} vs {near})");
+        assert!(
+            far > near,
+            "a larger deviance must produce a larger corrective step ({far} vs {near})"
+        );
     }
 
     #[test]
@@ -3631,12 +4638,26 @@ mod tests {
         // GrowToMax wants u64::MAX; the 25% slew cap limits the per-tick rise.
         struct GrowToMax;
         impl ControlLaw for GrowToMax {
-            fn propose(&self, _w: u64, _l: u64, _c: &BandConfig) -> Proposal { Proposal::Target(u64::MAX) }
+            fn propose(&self, _w: u64, _l: u64, _c: &BandConfig) -> Proposal {
+                Proposal::Target(u64::MAX)
+            }
         }
-        match decide_with(&SlewLimited { inner: GrowToMax, max_step_frac: 0.25 }, 950 * MI, 950 * MI, GI, &c) {
+        match decide_with(
+            &SlewLimited {
+                inner: GrowToMax,
+                max_step_frac: 0.25,
+            },
+            950 * MI,
+            950 * MI,
+            GI,
+            &c,
+        ) {
             Decision::Grow { from, to } => {
                 let rise = (to - from) as f64 / from as f64;
-                assert!(rise <= 0.26, "slew cap holds the per-tick rise near 25% (got {rise})");
+                assert!(
+                    rise <= 0.26,
+                    "slew cap holds the per-tick rise near 25% (got {rise})"
+                );
             }
             d => panic!("expected a capped Grow, got {d:?}"),
         }
@@ -3648,9 +4669,22 @@ mod tests {
     fn predictive_grow_with_zero_rate_is_identical_to_inner() {
         // No history (rate 0) ⇒ nothing to predict ⇒ exactly the inner band law.
         let c = cfg();
-        let law = PredictiveGrow { inner: BandLaw, lookahead_secs: 60.0 };
-        for (ws, lim) in [(800 * MI, GI), (950 * MI, GI), (200 * MI, 2 * GI), (0, 0), (16 * GI, 16 * GI)] {
-            assert_eq!(decide_with_rate(&law, ws, ws, lim, &c, 0), decide(ws, lim, &c), "ws={ws} lim={lim}");
+        let law = PredictiveGrow {
+            inner: BandLaw,
+            lookahead_secs: 60.0,
+        };
+        for (ws, lim) in [
+            (800 * MI, GI),
+            (950 * MI, GI),
+            (200 * MI, 2 * GI),
+            (0, 0),
+            (16 * GI, 16 * GI),
+        ] {
+            assert_eq!(
+                decide_with_rate(&law, ws, ws, lim, &c, 0),
+                decide(ws, lim, &c),
+                "ws={ws} lim={lim}"
+            );
         }
     }
 
@@ -3659,7 +4693,10 @@ mod tests {
         // util 0.78 (in-band → plain BandLaw HOLDS), but a +2Mi/s rate predicts
         // the working set crossing the grow edge within the lookahead → grow NOW.
         let c = cfg();
-        let law = PredictiveGrow { inner: BandLaw, lookahead_secs: 60.0 };
+        let law = PredictiveGrow {
+            inner: BandLaw,
+            lookahead_secs: 60.0,
+        };
         // plain law holds at this in-band utilization …
         assert_eq!(decide(800 * MI, GI, &c), Decision::Hold);
         // … but the predictive law grows ahead of the predicted breach.
@@ -3677,9 +4714,22 @@ mod tests {
     #[test]
     fn predictive_grow_is_still_ceiling_clamped() {
         // a runaway rate cannot breach the ceiling — the shared gate owns that.
-        let c = BandConfig { ceiling_bytes: 4 * GI, ..cfg() };
-        let law = PredictiveGrow { inner: BandLaw, lookahead_secs: 60.0 };
-        match decide_with_rate(&law, 800 * MI, 800 * MI, GI, &c, GI as i64 /* 1Gi/s — absurd */) {
+        let c = BandConfig {
+            ceiling_bytes: 4 * GI,
+            ..cfg()
+        };
+        let law = PredictiveGrow {
+            inner: BandLaw,
+            lookahead_secs: 60.0,
+        };
+        match decide_with_rate(
+            &law,
+            800 * MI,
+            800 * MI,
+            GI,
+            &c,
+            GI as i64, /* 1Gi/s — absurd */
+        ) {
             Decision::Grow { from, to } => {
                 assert_eq!(from, GI);
                 assert_eq!(to, c.ceiling_bytes, "predictive grow capped at the ceiling");
@@ -3693,10 +4743,16 @@ mod tests {
         // low util + a falling rate: the inner law shrinks; prediction (which only
         // ever grows) must pass the shrink through untouched.
         let c = cfg();
-        let law = PredictiveGrow { inner: BandLaw, lookahead_secs: 60.0 };
+        let law = PredictiveGrow {
+            inner: BandLaw,
+            lookahead_secs: 60.0,
+        };
         let with = decide_with_rate(&law, 200 * MI, 200 * MI, 2 * GI, &c, -(MI as i64));
         assert_eq!(with, decide(200 * MI, 2 * GI, &c));
-        assert!(matches!(with, Decision::Shrink { .. }), "prediction must not block a shrink, got {with:?}");
+        assert!(
+            matches!(with, Decision::Shrink { .. }),
+            "prediction must not block a shrink, got {with:?}"
+        );
     }
 
     #[test]
@@ -3705,22 +4761,40 @@ mod tests {
         assert!(BandConfig::default().validate().is_ok());
         // inverted band.
         assert_eq!(
-            BandConfig { shrink_below: 0.90, grow_above: 0.70, ..BandConfig::default() }.validate(),
+            BandConfig {
+                shrink_below: 0.90,
+                grow_above: 0.70,
+                ..BandConfig::default()
+            }
+            .validate(),
             Err(BandConfigError::BadBand)
         );
         // a grow that doesn't raise.
         assert_eq!(
-            BandConfig { grow_factor: 1.0, ..BandConfig::default() }.validate(),
+            BandConfig {
+                grow_factor: 1.0,
+                ..BandConfig::default()
+            }
+            .validate(),
             Err(BandConfigError::BadFactor)
         );
         // a shrink that doesn't lower.
         assert_eq!(
-            BandConfig { shrink_factor: 1.0, ..BandConfig::default() }.validate(),
+            BandConfig {
+                shrink_factor: 1.0,
+                ..BandConfig::default()
+            }
+            .validate(),
             Err(BandConfigError::BadFactor)
         );
         // empty operating range.
         assert_eq!(
-            BandConfig { floor_bytes: 8 << 30, ceiling_bytes: 1 << 30, ..BandConfig::default() }.validate(),
+            BandConfig {
+                floor_bytes: 8 << 30,
+                ceiling_bytes: 1 << 30,
+                ..BandConfig::default()
+            }
+            .validate(),
             Err(BandConfigError::EmptyRange)
         );
     }
@@ -3732,8 +4806,14 @@ mod tests {
     #[test]
     fn safety_gate_contains_the_predictive_law() {
         let c = cfg();
-        let band = PredictiveGrow { inner: BandLaw, lookahead_secs: 60.0 };
-        let prop = PredictiveGrow { inner: ProportionalLaw { gain: 1.0 }, lookahead_secs: 30.0 };
+        let band = PredictiveGrow {
+            inner: BandLaw,
+            lookahead_secs: 60.0,
+        };
+        let prop = PredictiveGrow {
+            inner: ProportionalLaw { gain: 1.0 },
+            lookahead_secs: 30.0,
+        };
         for &ws in &[0u64, 100 * MI, 800 * MI, 4 * GI, 16 * GI, 32 * GI] {
             for &limit in &[256 * MI, GI, 4 * GI, 16 * GI, 20 * GI] {
                 let safe_min = (ws as f64 / c.setpoint).ceil() as u64;
@@ -3744,12 +4824,21 @@ mod tests {
                     ] {
                         match d {
                             Decision::Grow { from, to } => {
-                                assert!(to <= c.ceiling_bytes, "ws={ws} limit={limit} rate={rate}: grew over ceiling to {to}");
+                                assert!(
+                                    to <= c.ceiling_bytes,
+                                    "ws={ws} limit={limit} rate={rate}: grew over ceiling to {to}"
+                                );
                                 assert!(to > from, "a Grow must raise the limit");
                             }
                             Decision::Shrink { from, to } => {
-                                assert!(to >= c.floor_bytes || from > c.ceiling_bytes, "shrank below floor");
-                                assert!(to >= safe_min || from > c.ceiling_bytes, "ws={ws} limit={limit} rate={rate}: shrank below safe_min to {to}");
+                                assert!(
+                                    to >= c.floor_bytes || from > c.ceiling_bytes,
+                                    "shrank below floor"
+                                );
+                                assert!(
+                                    to >= safe_min || from > c.ceiling_bytes,
+                                    "ws={ws} limit={limit} rate={rate}: shrank below safe_min to {to}"
+                                );
                                 assert!(to < from, "a Shrink must lower the limit");
                             }
                             _ => {}
@@ -3773,14 +4862,43 @@ mod tests {
     /// trailing-window peak (exactly as the reconcile layer does) and run the proven
     /// `plan_tick`, applying any carve to the live limit. Returns, per tick, the
     /// `(limit, peak)` pair so callers can assert against the tick's CURRENT peak.
-    fn run_sequence(samples: &[u64], mut limit: u64, c: &BandConfig, decay: f64) -> Vec<(u64, u64)> {
+    fn run_sequence(
+        samples: &[u64],
+        mut limit: u64,
+        c: &BandConfig,
+        decay: f64,
+    ) -> Vec<(u64, u64)> {
         let mut peak = 0u64;
         let mut trail = Vec::with_capacity(samples.len());
         for &used in samples {
             peak = update_peak(peak, used, decay);
-            let o = Observation { used, peak_used: peak, bound: Capacity::Declared(limit), owners: ours(), staleness_secs: 0, memory_shrink_restart_free: false, observed_for_secs: u64::MAX, request_floor: 0, throttle_signal: 0, restarting: false, storage_capability: None };
-            match plan_tick(&o, c, Directionality::Bidirectional, false, "breathe-memory", MEMORY_LIMIT_FIELD, FRESH, None, CarvePolicy::default()) {
-                TickPlan::Act { decision: Decision::Grow { to, .. } | Decision::Shrink { to, .. } } => limit = to,
+            let o = Observation {
+                used,
+                peak_used: peak,
+                bound: Capacity::Declared(limit),
+                owners: ours(),
+                staleness_secs: 0,
+                memory_shrink_restart_free: false,
+                observed_for_secs: u64::MAX,
+                request_floor: 0,
+                throttle_signal: 0,
+                restarting: false,
+                storage_capability: None,
+            };
+            match plan_tick(
+                &o,
+                c,
+                Directionality::Bidirectional,
+                false,
+                "breathe-memory",
+                MEMORY_LIMIT_FIELD,
+                FRESH,
+                None,
+                CarvePolicy::default(),
+            ) {
+                TickPlan::Act {
+                    decision: Decision::Grow { to, .. } | Decision::Shrink { to, .. },
+                } => limit = to,
                 _ => {}
             }
             trail.push((limit, peak));
@@ -3811,17 +4929,29 @@ mod tests {
         // 446Mi (=350Mi/0.8) on every idle tick; here it tracks ~900Mi/0.8.
         for (i, &(lim, peak)) in trail.iter().enumerate() {
             let floor = (peak as f64 / c.setpoint).ceil() as u64;
-            assert!(lim >= floor, "tick {i}: limit {lim} < held-peak floor {floor} (the authentik OOM)");
+            assert!(
+                lim >= floor,
+                "tick {i}: limit {lim} < held-peak floor {floor} (the authentik OOM)"
+            );
         }
         // a subsequent re-spike to the SAME level never OOMs: it fits under the limit.
         let (final_limit, _) = *trail.last().unwrap();
-        assert!(spike <= final_limit, "the re-spike {spike} must fit under the held limit {final_limit}");
+        assert!(
+            spike <= final_limit,
+            "the re-spike {spike} must fit under the held limit {final_limit}"
+        );
         // the BUGGY behaviour is the counter-example: an instantaneous floor on the
         // idle sample would be 350Mi/0.8 = 446Mi, far below the 900Mi re-spike.
         let buggy_instantaneous_floor = (idle as f64 / c.setpoint).ceil() as u64;
-        assert!(buggy_instantaneous_floor < spike, "the bug: instantaneous floor {buggy_instantaneous_floor} < re-spike {spike}");
+        assert!(
+            buggy_instantaneous_floor < spike,
+            "the bug: instantaneous floor {buggy_instantaneous_floor} < re-spike {spike}"
+        );
         // the held limit is MILES above that buggy floor — proving the fix lifts it.
-        assert!(final_limit > 2 * buggy_instantaneous_floor, "held limit {final_limit} must dwarf the buggy floor {buggy_instantaneous_floor}");
+        assert!(
+            final_limit > 2 * buggy_instantaneous_floor,
+            "held limit {final_limit} must dwarf the buggy floor {buggy_instantaneous_floor}"
+        );
     }
 
     /// Exhaustive: for EVERY ordering of a small alphabet of working-set samples,
@@ -3847,17 +4977,44 @@ mod tests {
                             // pure single-tick max (decay 0): the tightest honest claim
                             // — the floor must hold the peak at least the tick it is seen.
                             peak = update_peak(peak, used, 0.0); // = max(peak, used)
-                            let floor = ((peak as f64 / c.setpoint).ceil() as u64).max(c.floor_bytes);
-                            let o = Observation { used, peak_used: peak, bound: Capacity::Declared(limit), owners: ours(), staleness_secs: 0, memory_shrink_restart_free: false, observed_for_secs: u64::MAX, request_floor: 0, throttle_signal: 0, restarting: false, storage_capability: None };
-                            match plan_tick(&o, &c, Directionality::Bidirectional, false, "breathe-memory", MEMORY_LIMIT_FIELD, FRESH, None, CarvePolicy::default()) {
-                                TickPlan::Act { decision: Decision::Shrink { to, .. } } => {
+                            let floor =
+                                ((peak as f64 / c.setpoint).ceil() as u64).max(c.floor_bytes);
+                            let o = Observation {
+                                used,
+                                peak_used: peak,
+                                bound: Capacity::Declared(limit),
+                                owners: ours(),
+                                staleness_secs: 0,
+                                memory_shrink_restart_free: false,
+                                observed_for_secs: u64::MAX,
+                                request_floor: 0,
+                                throttle_signal: 0,
+                                restarting: false,
+                                storage_capability: None,
+                            };
+                            match plan_tick(
+                                &o,
+                                &c,
+                                Directionality::Bidirectional,
+                                false,
+                                "breathe-memory",
+                                MEMORY_LIMIT_FIELD,
+                                FRESH,
+                                None,
+                                CarvePolicy::default(),
+                            ) {
+                                TickPlan::Act {
+                                    decision: Decision::Shrink { to, .. },
+                                } => {
                                     assert!(
                                         to >= floor,
                                         "samples={samples:?} used={used} peak={peak}: SHRANK to {to} < demonstrated-peak floor {floor} (OOM-from-carve)"
                                     );
                                     limit = to;
                                 }
-                                TickPlan::Act { decision: Decision::Grow { to, .. } } => limit = to,
+                                TickPlan::Act {
+                                    decision: Decision::Grow { to, .. },
+                                } => limit = to,
                                 _ => {}
                             }
                         }
@@ -3873,20 +5030,50 @@ mod tests {
     #[test]
     fn shrink_never_below_request_floor() {
         // a low-util sample that WOULD shrink hard, but a 1Gi request floor binds.
-        let c = BandConfig { request_floor_bytes: GI, ..cfg() };
+        let c = BandConfig {
+            request_floor_bytes: GI,
+            ..cfg()
+        };
         // util 0.05 @ 2Gi ⇒ BandLaw wants to shrink way down; request floor caps it.
         match decide(100 * MI, 2 * GI, &c) {
-            Decision::Shrink { to, .. } => assert!(to >= GI, "shrink {to} dropped below the 1Gi request floor"),
+            Decision::Shrink { to, .. } => {
+                assert!(to >= GI, "shrink {to} dropped below the 1Gi request floor")
+            }
             Decision::NoSafeShrink { .. } => {} // also acceptable (floor == limit cases)
             d => panic!("expected a request-floor-bound Shrink/NoSafeShrink, got {d:?}"),
         }
         // and the request floor composes with the peak floor (max of the two binds).
-        let o = Observation { used: 100 * MI, peak_used: GI + 200 * MI, bound: Capacity::Declared(4 * GI), owners: ours(), staleness_secs: 0, memory_shrink_restart_free: false, observed_for_secs: u64::MAX, request_floor: 0, throttle_signal: 0, restarting: false, storage_capability: None };
-        if let TickPlan::Act { decision: Decision::Shrink { to, .. } } =
-            plan_tick(&o, &c, Directionality::Bidirectional, false, "breathe-memory", MEMORY_LIMIT_FIELD, FRESH, None, CarvePolicy::default())
-        {
+        let o = Observation {
+            used: 100 * MI,
+            peak_used: GI + 200 * MI,
+            bound: Capacity::Declared(4 * GI),
+            owners: ours(),
+            staleness_secs: 0,
+            memory_shrink_restart_free: false,
+            observed_for_secs: u64::MAX,
+            request_floor: 0,
+            throttle_signal: 0,
+            restarting: false,
+            storage_capability: None,
+        };
+        if let TickPlan::Act {
+            decision: Decision::Shrink { to, .. },
+        } = plan_tick(
+            &o,
+            &c,
+            Directionality::Bidirectional,
+            false,
+            "breathe-memory",
+            MEMORY_LIMIT_FIELD,
+            FRESH,
+            None,
+            CarvePolicy::default(),
+        ) {
             let peak_floor = ((GI + 200 * MI) as f64 / c.setpoint).ceil() as u64;
-            assert!(to >= peak_floor.max(GI), "shrink {to} below max(peak_floor, request_floor)");
+            assert!(
+                to >= peak_floor.max(GI),
+                "shrink {to} below max(peak_floor, request_floor)"
+            );
         }
     }
 
@@ -3902,8 +5089,14 @@ mod tests {
         let trail = run_sequence(&[600 * MI; 30], 4 * GI, &c, 0.97);
         let (final_limit, _) = *trail.last().unwrap();
         let util = (600 * MI) as f64 / final_limit as f64;
-        assert!(util >= c.shrink_below, "a steady band must still converge into the band (util {util})");
-        assert!(final_limit < 4 * GI, "a steady over-allotted band must shrink (final {final_limit})");
+        assert!(
+            util >= c.shrink_below,
+            "a steady band must still converge into the band (util {util})"
+        );
+        assert!(
+            final_limit < 4 * GI,
+            "a steady over-allotted band must shrink (final {final_limit})"
+        );
     }
 
     /// `update_peak` is monotone-safe: the folded peak is ALWAYS ≥ the current
@@ -3917,7 +5110,10 @@ mod tests {
         // decayed prior peak still dominates for a meaningful window.
         let after_spike = update_peak(900 * MI, 350 * MI, 0.97);
         assert!(after_spike >= 350 * MI, "peak ≥ current sample");
-        assert!(after_spike > 800 * MI, "a slow-decay peak holds the spike (got {after_spike})");
+        assert!(
+            after_spike > 800 * MI,
+            "a slow-decay peak holds the spike (got {after_spike})"
+        );
         // decay 0 ⇒ pure single-tick max (no memory beyond the sample).
         assert_eq!(update_peak(900 * MI, 350 * MI, 0.0), 350 * MI);
         // the peak is never below the current sample, for any decay.
@@ -3951,7 +5147,10 @@ mod tests {
             for &peak in &[ws, ws + 300 * MI, 4 * GI] {
                 let soft = soft_min(ws, &c);
                 let hard = safe_min(peak.max(ws), ws, &c);
-                assert!(soft <= hard, "soft_min {soft} > hard safe_min {hard} (ws={ws} peak={peak})");
+                assert!(
+                    soft <= hard,
+                    "soft_min {soft} > hard safe_min {hard} (ws={ws} peak={peak})"
+                );
             }
         }
     }
@@ -3979,7 +5178,10 @@ mod tests {
             Some(Decision::Shrink { from, to }) => {
                 assert_eq!(from, 2 * GI);
                 assert!(to < from, "memory.high reclaimed for efficiency");
-                assert!(to >= soft_min(ws, &c), "soft shrink never below the soft floor");
+                assert!(
+                    to >= soft_min(ws, &c),
+                    "soft shrink never below the soft floor"
+                );
             }
             other => panic!("efficiency pressure must reclaim memory.high, got {other:?}"),
         }
@@ -3992,8 +5194,14 @@ mod tests {
         let c = cfg();
         let ws = 950 * MI; // util 0.93 @ 1Gi ⇒ grow
         let plan = plan_dual_carve(&BandLaw, ws, ws, GI, Some(GI), &c);
-        assert!(matches!(plan.hard, Decision::Grow { from: GI, .. }), "memory.max grows under pressure");
-        assert!(matches!(plan.soft, Some(Decision::Grow { from: GI, .. })), "memory.high grows under pressure");
+        assert!(
+            matches!(plan.hard, Decision::Grow { from: GI, .. }),
+            "memory.max grows under pressure"
+        );
+        assert!(
+            matches!(plan.soft, Some(Decision::Grow { from: GI, .. })),
+            "memory.high grows under pressure"
+        );
     }
 
     /// THE AUTHENTIK REPLAY at the soft/hard level: a worker carved on its 40%-idle
@@ -4024,7 +5232,10 @@ mod tests {
             Decision::NoSafeShrink { current } | Decision::Grow { to: current, .. } => current,
             _ => hard_limit,
         };
-        assert!(spike < held_hard, "the un-observed spike {spike} must fit under the held kill ceiling {held_hard}");
+        assert!(
+            spike < held_hard,
+            "the un-observed spike {spike} must fit under the held kill ceiling {held_hard}"
+        );
     }
 
     /// A dimension with NO soft plane (`soft_current: None`) is hard-only — exactly
@@ -4053,7 +5264,9 @@ mod tests {
     fn dual_carve_both_planes_stay_within_their_floors() {
         struct ShrinkToZero;
         impl ControlLaw for ShrinkToZero {
-            fn propose(&self, _w: u64, _l: u64, _c: &BandConfig) -> Proposal { Proposal::Target(0) }
+            fn propose(&self, _w: u64, _l: u64, _c: &BandConfig) -> Proposal {
+                Proposal::Target(0)
+            }
         }
         let c = cfg();
         for &ws in &[0u64, 100 * MI, 800 * MI, 4 * GI] {
@@ -4063,11 +5276,15 @@ mod tests {
                     // hard plane: an efficiency shrink of an in-ceiling limit is refused.
                     assert!(
                         !matches!(plan.hard, Decision::Shrink { from, .. } if from <= c.ceiling_bytes),
-                        "ws={ws} hard={hard}: memory.max must not shrink for efficiency, got {:?}", plan.hard
+                        "ws={ws} hard={hard}: memory.max must not shrink for efficiency, got {:?}",
+                        plan.hard
                     );
                     // soft plane (when present): a shrink never drops below the soft floor.
                     if let Some(Decision::Shrink { to, .. }) = plan.soft {
-                        assert!(to >= soft_min(ws, &c), "ws={ws}: soft shrink {to} below soft floor");
+                        assert!(
+                            to >= soft_min(ws, &c),
+                            "ws={ws}: soft shrink {to} below soft floor"
+                        );
                     }
                 }
             }
@@ -4087,12 +5304,18 @@ mod tests {
         let ws = 400 * MI; // util 0.20 @ 2Gi ⇒ shrink pressure
         let carve = plan_k8s_memory_carve(&BandLaw, ws, ws, 2 * GI, 2 * GI, &c);
         // HARD memory.max: held — no pod-resize lowering of the kill ceiling.
-        assert_eq!(carve.hard_target, None, "the kill ceiling must NOT be lowered for efficiency");
+        assert_eq!(
+            carve.hard_target, None,
+            "the kill ceiling must NOT be lowered for efficiency"
+        );
         // SOFT memory.high: reclaimed toward the working-set setpoint (host-agent write).
         match carve.soft_target {
             Some(t) => {
                 assert!(t < 2 * GI, "memory.high reclaimed for efficiency");
-                assert!(t >= soft_min(ws, &c), "soft target never below the soft floor");
+                assert!(
+                    t >= soft_min(ws, &c),
+                    "soft target never below the soft floor"
+                );
             }
             None => panic!("an efficiency carve must dispatch a soft memory.high target"),
         }
@@ -4106,8 +5329,14 @@ mod tests {
         let c = cfg();
         let ws = 950 * MI; // util 0.93 @ 1Gi ⇒ grow
         let carve = plan_k8s_memory_carve(&BandLaw, ws, ws, GI, GI, &c);
-        assert!(carve.hard_target.is_some_and(|t| t > GI), "memory.max grows");
-        assert!(carve.soft_target.is_some_and(|t| t > GI), "memory.high grows");
+        assert!(
+            carve.hard_target.is_some_and(|t| t > GI),
+            "memory.max grows"
+        );
+        assert!(
+            carve.soft_target.is_some_and(|t| t > GI),
+            "memory.high grows"
+        );
     }
 
     /// The OOM-impossibility predicate: across every working set + live-limit pair,
@@ -4118,7 +5347,9 @@ mod tests {
     fn k8s_carve_never_lowers_the_kill_ceiling() {
         struct ShrinkToZero;
         impl ControlLaw for ShrinkToZero {
-            fn propose(&self, _w: u64, _l: u64, _c: &BandConfig) -> Proposal { Proposal::Target(0) }
+            fn propose(&self, _w: u64, _l: u64, _c: &BandConfig) -> Proposal {
+                Proposal::Target(0)
+            }
         }
         let c = cfg();
         // exercise BOTH the proven default law and an adversarial shrink-to-zero law
@@ -4133,8 +5364,20 @@ mod tests {
         for &ws in &[0u64, 50 * MI, 400 * MI, 950 * MI, 4 * GI, 32 * GI] {
             for &hard in &[256 * MI, GI, 2 * GI, 16 * GI] {
                 for &soft in &[hard, u64::MAX] {
-                    check("BandLaw", plan_k8s_memory_carve(&BandLaw, ws, ws, hard, soft, &c), ws, hard, soft);
-                    check("ShrinkToZero", plan_k8s_memory_carve(&ShrinkToZero, ws, ws, hard, soft, &c), ws, hard, soft);
+                    check(
+                        "BandLaw",
+                        plan_k8s_memory_carve(&BandLaw, ws, ws, hard, soft, &c),
+                        ws,
+                        hard,
+                        soft,
+                    );
+                    check(
+                        "ShrinkToZero",
+                        plan_k8s_memory_carve(&ShrinkToZero, ws, ws, hard, soft, &c),
+                        ws,
+                        hard,
+                        soft,
+                    );
                 }
             }
         }
@@ -4150,12 +5393,21 @@ mod tests {
         let idle = 280 * MI;
         let hard_limit = 662 * MI;
         let carve = plan_k8s_memory_carve(&BandLaw, idle, idle, hard_limit, hard_limit, &c);
-        assert_eq!(carve.hard_target, None, "the kill ceiling stays at the provisioned value");
+        assert_eq!(
+            carve.hard_target, None,
+            "the kill ceiling stays at the provisioned value"
+        );
         assert!(carve.never_lowers_kill_ceiling(hard_limit));
         // an unset soft cgroup (u64::MAX) snaps down to a real soft target on tick 1.
         let unset = plan_k8s_memory_carve(&BandLaw, idle, idle, hard_limit, u64::MAX, &c);
-        assert!(unset.soft_target.is_some(), "an unset memory.high snaps down to a soft target");
-        assert_eq!(unset.hard_target, None, "still never lowers the kill ceiling");
+        assert!(
+            unset.soft_target.is_some(),
+            "an unset memory.high snaps down to a soft target"
+        );
+        assert_eq!(
+            unset.hard_target, None,
+            "still never lowers the kill ceiling"
+        );
     }
 
     /// An OVER-CEILING `memory.max` (e.g. a stale large limit above the band ceiling)
@@ -4169,7 +5421,11 @@ mod tests {
         let c = cfg(); // ceiling 16Gi
         let over = 32 * GI;
         let carve = plan_k8s_memory_carve(&BandLaw, 8 * GI, 8 * GI, over, over, &c);
-        assert_eq!(carve.hard_target, Some(c.ceiling_bytes), "over-ceiling limit snaps to the ceiling");
+        assert_eq!(
+            carve.hard_target,
+            Some(c.ceiling_bytes),
+            "over-ceiling limit snaps to the ceiling"
+        );
         // for an IN-ceiling limit the kill ceiling is never lowered (the OOM-safe case).
         let in_ceiling = plan_k8s_memory_carve(&BandLaw, 400 * MI, 400 * MI, 2 * GI, 2 * GI, &c);
         assert!(in_ceiling.never_lowers_kill_ceiling(2 * GI));
@@ -4181,13 +5437,23 @@ mod tests {
     /// passes a GROW through untouched (buying headroom is always safe).
     #[test]
     fn warmup_holds_shrink_passes_grow() {
-        let shrink = Decision::Shrink { from: 2 * GI, to: GI };
+        let shrink = Decision::Shrink {
+            from: 2 * GI,
+            to: GI,
+        };
         assert_eq!(
             clamp_to_warmup(shrink, 60, 600),
-            Decision::Warmup { current: 2 * GI, observed_for: 60, warmup: 600 }
+            Decision::Warmup {
+                current: 2 * GI,
+                observed_for: 60,
+                warmup: 600
+            }
         );
         // a grow during warmup is NEVER held.
-        let grow = Decision::Grow { from: GI, to: 2 * GI };
+        let grow = Decision::Grow {
+            from: GI,
+            to: 2 * GI,
+        };
         assert_eq!(clamp_to_warmup(grow, 60, 600), grow);
         // past warmup ⇒ the shrink passes through.
         assert_eq!(clamp_to_warmup(shrink, 700, 600), shrink);
@@ -4210,25 +5476,76 @@ mod tests {
         for &used in &[1u64, 10 * MI, 100 * MI, 350 * MI] {
             for &observed_for in &[0u64, 1, 60, 300, 599] {
                 let o = Observation {
-                    used, peak_used: used, bound: Capacity::Declared(2 * GI), owners: ours(),
-                    staleness_secs: 0, memory_shrink_restart_free: false, observed_for_secs: observed_for, request_floor: 0, throttle_signal: 0, restarting: false, storage_capability: None,
+                    used,
+                    peak_used: used,
+                    bound: Capacity::Declared(2 * GI),
+                    owners: ours(),
+                    staleness_secs: 0,
+                    memory_shrink_restart_free: false,
+                    observed_for_secs: observed_for,
+                    request_floor: 0,
+                    throttle_signal: 0,
+                    restarting: false,
+                    storage_capability: None,
                 };
-                let plan = plan_tick(&o, &c, Directionality::Bidirectional, false, "breathe-memory", MEMORY_LIMIT_FIELD, FRESH, None, CarvePolicy::default());
+                let plan = plan_tick(
+                    &o,
+                    &c,
+                    Directionality::Bidirectional,
+                    false,
+                    "breathe-memory",
+                    MEMORY_LIMIT_FIELD,
+                    FRESH,
+                    None,
+                    CarvePolicy::default(),
+                );
                 assert!(
                     matches!(plan, TickPlan::Warmup { .. }),
                     "used={used} observed_for={observed_for}: a warming-up workload must HOLD (never shrink), got {plan:?}"
                 );
                 // and CRUCIALLY: never an Act/Shrink.
-                assert!(!matches!(plan, TickPlan::Act { decision: Decision::Shrink { .. } }), "must never carve during warmup");
+                assert!(
+                    !matches!(
+                        plan,
+                        TickPlan::Act {
+                            decision: Decision::Shrink { .. }
+                        }
+                    ),
+                    "must never carve during warmup"
+                );
             }
         }
         // past warmup, the same idle workload DOES shrink (the gate only delays).
         let warm = Observation {
-            used: 100 * MI, peak_used: 100 * MI, bound: Capacity::Declared(2 * GI), owners: ours(),
-            staleness_secs: 0, memory_shrink_restart_free: false, observed_for_secs: 601, request_floor: 0, throttle_signal: 0, restarting: false, storage_capability: None,
+            used: 100 * MI,
+            peak_used: 100 * MI,
+            bound: Capacity::Declared(2 * GI),
+            owners: ours(),
+            staleness_secs: 0,
+            memory_shrink_restart_free: false,
+            observed_for_secs: 601,
+            request_floor: 0,
+            throttle_signal: 0,
+            restarting: false,
+            storage_capability: None,
         };
         assert!(
-            matches!(plan_tick(&warm, &c, Directionality::Bidirectional, false, "breathe-memory", MEMORY_LIMIT_FIELD, FRESH, None, CarvePolicy::default()), TickPlan::Act { decision: Decision::Shrink { .. } }),
+            matches!(
+                plan_tick(
+                    &warm,
+                    &c,
+                    Directionality::Bidirectional,
+                    false,
+                    "breathe-memory",
+                    MEMORY_LIMIT_FIELD,
+                    FRESH,
+                    None,
+                    CarvePolicy::default()
+                ),
+                TickPlan::Act {
+                    decision: Decision::Shrink { .. }
+                }
+            ),
             "past warmup the idle workload shrinks normally"
         );
     }
@@ -4240,11 +5557,35 @@ mod tests {
         let c = cfg();
         // util 0.93 @ 1Gi, restarted 5s ago (deep in warmup) ⇒ STILL grows.
         let booting = Observation {
-            used: 950 * MI, peak_used: 950 * MI, bound: Capacity::Declared(GI), owners: ours(),
-            staleness_secs: 0, memory_shrink_restart_free: false, observed_for_secs: 5, request_floor: 0, throttle_signal: 0, restarting: false, storage_capability: None,
+            used: 950 * MI,
+            peak_used: 950 * MI,
+            bound: Capacity::Declared(GI),
+            owners: ours(),
+            staleness_secs: 0,
+            memory_shrink_restart_free: false,
+            observed_for_secs: 5,
+            request_floor: 0,
+            throttle_signal: 0,
+            restarting: false,
+            storage_capability: None,
         };
         assert!(
-            matches!(plan_tick(&booting, &c, Directionality::Bidirectional, false, "breathe-memory", MEMORY_LIMIT_FIELD, FRESH, None, CarvePolicy::default()), TickPlan::Act { decision: Decision::Grow { .. } }),
+            matches!(
+                plan_tick(
+                    &booting,
+                    &c,
+                    Directionality::Bidirectional,
+                    false,
+                    "breathe-memory",
+                    MEMORY_LIMIT_FIELD,
+                    FRESH,
+                    None,
+                    CarvePolicy::default()
+                ),
+                TickPlan::Act {
+                    decision: Decision::Grow { .. }
+                }
+            ),
             "a grow at boot must still act (the spike needs headroom)"
         );
     }
@@ -4259,27 +5600,68 @@ mod tests {
         let c = cfg();
         // ticks every ~60s; the boot spike lands at t≈120s, still inside warmup(600).
         // samples: idle, idle, SPIKE(900Mi), idle, idle — observed_for grows 0,60,120,…
-        let samples = [(0u64, 280 * MI), (60, 280 * MI), (120, 900 * MI), (180, 280 * MI), (240, 280 * MI)];
+        let samples = [
+            (0u64, 280 * MI),
+            (60, 280 * MI),
+            (120, 900 * MI),
+            (180, 280 * MI),
+            (240, 280 * MI),
+        ];
         let mut limit = 2 * GI;
         let mut peak = 0u64;
         let mut ever_shrank_before_spike = false;
         for (i, &(observed_for, used)) in samples.iter().enumerate() {
             peak = update_peak(peak, used, 0.99);
             let o = Observation {
-                used, peak_used: peak, bound: Capacity::Declared(limit), owners: ours(),
-                staleness_secs: 0, memory_shrink_restart_free: false, observed_for_secs: observed_for, request_floor: 0, throttle_signal: 0, restarting: false, storage_capability: None,
+                used,
+                peak_used: peak,
+                bound: Capacity::Declared(limit),
+                owners: ours(),
+                staleness_secs: 0,
+                memory_shrink_restart_free: false,
+                observed_for_secs: observed_for,
+                request_floor: 0,
+                throttle_signal: 0,
+                restarting: false,
+                storage_capability: None,
             };
-            match plan_tick(&o, &c, Directionality::Bidirectional, false, "breathe-memory", MEMORY_LIMIT_FIELD, FRESH, None, CarvePolicy::default()) {
-                TickPlan::Act { decision: Decision::Shrink { to, .. } } => { if i < 2 { ever_shrank_before_spike = true; } limit = to; }
-                TickPlan::Act { decision: Decision::Grow { to, .. } } => limit = to,
+            match plan_tick(
+                &o,
+                &c,
+                Directionality::Bidirectional,
+                false,
+                "breathe-memory",
+                MEMORY_LIMIT_FIELD,
+                FRESH,
+                None,
+                CarvePolicy::default(),
+            ) {
+                TickPlan::Act {
+                    decision: Decision::Shrink { to, .. },
+                } => {
+                    if i < 2 {
+                        ever_shrank_before_spike = true;
+                    }
+                    limit = to;
+                }
+                TickPlan::Act {
+                    decision: Decision::Grow { to, .. },
+                } => limit = to,
                 TickPlan::Warmup { .. } => {} // held — the correct behaviour during warmup
                 _ => {}
             }
         }
         // during the idle warmup phase (before the spike) the band NEVER shrank …
-        assert!(!ever_shrank_before_spike, "must hold (never shrink) during the idle warmup phase");
+        assert!(
+            !ever_shrank_before_spike,
+            "must hold (never shrink) during the idle warmup phase"
+        );
         // … so the limit never dropped below the spike, and a re-spike fits.
-        assert!(900 * MI <= limit, "the boot spike {} must fit under the held limit {limit}", 900 * MI);
+        assert!(
+            900 * MI <= limit,
+            "the boot spike {} must fit under the held limit {limit}",
+            900 * MI
+        );
     }
 
     // ── CPU-BLINDNESS / NO-STARVE INVARIANT (the pangea-operator 2026-06 fix) ─────
@@ -4289,9 +5671,17 @@ mod tests {
     /// never exceed its limit.
     fn obs_throttled(used: u64, cap: u64, throttle: u64, restarting: bool) -> Observation {
         Observation {
-            used, peak_used: used, bound: Capacity::Declared(cap), owners: ours(),
-            staleness_secs: 0, memory_shrink_restart_free: false, observed_for_secs: u64::MAX,
-            request_floor: 0, throttle_signal: throttle, restarting, storage_capability: None,
+            used,
+            peak_used: used,
+            bound: Capacity::Declared(cap),
+            owners: ours(),
+            staleness_secs: 0,
+            memory_shrink_restart_free: false,
+            observed_for_secs: u64::MAX,
+            request_floor: 0,
+            throttle_signal: throttle,
+            restarting,
+            storage_capability: None,
         }
     }
 
@@ -4312,15 +5702,32 @@ mod tests {
                 for &throttle in &[1u64, 5, 100] {
                     for &restarting in &[false, true] {
                         let o = obs_throttled(used, limit, throttle, restarting);
-                        let plan = plan_tick(&o, &c, Directionality::Bidirectional, false, "breathe-memory", MEMORY_LIMIT_FIELD, FRESH, None, CarvePolicy::default());
+                        let plan = plan_tick(
+                            &o,
+                            &c,
+                            Directionality::Bidirectional,
+                            false,
+                            "breathe-memory",
+                            MEMORY_LIMIT_FIELD,
+                            FRESH,
+                            None,
+                            CarvePolicy::default(),
+                        );
                         // the carve must NEVER be a shrink — neither an Act(Shrink) nor a
                         // cooldown'd/stale Shrink decision; the only permitted outcomes are
                         // a hold (Throttled / Observe) or a GROW.
                         assert!(
-                            !matches!(plan,
-                                TickPlan::Act { decision: Decision::Shrink { .. } }
-                                | TickPlan::Cooldown { decision: Decision::Shrink { .. } }
-                                | TickPlan::Stale { decision: Decision::Shrink { .. }, .. }),
+                            !matches!(
+                                plan,
+                                TickPlan::Act {
+                                    decision: Decision::Shrink { .. }
+                                } | TickPlan::Cooldown {
+                                    decision: Decision::Shrink { .. }
+                                } | TickPlan::Stale {
+                                    decision: Decision::Shrink { .. },
+                                    ..
+                                }
+                            ),
                             "throttled workload SHRANK (the CPU-starve ratchet): used={used} limit={limit} throttle={throttle} restarting={restarting} → {plan:?}"
                         );
                     }
@@ -4337,9 +5744,24 @@ mod tests {
         let c = cfg();
         for &used in &[0u64, 10 * MI, 100 * MI, 400 * MI] {
             let o = obs_throttled(used, 2 * GI, 0, true); // idle, no live throttle, but restarting
-            let plan = plan_tick(&o, &c, Directionality::Bidirectional, false, "breathe-memory", MEMORY_LIMIT_FIELD, FRESH, None, CarvePolicy::default());
+            let plan = plan_tick(
+                &o,
+                &c,
+                Directionality::Bidirectional,
+                false,
+                "breathe-memory",
+                MEMORY_LIMIT_FIELD,
+                FRESH,
+                None,
+                CarvePolicy::default(),
+            );
             assert!(
-                !matches!(plan, TickPlan::Act { decision: Decision::Shrink { .. } }),
+                !matches!(
+                    plan,
+                    TickPlan::Act {
+                        decision: Decision::Shrink { .. }
+                    }
+                ),
                 "a restarting workload must never be shrunk: used={used} → {plan:?}"
             );
         }
@@ -4354,14 +5776,33 @@ mod tests {
     fn operator_case_idle_usage_with_throttle_grows_and_never_starves() {
         // cpu band semantics: scalars are millicores. limit 1000m, observed idle ~1m,
         // but the workload is being THROTTLED during its plan burst.
-        let cpu_cfg = BandConfig { floor_bytes: 100, ceiling_bytes: 4000, ..BandConfig::default() };
+        let cpu_cfg = BandConfig {
+            floor_bytes: 100,
+            ceiling_bytes: 4000,
+            ..BandConfig::default()
+        };
         let limit = 1000u64; // 1000m, the pre-incident limit
         let o = obs_throttled(1, limit, /*throttle*/ 5, false); // ~1m idle, actively throttled
-        match plan_tick(&o, &cpu_cfg, Directionality::Bidirectional, false, "breathe-memory", MEMORY_LIMIT_FIELD, FRESH, None, CarvePolicy::default()) {
+        match plan_tick(
+            &o,
+            &cpu_cfg,
+            Directionality::Bidirectional,
+            false,
+            "breathe-memory",
+            MEMORY_LIMIT_FIELD,
+            FRESH,
+            None,
+            CarvePolicy::default(),
+        ) {
             // the throttle lifts demand above the cap ⇒ the band law GROWS (climb out).
-            TickPlan::Act { decision: Decision::Grow { from, to } } => {
+            TickPlan::Act {
+                decision: Decision::Grow { from, to },
+            } => {
                 assert_eq!(from, limit);
-                assert!(to > limit, "sustained throttle must GROW the cpu limit, got {to}");
+                assert!(
+                    to > limit,
+                    "sustained throttle must GROW the cpu limit, got {to}"
+                );
             }
             // a Throttled hold (if the demand-lift somehow didn't reach the grow edge)
             // is also acceptable — the invariant is "never shrink", and a hold honors it.
@@ -4374,14 +5815,38 @@ mod tests {
         let mut lim = limit;
         for _ in 0..20 {
             let o = obs_throttled(1, lim, 5, false); // still idle-but-throttled at the new cap
-            match plan_tick(&o, &cpu_cfg, Directionality::Bidirectional, false, "breathe-memory", MEMORY_LIMIT_FIELD, FRESH, None, CarvePolicy::default()) {
-                TickPlan::Act { decision: Decision::Grow { to, .. } } => { assert!(to >= lim); lim = to; }
-                TickPlan::Observe { decision: Decision::AtCeiling { .. } } | TickPlan::Throttled { .. } => break,
+            match plan_tick(
+                &o,
+                &cpu_cfg,
+                Directionality::Bidirectional,
+                false,
+                "breathe-memory",
+                MEMORY_LIMIT_FIELD,
+                FRESH,
+                None,
+                CarvePolicy::default(),
+            ) {
+                TickPlan::Act {
+                    decision: Decision::Grow { to, .. },
+                } => {
+                    assert!(to >= lim);
+                    lim = to;
+                }
+                TickPlan::Observe {
+                    decision: Decision::AtCeiling { .. },
+                }
+                | TickPlan::Throttled { .. } => break,
                 p => panic!("sustained throttle must only ever grow or hold, got {p:?}"),
             }
         }
-        assert!(lim >= limit, "the limit must never drop below where it started under sustained throttle (got {lim})");
-        assert!(lim > limit, "sustained throttle should have GROWN the limit out of the cap (got {lim})");
+        assert!(
+            lim >= limit,
+            "the limit must never drop below where it started under sustained throttle (got {lim})"
+        );
+        assert!(
+            lim > limit,
+            "sustained throttle should have GROWN the limit out of the cap (got {lim})"
+        );
     }
 
     /// CONTRAST: the SAME idle reading WITHOUT a throttle signal DOES shrink (the
@@ -4393,7 +5858,22 @@ mod tests {
         // idle @ 2Gi, NO throttle, past warmup ⇒ the legacy idle shrink.
         let o = obs_throttled(100 * MI, 2 * GI, 0, false);
         assert!(
-            matches!(plan_tick(&o, &c, Directionality::Bidirectional, false, "breathe-memory", MEMORY_LIMIT_FIELD, FRESH, None, CarvePolicy::default()), TickPlan::Act { decision: Decision::Shrink { .. } }),
+            matches!(
+                plan_tick(
+                    &o,
+                    &c,
+                    Directionality::Bidirectional,
+                    false,
+                    "breathe-memory",
+                    MEMORY_LIMIT_FIELD,
+                    FRESH,
+                    None,
+                    CarvePolicy::default()
+                ),
+                TickPlan::Act {
+                    decision: Decision::Shrink { .. }
+                }
+            ),
             "without a throttle signal an idle workload still shrinks (the signal is load-bearing)"
         );
     }
@@ -4406,7 +5886,22 @@ mod tests {
         // high util @ 1Gi + throttle ⇒ a grow, never held.
         let o = obs_throttled(950 * MI, GI, 5, false);
         assert!(
-            matches!(plan_tick(&o, &c, Directionality::Bidirectional, false, "breathe-memory", MEMORY_LIMIT_FIELD, FRESH, None, CarvePolicy::default()), TickPlan::Act { decision: Decision::Grow { .. } }),
+            matches!(
+                plan_tick(
+                    &o,
+                    &c,
+                    Directionality::Bidirectional,
+                    false,
+                    "breathe-memory",
+                    MEMORY_LIMIT_FIELD,
+                    FRESH,
+                    None,
+                    CarvePolicy::default()
+                ),
+                TickPlan::Act {
+                    decision: Decision::Grow { .. }
+                }
+            ),
             "a grow under throttle must still act"
         );
     }
@@ -4414,15 +5909,26 @@ mod tests {
     // ── the pure throttle helpers ────────────────────────────────────────────
 
     #[test]
-    #[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    #[allow(
+        clippy::cast_precision_loss,
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss
+    )]
     fn throttled_demand_lifts_above_the_limit_only_when_signalled() {
         let c = cfg();
         // no signal ⇒ None (byte-identical to before).
         assert_eq!(throttled_demand(100 * MI, GI, 0, false, &c), None);
         // a throttle signal ⇒ demand strictly above the current limit (one grow step).
         let d = throttled_demand(1, GI, 5, false, &c).expect("throttled ⇒ Some demand");
-        assert!(d > GI, "throttled demand {d} must exceed the limit {GI} (so the floor refuses a shrink + the law grows)");
-        assert_eq!(d, (GI as f64 * c.grow_factor).ceil() as u64, "one grow-step above the cap");
+        assert!(
+            d > GI,
+            "throttled demand {d} must exceed the limit {GI} (so the floor refuses a shrink + the law grows)"
+        );
+        assert_eq!(
+            d,
+            (GI as f64 * c.grow_factor).ceil() as u64,
+            "one grow-step above the cap"
+        );
         // restarting alone (no live throttle) still lifts just above the cap.
         let r = throttled_demand(1, GI, 0, true, &c).expect("restarting ⇒ Some demand");
         assert!(r > GI);
@@ -4432,23 +5938,63 @@ mod tests {
     fn clamp_to_throttle_holds_a_shrink_passes_grow_and_hold() {
         // a shrink under throttle ⇒ held as a typed Throttled.
         assert_eq!(
-            clamp_to_throttle(Decision::Shrink { from: GI, to: 800 * MI }, 5, false),
-            Decision::Throttled { current: GI, restarting: false }
+            clamp_to_throttle(
+                Decision::Shrink {
+                    from: GI,
+                    to: 800 * MI
+                },
+                5,
+                false
+            ),
+            Decision::Throttled {
+                current: GI,
+                restarting: false
+            }
         );
         // restarting flag is propagated.
         assert_eq!(
-            clamp_to_throttle(Decision::Shrink { from: GI, to: 800 * MI }, 0, true),
-            Decision::Throttled { current: GI, restarting: true }
+            clamp_to_throttle(
+                Decision::Shrink {
+                    from: GI,
+                    to: 800 * MI
+                },
+                0,
+                true
+            ),
+            Decision::Throttled {
+                current: GI,
+                restarting: true
+            }
         );
         // a grow passes through untouched.
         assert_eq!(
-            clamp_to_throttle(Decision::Grow { from: GI, to: 2 * GI }, 5, false),
-            Decision::Grow { from: GI, to: 2 * GI }
+            clamp_to_throttle(
+                Decision::Grow {
+                    from: GI,
+                    to: 2 * GI
+                },
+                5,
+                false
+            ),
+            Decision::Grow {
+                from: GI,
+                to: 2 * GI
+            }
         );
         // no signal ⇒ no-op (behaviour-preserving).
         assert_eq!(
-            clamp_to_throttle(Decision::Shrink { from: GI, to: 800 * MI }, 0, false),
-            Decision::Shrink { from: GI, to: 800 * MI }
+            clamp_to_throttle(
+                Decision::Shrink {
+                    from: GI,
+                    to: 800 * MI
+                },
+                0,
+                false
+            ),
+            Decision::Shrink {
+                from: GI,
+                to: 800 * MI
+            }
         );
         // a hold is untouched.
         assert_eq!(clamp_to_throttle(Decision::Hold, 5, false), Decision::Hold);
@@ -4465,10 +6011,16 @@ mod tests {
         let demand = throttled_demand(1, limit, 5, false, &c).unwrap();
         // safe_min keyed on the lifted demand-as-peak is ≥ the limit ⇒ no shrink room.
         let sm = safe_min(demand, demand, &c);
-        assert!(sm >= limit, "lifted safe_min {sm} must be ≥ the limit {limit} (the floor itself refuses a shrink)");
+        assert!(
+            sm >= limit,
+            "lifted safe_min {sm} must be ≥ the limit {limit} (the floor itself refuses a shrink)"
+        );
         // and the proven safety_clamp turns an aggressive shrink proposal into a grow/hold.
         let d = safety_clamp(Proposal::Target(1), demand, demand, limit, &c);
-        assert!(!matches!(d, Decision::Shrink { .. }), "the proven clamp must not produce a shrink under the lift, got {d:?}");
+        assert!(
+            !matches!(d, Decision::Shrink { .. }),
+            "the proven clamp must not produce a shrink under the lift, got {d:?}"
+        );
     }
 
     // ══ S2: THE TWO NEW CARVE-POLICY AXES ═════════════════════════════════════
@@ -4476,7 +6028,10 @@ mod tests {
     /// Helper: an observation whose bound is genuinely ABSENT (the target declares
     /// no limit for this dimension at all).
     fn obs_unbounded(used: u64) -> Observation {
-        Observation { bound: Capacity::Absent, ..obs(used, 0, ours()) }
+        Observation {
+            bound: Capacity::Absent,
+            ..obs(used, 0, ours())
+        }
     }
 
     // ── the bound-introduction gate (D7) ─────────────────────────────────────
@@ -4487,12 +6042,21 @@ mod tests {
     #[test]
     fn an_absent_bound_is_reported_never_seeded() {
         let plan = plan_tick(
-            &obs_unbounded(500 * MI), &cfg(), Directionality::Bidirectional, false,
-            "breathe-memory", MEMORY_LIMIT_FIELD, FRESH, None, CarvePolicy::default(),
+            &obs_unbounded(500 * MI),
+            &cfg(),
+            Directionality::Bidirectional,
+            false,
+            "breathe-memory",
+            MEMORY_LIMIT_FIELD,
+            FRESH,
+            None,
+            CarvePolicy::default(),
         );
         assert_eq!(
             plan,
-            TickPlan::Observe { decision: Decision::NoLimit },
+            TickPlan::Observe {
+                decision: Decision::NoLimit
+            },
             "with no declared bound there is no denominator, and inventing one is a NEW constraint"
         );
     }
@@ -4504,24 +6068,52 @@ mod tests {
     #[test]
     fn no_limit_is_reachable_at_all() {
         let reached = plan_tick(
-            &obs_unbounded(1), &cfg(), Directionality::GrowOnly, false,
-            "breathe-memory", MEMORY_LIMIT_FIELD, FRESH, None, CarvePolicy::default(),
+            &obs_unbounded(1),
+            &cfg(),
+            Directionality::GrowOnly,
+            false,
+            "breathe-memory",
+            MEMORY_LIMIT_FIELD,
+            FRESH,
+            None,
+            CarvePolicy::default(),
         );
-        assert_eq!(reached, TickPlan::Observe { decision: Decision::NoLimit });
+        assert_eq!(
+            reached,
+            TickPlan::Observe {
+                decision: Decision::NoLimit
+            }
+        );
     }
 
     /// The escape hatch: an AUTHORED `boundIntroduction: allowed` still seeds the
     /// ceded field to the floor, exactly as the pre-gate code did.
     #[test]
     fn an_allowed_bound_introduction_still_seeds_to_the_floor() {
-        let policy = CarvePolicy { bound_introduction: BoundIntroduction::Allowed, ..CarvePolicy::default() };
+        let policy = CarvePolicy {
+            bound_introduction: BoundIntroduction::Allowed,
+            ..CarvePolicy::default()
+        };
         match plan_tick(
-            &obs_unbounded(500 * MI), &cfg(), Directionality::Bidirectional, false,
-            "breathe-memory", MEMORY_LIMIT_FIELD, FRESH, None, policy,
+            &obs_unbounded(500 * MI),
+            &cfg(),
+            Directionality::Bidirectional,
+            false,
+            "breathe-memory",
+            MEMORY_LIMIT_FIELD,
+            FRESH,
+            None,
+            policy,
         ) {
-            TickPlan::Act { decision: Decision::Grow { from, to } } => {
+            TickPlan::Act {
+                decision: Decision::Grow { from, to },
+            } => {
                 assert_eq!(from, 0);
-                assert_eq!(to, cfg().floor_bytes, "the ceded-field takeover is preserved, it just has to say so");
+                assert_eq!(
+                    to,
+                    cfg().floor_bytes,
+                    "the ceded-field takeover is preserved, it just has to say so"
+                );
             }
             other => panic!("an allowed introduction must seed, got {other:?}"),
         }
@@ -4533,20 +6125,47 @@ mod tests {
     /// stopped scaling from zero.)
     #[test]
     fn a_declared_below_floor_bound_still_snaps_up() {
-        let low = Observation { bound: Capacity::Declared(1), ..obs(1, 0, ours()) };
+        let low = Observation {
+            bound: Capacity::Declared(1),
+            ..obs(1, 0, ours())
+        };
         match plan_tick(
-            &low, &cfg(), Directionality::Bidirectional, false,
-            "breathe-memory", MEMORY_LIMIT_FIELD, FRESH, None, CarvePolicy::default(),
+            &low,
+            &cfg(),
+            Directionality::Bidirectional,
+            false,
+            "breathe-memory",
+            MEMORY_LIMIT_FIELD,
+            FRESH,
+            None,
+            CarvePolicy::default(),
         ) {
-            TickPlan::Act { decision: Decision::Grow { from: 1, to } } => assert_eq!(to, cfg().floor_bytes),
+            TickPlan::Act {
+                decision: Decision::Grow { from: 1, to },
+            } => assert_eq!(to, cfg().floor_bytes),
             other => panic!("a DECLARED below-floor bound must still snap up, got {other:?}"),
         }
         // ...and a declared ZERO is likewise a real value the law reasons on.
-        let zero = Observation { bound: Capacity::Declared(0), ..obs(0, 0, ours()) };
+        let zero = Observation {
+            bound: Capacity::Declared(0),
+            ..obs(0, 0, ours())
+        };
         assert!(
             !matches!(
-                plan_tick(&zero, &cfg(), Directionality::Bidirectional, false, "breathe-memory", MEMORY_LIMIT_FIELD, FRESH, None, CarvePolicy::default()),
-                TickPlan::Observe { decision: Decision::NoLimit }
+                plan_tick(
+                    &zero,
+                    &cfg(),
+                    Directionality::Bidirectional,
+                    false,
+                    "breathe-memory",
+                    MEMORY_LIMIT_FIELD,
+                    FRESH,
+                    None,
+                    CarvePolicy::default()
+                ),
+                TickPlan::Observe {
+                    decision: Decision::NoLimit
+                }
             ),
             "a DECLARED zero is a value, not an absence — only provenance decides"
         );
@@ -4556,9 +6175,16 @@ mod tests {
     #[test]
     fn capacity_carries_one_number_and_its_provenance() {
         assert_eq!(Capacity::Declared(42).value(), 42);
-        assert_eq!(Capacity::Absent.value(), 0, "absence reads as the same 0 the old code carried");
+        assert_eq!(
+            Capacity::Absent.value(),
+            0,
+            "absence reads as the same 0 the old code carried"
+        );
         assert!(Capacity::Absent.is_absent());
-        assert!(!Capacity::Declared(0).is_absent(), "a declared zero is NOT an absence");
+        assert!(
+            !Capacity::Declared(0).is_absent(),
+            "a declared zero is NOT an absence"
+        );
         assert_eq!(obs(1, 7, ours()).capacity(), 7);
     }
 
@@ -4566,17 +6192,33 @@ mod tests {
 
     /// `ObserveOnly` withholds the shrink and NAMES what it withheld —
     /// `ReclaimWithheld`, not the `NoSafeShrink`/`AtFloor` the band is nowhere
-    /// near. This is the phase-lie fix for 36 idle camelot-eks MemoryBands.
+    /// near. This is the phase-lie fix for 36 idle private-estate-eks MemoryBands.
     #[test]
     fn observe_only_withholds_the_shrink_and_names_the_slack() {
-        let policy = CarvePolicy { reclaim: Reclaim::ObserveOnly, ..CarvePolicy::default() };
+        let policy = CarvePolicy {
+            reclaim: Reclaim::ObserveOnly,
+            ..CarvePolicy::default()
+        };
         // idle @ 2Gi ⇒ a real, safe shrink the policy declines to take.
         let o = obs(100 * MI, 2 * GI, ours());
         match plan_tick(
-            &o, &cfg(), Reclaim::ObserveOnly.narrow(Directionality::Bidirectional), false,
-            "breathe-memory", MEMORY_LIMIT_FIELD, FRESH, None, policy,
+            &o,
+            &cfg(),
+            Reclaim::ObserveOnly.narrow(Directionality::Bidirectional),
+            false,
+            "breathe-memory",
+            MEMORY_LIMIT_FIELD,
+            FRESH,
+            None,
+            policy,
         ) {
-            TickPlan::Observe { decision: Decision::ReclaimWithheld { current, reclaimable } } => {
+            TickPlan::Observe {
+                decision:
+                    Decision::ReclaimWithheld {
+                        current,
+                        reclaimable,
+                    },
+            } => {
                 assert_eq!(current, 2 * GI, "the limit is left exactly as it was");
                 assert!(reclaimable > 0, "and the amount NOT taken is reported");
             }
@@ -4590,18 +6232,43 @@ mod tests {
     #[test]
     fn disabled_reclaim_is_byte_identical_to_the_old_grow_only_pin() {
         let o = obs(100 * MI, 2 * GI, ours());
-        let policy = CarvePolicy { reclaim: Reclaim::Disabled, ..CarvePolicy::default() };
+        let policy = CarvePolicy {
+            reclaim: Reclaim::Disabled,
+            ..CarvePolicy::default()
+        };
         let typed = plan_tick(
-            &o, &cfg(), Reclaim::Disabled.narrow(Directionality::Bidirectional), false,
-            "breathe-memory", MEMORY_LIMIT_FIELD, FRESH, None, policy,
+            &o,
+            &cfg(),
+            Reclaim::Disabled.narrow(Directionality::Bidirectional),
+            false,
+            "breathe-memory",
+            MEMORY_LIMIT_FIELD,
+            FRESH,
+            None,
+            policy,
         );
         // the OLD path: substitute GrowOnly by hand, no reclaim policy at all.
         let legacy = plan_tick(
-            &o, &cfg(), Directionality::GrowOnly, false,
-            "breathe-memory", MEMORY_LIMIT_FIELD, FRESH, None, CarvePolicy::default(),
+            &o,
+            &cfg(),
+            Directionality::GrowOnly,
+            false,
+            "breathe-memory",
+            MEMORY_LIMIT_FIELD,
+            FRESH,
+            None,
+            CarvePolicy::default(),
         );
-        assert_eq!(typed, legacy, "Reclaim::Disabled must be indistinguishable from the old pin");
-        assert_eq!(typed, TickPlan::Observe { decision: Decision::NoSafeShrink { current: 2 * GI } });
+        assert_eq!(
+            typed, legacy,
+            "Reclaim::Disabled must be indistinguishable from the old pin"
+        );
+        assert_eq!(
+            typed,
+            TickPlan::Observe {
+                decision: Decision::NoSafeShrink { current: 2 * GI }
+            }
+        );
     }
 
     /// No reclaim policy ever withholds a GROW — buying headroom is the safe
@@ -4609,12 +6276,30 @@ mod tests {
     #[test]
     fn no_reclaim_policy_ever_withholds_a_grow() {
         for r in [Reclaim::Enabled, Reclaim::Disabled, Reclaim::ObserveOnly] {
-            let policy = CarvePolicy { reclaim: r, ..CarvePolicy::default() };
+            let policy = CarvePolicy {
+                reclaim: r,
+                ..CarvePolicy::default()
+            };
             let plan = plan_tick(
-                &obs(950 * MI, GI, ours()), &cfg(), r.narrow(Directionality::Bidirectional), false,
-                "breathe-memory", MEMORY_LIMIT_FIELD, FRESH, None, policy,
+                &obs(950 * MI, GI, ours()),
+                &cfg(),
+                r.narrow(Directionality::Bidirectional),
+                false,
+                "breathe-memory",
+                MEMORY_LIMIT_FIELD,
+                FRESH,
+                None,
+                policy,
             );
-            assert!(matches!(plan, TickPlan::Act { decision: Decision::Grow { .. } }), "{r:?} must still grow");
+            assert!(
+                matches!(
+                    plan,
+                    TickPlan::Act {
+                        decision: Decision::Grow { .. }
+                    }
+                ),
+                "{r:?} must still grow"
+            );
         }
     }
 
@@ -4627,8 +6312,16 @@ mod tests {
         assert_eq!(Reclaim::Disabled.narrow(Bidirectional), GrowOnly);
         assert_eq!(Reclaim::ObserveOnly.narrow(Bidirectional), GrowOnly);
         for r in [Reclaim::Enabled, Reclaim::Disabled, Reclaim::ObserveOnly] {
-            assert_eq!(r.narrow(GrowOnly), GrowOnly, "{r:?} cannot make storage shrinkable");
-            assert_eq!(r.narrow(DirObserveOnly), DirObserveOnly, "{r:?} cannot make an observe-only band write");
+            assert_eq!(
+                r.narrow(GrowOnly),
+                GrowOnly,
+                "{r:?} cannot make storage shrinkable"
+            );
+            assert_eq!(
+                r.narrow(DirObserveOnly),
+                DirObserveOnly,
+                "{r:?} cannot make an observe-only band write"
+            );
         }
     }
 
@@ -4638,11 +6331,30 @@ mod tests {
     /// the reversed order loses the information.
     #[test]
     fn the_reclaim_clamp_must_run_before_the_directionality_clamp() {
-        let shrink = Decision::Shrink { from: 2 * GI, to: GI };
-        let right = clamp_to_directionality(clamp_to_reclaim(shrink, Reclaim::ObserveOnly), Directionality::GrowOnly);
-        assert_eq!(right, Decision::ReclaimWithheld { current: 2 * GI, reclaimable: GI });
-        let wrong = clamp_to_reclaim(clamp_to_directionality(shrink, Directionality::GrowOnly), Reclaim::ObserveOnly);
-        assert_eq!(wrong, Decision::NoSafeShrink { current: 2 * GI }, "reversed, the reclaimable amount is lost");
+        let shrink = Decision::Shrink {
+            from: 2 * GI,
+            to: GI,
+        };
+        let right = clamp_to_directionality(
+            clamp_to_reclaim(shrink, Reclaim::ObserveOnly),
+            Directionality::GrowOnly,
+        );
+        assert_eq!(
+            right,
+            Decision::ReclaimWithheld {
+                current: 2 * GI,
+                reclaimable: GI
+            }
+        );
+        let wrong = clamp_to_reclaim(
+            clamp_to_directionality(shrink, Directionality::GrowOnly),
+            Reclaim::ObserveOnly,
+        );
+        assert_eq!(
+            wrong,
+            Decision::NoSafeShrink { current: 2 * GI },
+            "reversed, the reclaimable amount is lost"
+        );
         assert_ne!(right, wrong, "so the order is not a style choice");
     }
 }
