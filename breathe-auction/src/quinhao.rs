@@ -138,7 +138,12 @@ impl Demand {
     /// claimant is `even(…)` with the same demand.
     #[must_use]
     pub fn even() -> Self {
-        Self { weight: 1, min: 0, max: u64::MAX, demand: u64::MAX }
+        Self {
+            weight: 1,
+            min: 0,
+            max: u64::MAX,
+            demand: u64::MAX,
+        }
     }
 
     /// A claimant absent from an axis entirely (weight 0, no floor, no demand) —
@@ -146,7 +151,12 @@ impl Demand {
     /// participate in. Granted exactly 0 on that axis.
     #[must_use]
     pub fn absent() -> Self {
-        Self { weight: 0, min: 0, max: 0, demand: 0 }
+        Self {
+            weight: 0,
+            min: 0,
+            max: 0,
+            demand: 0,
+        }
     }
 
     /// The effective ceiling on a granted share — `min(max, demand)`. A claimant
@@ -206,7 +216,10 @@ pub fn allocate_even(band: u64, claims: &[Demand]) -> Vec<u64> {
     let mut grant: Vec<u64> = claims.iter().map(|c| c.min).collect();
     // A claimant is "frozen" once it hits its effective cap (or has weight 0): it
     // takes no further surplus. Weight-0 claimants get exactly their floor.
-    let mut frozen: Vec<bool> = claims.iter().map(|c| c.weight == 0 || c.min >= c.effective_cap()).collect();
+    let mut frozen: Vec<bool> = claims
+        .iter()
+        .map(|c| c.weight == 0 || c.min >= c.effective_cap())
+        .collect();
     let mut remaining = band128 - sum_min;
 
     // Each pass distributes `remaining` over the active (unfrozen) claimants by
@@ -246,9 +259,7 @@ pub fn allocate_even(band: u64, claims: &[Demand]) -> Vec<u64> {
         let mut crumb = remaining - distributed;
         if crumb > 0 {
             let mut order: Vec<usize> = (0..n).filter(|&i| !frozen[i]).collect();
-            order.sort_by(|&a, &b| {
-                claims[b].weight.cmp(&claims[a].weight).then(a.cmp(&b))
-            });
+            order.sort_by(|&a, &b| claims[b].weight.cmp(&claims[a].weight).then(a.cmp(&b)));
             for &i in &order {
                 if crumb == 0 {
                     break;
@@ -307,13 +318,23 @@ impl DemandVector {
     /// [`Demand::absent`] on every other axis — the drive-product default.
     #[must_use]
     pub fn storage_only(storage: Demand) -> Self {
-        Self { storage, cpu: Demand::absent(), bandwidth: Demand::absent(), request_rate: Demand::absent() }
+        Self {
+            storage,
+            cpu: Demand::absent(),
+            bandwidth: Demand::absent(),
+            request_rate: Demand::absent(),
+        }
     }
 
     /// A vector with an explicit [`Demand`] on every axis.
     #[must_use]
     pub fn new(storage: Demand, cpu: Demand, bandwidth: Demand, request_rate: Demand) -> Self {
-        Self { storage, cpu, bandwidth, request_rate }
+        Self {
+            storage,
+            cpu,
+            bandwidth,
+            request_rate,
+        }
     }
 
     /// This vector's demand on one axis.
@@ -384,13 +405,21 @@ impl Quinhao {
     /// A top-level (pool-rooted) claimant — `parent = None`.
     #[must_use]
     pub fn root(id: impl Into<String>, demand: DemandVector) -> Self {
-        Self { id: id.into(), parent: None, demand }
+        Self {
+            id: id.into(),
+            parent: None,
+            demand,
+        }
     }
 
     /// A child claimant under `parent`.
     #[must_use]
     pub fn child(id: impl Into<String>, parent: impl Into<String>, demand: DemandVector) -> Self {
-        Self { id: id.into(), parent: Some(parent.into()), demand }
+        Self {
+            id: id.into(),
+            parent: Some(parent.into()),
+            demand,
+        }
     }
 }
 
@@ -453,8 +482,13 @@ impl std::fmt::Display for FabricError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::DuplicateId { id } => write!(f, "duplicate claimant id {id:?}"),
-            Self::UnknownParent { id, parent } => write!(f, "claimant {id:?} names unknown parent {parent:?}"),
-            Self::Cycle { id } => write!(f, "claimant {id:?} is part of a parent cycle (not a forest)"),
+            Self::UnknownParent { id, parent } => {
+                write!(f, "claimant {id:?} names unknown parent {parent:?}")
+            }
+            Self::Cycle { id } => write!(
+                f,
+                "claimant {id:?} is part of a parent cycle (not a forest)"
+            ),
         }
     }
 }
@@ -479,13 +513,23 @@ impl PoolCapacity {
     /// A pool with only a storage capacity (the drive default); other axes 0.
     #[must_use]
     pub fn storage_only(storage: u64) -> Self {
-        Self { storage, cpu: 0, bandwidth: 0, request_rate: 0 }
+        Self {
+            storage,
+            cpu: 0,
+            bandwidth: 0,
+            request_rate: 0,
+        }
     }
 
     /// A pool capacity on every axis.
     #[must_use]
     pub fn new(storage: u64, cpu: u64, bandwidth: u64, request_rate: u64) -> Self {
-        Self { storage, cpu, bandwidth, request_rate }
+        Self {
+            storage,
+            cpu,
+            bandwidth,
+            request_rate,
+        }
     }
 
     /// This pool's total capacity on one dimension (the band is this × setpoint).
@@ -528,12 +572,20 @@ pub fn allocate_fabric(
     claimants: &[Quinhao],
 ) -> Result<FabricGrants, FabricError> {
     let (by_id, children) = parse_forest(claimants)?;
-    let setpoint = if setpoint > 0.0 && setpoint <= 1.0 { setpoint } else { 1.0 };
+    let setpoint = if setpoint > 0.0 && setpoint <= 1.0 {
+        setpoint
+    } else {
+        1.0
+    };
     let mut grants = FabricGrants::default();
 
     // ── Allocate each dimension independently (the vector is per-axis). ──────
     for dim in Dim::ALL {
-        #[allow(clippy::cast_precision_loss, clippy::cast_sign_loss, clippy::cast_possible_truncation)]
+        #[allow(
+            clippy::cast_precision_loss,
+            clippy::cast_sign_loss,
+            clippy::cast_possible_truncation
+        )]
         let band = (capacity.get(dim) as f64 * setpoint) as u64;
         allocate_subtree(dim, band, None, &children, &by_id, &mut grants);
     }
@@ -557,7 +609,10 @@ fn parse_forest(
     for q in claimants {
         if let Some(p) = &q.parent {
             if !by_id.contains_key(p.as_str()) {
-                return Err(FabricError::UnknownParent { id: q.id.clone(), parent: p.clone() });
+                return Err(FabricError::UnknownParent {
+                    id: q.id.clone(),
+                    parent: p.clone(),
+                });
             }
         }
     }
@@ -580,7 +635,10 @@ fn parse_forest(
     // Children index: parent-id → [child ids]; `None` bucket = top-level.
     let mut children: BTreeMap<Option<&str>, Vec<&str>> = BTreeMap::new();
     for q in claimants {
-        children.entry(q.parent.as_deref()).or_default().push(q.id.as_str());
+        children
+            .entry(q.parent.as_deref())
+            .or_default()
+            .push(q.id.as_str());
     }
 
     Ok((by_id, children))
@@ -597,14 +655,20 @@ fn allocate_subtree(
     by_id: &BTreeMap<&str, &Quinhao>,
     grants: &mut FabricGrants,
 ) {
-    let Some(kids) = children.get(&parent) else { return };
+    let Some(kids) = children.get(&parent) else {
+        return;
+    };
     if kids.is_empty() {
         return;
     }
     let demands: Vec<Demand> = kids.iter().map(|id| by_id[*id].demand.get(dim)).collect();
     let shares = allocate_even(band, &demands);
     for (id, share) in kids.iter().zip(shares) {
-        grants.grants.entry((*id).to_string()).or_default().set(dim, share);
+        grants
+            .grants
+            .entry((*id).to_string())
+            .or_default()
+            .set(dim, share);
         // The child's grant becomes the band its own children split.
         allocate_subtree(dim, share, Some(*id), children, by_id, grants);
     }
@@ -655,7 +719,11 @@ fn dominant_ratio(demand: &DemandVector, band: &[f64; 4]) -> f64 {
         .enumerate()
         .map(|(i, dim)| {
             let d = demand.get(*dim).demand;
-            if d == 0 || d == u64::MAX || band[i] <= 0.0 { 0.0 } else { d as f64 / band[i] }
+            if d == 0 || d == u64::MAX || band[i] <= 0.0 {
+                0.0
+            } else {
+                d as f64 / band[i]
+            }
         })
         .fold(0.0_f64, f64::max)
 }
@@ -682,8 +750,16 @@ fn dominant_ratio(demand: &DemandVector, band: &[f64; 4]) -> f64 {
 ///   demand vector (the allocation preserves the claimant's own resource
 ///   shape, unlike per-axis-independent water-filling).
 #[must_use]
-pub fn allocate_drf(capacity: PoolCapacity, setpoint: f64, claims: &[DemandVector]) -> Vec<GrantVector> {
-    let setpoint = if setpoint > 0.0 && setpoint <= 1.0 { setpoint } else { 1.0 };
+pub fn allocate_drf(
+    capacity: PoolCapacity,
+    setpoint: f64,
+    claims: &[DemandVector],
+) -> Vec<GrantVector> {
+    let setpoint = if setpoint > 0.0 && setpoint <= 1.0 {
+        setpoint
+    } else {
+        1.0
+    };
     #[allow(clippy::cast_precision_loss)]
     let band: [f64; 4] = Dim::ALL.map(|d| capacity.get(d) as f64 * setpoint);
     allocate_drf_band(band, claims)
@@ -754,7 +830,11 @@ fn allocate_drf_band(band: [f64; 4], claims: &[DemandVector]) -> Vec<GrantVector
                 if d == 0 || d == u64::MAX {
                     continue;
                 }
-                #[allow(clippy::cast_precision_loss, clippy::cast_sign_loss, clippy::cast_possible_truncation)]
+                #[allow(
+                    clippy::cast_precision_loss,
+                    clippy::cast_sign_loss,
+                    clippy::cast_possible_truncation
+                )]
                 let alloc = (k * d as f64).floor().max(0.0) as u64;
                 g.set(dim, alloc);
             }
@@ -787,7 +867,9 @@ fn allocate_drf_subtree(
     by_id: &BTreeMap<&str, &Quinhao>,
     grants: &mut FabricGrants,
 ) {
-    let Some(kids) = children.get(&parent) else { return };
+    let Some(kids) = children.get(&parent) else {
+        return;
+    };
     if kids.is_empty() {
         return;
     }
@@ -829,7 +911,11 @@ pub fn allocate_drf_fabric(
     claimants: &[Quinhao],
 ) -> Result<FabricGrants, FabricError> {
     let (by_id, children) = parse_forest(claimants)?;
-    let setpoint = if setpoint > 0.0 && setpoint <= 1.0 { setpoint } else { 1.0 };
+    let setpoint = if setpoint > 0.0 && setpoint <= 1.0 {
+        setpoint
+    } else {
+        1.0
+    };
     #[allow(clippy::cast_precision_loss)]
     let band: [f64; 4] = Dim::ALL.map(|d| capacity.get(d) as f64 * setpoint);
     let mut grants = FabricGrants::default();

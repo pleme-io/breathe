@@ -12,11 +12,11 @@
 //! ## The three invariants, made structural
 //!
 //! **1. Never overstep other structures (footprint ownership).** The cluster has
-//! resident non-camelot volumes (rabbitmq, profiling, the resident tenant
+//! resident non-the private estate volumes (rabbitmq, profiling, the resident tenant
 //! workloads). The carve commit takes an [`OwnedPvc`], never a raw ref. An
 //! `OwnedPvc` is constructible ONLY through [`FootprintPolicy::try_own`], which
 //! re-parses the volume's live identity against the footprint predicate (label
-//! `role: camelot` / namespace ∈ the owned set / the ownership tag). A resident
+//! `role: the private estate` / namespace ∈ the owned set / the ownership tag). A resident
 //! volume yields no `OwnedPvc` — acting on it is a PARSE-TIME REJECTION, not a
 //! filter that could be miswritten. **Tier: parse-time-rejected** (the ownership
 //! parse is the sole ingress; fields private; re-parsed every tick).
@@ -140,9 +140,9 @@ pub struct VolumeIdentity {
     /// The PVC name.
     pub name: String,
     /// The value of the volume's `role` label, if present (the ownership label is
-    /// `role: camelot`).
+    /// `role: the private estate`).
     pub role_label: Option<String>,
-    /// The camelot ownership tag/annotation is present (an explicit owned marker).
+    /// The private estate ownership tag/annotation is present (an explicit owned marker).
     pub ownership_tag: bool,
 }
 
@@ -152,7 +152,12 @@ impl VolumeIdentity {
     /// namespace is in the footprint's owned set.
     #[must_use]
     pub fn resident(namespace: impl Into<String>, name: impl Into<String>) -> Self {
-        Self { namespace: namespace.into(), name: name.into(), role_label: None, ownership_tag: false }
+        Self {
+            namespace: namespace.into(),
+            name: name.into(),
+            role_label: None,
+            ownership_tag: false,
+        }
     }
 }
 
@@ -169,22 +174,29 @@ pub struct FootprintPolicy {
 impl FootprintPolicy {
     /// A custom footprint.
     #[must_use]
-    pub fn new(owned_namespaces: impl IntoIterator<Item = String>, owner_role_value: impl Into<String>) -> Self {
+    pub fn new(
+        owned_namespaces: impl IntoIterator<Item = String>,
+        owner_role_value: impl Into<String>,
+    ) -> Self {
         Self {
             owned_namespaces: owned_namespaces.into_iter().collect(),
             owner_role_value: owner_role_value.into(),
         }
     }
 
-    /// The camelot footprint: namespaces `{camelot, camelot-build, tendril}` and
-    /// the `role: camelot` label. The resident non-camelot namespaces
+    /// The private estate footprint: namespaces `{the private estate, private-estate-build, the observability tap}` and
+    /// the `role: the private estate` label. The resident non-the private estate namespaces
     /// (`rabbitmq`, `profiling`, the resident tenant workloads) are NOT in the set, so a
     /// volume in them yields no [`OwnedPvc`].
     #[must_use]
-    pub fn camelot() -> Self {
+    pub fn isolated() -> Self {
         Self::new(
-            ["camelot".to_owned(), "camelot-build".to_owned(), "tendril".to_owned()],
-            "camelot",
+            [
+                "isolated".to_owned(),
+                "isolated-build".to_owned(),
+                "the observability tap".to_owned(),
+            ],
+            "isolated",
         )
     }
 
@@ -204,7 +216,11 @@ impl FootprintPolicy {
     #[must_use]
     pub fn try_own(&self, id: &VolumeIdentity, tick: TickId) -> Option<OwnedPvc> {
         if self.owns(id) {
-            Some(OwnedPvc { namespace: id.namespace.clone(), name: id.name.clone(), tick })
+            Some(OwnedPvc {
+                namespace: id.namespace.clone(),
+                name: id.name.clone(),
+                tick,
+            })
         } else {
             None
         }
@@ -351,10 +367,16 @@ impl RegenerableVolume {
     /// if either witness was minted in an earlier tick (stale live state).
     pub fn release(self, proof: NotInUse, current: TickId) -> Result<ReleaseCommand, CarveRefused> {
         if !self.owned.is_fresh(current) {
-            return Err(CarveRefused::StaleOwnershipWitness { minted: self.owned.tick(), current });
+            return Err(CarveRefused::StaleOwnershipWitness {
+                minted: self.owned.tick(),
+                current,
+            });
         }
         if !proof.is_fresh(current) {
-            return Err(CarveRefused::StaleNotInUseWitness { minted: proof.tick(), current });
+            return Err(CarveRefused::StaleNotInUseWitness {
+                minted: proof.tick(),
+                current,
+            });
         }
         Ok(ReleaseCommand {
             namespace: self.owned.namespace,
@@ -372,7 +394,12 @@ impl RegenerableVolume {
     ///
     /// # Errors
     /// As [`release`](Self::release).
-    pub fn recreate(self, proof: NotInUse, current: TickId, new_size: u64) -> Result<ReleaseCommand, CarveRefused> {
+    pub fn recreate(
+        self,
+        proof: NotInUse,
+        current: TickId,
+        new_size: u64,
+    ) -> Result<ReleaseCommand, CarveRefused> {
         let mut cmd = self.release(proof, current)?;
         cmd.recreate_to = Some(new_size);
         Ok(cmd)
@@ -559,7 +586,12 @@ impl AutonomousStorageCarve {
     /// [`SmallAtomicGrow`] with `to = min(desired_target, from + cap)` — a bounded
     /// increment, minted THIS tick. NEVER a shrink, release, or big jump.
     #[must_use]
-    pub fn plan_grow(self, current: u64, desired_target: u64, tick: TickId) -> Option<SmallAtomicGrow> {
+    pub fn plan_grow(
+        self,
+        current: u64,
+        desired_target: u64,
+        tick: TickId,
+    ) -> Option<SmallAtomicGrow> {
         if desired_target <= current {
             return None; // grow-only: a shrink/hold has no autonomous code path
         }
@@ -569,7 +601,11 @@ impl AutonomousStorageCarve {
         }
         let step_ceiling = current.saturating_add(cap);
         let to = desired_target.min(step_ceiling);
-        Some(SmallAtomicGrow { from: current, to, tick })
+        Some(SmallAtomicGrow {
+            from: current,
+            to,
+            tick,
+        })
     }
 }
 
@@ -643,7 +679,10 @@ impl std::fmt::Display for CarveRefused {
                 current.get()
             ),
             CarveRefused::VolumeMidOperation => {
-                write!(f, "a ModifyVolume/resize is already in flight — never double-act a mid-operation volume")
+                write!(
+                    f,
+                    "a ModifyVolume/resize is already in flight — never double-act a mid-operation volume"
+                )
             }
         }
     }
@@ -669,10 +708,16 @@ pub fn commit_small_atomic_grow(
     op_state: VolumeOpState,
 ) -> Result<AtomicGrowCommand, CarveRefused> {
     if !owned.is_fresh(current) {
-        return Err(CarveRefused::StaleOwnershipWitness { minted: owned.tick(), current });
+        return Err(CarveRefused::StaleOwnershipWitness {
+            minted: owned.tick(),
+            current,
+        });
     }
     if !grow.is_fresh(current) {
-        return Err(CarveRefused::StaleGrowWitness { minted: grow.tick(), current });
+        return Err(CarveRefused::StaleGrowWitness {
+            minted: grow.tick(),
+            current,
+        });
     }
     if matches!(op_state, VolumeOpState::ResizeInProgress) {
         return Err(CarveRefused::VolumeMidOperation);
@@ -699,34 +744,54 @@ mod tests {
     // ── INVARIANT 1: footprint ownership (parse-time-rejected) ─────────────────
 
     #[test]
-    fn a_camelot_volume_yields_an_owned_pvc() {
-        let fp = FootprintPolicy::camelot();
+    fn an_isolated_volume_yields_an_owned_pvc() {
+        let fp = FootprintPolicy::isolated();
         // by namespace
-        assert!(fp.try_own(&VolumeIdentity::resident("camelot", "data-mysql-0"), t(1)).is_some());
+        assert!(
+            fp.try_own(&VolumeIdentity::resident("isolated", "data-mysql-0"), t(1))
+                .is_some()
+        );
         // by role label
-        let labeled = VolumeIdentity { role_label: Some("camelot".into()), ..VolumeIdentity::resident("other", "v") };
+        let labeled = VolumeIdentity {
+            role_label: Some("isolated".into()),
+            ..VolumeIdentity::resident("other", "v")
+        };
         assert!(fp.try_own(&labeled, t(1)).is_some());
         // by ownership tag
-        let tagged = VolumeIdentity { ownership_tag: true, ..VolumeIdentity::resident("other", "v") };
+        let tagged = VolumeIdentity {
+            ownership_tag: true,
+            ..VolumeIdentity::resident("other", "v")
+        };
         assert!(fp.try_own(&tagged, t(1)).is_some());
     }
 
     #[test]
-    fn a_resident_non_camelot_volume_yields_no_owned_pvc() {
+    fn a_resident_non_isolated_volume_yields_no_owned_pvc() {
         // THE overstep guard: rabbitmq / profiling / tenant volumes have NO
         // OwnedPvc — acting on them is unrepresentable (no witness to pass the
         // actuator commit).
-        let fp = FootprintPolicy::camelot();
-        for ns in ["rabbitmq", "profiling", "tenant-workloads", "kube-system", "default"] {
+        let fp = FootprintPolicy::isolated();
+        for ns in [
+            "rabbitmq",
+            "profiling",
+            "tenant-workloads",
+            "kube-system",
+            "default",
+        ] {
             let id = VolumeIdentity::resident(ns, "some-data");
-            assert!(fp.try_own(&id, t(1)).is_none(), "{ns} volume must not be ownable");
+            assert!(
+                fp.try_own(&id, t(1)).is_none(),
+                "{ns} volume must not be ownable"
+            );
         }
     }
 
     #[test]
     fn owned_pvc_carries_the_tick_it_was_minted_in() {
-        let fp = FootprintPolicy::camelot();
-        let owned = fp.try_own(&VolumeIdentity::resident("camelot", "v"), t(7)).unwrap();
+        let fp = FootprintPolicy::isolated();
+        let owned = fp
+            .try_own(&VolumeIdentity::resident("isolated", "v"), t(7))
+            .unwrap();
         assert!(owned.is_fresh(t(7)));
         assert!(!owned.is_fresh(t(8)));
     }
@@ -740,8 +805,10 @@ mod tests {
         // no code path. (If a `release` were added to DurableVolume, this test's
         // sibling doc-test / the type would change — the invariant is the ABSENCE
         // of the method.)
-        let fp = FootprintPolicy::camelot();
-        let owned = fp.try_own(&VolumeIdentity::resident("camelot", "data-mysql-0"), t(1)).unwrap();
+        let fp = FootprintPolicy::isolated();
+        let owned = fp
+            .try_own(&VolumeIdentity::resident("isolated", "data-mysql-0"), t(1))
+            .unwrap();
         match classify_durability(owned, &DurabilityFacts::of(DataRole::SaasState)) {
             VolumeClass::Durable(d) => {
                 // The ONLY thing we can do is read ownership / grow — no release.
@@ -753,11 +820,16 @@ mod tests {
 
     #[test]
     fn unknown_and_saas_roles_default_to_durable() {
-        let fp = FootprintPolicy::camelot();
+        let fp = FootprintPolicy::isolated();
         for role in [DataRole::SaasState, DataRole::Unknown] {
-            let owned = fp.try_own(&VolumeIdentity::resident("camelot", "v"), t(1)).unwrap();
+            let owned = fp
+                .try_own(&VolumeIdentity::resident("isolated", "v"), t(1))
+                .unwrap();
             assert!(
-                matches!(classify_durability(owned, &DurabilityFacts::of(role)), VolumeClass::Durable(_)),
+                matches!(
+                    classify_durability(owned, &DurabilityFacts::of(role)),
+                    VolumeClass::Durable(_)
+                ),
                 "{role:?} must be durable (safe default)"
             );
         }
@@ -765,15 +837,24 @@ mod tests {
 
     #[test]
     fn a_regenerable_volume_releases_only_with_a_not_in_use_proof() {
-        let fp = FootprintPolicy::camelot();
-        let owned = fp.try_own(&VolumeIdentity::resident("camelot", "scratch-cache"), t(3)).unwrap();
+        let fp = FootprintPolicy::isolated();
+        let owned = fp
+            .try_own(&VolumeIdentity::resident("isolated", "scratch-cache"), t(3))
+            .unwrap();
         let VolumeClass::Regenerable(vol) =
             classify_durability(owned, &DurabilityFacts::of(DataRole::RebuildableFromSource))
         else {
             panic!("rebuildable-from-source must classify Regenerable");
         };
         // orphan → a NotInUse proof exists → release succeeds this tick.
-        let proof = prove_not_in_use(ConsumerReachability { live_consumer_pods: 0, attached: false }, t(3)).unwrap();
+        let proof = prove_not_in_use(
+            ConsumerReachability {
+                live_consumer_pods: 0,
+                attached: false,
+            },
+            t(3),
+        )
+        .unwrap();
         let cmd = vol.release(proof, t(3)).unwrap();
         assert_eq!(cmd.name, "scratch-cache");
         assert_eq!(cmd.recreate_to, None);
@@ -783,23 +864,68 @@ mod tests {
     fn an_in_use_volume_mints_no_not_in_use_proof() {
         // THE in-use guard: any live consumer OR an attached volume → no witness,
         // so the release path cannot be entered (no proof to pass).
-        assert!(prove_not_in_use(ConsumerReachability { live_consumer_pods: 1, attached: false }, t(1)).is_none());
-        assert!(prove_not_in_use(ConsumerReachability { live_consumer_pods: 0, attached: true }, t(1)).is_none());
-        assert!(prove_not_in_use(ConsumerReachability { live_consumer_pods: 3, attached: true }, t(1)).is_none());
+        assert!(
+            prove_not_in_use(
+                ConsumerReachability {
+                    live_consumer_pods: 1,
+                    attached: false
+                },
+                t(1)
+            )
+            .is_none()
+        );
+        assert!(
+            prove_not_in_use(
+                ConsumerReachability {
+                    live_consumer_pods: 0,
+                    attached: true
+                },
+                t(1)
+            )
+            .is_none()
+        );
+        assert!(
+            prove_not_in_use(
+                ConsumerReachability {
+                    live_consumer_pods: 3,
+                    attached: true
+                },
+                t(1)
+            )
+            .is_none()
+        );
         // only a true orphan mints one.
-        assert!(prove_not_in_use(ConsumerReachability { live_consumer_pods: 0, attached: false }, t(1)).is_some());
+        assert!(
+            prove_not_in_use(
+                ConsumerReachability {
+                    live_consumer_pods: 0,
+                    attached: false
+                },
+                t(1)
+            )
+            .is_some()
+        );
     }
 
     #[test]
     fn recreate_carries_the_target_size() {
-        let fp = FootprintPolicy::camelot();
-        let owned = fp.try_own(&VolumeIdentity::resident("camelot", "idx"), t(2)).unwrap();
+        let fp = FootprintPolicy::isolated();
+        let owned = fp
+            .try_own(&VolumeIdentity::resident("isolated", "idx"), t(2))
+            .unwrap();
         let VolumeClass::Regenerable(vol) =
             classify_durability(owned, &DurabilityFacts::of(DataRole::RebuildableFromSource))
         else {
             unreachable!()
         };
-        let proof = prove_not_in_use(ConsumerReachability { live_consumer_pods: 0, attached: false }, t(2)).unwrap();
+        let proof = prove_not_in_use(
+            ConsumerReachability {
+                live_consumer_pods: 0,
+                attached: false,
+            },
+            t(2),
+        )
+        .unwrap();
         let cmd = vol.recreate(proof, t(2), 8 * GI).unwrap();
         assert_eq!(cmd.recreate_to, Some(8 * GI));
     }
@@ -807,29 +933,47 @@ mod tests {
     #[test]
     fn a_stale_not_in_use_proof_is_refused() {
         // Per-tick: a proof minted last tick cannot authorize a release this tick.
-        let fp = FootprintPolicy::camelot();
-        let owned = fp.try_own(&VolumeIdentity::resident("camelot", "cache"), t(5)).unwrap();
+        let fp = FootprintPolicy::isolated();
+        let owned = fp
+            .try_own(&VolumeIdentity::resident("isolated", "cache"), t(5))
+            .unwrap();
         let VolumeClass::Regenerable(vol) =
             classify_durability(owned, &DurabilityFacts::of(DataRole::RebuildableFromSource))
         else {
             unreachable!()
         };
-        let stale_proof = prove_not_in_use(ConsumerReachability { live_consumer_pods: 0, attached: false }, t(4)).unwrap();
+        let stale_proof = prove_not_in_use(
+            ConsumerReachability {
+                live_consumer_pods: 0,
+                attached: false,
+            },
+            t(4),
+        )
+        .unwrap();
         let err = vol.release(stale_proof, t(5)).unwrap_err();
         assert!(matches!(err, CarveRefused::StaleNotInUseWitness { .. }));
     }
 
     #[test]
     fn a_stale_ownership_witness_is_refused_on_release() {
-        let fp = FootprintPolicy::camelot();
-        let owned = fp.try_own(&VolumeIdentity::resident("camelot", "cache"), t(4)).unwrap();
+        let fp = FootprintPolicy::isolated();
+        let owned = fp
+            .try_own(&VolumeIdentity::resident("isolated", "cache"), t(4))
+            .unwrap();
         let VolumeClass::Regenerable(vol) =
             classify_durability(owned, &DurabilityFacts::of(DataRole::RebuildableFromSource))
         else {
             unreachable!()
         };
         // ownership was proven tick 4; this tick is 6.
-        let proof = prove_not_in_use(ConsumerReachability { live_consumer_pods: 0, attached: false }, t(6)).unwrap();
+        let proof = prove_not_in_use(
+            ConsumerReachability {
+                live_consumer_pods: 0,
+                attached: false,
+            },
+            t(6),
+        )
+        .unwrap();
         let err = vol.release(proof, t(6)).unwrap_err();
         assert!(matches!(err, CarveRefused::StaleOwnershipWitness { .. }));
     }
@@ -853,7 +997,10 @@ mod tests {
         let carve = AutonomousStorageCarve;
         // grow-only: a desired target at or below current yields NO step.
         assert!(carve.plan_grow(10 * GI, 10 * GI, t(1)).is_none());
-        assert!(carve.plan_grow(10 * GI, 4 * GI, t(1)).is_none(), "never shrinks");
+        assert!(
+            carve.plan_grow(10 * GI, 4 * GI, t(1)).is_none(),
+            "never shrinks"
+        );
         // a modest grow lands exactly at the desired target (within the cap).
         let g = carve.plan_grow(10 * GI, 11 * GI, t(1)).unwrap();
         assert_eq!(g.to(), 11 * GI);
@@ -866,14 +1013,21 @@ mod tests {
 
     #[test]
     fn the_directionality_typestate_agrees_with_the_config_clamp() {
-        assert_eq!(AutonomousStorageCarve.directionality(), Directionality::GrowOnly);
+        assert_eq!(
+            AutonomousStorageCarve.directionality(),
+            Directionality::GrowOnly
+        );
     }
 
     #[test]
     fn an_atomic_grow_commits_only_when_every_boundary_re_verifies_this_tick() {
-        let fp = FootprintPolicy::camelot();
-        let owned = fp.try_own(&VolumeIdentity::resident("camelot", "data-0"), t(9)).unwrap();
-        let grow = AutonomousStorageCarve.plan_grow(10 * GI, 12 * GI, t(9)).unwrap();
+        let fp = FootprintPolicy::isolated();
+        let owned = fp
+            .try_own(&VolumeIdentity::resident("isolated", "data-0"), t(9))
+            .unwrap();
+        let grow = AutonomousStorageCarve
+            .plan_grow(10 * GI, 12 * GI, t(9))
+            .unwrap();
         let cmd = commit_small_atomic_grow(t(9), owned, grow, VolumeOpState::Idle).unwrap();
         assert_eq!(cmd.from, 10 * GI);
         assert_eq!(cmd.to, 12 * GI);
@@ -884,18 +1038,26 @@ mod tests {
     fn a_stale_ownership_witness_cannot_drive_an_act() {
         // ownership minted tick 9, grow planned tick 10, committing at tick 10 →
         // the ownership witness is stale → refused (re-parse required).
-        let fp = FootprintPolicy::camelot();
-        let owned = fp.try_own(&VolumeIdentity::resident("camelot", "data-0"), t(9)).unwrap();
-        let grow = AutonomousStorageCarve.plan_grow(10 * GI, 12 * GI, t(10)).unwrap();
+        let fp = FootprintPolicy::isolated();
+        let owned = fp
+            .try_own(&VolumeIdentity::resident("isolated", "data-0"), t(9))
+            .unwrap();
+        let grow = AutonomousStorageCarve
+            .plan_grow(10 * GI, 12 * GI, t(10))
+            .unwrap();
         let err = commit_small_atomic_grow(t(10), owned, grow, VolumeOpState::Idle).unwrap_err();
         assert!(matches!(err, CarveRefused::StaleOwnershipWitness { .. }));
     }
 
     #[test]
     fn a_stale_grow_witness_cannot_drive_an_act() {
-        let fp = FootprintPolicy::camelot();
-        let owned = fp.try_own(&VolumeIdentity::resident("camelot", "data-0"), t(10)).unwrap();
-        let grow = AutonomousStorageCarve.plan_grow(10 * GI, 12 * GI, t(9)).unwrap(); // stale
+        let fp = FootprintPolicy::isolated();
+        let owned = fp
+            .try_own(&VolumeIdentity::resident("isolated", "data-0"), t(10))
+            .unwrap();
+        let grow = AutonomousStorageCarve
+            .plan_grow(10 * GI, 12 * GI, t(9))
+            .unwrap(); // stale
         let err = commit_small_atomic_grow(t(10), owned, grow, VolumeOpState::Idle).unwrap_err();
         assert!(matches!(err, CarveRefused::StaleGrowWitness { .. }));
     }
@@ -903,10 +1065,15 @@ mod tests {
     #[test]
     fn a_mid_operation_volume_is_never_double_acted() {
         // fresh witnesses, but a ModifyVolume is already in flight → refused.
-        let fp = FootprintPolicy::camelot();
-        let owned = fp.try_own(&VolumeIdentity::resident("camelot", "data-0"), t(3)).unwrap();
-        let grow = AutonomousStorageCarve.plan_grow(10 * GI, 12 * GI, t(3)).unwrap();
-        let err = commit_small_atomic_grow(t(3), owned, grow, VolumeOpState::ResizeInProgress).unwrap_err();
+        let fp = FootprintPolicy::isolated();
+        let owned = fp
+            .try_own(&VolumeIdentity::resident("isolated", "data-0"), t(3))
+            .unwrap();
+        let grow = AutonomousStorageCarve
+            .plan_grow(10 * GI, 12 * GI, t(3))
+            .unwrap();
+        let err = commit_small_atomic_grow(t(3), owned, grow, VolumeOpState::ResizeInProgress)
+            .unwrap_err();
         assert_eq!(err, CarveRefused::VolumeMidOperation);
     }
 
@@ -927,9 +1094,17 @@ mod tests {
                     Some(g) => {
                         assert!(g.to() > g.from(), "always a grow");
                         assert!(g.delta() > 0);
-                        assert!(g.delta() <= grow_step_cap(cur), "delta {} exceeds cap {}", g.delta(), grow_step_cap(cur));
+                        assert!(
+                            g.delta() <= grow_step_cap(cur),
+                            "delta {} exceeds cap {}",
+                            g.delta(),
+                            grow_step_cap(cur)
+                        );
                         assert!(g.to() <= desired, "never overshoots the desired target");
-                        assert!(g.to() <= cur + grow_step_cap(cur), "never an unbounded jump");
+                        assert!(
+                            g.to() <= cur + grow_step_cap(cur),
+                            "never an unbounded jump"
+                        );
                     }
                 }
             }
@@ -942,7 +1117,10 @@ mod tests {
         // the release path cannot be constructed. Sweep the reachability space.
         for consumers in 0..4u32 {
             for attached in [false, true] {
-                let reach = ConsumerReachability { live_consumer_pods: consumers, attached };
+                let reach = ConsumerReachability {
+                    live_consumer_pods: consumers,
+                    attached,
+                };
                 let witness = prove_not_in_use(reach, t(1));
                 assert_eq!(
                     witness.is_some(),
@@ -955,22 +1133,48 @@ mod tests {
 
     #[test]
     fn prop_a_non_owned_volume_yields_no_owned_pvc() {
-        // Sweep resident namespaces: none are ownable under the camelot footprint.
-        let fp = FootprintPolicy::camelot();
-        for ns in ["rabbitmq", "profiling", "tenant-workloads", "monitoring", "istio-system", "flux-system"] {
-            assert!(fp.try_own(&VolumeIdentity::resident(ns, "d"), t(1)).is_none());
+        // Sweep resident namespaces: none are ownable under the private estate footprint.
+        let fp = FootprintPolicy::isolated();
+        for ns in [
+            "rabbitmq",
+            "profiling",
+            "tenant-workloads",
+            "monitoring",
+            "istio-system",
+            "flux-system",
+        ] {
+            assert!(
+                fp.try_own(&VolumeIdentity::resident(ns, "d"), t(1))
+                    .is_none()
+            );
         }
         // and every owned namespace is ownable.
-        for ns in ["camelot", "camelot-build", "tendril"] {
-            assert!(fp.try_own(&VolumeIdentity::resident(ns, "d"), t(1)).is_some());
+        for ns in ["isolated", "isolated-build", "the observability tap"] {
+            assert!(
+                fp.try_own(&VolumeIdentity::resident(ns, "d"), t(1))
+                    .is_some()
+            );
         }
     }
 
     #[test]
     fn prop_grow_step_cap_never_exceeds_either_bound() {
-        for kib in [1u64, 512, 2 * MI, 100 * MI, GI, 7 * GI, 10 * GI, 40 * GI, 4096 * GI] {
+        for kib in [
+            1u64,
+            512,
+            2 * MI,
+            100 * MI,
+            GI,
+            7 * GI,
+            10 * GI,
+            40 * GI,
+            4096 * GI,
+        ] {
             let cap = grow_step_cap(kib);
-            assert!(cap <= GROW_STEP_ABS_CAP_BYTES, "cap {cap} exceeds abs bound");
+            assert!(
+                cap <= GROW_STEP_ABS_CAP_BYTES,
+                "cap {cap} exceeds abs bound"
+            );
             assert!(cap <= kib / 5, "cap {cap} exceeds 20% of {kib}");
         }
     }

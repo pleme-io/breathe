@@ -37,7 +37,7 @@
 //! composes the concrete realizers BY REFERENCE (each `doctrine_ref`), exactly as
 //! breathe-invariant references the band crates without depending on them:
 //! `breathe-catalog::builder` (the DegradeTier total-order ladders + BuilderObjective),
-//! `pangea-architectures` (Camelot{,Builder}NodeGroup + AzTopology + `reject_on_demand!`),
+//! `pangea-architectures` (the private estate{,Builder}NodeGroup + AzTopology + `reject_on_demand!`),
 //! `pangea-spot` (Allocation + Catalog). This keeps the lock decoupled from those
 //! surfaces' churn (standalone workspace, no band-crate dep).
 //!
@@ -59,14 +59,14 @@ pub mod invariant;
 pub mod spread;
 
 pub use axis::{
-    default_placement, resolve_arch, ArchCostSignal, ArchPinReason, ArchSelection, Interruption,
-    LadderMode, PerfClass, Placement, ResolvedArch, SpotStrategy, StorageBinding,
-    REMOVED_ON_DEMAND_PERF_CLASSES,
+    ArchCostSignal, ArchPinReason, ArchSelection, Interruption, LadderMode, PerfClass, Placement,
+    REMOVED_ON_DEMAND_PERF_CLASSES, ResolvedArch, SpotStrategy, StorageBinding, default_placement,
+    resolve_arch,
 };
 pub use invariant::{AuctionClause, UnrepTier};
 pub use spread::{
-    cost_witness, molding, AuctionSpread, CostRationale, CostWitness, Lane, Maturity,
-    StrategyWiring, UseCase, BUILD_BURST, COST_WITNESSES, EYES_TINY, MOLDINGS, SAAS_STEADY,
+    AuctionSpread, BUILD_BURST, COST_WITNESSES, CostRationale, CostWitness, EYES_TINY, Lane,
+    MOLDINGS, Maturity, SAAS_STEADY, StrategyWiring, UseCase, cost_witness, molding,
 };
 
 /// A compact tier-honest ledger row per permutation axis — what is
@@ -123,7 +123,7 @@ pub const AXIS_LEDGER: &[AxisLedgerRow] = &[
         axis: "placement (AZ)",
         maturity: spread::Maturity::Design,
         tier: UnrepTier::CeilingC2,
-        note: "single-instance-EBS ⇒ single-AZ enforced; multi-AZ per-replica is the resilient destination (shipped CamelotNodeGroup single-AZ interim); the subnet's real AZ is plan-time-only (C2)",
+        note: "single-instance-EBS ⇒ single-AZ enforced; multi-AZ per-replica is the resilient destination (shipped the isolated node-group architecture single-AZ interim); the subnet's real AZ is plan-time-only (C2)",
     },
     AxisLedgerRow {
         axis: "interruption (retirada)",
@@ -135,7 +135,7 @@ pub const AXIS_LEDGER: &[AxisLedgerRow] = &[
 
 #[cfg(test)]
 mod tests {
-    use super::{AxisLedgerRow, AXIS_LEDGER};
+    use super::{AXIS_LEDGER, AxisLedgerRow};
 
     #[test]
     fn axis_ledger_names_the_managed_ng_gap_honestly() {
@@ -144,7 +144,10 @@ mod tests {
             .iter()
             .find(|r| r.axis == "spot-strategy")
             .expect("the spot-strategy row must exist");
-        assert!(strat.note.contains("DROPPED") && strat.note.contains("managed-NG"), "the gap must be named");
+        assert!(
+            strat.note.contains("DROPPED") && strat.note.contains("managed-NG"),
+            "the gap must be named"
+        );
     }
 
     #[test]

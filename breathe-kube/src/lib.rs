@@ -12,10 +12,11 @@ pub mod pod_cgroup;
 pub mod replica_env;
 
 pub use kube_cluster::KubeCluster;
-pub use replica_env::KubeReplicaEnv;
 pub use managed_fields::{
     cnpg_cluster_limit_segments, field_owners, pod_template_limit_segments, replicas_segments,
 };
 pub use pod_cgroup::{
-    container_id_from_status, node_name_from_pod, pod_coords_from_value, PodCgroupCoords, PodCoordError,
+    PodCgroupCoords, PodCoordError, container_id_from_status, node_name_from_pod,
+    pod_coords_from_value,
 };
+pub use replica_env::KubeReplicaEnv;

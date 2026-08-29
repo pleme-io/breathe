@@ -22,8 +22,8 @@ use std::collections::BTreeMap;
 use breathe_control::replica::{ReplicaBandConfig, ReplicaSignal, Topology};
 use breathe_control::{BandConfig, BoundIntroduction, MetricMissingPolicy, Unit};
 use breathe_provider::gate::{
-    self, ConfirmVerdict, EffectiveGate, EffectiveGateReport, GateInputs, LegacyDecision, LegacyPath, WriteIntent,
-    WriteIntentSpec,
+    self, ConfirmVerdict, EffectiveGate, EffectiveGateReport, GateInputs, LegacyDecision,
+    LegacyPath, WriteIntent, WriteIntentSpec,
 };
 use breathe_provider::{DisruptionPolicy, LimitLayout, MetricSource};
 use kube::CustomResource;
@@ -256,7 +256,7 @@ pub struct BandStatus {
     /// This is the field that answers, from the CR alone, the two questions
     /// `effectiveDryRun` could not: *why is this band held?* (an authored
     /// `observe`, or an accidental `NotReady`/`Stale`/`Conflict` — a
-    /// distinction that mattered on camelot-eks, where six bands were shadowed
+    /// distinction that mattered on one cluster-eks, where six bands were shadowed
     /// by accident while every surface reported "dryRun") and *what authorizes
     /// this band to write?* A `witness` of `legacyDefault` means the write
     /// rests on a pre-2026-07 resolution path rather than an authored
@@ -392,9 +392,13 @@ pub fn map_shadow_reason(r: outorga::ShadowReason) -> gate::ShadowReason {
         outorga::ShadowReason::NotReady => gate::ShadowReason::NotReady,
         outorga::ShadowReason::Stale => gate::ShadowReason::Stale,
         outorga::ShadowReason::Conflict => gate::ShadowReason::Conflict,
-        outorga::ShadowReason::ConfirmPending { held_secs, need_secs } => {
-            gate::ShadowReason::ConfirmPending { held_secs, need_secs }
-        }
+        outorga::ShadowReason::ConfirmPending {
+            held_secs,
+            need_secs,
+        } => gate::ShadowReason::ConfirmPending {
+            held_secs,
+            need_secs,
+        },
     }
 }
 
@@ -472,7 +476,10 @@ pub trait Band:
     /// is a new constraint, and the two directions are not symmetric (failing to
     /// right-size wastes quota; capping cluster DNS can wedge a cluster).
     fn bound_introduction(&self) -> BoundIntroduction {
-        self.bound_introduction_spec().map_or(BoundIntroduction::Forbidden, BoundIntroductionSpec::to_control)
+        self.bound_introduction_spec().map_or(
+            BoundIntroduction::Forbidden,
+            BoundIntroductionSpec::to_control,
+        )
     }
     /// The clean-observation window (seconds) a `ShadowConfirmEffect` band holds
     /// Ready-and-healthy before it auto-promotes to carving.
@@ -529,7 +536,10 @@ pub trait Band:
     /// compiled default. `floor`/`ceiling`/`requestFloor`/`warmupSeconds` are
     /// read straight from this band's own spec regardless of `posture` — see
     /// the module-level safety invariant.
-    fn band_config_with_posture(&self, posture: Option<&BreathePostureSpec>) -> anyhow::Result<BandConfig> {
+    fn band_config_with_posture(
+        &self,
+        posture: Option<&BreathePostureSpec>,
+    ) -> anyhow::Result<BandConfig> {
         let _ = posture;
         self.band_config()
     }
@@ -544,7 +554,10 @@ pub trait Band:
         self.max_staleness_seconds()
     }
     /// Posture-aware [`Band::disruption_policy`].
-    fn disruption_policy_with_posture(&self, posture: Option<&BreathePostureSpec>) -> DisruptionPolicy {
+    fn disruption_policy_with_posture(
+        &self,
+        posture: Option<&BreathePostureSpec>,
+    ) -> DisruptionPolicy {
         let _ = posture;
         self.disruption_policy()
     }
@@ -563,7 +576,8 @@ pub trait Band:
     /// default already does), never "shadow forever". This makes "the band never
     /// goes live" a state that is unrepresentable without explicit operator intent.
     fn promotion_mode(&self) -> PromotionMode {
-        self.mode_spec().unwrap_or(PromotionMode::ShadowConfirmEffect)
+        self.mode_spec()
+            .unwrap_or(PromotionMode::ShadowConfirmEffect)
     }
 
     /// The operator fast-path: `breathe.pleme.io/confirmed: "true"` promotes now.
@@ -588,7 +602,10 @@ pub trait Band:
     fn confirm_gate_passed(&self, now_epoch: i64) -> bool {
         let policy = outorga::PromotionPolicy::new(outorga::PromotionMode::ShadowConfirmEffect)
             .confirm_after(self.confirm_after_seconds());
-        matches!(policy.confirm_gate(&BandObservation(self), now_epoch), outorga::ConfirmGate::Passed)
+        matches!(
+            policy.confirm_gate(&BandObservation(self), now_epoch),
+            outorga::ConfirmGate::Passed
+        )
     }
 
     /// Which pre-`writeIntent` path authorized a write, for attribution in
@@ -637,17 +654,21 @@ pub trait Band:
         // The confirm gate is consulted only for a calibrating intent; the
         // legacy path runs its own gate inside `decide` below.
         let confirm = match &intent {
-            Some(Ok(WriteIntent::CalibrateThenWrite { confirm_after_seconds })) => {
+            Some(Ok(WriteIntent::CalibrateThenWrite {
+                confirm_after_seconds,
+            })) => {
                 let obs = BandObservation(self);
-                let policy = outorga::PromotionPolicy::new(outorga::PromotionMode::ShadowConfirmEffect)
-                    .confirm_after(*confirm_after_seconds);
+                let policy =
+                    outorga::PromotionPolicy::new(outorga::PromotionMode::ShadowConfirmEffect)
+                        .confirm_after(*confirm_after_seconds);
                 let required_secs = i64::try_from(*confirm_after_seconds).unwrap_or(i64::MAX);
                 match policy.confirm_gate(&obs, now_epoch) {
                     outorga::ConfirmGate::Passed => {
                         if outorga::Observation::operator_confirmed(&obs) {
                             ConfirmVerdict::OperatorConfirmed
                         } else {
-                            let since = outorga::Observation::ready_since(&obs).unwrap_or(now_epoch);
+                            let since =
+                                outorga::Observation::ready_since(&obs).unwrap_or(now_epoch);
                             ConfirmVerdict::Passed {
                                 ready_since_epoch: since,
                                 held_secs: (now_epoch - since).max(0),
@@ -655,10 +676,16 @@ pub trait Band:
                             }
                         }
                     }
-                    outorga::ConfirmGate::Pending { held_secs, need_secs } => {
-                        ConfirmVerdict::Pending { held_secs, required_secs: need_secs }
+                    outorga::ConfirmGate::Pending {
+                        held_secs,
+                        need_secs,
+                    } => ConfirmVerdict::Pending {
+                        held_secs,
+                        required_secs: need_secs,
+                    },
+                    outorga::ConfirmGate::Blocked(r) => {
+                        ConfirmVerdict::Blocked(map_shadow_reason(r))
                     }
-                    outorga::ConfirmGate::Blocked(r) => ConfirmVerdict::Blocked(map_shadow_reason(r)),
                 }
             }
             _ => ConfirmVerdict::NotEvaluated,
@@ -677,7 +704,12 @@ pub trait Band:
             outorga::PromotionDecision::Shadow(r) => LegacyDecision::Shadow(map_shadow_reason(r)),
         };
 
-        gate::resolve_gate(&GateInputs { intent, frozen, confirm, legacy })
+        gate::resolve_gate(&GateInputs {
+            intent,
+            frozen,
+            confirm,
+            legacy,
+        })
     }
 
     /// The EFFECTIVE dry-run for this tick, derived from the promotion lifecycle.
@@ -773,14 +805,18 @@ impl<B: Band> outorga::Observation for BandObservation<'_, B> {
         self.ready_since().is_some()
     }
     fn stale(&self) -> bool {
-        self.0
-            .status()
-            .is_some_and(|st| st.conditions.iter().any(|c| c.type_ == "Stale" && c.status == "True"))
+        self.0.status().is_some_and(|st| {
+            st.conditions
+                .iter()
+                .any(|c| c.type_ == "Stale" && c.status == "True")
+        })
     }
     fn conflict(&self) -> bool {
-        self.0
-            .status()
-            .is_some_and(|st| st.conditions.iter().any(|c| c.type_ == "Conflict" && c.status == "True"))
+        self.0.status().is_some_and(|st| {
+            st.conditions
+                .iter()
+                .any(|c| c.type_ == "Conflict" && c.status == "True")
+        })
     }
     fn ready_since(&self) -> Option<i64> {
         let st = self.0.status()?;
@@ -800,7 +836,9 @@ impl<B: Band> outorga::Observation for BandObservation<'_, B> {
         if cond.status != "True" {
             return None;
         }
-        chrono::DateTime::parse_from_rfc3339(&cond.last_transition_time).ok().map(|t| t.timestamp())
+        chrono::DateTime::parse_from_rfc3339(&cond.last_transition_time)
+            .ok()
+            .map(|t| t.timestamp())
     }
     fn operator_confirmed(&self) -> bool {
         self.0.operator_confirmed()
@@ -865,7 +903,11 @@ impl outorga::Observation for AlwaysReady {
 /// scope for a same-behavior migration.
 #[must_use]
 pub fn legacy_effective_dry_run(dry_run: bool, frozen: bool) -> outorga::PromotionDecision {
-    let mode = if dry_run { outorga::PromotionMode::Shadow } else { outorga::PromotionMode::Effect };
+    let mode = if dry_run {
+        outorga::PromotionMode::Shadow
+    } else {
+        outorga::PromotionMode::Effect
+    };
     outorga::PromotionPolicy::new(mode).decide(&AlwaysReady, 0, frozen)
 }
 
@@ -888,7 +930,11 @@ fn band_config_of(
     };
     // An empty request_floor ⇒ no declared request floor (0). A malformed one is a
     // typed parse error (never silently a wrong floor).
-    let request_floor_bytes = if request_floor.is_empty() { 0 } else { parse(request_floor)? };
+    let request_floor_bytes = if request_floor.is_empty() {
+        0
+    } else {
+        parse(request_floor)?
+    };
     Ok(BandConfig {
         grow_above,
         shrink_below,
@@ -1023,7 +1069,7 @@ macro_rules! band_kind {
             /// Right-sizing an existing limit and newly capping a workload that was
             /// deliberately left uncapped look identical to a controller reading
             /// `limit == 0` — and breathe was doing the second while believing it did
-            /// the first. On camelot-eks it introduced a cpu limit onto `coredns` and
+            /// the first. On private-estate-eks it introduced a cpu limit onto `coredns` and
             /// `ebs-csi-controller`, neither of which declares one.
             ///
             /// * `forbidden` (default) — a target with no declared bound reports
@@ -1219,17 +1265,71 @@ macro_rules! band_kind {
     };
 }
 
-band_kind!(MemoryBandSpec, MemoryBand, "MemoryBand", "mband", Unit::Bytes, "d_floor_bytes", "d_ceiling_bytes", breathe_provider::DimensionId::Memory);
-band_kind!(CpuBandSpec, CpuBand, "CpuBand", "cband", Unit::Millicores, "d_floor_milli", "d_ceiling_milli", breathe_provider::DimensionId::Cpu);
-band_kind!(StorageBandSpec, StorageBand, "StorageBand", "sband", Unit::Bytes, "d_storage_floor_bytes", "d_storage_ceiling_bytes", breathe_provider::DimensionId::Storage);
+band_kind!(
+    MemoryBandSpec,
+    MemoryBand,
+    "MemoryBand",
+    "mband",
+    Unit::Bytes,
+    "d_floor_bytes",
+    "d_ceiling_bytes",
+    breathe_provider::DimensionId::Memory
+);
+band_kind!(
+    CpuBandSpec,
+    CpuBand,
+    "CpuBand",
+    "cband",
+    Unit::Millicores,
+    "d_floor_milli",
+    "d_ceiling_milli",
+    breathe_provider::DimensionId::Cpu
+);
+band_kind!(
+    StorageBandSpec,
+    StorageBand,
+    "StorageBand",
+    "sband",
+    Unit::Bytes,
+    "d_storage_floor_bytes",
+    "d_storage_ceiling_bytes",
+    breathe_provider::DimensionId::Storage
+);
 // HOST bands — the descriptor (breathe-host) encodes the host addressing; the
 // CRD shape is identical to the byte-valued k8s bands, so the same macro stamps
 // them. targetRef.name carries the systemd unit (CgroupBand) or the node
 // (ArcBand); the agent applies via HostCluster within the BreatheNodePool L2 ceiling.
-band_kind!(ArcBandSpec, ArcBand, "ArcBand", "aband", Unit::Bytes, "d_floor_bytes", "d_ceiling_bytes", breathe_provider::DimensionId::Arc);
-band_kind!(CgroupBandSpec, CgroupBand, "CgroupBand", "gband", Unit::Bytes, "d_floor_bytes", "d_ceiling_bytes", breathe_provider::DimensionId::Cgroup);
+band_kind!(
+    ArcBandSpec,
+    ArcBand,
+    "ArcBand",
+    "aband",
+    Unit::Bytes,
+    "d_floor_bytes",
+    "d_ceiling_bytes",
+    breathe_provider::DimensionId::Arc
+);
+band_kind!(
+    CgroupBandSpec,
+    CgroupBand,
+    "CgroupBand",
+    "gband",
+    Unit::Bytes,
+    "d_floor_bytes",
+    "d_ceiling_bytes",
+    breathe_provider::DimensionId::Cgroup
+);
 // HOST cpu band — the unit's transient CPUQuota cap, millicores (like CpuBand).
-band_kind!(CgroupCpuBandSpec, CgroupCpuBand, "CgroupCpuBand", "gcband", Unit::Millicores, "d_floor_milli", "d_ceiling_milli", breathe_provider::DimensionId::CgroupCpu);
+band_kind!(
+    CgroupCpuBandSpec,
+    CgroupCpuBand,
+    "CgroupCpuBand",
+    "gcband",
+    Unit::Millicores,
+    "d_floor_milli",
+    "d_ceiling_milli",
+    breathe_provider::DimensionId::CgroupCpu
+);
 
 // ───────────── HostParamBand — the GENERIC sysctl / ZFS-param band (PR-2) ─────────────
 // Hand-rolled (not band_kind!) because it carries EXTRA spec fields — the knob,
@@ -1250,7 +1350,11 @@ pub enum HostKnobSpec {
     ZfsParam { param: String },
     /// A systemd unit's per-device `io.max` cap — Step-4. `field` is one of
     /// `rbps`/`wbps`/`riops`/`wiops`; `device` is `<maj>:<min>`.
-    CgroupIoMax { unit: String, device: String, field: IoMaxFieldSpec },
+    CgroupIoMax {
+        unit: String,
+        device: String,
+        field: IoMaxFieldSpec,
+    },
 }
 
 /// Which `io.max` sub-knob a [`HostKnobSpec::CgroupIoMax`] carves (serde mirror of
@@ -1290,7 +1394,10 @@ pub enum HostMetricSpec {
     CgroupIoStat { unit: String, field: IoMaxFieldSpec },
     /// PRESSURE-STALL avg10 (×100) from `/proc/pressure/<resource>` — Step-3, the
     /// throttle signal for a soft band. `resource` ∈ cpu/memory/io, `kind` ∈ some/full.
-    Psi { resource: PsiResourceSpec, kind: PsiKindSpec },
+    Psi {
+        resource: PsiResourceSpec,
+        kind: PsiKindSpec,
+    },
 }
 
 /// Mirror of `breathe_provider::PsiResource` for the CRD.
@@ -1382,7 +1489,10 @@ pub struct HostParamBandSpec {
     /// structural schema cannot express a conditional `required`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub write_intent: Option<WriteIntentSpec>,
-    #[serde(default, skip_serializing_if = "breathe_provider::DisruptionPolicy::is_restart_free_only")]
+    #[serde(
+        default,
+        skip_serializing_if = "breathe_provider::DisruptionPolicy::is_restart_free_only"
+    )]
     pub disruption_policy: DisruptionPolicy,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub suspend: bool,
@@ -1402,8 +1512,14 @@ impl HostParamBandSpec {
     pub fn provider_knob(&self) -> breathe_provider::HostKnob {
         match &self.knob {
             HostKnobSpec::Sysctl { key } => breathe_provider::HostKnob::Sysctl { key: key.clone() },
-            HostKnobSpec::ZfsParam { param } => breathe_provider::HostKnob::ZfsParam { param: param.clone() },
-            HostKnobSpec::CgroupIoMax { unit, device, field } => breathe_provider::HostKnob::CgroupIoMax {
+            HostKnobSpec::ZfsParam { param } => breathe_provider::HostKnob::ZfsParam {
+                param: param.clone(),
+            },
+            HostKnobSpec::CgroupIoMax {
+                unit,
+                device,
+                field,
+            } => breathe_provider::HostKnob::CgroupIoMax {
                 unit: unit.clone(),
                 device: device.clone(),
                 field: field.provider(),
@@ -1414,12 +1530,18 @@ impl HostParamBandSpec {
     #[must_use]
     pub fn provider_metric(&self) -> breathe_provider::HostMetric {
         match &self.metric {
-            HostMetricSpec::MeminfoField { field } => breathe_provider::HostMetric::MeminfoField { field: field.clone() },
-            HostMetricSpec::ArcstatsRow { row } => breathe_provider::HostMetric::ArcKstat { row: row.clone() },
-            HostMetricSpec::CgroupIoStat { unit, field } => breathe_provider::HostMetric::CgroupIoStat {
-                unit: unit.clone(),
-                field: field.provider(),
+            HostMetricSpec::MeminfoField { field } => breathe_provider::HostMetric::MeminfoField {
+                field: field.clone(),
             },
+            HostMetricSpec::ArcstatsRow { row } => {
+                breathe_provider::HostMetric::ArcKstat { row: row.clone() }
+            }
+            HostMetricSpec::CgroupIoStat { unit, field } => {
+                breathe_provider::HostMetric::CgroupIoStat {
+                    unit: unit.clone(),
+                    field: field.provider(),
+                }
+            }
             HostMetricSpec::Psi { resource, kind } => breathe_provider::HostMetric::Psi {
                 resource: match resource {
                     PsiResourceSpec::Cpu => breathe_provider::PsiResource::Cpu,
@@ -1453,8 +1575,16 @@ impl crate::Band for HostParamBand {
     fn band_config(&self) -> anyhow::Result<BandConfig> {
         let s = &self.spec;
         crate::band_config_of(
-            s.setpoint, s.grow_above, s.shrink_below, s.grow_factor, s.shrink_factor,
-            &s.floor, &s.ceiling, "", 0, Unit::Bytes,
+            s.setpoint,
+            s.grow_above,
+            s.shrink_below,
+            s.grow_factor,
+            s.shrink_factor,
+            &s.floor,
+            &s.ceiling,
+            "",
+            0,
+            Unit::Bytes,
         )
     }
     fn max_staleness_seconds(&self) -> u64 {
@@ -1494,13 +1624,18 @@ impl crate::Band for HostParamBand {
         self.spec.suspend
     }
     fn force_limit_value(&self) -> Option<u64> {
-        self.spec.force_limit.as_deref().and_then(|q| Unit::Bytes.parse(q))
+        self.spec
+            .force_limit
+            .as_deref()
+            .and_then(|q| Unit::Bytes.parse(q))
     }
     fn force_limit_expiry(&self) -> Option<&str> {
         self.spec.force_limit_expiry.as_deref()
     }
     fn predictive(&self) -> Option<f64> {
-        self.spec.predictive.then_some(self.spec.predictive_lookahead_seconds as f64)
+        self.spec
+            .predictive
+            .then_some(self.spec.predictive_lookahead_seconds as f64)
     }
     fn status(&self) -> Option<&BandStatus> {
         self.status.as_ref()
@@ -1527,16 +1662,32 @@ pub enum KubeLayoutSpec {
     // snake_case island (an idiom leak); the round-trip test below locks it.
     /// A field of any operator CR (CNPG/VictoriaMetrics/OpenSearch) at `fieldPath`.
     #[serde(rename_all = "camelCase")]
-    CrField { api_version: String, kind: String, name: String, field_path: String, #[serde(default)] restart_free: bool },
+    CrField {
+        api_version: String,
+        kind: String,
+        name: String,
+        field_path: String,
+        #[serde(default)]
+        restart_free: bool,
+    },
     /// An Istio DestinationRule connection-pool field (Envoy live-reload).
     #[serde(rename_all = "camelCase")]
     DestinationRuleField { name: String, field_path: String },
     /// A namespace ResourceQuota / LimitRange envelope field.
     #[serde(rename_all = "camelCase")]
-    NamespaceEnvelope { namespace: String, kind: NamespaceEnvelopeKindSpec, field_path: String },
+    NamespaceEnvelope {
+        namespace: String,
+        kind: NamespaceEnvelopeKindSpec,
+        field_path: String,
+    },
     /// A controller setpoint — HPA target / PDB minAvailable.
     #[serde(rename_all = "camelCase")]
-    ControllerSetpoint { api_version: String, kind: String, name: String, field_path: String },
+    ControllerSetpoint {
+        api_version: String,
+        kind: String,
+        name: String,
+        field_path: String,
+    },
 }
 
 /// Mirror of `breathe_provider::NamespaceEnvelopeKind` for the CRD.
@@ -1614,7 +1765,10 @@ pub struct KubeParamBandSpec {
     /// structural schema cannot express a conditional `required`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub write_intent: Option<WriteIntentSpec>,
-    #[serde(default, skip_serializing_if = "breathe_provider::DisruptionPolicy::is_restart_free_only")]
+    #[serde(
+        default,
+        skip_serializing_if = "breathe_provider::DisruptionPolicy::is_restart_free_only"
+    )]
     pub disruption_policy: DisruptionPolicy,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub suspend: bool,
@@ -1634,23 +1788,51 @@ impl KubeParamBandSpec {
     pub fn provider_layout(&self) -> breathe_provider::LimitLayout {
         use breathe_provider::LimitLayout;
         match &self.layout {
-            KubeLayoutSpec::CrField { api_version, kind, name, field_path, restart_free } => LimitLayout::CrField {
-                api_version: api_version.clone(), kind: kind.clone(), name: name.clone(),
-                field_path: field_path.clone(), restart_free: *restart_free,
+            KubeLayoutSpec::CrField {
+                api_version,
+                kind,
+                name,
+                field_path,
+                restart_free,
+            } => LimitLayout::CrField {
+                api_version: api_version.clone(),
+                kind: kind.clone(),
+                name: name.clone(),
+                field_path: field_path.clone(),
+                restart_free: *restart_free,
             },
             KubeLayoutSpec::DestinationRuleField { name, field_path } => {
-                LimitLayout::DestinationRuleField { name: name.clone(), field_path: field_path.clone() }
+                LimitLayout::DestinationRuleField {
+                    name: name.clone(),
+                    field_path: field_path.clone(),
+                }
             }
-            KubeLayoutSpec::NamespaceEnvelope { namespace, kind, field_path } => LimitLayout::NamespaceEnvelope {
+            KubeLayoutSpec::NamespaceEnvelope {
+                namespace,
+                kind,
+                field_path,
+            } => LimitLayout::NamespaceEnvelope {
                 namespace: namespace.clone(),
                 kind: match kind {
-                    NamespaceEnvelopeKindSpec::ResourceQuota => breathe_provider::NamespaceEnvelopeKind::ResourceQuota,
-                    NamespaceEnvelopeKindSpec::LimitRange => breathe_provider::NamespaceEnvelopeKind::LimitRange,
+                    NamespaceEnvelopeKindSpec::ResourceQuota => {
+                        breathe_provider::NamespaceEnvelopeKind::ResourceQuota
+                    }
+                    NamespaceEnvelopeKindSpec::LimitRange => {
+                        breathe_provider::NamespaceEnvelopeKind::LimitRange
+                    }
                 },
                 field_path: field_path.clone(),
             },
-            KubeLayoutSpec::ControllerSetpoint { api_version, kind, name, field_path } => LimitLayout::ControllerSetpoint {
-                api_version: api_version.clone(), kind: kind.clone(), name: name.clone(), field_path: field_path.clone(),
+            KubeLayoutSpec::ControllerSetpoint {
+                api_version,
+                kind,
+                name,
+                field_path,
+            } => LimitLayout::ControllerSetpoint {
+                api_version: api_version.clone(),
+                kind: kind.clone(),
+                name: name.clone(),
+                field_path: field_path.clone(),
             },
         }
     }
@@ -1679,7 +1861,18 @@ impl crate::Band for KubeParamBand {
     fn band_config(&self) -> anyhow::Result<BandConfig> {
         let s = &self.spec;
         // k8s-CR fields are bare integers (maxConnections, retention secs, quota counts).
-        crate::band_config_of(s.setpoint, s.grow_above, s.shrink_below, s.grow_factor, s.shrink_factor, &s.floor, &s.ceiling, "", 0, Unit::Count)
+        crate::band_config_of(
+            s.setpoint,
+            s.grow_above,
+            s.shrink_below,
+            s.grow_factor,
+            s.shrink_factor,
+            &s.floor,
+            &s.ceiling,
+            "",
+            0,
+            Unit::Count,
+        )
     }
     fn max_staleness_seconds(&self) -> u64 {
         self.spec.max_staleness_seconds
@@ -1718,13 +1911,18 @@ impl crate::Band for KubeParamBand {
         self.spec.suspend
     }
     fn force_limit_value(&self) -> Option<u64> {
-        self.spec.force_limit.as_deref().and_then(|q| Unit::Count.parse(q))
+        self.spec
+            .force_limit
+            .as_deref()
+            .and_then(|q| Unit::Count.parse(q))
     }
     fn force_limit_expiry(&self) -> Option<&str> {
         self.spec.force_limit_expiry.as_deref()
     }
     fn predictive(&self) -> Option<f64> {
-        self.spec.predictive.then_some(self.spec.predictive_lookahead_seconds as f64)
+        self.spec
+            .predictive
+            .then_some(self.spec.predictive_lookahead_seconds as f64)
     }
     fn status(&self) -> Option<&BandStatus> {
         self.status.as_ref()
@@ -1759,7 +1957,11 @@ pub enum AppReloadSpec {
 pub enum AppLayoutSpec {
     /// A config file `key` at `path`, applied by the ConfigReload actuator + `reload`.
     #[serde(rename_all = "camelCase")]
-    ConfigFile { path: String, key: String, reload: AppReloadSpec },
+    ConfigFile {
+        path: String,
+        key: String,
+        reload: AppReloadSpec,
+    },
     /// A protocol `CONFIG SET` knob (Redis/Kafka/NATS) via the redis-CLI actuator.
     /// `command` = the protocol param (e.g. `maxmemory`); `endpoint` = the server URL.
     #[serde(rename_all = "camelCase")]
@@ -1856,7 +2058,10 @@ pub struct AppBandSpec {
     /// structural schema cannot express a conditional `required`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub write_intent: Option<WriteIntentSpec>,
-    #[serde(default, skip_serializing_if = "breathe_provider::DisruptionPolicy::is_restart_free_only")]
+    #[serde(
+        default,
+        skip_serializing_if = "breathe_provider::DisruptionPolicy::is_restart_free_only"
+    )]
     pub disruption_policy: DisruptionPolicy,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub suspend: bool,
@@ -1888,9 +2093,10 @@ impl AppBandSpec {
             },
             AppLayoutSpec::ApiCall { endpoint, command }
             | AppLayoutSpec::Jmx { endpoint, command }
-            | AppLayoutSpec::AppRpc { endpoint, command } => {
-                LimitLayout::ApiCall { endpoint: endpoint.clone(), command: command.clone() }
-            }
+            | AppLayoutSpec::AppRpc { endpoint, command } => LimitLayout::ApiCall {
+                endpoint: endpoint.clone(),
+                command: command.clone(),
+            },
         }
     }
     /// Which actuator backend the controller must build for this band's layout.
@@ -1928,7 +2134,18 @@ impl crate::Band for AppBand {
     fn band_config(&self) -> anyhow::Result<BandConfig> {
         let s = &self.spec;
         // app knobs are bare integers (maxmemory bytes, max_connections counts, …).
-        crate::band_config_of(s.setpoint, s.grow_above, s.shrink_below, s.grow_factor, s.shrink_factor, &s.floor, &s.ceiling, "", 0, Unit::Count)
+        crate::band_config_of(
+            s.setpoint,
+            s.grow_above,
+            s.shrink_below,
+            s.grow_factor,
+            s.shrink_factor,
+            &s.floor,
+            &s.ceiling,
+            "",
+            0,
+            Unit::Count,
+        )
     }
     fn max_staleness_seconds(&self) -> u64 {
         self.spec.max_staleness_seconds
@@ -1952,13 +2169,18 @@ impl crate::Band for AppBand {
         self.spec.suspend
     }
     fn force_limit_value(&self) -> Option<u64> {
-        self.spec.force_limit.as_deref().and_then(|q| Unit::Count.parse(q))
+        self.spec
+            .force_limit
+            .as_deref()
+            .and_then(|q| Unit::Count.parse(q))
     }
     fn force_limit_expiry(&self) -> Option<&str> {
         self.spec.force_limit_expiry.as_deref()
     }
     fn predictive(&self) -> Option<f64> {
-        self.spec.predictive.then_some(self.spec.predictive_lookahead_seconds as f64)
+        self.spec
+            .predictive
+            .then_some(self.spec.predictive_lookahead_seconds as f64)
     }
     fn status(&self) -> Option<&BandStatus> {
         self.status.as_ref()
@@ -2075,8 +2297,12 @@ impl TopologySpec {
     pub fn control(self) -> Topology {
         match self.kind {
             TopologyKind::NonPersistent => Topology::NonPersistent,
-            TopologyKind::Persistent => Topology::Persistent { replication_factor: self.replication_factor.unwrap_or(0) },
-            TopologyKind::MasterSlave => Topology::MasterSlave { primaries: self.primaries.unwrap_or(0) },
+            TopologyKind::Persistent => Topology::Persistent {
+                replication_factor: self.replication_factor.unwrap_or(0),
+            },
+            TopologyKind::MasterSlave => Topology::MasterSlave {
+                primaries: self.primaries.unwrap_or(0),
+            },
             TopologyKind::FullyDistributed => Topology::FullyDistributed,
         }
     }
@@ -2197,7 +2423,10 @@ pub struct ReplicaBandSpec {
     /// The golden/ceiling gate. Because a scale-IN sheds a pod (`RestartRequiring`),
     /// the default `restartFreeOnly` scales OUT freely but GATES scale-in; set
     /// `allowRestart` to let the band shed replicas (the usual autoscaler posture).
-    #[serde(default, skip_serializing_if = "breathe_provider::DisruptionPolicy::is_restart_free_only")]
+    #[serde(
+        default,
+        skip_serializing_if = "breathe_provider::DisruptionPolicy::is_restart_free_only"
+    )]
     pub disruption_policy: DisruptionPolicy,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub suspend: bool,
@@ -2231,7 +2460,9 @@ impl ReplicaBandSpec {
     /// The typed actuator layout — SSA-write `.spec.replicas` on the owner kind.
     #[must_use]
     pub fn provider_layout(&self) -> LimitLayout {
-        LimitLayout::Replica { kind: self.target_ref.kind.clone() }
+        LimitLayout::Replica {
+            kind: self.target_ref.kind.clone(),
+        }
     }
     /// The provider-typed driving metric source (a PromQL).
     #[must_use]
@@ -2241,7 +2472,10 @@ impl ReplicaBandSpec {
     /// The provider-typed reclaim (spot) metric source, if spot-aware.
     #[must_use]
     pub fn provider_reclaim_metric(&self) -> Option<MetricSource> {
-        self.metric.reclaim_prometheus.clone().map(MetricSource::Prometheus)
+        self.metric
+            .reclaim_prometheus
+            .clone()
+            .map(MetricSource::Prometheus)
     }
 
     /// Parse-time validation of THIS band, including the topology ↔ target-kind
@@ -2255,7 +2489,8 @@ impl ReplicaBandSpec {
     /// # Errors
     /// Any [`breathe_control::replica::ReplicaError`] the coupled gate raises.
     pub fn validate_for_target(&self) -> Result<(), breathe_control::replica::ReplicaError> {
-        self.replica_band_config().validate_for_target(&self.target_ref.kind)
+        self.replica_band_config()
+            .validate_for_target(&self.target_ref.kind)
     }
 }
 
@@ -2315,7 +2550,10 @@ impl crate::Band for ReplicaBand {
         self.spec.suspend
     }
     fn force_limit_value(&self) -> Option<u64> {
-        self.spec.force_limit.as_deref().and_then(|q| Unit::Count.parse(q))
+        self.spec
+            .force_limit
+            .as_deref()
+            .and_then(|q| Unit::Count.parse(q))
     }
     fn force_limit_expiry(&self) -> Option<&str> {
         self.spec.force_limit_expiry.as_deref()
@@ -2548,7 +2786,11 @@ pub struct DemandSignalSpec {
 
 impl Default for DemandSignalSpec {
     fn default() -> Self {
-        Self { quantile: d_demand_quantile(), window: d_demand_window(), headroom: d_demand_headroom() }
+        Self {
+            quantile: d_demand_quantile(),
+            window: d_demand_window(),
+            headroom: d_demand_headroom(),
+        }
     }
 }
 
@@ -2752,7 +2994,10 @@ pub struct RequestBandSpec {
 impl RequestBandSpec {
     /// The resolved workload class (spec > posture > `standard`).
     #[must_use]
-    pub fn resolved_workload_class(&self, posture: Option<&BreathePostureSpec>) -> WorkloadClassSpec {
+    pub fn resolved_workload_class(
+        &self,
+        posture: Option<&BreathePostureSpec>,
+    ) -> WorkloadClassSpec {
         self.workload_class
             .or_else(|| posture.and_then(|p| p.workload_class))
             .unwrap_or(WorkloadClassSpec::Standard)
@@ -2778,7 +3023,9 @@ impl RequestBandSpec {
     /// The typed layout this band carves — the REQUEST peer of `PodResize`.
     #[must_use]
     pub fn provider_layout(&self) -> LimitLayout {
-        LimitLayout::PodRequestResize { container: self.target_ref.container.clone() }
+        LimitLayout::PodRequestResize {
+            container: self.target_ref.container.clone(),
+        }
     }
 
     /// **Where this band's value must land in git — or why it cannot.**
@@ -2803,7 +3050,8 @@ impl RequestBandSpec {
     /// into `status.qosGap` as `Blocked(..)`.
     pub fn durable_coordinate(
         &self,
-    ) -> Result<&breathe_provider::ManifestCoordinate, breathe_provider::ClassTransitionBlocked> {
+    ) -> Result<&breathe_provider::ManifestCoordinate, breathe_provider::ClassTransitionBlocked>
+    {
         use breathe_provider::ClassTransitionBlocked as B;
         match self.durability {
             DurabilitySpec::Ephemeral => Err(B::EphemeralCannotTransition),
@@ -2829,7 +3077,9 @@ impl crate::Band for RequestBand {
         self.spec.warmup_seconds
     }
     fn max_staleness_seconds(&self) -> u64 {
-        self.spec.max_staleness_seconds.unwrap_or_else(d_max_staleness)
+        self.spec
+            .max_staleness_seconds
+            .unwrap_or_else(d_max_staleness)
     }
     fn cooldown_seconds(&self) -> u64 {
         self.spec.cooldown_seconds.unwrap_or_else(d_cooldown)
@@ -2859,7 +3109,10 @@ impl crate::Band for RequestBand {
         self.spec.suspend
     }
     fn force_limit_value(&self) -> Option<u64> {
-        self.spec.force_limit.as_deref().and_then(|q| self.spec.resource.unit().parse(q))
+        self.spec
+            .force_limit
+            .as_deref()
+            .and_then(|q| self.spec.resource.unit().parse(q))
     }
     fn force_limit_expiry(&self) -> Option<&str> {
         self.spec.force_limit_expiry.as_deref()
@@ -2881,7 +3134,10 @@ impl crate::Band for RequestBand {
     fn posture_ref(&self) -> Option<&str> {
         self.spec.posture_ref.as_deref()
     }
-    fn band_config_with_posture(&self, posture: Option<&BreathePostureSpec>) -> anyhow::Result<BandConfig> {
+    fn band_config_with_posture(
+        &self,
+        posture: Option<&BreathePostureSpec>,
+    ) -> anyhow::Result<BandConfig> {
         let s = &self.spec;
         let unit = s.resource.unit();
         // A blank floor/ceiling means "unset" and falls back to the unit's
@@ -2893,14 +3149,32 @@ impl crate::Band for RequestBand {
             RequestResourceSpec::Memory => (d_floor_bytes(), d_ceiling_bytes()),
             RequestResourceSpec::Cpu => (d_floor_milli(), d_ceiling_milli()),
         };
-        let floor = if s.floor.is_empty() { d_floor } else { s.floor.clone() };
-        let ceiling = if s.ceiling.is_empty() { d_ceiling } else { s.ceiling.clone() };
+        let floor = if s.floor.is_empty() {
+            d_floor
+        } else {
+            s.floor.clone()
+        };
+        let ceiling = if s.ceiling.is_empty() {
+            d_ceiling
+        } else {
+            s.ceiling.clone()
+        };
         crate::band_config_of(
-            s.setpoint.or_else(|| posture.map(|p| p.setpoint)).unwrap_or_else(d_setpoint),
-            s.grow_above.or_else(|| posture.map(|p| p.grow_above)).unwrap_or_else(d_grow_above),
-            s.shrink_below.or_else(|| posture.map(|p| p.shrink_below)).unwrap_or_else(d_shrink_below),
-            s.grow_factor.or_else(|| posture.map(|p| p.grow_factor)).unwrap_or_else(d_grow_factor),
-            s.shrink_factor.or_else(|| posture.map(|p| p.shrink_factor)).unwrap_or_else(d_shrink_factor),
+            s.setpoint
+                .or_else(|| posture.map(|p| p.setpoint))
+                .unwrap_or_else(d_setpoint),
+            s.grow_above
+                .or_else(|| posture.map(|p| p.grow_above))
+                .unwrap_or_else(d_grow_above),
+            s.shrink_below
+                .or_else(|| posture.map(|p| p.shrink_below))
+                .unwrap_or_else(d_shrink_below),
+            s.grow_factor
+                .or_else(|| posture.map(|p| p.grow_factor))
+                .unwrap_or_else(d_grow_factor),
+            s.shrink_factor
+                .or_else(|| posture.map(|p| p.shrink_factor))
+                .unwrap_or_else(d_shrink_factor),
             &floor,
             &ceiling,
             // No `requestFloor`: on THIS kind the carved value IS the request, so
@@ -2923,7 +3197,10 @@ impl crate::Band for RequestBand {
             .or_else(|| posture.map(|p| u64::from(p.max_staleness_seconds)))
             .unwrap_or_else(d_max_staleness)
     }
-    fn disruption_policy_with_posture(&self, posture: Option<&BreathePostureSpec>) -> DisruptionPolicy {
+    fn disruption_policy_with_posture(
+        &self,
+        posture: Option<&BreathePostureSpec>,
+    ) -> DisruptionPolicy {
         self.spec
             .disruption_policy
             .or_else(|| posture.map(|p| p.disruption_policy))
@@ -3202,12 +3479,12 @@ pub enum ProviderKind {
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub enum NodeProvisioningBackend {
-    /// The existing, live path (census/`CamelotAgentNode` precedent): breathe
+    /// The existing, live path (census/`the agent-node architecture` precedent): breathe
     /// stays observe-only for the cloud mutation itself — reports
     /// `wouldProvision` in shadow; when live, claims a Ready node a
     /// human/Pangea separately provisioned via
-    /// `Pangea::Architectures::CamelotAgentNode` + pangea-operator. The
-    /// default — matches Camelot's active "stick to AMI" posture.
+    /// `Pangea::Architectures::the agent-node architecture` + pangea-operator. The
+    /// default — matches the private estate's active "stick to AMI" posture.
     #[default]
     K3sCustomAmi,
     /// Realize against a real upstream Karpenter install: read the
@@ -3217,7 +3494,7 @@ pub enum NodeProvisioningBackend {
     /// `dryRun`/`writeEnabled` gates as every other backend.
     EksKarpenter,
     /// Realize against a plain EKS-managed nodegroup — an ASG the EKS
-    /// service itself owns, NOT a real Karpenter install (Camelot's
+    /// service itself owns, NOT a real Karpenter install (the private estate's
     /// `system`/`controllers` pools today: zero Karpenter, plain managed
     /// nodegroups). Reads the referenced nodegroup's live
     /// `scalingConfig`/`status` via `DescribeNodegroup` and, on
@@ -3500,7 +3777,7 @@ pub struct CloudPoolStatus {
 // The node-claim family in `BreatheCloudPool` (above) OPENS membership: a
 // `Grew` tick claims one Ready node INTO a pool. `IsolationBand` is the
 // membership-CLOSING peer: it PROTECTS a named node (its first use: the
-// Camelot origin/control-plane node) by keeping it tainted against every
+// the private estate origin/control-plane node) by keeping it tainted against every
 // workload except an explicit allowlist. theory/CORRENTEZA.md §4/§11.3 names
 // this shape as a degenerate N=1 instance of the not-yet-built generic
 // `IsolationBand` — this type is exactly that, scoped to what origin-guard
@@ -3565,7 +3842,11 @@ fn d_no_schedule() -> String {
 
 impl Default for TaintSpec {
     fn default() -> Self {
-        Self { key: d_origin_taint_key(), value: None, effect: d_no_schedule() }
+        Self {
+            key: d_origin_taint_key(),
+            value: None,
+            effect: d_no_schedule(),
+        }
     }
 }
 
@@ -3621,7 +3902,7 @@ pub struct IsolationBandSpec {
     /// pathology "workload W is running on pool P, which is not for W" had
     /// NO detector at the scope the pathology lives at. `IsolationBand`
     /// shipped and was registered, but its only node-naming surface was a
-    /// static hostname list, so on Camelot's Karpenter-managed builder pools
+    /// static hostname list, so on the private estate's Karpenter-managed builder pools
     /// there was no way to *say* "this pool". The pathology was therefore
     /// only ever found by a human reading a cost report — the exact
     /// audit-detected-instead-of-self-detected shape the taxonomy exists to
@@ -3630,7 +3911,7 @@ pub struct IsolationBandSpec {
     ///
     /// Semantics: an equality-based label selector (the `nodeSelector`
     /// convention — ALL pairs must match), e.g.
-    /// `{"karpenter.sh/nodepool": "camelot-builder-amd64"}`. Resolved
+    /// `{"karpenter.sh/nodepool": "private-estate-builder-amd64"}`. Resolved
     /// against live Nodes each reconcile and UNIONed with `targetNodes`
     /// (see `origin_guard::merge_target_nodes`), so a band may use either
     /// surface or both.
@@ -3857,7 +4138,13 @@ pub struct OverviewStatus {
 /// a config change currently applies on the next controller restart). Create one
 /// (e.g. `metadata.name: default`).
 #[derive(CustomResource, Serialize, Deserialize, Clone, Debug, JsonSchema, Default)]
-#[kube(group = "breathe.pleme.io", version = "v1", kind = "BreatheConfig", shortname = "bcfg", category = "breathe")]
+#[kube(
+    group = "breathe.pleme.io",
+    version = "v1",
+    kind = "BreatheConfig",
+    shortname = "bcfg",
+    category = "breathe"
+)]
 #[serde(rename_all = "camelCase")]
 pub struct BreatheConfigSpec {
     /// PromQL endpoint the storage dimension reads `used` from.
@@ -3954,18 +4241,37 @@ pub struct DensaStatus {
 /// The typed refusal of a [`DensaSpec`] — the never-swap fits-check.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DensaError {
-    FloorAboveCeiling { name: String, floor: u64, ceiling: u64 },
-    DoesNotFit { sum_floors: u64, reserve: u64, capacity: u64 },
+    FloorAboveCeiling {
+        name: String,
+        floor: u64,
+        ceiling: u64,
+    },
+    DoesNotFit {
+        sum_floors: u64,
+        reserve: u64,
+        capacity: u64,
+    },
 }
 
 impl std::fmt::Display for DensaError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::FloorAboveCeiling { name, floor, ceiling } => {
+            Self::FloorAboveCeiling {
+                name,
+                floor,
+                ceiling,
+            } => {
                 write!(f, "{name}: floor {floor} > ceiling {ceiling}")
             }
-            Self::DoesNotFit { sum_floors, reserve, capacity } => {
-                write!(f, "Σfloors {sum_floors} + reserve {reserve} > capacity {capacity} (never-swap breach)")
+            Self::DoesNotFit {
+                sum_floors,
+                reserve,
+                capacity,
+            } => {
+                write!(
+                    f,
+                    "Σfloors {sum_floors} + reserve {reserve} > capacity {capacity} (never-swap breach)"
+                )
             }
         }
     }
@@ -3981,21 +4287,32 @@ impl DensaSpec {
     pub fn fits(&self) -> Result<(), DensaError> {
         for b in &self.bounds {
             if b.floor > b.ceiling {
-                return Err(DensaError::FloorAboveCeiling { name: b.name.clone(), floor: b.floor, ceiling: b.ceiling });
+                return Err(DensaError::FloorAboveCeiling {
+                    name: b.name.clone(),
+                    floor: b.floor,
+                    ceiling: b.ceiling,
+                });
             }
         }
         let sum: u64 = self.bounds.iter().map(|b| b.floor).sum();
         if sum.saturating_add(self.reserve) <= self.pool_capacity {
             Ok(())
         } else {
-            Err(DensaError::DoesNotFit { sum_floors: sum, reserve: self.reserve, capacity: self.pool_capacity })
+            Err(DensaError::DoesNotFit {
+                sum_floors: sum,
+                reserve: self.reserve,
+                capacity: self.pool_capacity,
+            })
         }
     }
 
     /// The L2 ceiling for a resource key (the `BandConfig.ceiling` bands carve within).
     #[must_use]
     pub fn ceiling(&self, name: &str) -> Option<u64> {
-        self.bounds.iter().find(|b| b.name == name).map(|b| b.ceiling)
+        self.bounds
+            .iter()
+            .find(|b| b.name == name)
+            .map(|b| b.ceiling)
     }
 
     /// The status this spec should carry — the fits-check folded into the wire
@@ -4011,7 +4328,13 @@ impl DensaSpec {
             (Some(sla), Some(spent)) => Some(sla as i64 - spent as i64),
             _ => None,
         };
-        DensaStatus { fits: Some(fits), sum_floors: Some(sum_floors), reason, cost_remaining_cents, observed_env_id: None }
+        DensaStatus {
+            fits: Some(fits),
+            sum_floors: Some(sum_floors),
+            reason,
+            cost_remaining_cents,
+            observed_env_id: None,
+        }
     }
 }
 
@@ -4248,12 +4571,21 @@ impl QuinhaoPoolSpec {
     /// use everything), matching `Demand::even`.
     fn parse_demand(
         d: &DimDemand,
-    ) -> Result<(breathe_auction::quinhao::Dim, breathe_auction::quinhao::Demand), QuinhaoPoolError> {
+    ) -> Result<
+        (
+            breathe_auction::quinhao::Dim,
+            breathe_auction::quinhao::Demand,
+        ),
+        QuinhaoPoolError,
+    > {
         let dim = breathe_auction::quinhao::Dim::from_str(&d.dim)
             .ok_or_else(|| QuinhaoPoolError::UnknownDim { dim: d.dim.clone() })?;
         let unit = Self::unit_for(dim);
         let parse_q = |field: &str, q: &str| -> Result<u64, QuinhaoPoolError> {
-            unit.parse(q).ok_or_else(|| QuinhaoPoolError::BadQuantity { field: field.into(), value: q.into() })
+            unit.parse(q).ok_or_else(|| QuinhaoPoolError::BadQuantity {
+                field: field.into(),
+                value: q.into(),
+            })
         };
         let parse_opt = |field: &str, q: &Option<String>| -> Result<u64, QuinhaoPoolError> {
             match q.as_deref().filter(|s| !s.is_empty()) {
@@ -4264,7 +4596,15 @@ impl QuinhaoPoolSpec {
         let min = parse_q("min", &d.min)?;
         let max = parse_opt("max", &d.max)?;
         let demand = parse_opt("demand", &d.demand)?;
-        Ok((dim, breathe_auction::quinhao::Demand { weight: d.weight, min, max, demand }))
+        Ok((
+            dim,
+            breathe_auction::quinhao::Demand {
+                weight: d.weight,
+                min,
+                max,
+                demand,
+            },
+        ))
     }
 
     /// Build the typed claimant forest from the spec — the allocator input. A
@@ -4296,7 +4636,11 @@ impl QuinhaoPoolSpec {
                 }
                 DemandVector::new(storage, cpu, bandwidth, request_rate)
             };
-            out.push(Quinhao { id: c.id.clone(), parent: c.parent_id.clone(), demand });
+            out.push(Quinhao {
+                id: c.id.clone(),
+                parent: c.parent_id.clone(),
+                demand,
+            });
         }
         Ok(out)
     }
@@ -4321,7 +4665,10 @@ impl QuinhaoPoolSpec {
             let unit = Self::unit_for(dim);
             let v = unit
                 .parse(&e.capacity)
-                .ok_or_else(|| QuinhaoPoolError::BadQuantity { field: "capacity".into(), value: e.capacity.clone() })?;
+                .ok_or_else(|| QuinhaoPoolError::BadQuantity {
+                    field: "capacity".into(),
+                    value: e.capacity.clone(),
+                })?;
             match dim {
                 breathe_auction::quinhao::Dim::Storage => storage = v,
                 breathe_auction::quinhao::Dim::Cpu => cpu = v,
@@ -4332,7 +4679,12 @@ impl QuinhaoPoolSpec {
         if let Some(observed) = storage_band_observed {
             storage = observed; // the band's observedCapacity wins (destination coupling)
         }
-        Ok(breathe_auction::quinhao::PoolCapacity::new(storage, cpu, bandwidth, request_rate))
+        Ok(breathe_auction::quinhao::PoolCapacity::new(
+            storage,
+            cpu,
+            bandwidth,
+            request_rate,
+        ))
     }
 
     /// The full pure allocation: build the forest + capacity, run the allocator,
@@ -4345,7 +4697,7 @@ impl QuinhaoPoolSpec {
     /// the receipt is observable, never a silently-wrong allocation.
     #[must_use]
     pub fn allocate(&self, storage_band_observed: Option<u64>) -> QuinhaoPoolStatus {
-        use breathe_auction::quinhao::{allocate_fabric, Dim};
+        use breathe_auction::quinhao::{Dim, allocate_fabric};
         let dry_run = self.dry_run;
         let refused = |reason: String| QuinhaoPoolStatus {
             phase: Some("Refused".into()),
@@ -4367,14 +4719,22 @@ impl QuinhaoPoolSpec {
         };
 
         // Per-dim band + observed-capacity summary (for the status surface).
-        let setpoint = if self.setpoint > 0.0 && self.setpoint <= 1.0 { self.setpoint } else { 1.0 };
+        let setpoint = if self.setpoint > 0.0 && self.setpoint <= 1.0 {
+            self.setpoint
+        } else {
+            1.0
+        };
         let mut band = BTreeMap::new();
         let mut observed_capacity = BTreeMap::new();
         for dim in Dim::ALL {
             let cap = capacity.get(dim);
             if cap > 0 {
                 observed_capacity.insert(dim.as_str().to_string(), cap as i64);
-                #[allow(clippy::cast_precision_loss, clippy::cast_sign_loss, clippy::cast_possible_truncation)]
+                #[allow(
+                    clippy::cast_precision_loss,
+                    clippy::cast_sign_loss,
+                    clippy::cast_possible_truncation
+                )]
                 let b = (cap as f64 * setpoint) as u64;
                 band.insert(dim.as_str().to_string(), b as i64);
             }
@@ -4396,7 +4756,12 @@ impl QuinhaoPoolSpec {
                         per_dim.insert(dim.as_str().to_string(), v as i64);
                     }
                 }
-                ClaimGrant { id: c.id.clone(), kind: c.kind, parent_id: c.parent_id.clone(), grants: per_dim }
+                ClaimGrant {
+                    id: c.id.clone(),
+                    kind: c.kind,
+                    parent_id: c.parent_id.clone(),
+                    grants: per_dim,
+                }
             })
             .collect();
 
@@ -4414,14 +4779,28 @@ impl QuinhaoPoolSpec {
     }
 }
 
-fn d_weight() -> u32 { 1 }
-fn d_zero_qty() -> String { "0".into() }
-fn d_true() -> bool { true }
+fn d_weight() -> u32 {
+    1
+}
+fn d_zero_qty() -> String {
+    "0".into()
+}
+fn d_true() -> bool {
+    true
+}
 
-fn d_floor_bytes() -> String { "256Mi".into() }
-fn d_ceiling_bytes() -> String { "16Gi".into() }
-fn d_floor_milli() -> String { "250m".into() }
-fn d_ceiling_milli() -> String { "2".into() }
+fn d_floor_bytes() -> String {
+    "256Mi".into()
+}
+fn d_ceiling_bytes() -> String {
+    "16Gi".into()
+}
+fn d_floor_milli() -> String {
+    "250m".into()
+}
+fn d_ceiling_milli() -> String {
+    "2".into()
+}
 // StorageBand PROVISION-MINIMAL defaults. Storage carves grow-only
 // (provision-minimal + grow-on-demand): a fresh volume is born at this small
 // floor and expands online toward the setpoint as real data lands, so an
@@ -4430,33 +4809,83 @@ fn d_ceiling_milli() -> String { "2".into() }
 // floor is a fresh-PVC minimum, NOT memory's 256Mi (a PVC below ~1Gi is rarely
 // useful and CSI minimums bite); the ceiling is a generous grow headroom a data
 // tier reaches only with real data.
-fn d_storage_floor_bytes() -> String { "2Gi".into() }
-fn d_storage_ceiling_bytes() -> String { "200Gi".into() }
+fn d_storage_floor_bytes() -> String {
+    "2Gi".into()
+}
+fn d_storage_ceiling_bytes() -> String {
+    "200Gi".into()
+}
 // The RESERVATION demand statistic. A stable high-water over a duty cycle, with
 // a small multiplicative headroom — NOT the limit law's `1/setpoint` divisor.
-fn d_demand_quantile() -> f64 { 0.95 }
-fn d_demand_window() -> String { "7d".into() }
-fn d_demand_headroom() -> f64 { 0.15 }
-fn d_setpoint() -> f64 { 0.80 }
-fn d_grow_above() -> f64 { 0.85 }
-fn d_shrink_below() -> f64 { 0.70 }
-fn d_grow_factor() -> f64 { 1.25 }
-fn d_shrink_factor() -> f64 { 0.90 }
-fn d_cooldown() -> u64 { 600 }
-fn d_max_staleness() -> u64 { 120 }
-fn d_predictive_lookahead() -> u64 { 60 }
-fn d_peak_decay() -> f64 { 0.98 } // trailing-window peak holds a spike for ~tens of ticks
-fn d_warmup_seconds() -> u64 { 600 } // hold a shrink for 10 min after a (re)start (boot-spike window)
-fn d_relief_latency() -> u64 { 180 } // ~3min node boot→Ready (the NodeOnDemand dead-time)
-fn d_replica_floor() -> u32 { 2 } // HA floor: a single replica tolerates no disruption
-fn d_replica_ceiling() -> u32 { 10 }
-fn d_replica_target() -> f64 { 0.80 }
-fn d_replica_tol_up() -> f64 { 0.10 } // small up → react fast to spikes
-fn d_replica_tol_down() -> f64 { 0.20 } // large down → resist churn (asymmetric)
-fn d_replica_up_pct() -> u32 { 100 }
-fn d_replica_up_pods() -> u32 { 4 }
-fn d_replica_down_pct() -> u32 { 10 }
-fn d_replica_down_pods() -> u32 { 1 }
+fn d_demand_quantile() -> f64 {
+    0.95
+}
+fn d_demand_window() -> String {
+    "7d".into()
+}
+fn d_demand_headroom() -> f64 {
+    0.15
+}
+fn d_setpoint() -> f64 {
+    0.80
+}
+fn d_grow_above() -> f64 {
+    0.85
+}
+fn d_shrink_below() -> f64 {
+    0.70
+}
+fn d_grow_factor() -> f64 {
+    1.25
+}
+fn d_shrink_factor() -> f64 {
+    0.90
+}
+fn d_cooldown() -> u64 {
+    600
+}
+fn d_max_staleness() -> u64 {
+    120
+}
+fn d_predictive_lookahead() -> u64 {
+    60
+}
+fn d_peak_decay() -> f64 {
+    0.98
+} // trailing-window peak holds a spike for ~tens of ticks
+fn d_warmup_seconds() -> u64 {
+    600
+} // hold a shrink for 10 min after a (re)start (boot-spike window)
+fn d_relief_latency() -> u64 {
+    180
+} // ~3min node boot→Ready (the NodeOnDemand dead-time)
+fn d_replica_floor() -> u32 {
+    2
+} // HA floor: a single replica tolerates no disruption
+fn d_replica_ceiling() -> u32 {
+    10
+}
+fn d_replica_target() -> f64 {
+    0.80
+}
+fn d_replica_tol_up() -> f64 {
+    0.10
+} // small up → react fast to spikes
+fn d_replica_tol_down() -> f64 {
+    0.20
+} // large down → resist churn (asymmetric)
+fn d_replica_up_pct() -> u32 {
+    100
+}
+fn d_replica_up_pods() -> u32 {
+    4
+}
+fn d_replica_down_pct() -> u32 {
+    10
+}
+fn d_replica_down_pods() -> u32 {
+    1
+}
 
 #[cfg(test)]
 mod tests {
@@ -4467,8 +4896,16 @@ mod tests {
         // a valid envelope fits; status reflects it + cost headroom
         let d = DensaSpec {
             bounds: vec![
-                DensaBound { name: "memory".into(), floor: 2_000, ceiling: 8_000 },
-                DensaBound { name: "node-on-demand".into(), floor: 1, ceiling: 5 },
+                DensaBound {
+                    name: "memory".into(),
+                    floor: 2_000,
+                    ceiling: 8_000,
+                },
+                DensaBound {
+                    name: "node-on-demand".into(),
+                    floor: 1,
+                    ceiling: 5,
+                },
             ],
             reserve: 500,
             pool_capacity: 10_000,
@@ -4483,23 +4920,41 @@ mod tests {
 
         // floor above ceiling → refused
         let bad = DensaSpec {
-            bounds: vec![DensaBound { name: "memory".into(), floor: 9_000, ceiling: 8_000 }],
+            bounds: vec![DensaBound {
+                name: "memory".into(),
+                floor: 9_000,
+                ceiling: 8_000,
+            }],
             reserve: 0,
             pool_capacity: 100_000,
             cost_sla_cents: None,
         };
-        assert!(matches!(bad.fits(), Err(DensaError::FloorAboveCeiling { .. })));
+        assert!(matches!(
+            bad.fits(),
+            Err(DensaError::FloorAboveCeiling { .. })
+        ));
         assert_eq!(bad.status_now(None).fits, Some(false));
         assert!(bad.status_now(None).reason.is_some());
 
         // over-subscribed floors → never-swap breach
         let over = DensaSpec {
-            bounds: vec![DensaBound { name: "memory".into(), floor: 9_000, ceiling: 9_500 }],
+            bounds: vec![DensaBound {
+                name: "memory".into(),
+                floor: 9_000,
+                ceiling: 9_500,
+            }],
             reserve: 2_000,
             pool_capacity: 10_000,
             cost_sla_cents: None,
         };
-        assert!(matches!(over.fits(), Err(DensaError::DoesNotFit { sum_floors: 9_000, reserve: 2_000, capacity: 10_000 })));
+        assert!(matches!(
+            over.fits(),
+            Err(DensaError::DoesNotFit {
+                sum_floors: 9_000,
+                reserve: 2_000,
+                capacity: 10_000
+            })
+        ));
     }
 
     #[test]
@@ -4512,12 +4967,44 @@ mod tests {
     #[test]
     fn three_kinds_share_band_config_parse() {
         // each kind constructs a valid BandConfig from its spec
-        let tr = TargetRef { kind: "Cluster".into(), name: "x".into(), api_version: None, container: None, pod_selector: None };
-        let mem = MemoryBand::new("m", MemoryBandSpec {
-            target_ref: tr.clone(), posture_ref: None, setpoint: Some(0.80), grow_above: Some(0.85), shrink_below: Some(0.70),
-            grow_factor: Some(1.25), shrink_factor: Some(0.90), floor: "512Mi".into(), ceiling: "4Gi".into(),
-            cooldown_seconds: Some(600), max_staleness_seconds: Some(120), dry_run: true, disruption_policy: Default::default(), disruption_policy_rationale: None, suspend: false, force_limit: None, force_limit_expiry: None, predictive: false, predictive_lookahead_seconds: 60, request_floor: String::new(), peak_decay: 0.98, mode: None, write_intent: None, bound_introduction: None, confirm_after_seconds: 1800, warmup_seconds: 600,
-        });
+        let tr = TargetRef {
+            kind: "Cluster".into(),
+            name: "x".into(),
+            api_version: None,
+            container: None,
+            pod_selector: None,
+        };
+        let mem = MemoryBand::new(
+            "m",
+            MemoryBandSpec {
+                target_ref: tr.clone(),
+                posture_ref: None,
+                setpoint: Some(0.80),
+                grow_above: Some(0.85),
+                shrink_below: Some(0.70),
+                grow_factor: Some(1.25),
+                shrink_factor: Some(0.90),
+                floor: "512Mi".into(),
+                ceiling: "4Gi".into(),
+                cooldown_seconds: Some(600),
+                max_staleness_seconds: Some(120),
+                dry_run: true,
+                disruption_policy: Default::default(),
+                disruption_policy_rationale: None,
+                suspend: false,
+                force_limit: None,
+                force_limit_expiry: None,
+                predictive: false,
+                predictive_lookahead_seconds: 60,
+                request_floor: String::new(),
+                peak_decay: 0.98,
+                mode: None,
+                write_intent: None,
+                bound_introduction: None,
+                confirm_after_seconds: 1800,
+                warmup_seconds: 600,
+            },
+        );
         let cfg = Band::band_config(&mem).unwrap();
         assert_eq!(cfg.floor_bytes, 512 * (1 << 20));
         assert!(mem.dry_run());
@@ -4525,12 +5012,44 @@ mod tests {
 
     #[test]
     fn cpu_band_parses_floor_ceiling_as_millicores() {
-        let tr = TargetRef { kind: "Cluster".into(), name: "db".into(), api_version: None, container: None, pod_selector: None };
-        let cpu = CpuBand::new("c", CpuBandSpec {
-            target_ref: tr, posture_ref: None, setpoint: Some(0.80), grow_above: Some(0.85), shrink_below: Some(0.70),
-            grow_factor: Some(1.25), shrink_factor: Some(0.90), floor: "250m".into(), ceiling: "2".into(),
-            cooldown_seconds: Some(600), max_staleness_seconds: Some(120), dry_run: false, disruption_policy: Default::default(), disruption_policy_rationale: None, suspend: false, force_limit: None, force_limit_expiry: None, predictive: false, predictive_lookahead_seconds: 60, request_floor: String::new(), peak_decay: 0.98, mode: None, write_intent: None, bound_introduction: None, confirm_after_seconds: 1800, warmup_seconds: 600,
-        });
+        let tr = TargetRef {
+            kind: "Cluster".into(),
+            name: "db".into(),
+            api_version: None,
+            container: None,
+            pod_selector: None,
+        };
+        let cpu = CpuBand::new(
+            "c",
+            CpuBandSpec {
+                target_ref: tr,
+                posture_ref: None,
+                setpoint: Some(0.80),
+                grow_above: Some(0.85),
+                shrink_below: Some(0.70),
+                grow_factor: Some(1.25),
+                shrink_factor: Some(0.90),
+                floor: "250m".into(),
+                ceiling: "2".into(),
+                cooldown_seconds: Some(600),
+                max_staleness_seconds: Some(120),
+                dry_run: false,
+                disruption_policy: Default::default(),
+                disruption_policy_rationale: None,
+                suspend: false,
+                force_limit: None,
+                force_limit_expiry: None,
+                predictive: false,
+                predictive_lookahead_seconds: 60,
+                request_floor: String::new(),
+                peak_decay: 0.98,
+                mode: None,
+                write_intent: None,
+                bound_introduction: None,
+                confirm_after_seconds: 1800,
+                warmup_seconds: 600,
+            },
+        );
         let cfg = Band::band_config(&cpu).unwrap();
         // millicores, NOT bytes: "250m" → 250, "2" cores → 2000m.
         assert_eq!(cfg.floor_bytes, 250);
@@ -4541,8 +5060,19 @@ mod tests {
     fn cpu_band_default_floor_ceiling_parse_as_millicores() {
         // an omitted floor/ceiling on a CpuBand must default to cpu-valid values
         // (250m / 2), not the byte default 256Mi which can't parse as millicores.
-        let cfg = crate::band_config_of(0.80, 0.85, 0.70, 1.25, 0.90,
-            &d_floor_milli(), &d_ceiling_milli(), "", 0, Unit::Millicores).unwrap();
+        let cfg = crate::band_config_of(
+            0.80,
+            0.85,
+            0.70,
+            1.25,
+            0.90,
+            &d_floor_milli(),
+            &d_ceiling_milli(),
+            "",
+            0,
+            Unit::Millicores,
+        )
+        .unwrap();
         assert_eq!(cfg.floor_bytes, 250);
         assert_eq!(cfg.ceiling_bytes, 2000);
         assert_eq!(cfg.request_floor_bytes, 0, "empty request_floor ⇒ no floor");
@@ -4563,8 +5093,16 @@ mod tests {
         assert_eq!(spec.ceiling, "200Gi", "the grow-on-demand ceiling default");
         let band = StorageBand::new("data-x", spec);
         let cfg = Band::band_config(&band).unwrap();
-        assert_eq!(cfg.floor_bytes, 2 * (1 << 30), "2Gi provision floor in bytes");
-        assert_eq!(cfg.ceiling_bytes, 200 * (1 << 30), "200Gi grow ceiling in bytes");
+        assert_eq!(
+            cfg.floor_bytes,
+            2 * (1 << 30),
+            "2Gi provision floor in bytes"
+        );
+        assert_eq!(
+            cfg.ceiling_bytes,
+            200 * (1 << 30),
+            "200Gi grow ceiling in bytes"
+        );
         // The carve target for a nearly-empty volume is the floor — the grow-on-
         // demand contract: breathe would provision ~2Gi, never a fixed 50Gi.
         assert_eq!(
@@ -4577,23 +5115,87 @@ mod tests {
     #[test]
     fn host_bands_share_the_band_shape_and_parse_bytes() {
         // ArcBand: the target is the node; floor/ceiling are byte quantities.
-        let tr = TargetRef { kind: "Node".into(), name: "rio".into(), api_version: None, container: None, pod_selector: None };
-        let arc = ArcBand::new("rio-arc", ArcBandSpec {
-            target_ref: tr, posture_ref: None, setpoint: Some(0.80), grow_above: Some(0.85), shrink_below: Some(0.70),
-            grow_factor: Some(1.25), shrink_factor: Some(0.90), floor: "1Gi".into(), ceiling: "6Gi".into(),
-            cooldown_seconds: Some(600), max_staleness_seconds: Some(120), dry_run: true, disruption_policy: Default::default(), disruption_policy_rationale: None, suspend: false, force_limit: None, force_limit_expiry: None, predictive: false, predictive_lookahead_seconds: 60, request_floor: String::new(), peak_decay: 0.98, mode: None, write_intent: None, bound_introduction: None, confirm_after_seconds: 1800, warmup_seconds: 600,
-        });
+        let tr = TargetRef {
+            kind: "Node".into(),
+            name: "rio".into(),
+            api_version: None,
+            container: None,
+            pod_selector: None,
+        };
+        let arc = ArcBand::new(
+            "rio-arc",
+            ArcBandSpec {
+                target_ref: tr,
+                posture_ref: None,
+                setpoint: Some(0.80),
+                grow_above: Some(0.85),
+                shrink_below: Some(0.70),
+                grow_factor: Some(1.25),
+                shrink_factor: Some(0.90),
+                floor: "1Gi".into(),
+                ceiling: "6Gi".into(),
+                cooldown_seconds: Some(600),
+                max_staleness_seconds: Some(120),
+                dry_run: true,
+                disruption_policy: Default::default(),
+                disruption_policy_rationale: None,
+                suspend: false,
+                force_limit: None,
+                force_limit_expiry: None,
+                predictive: false,
+                predictive_lookahead_seconds: 60,
+                request_floor: String::new(),
+                peak_decay: 0.98,
+                mode: None,
+                write_intent: None,
+                bound_introduction: None,
+                confirm_after_seconds: 1800,
+                warmup_seconds: 600,
+            },
+        );
         let cfg = Band::band_config(&arc).unwrap();
         assert_eq!(cfg.floor_bytes, 1 << 30);
         assert_eq!(cfg.ceiling_bytes, 6 * (1 << 30));
         assert!(arc.dry_run());
 
         // CgroupBand: the target NAME is the systemd unit the agent addresses.
-        let g = CgroupBand::new("nix-daemon", CgroupBandSpec {
-            target_ref: TargetRef { kind: "HostUnit".into(), name: "nix-daemon.service".into(), api_version: None, container: None, pod_selector: None },
-            posture_ref: None, setpoint: Some(0.80), grow_above: Some(0.85), shrink_below: Some(0.70), grow_factor: Some(1.25), shrink_factor: Some(0.90),
-            floor: "1Gi".into(), ceiling: "12Gi".into(), cooldown_seconds: Some(600), max_staleness_seconds: Some(120), dry_run: true, disruption_policy: Default::default(), disruption_policy_rationale: None, suspend: false, force_limit: None, force_limit_expiry: None, predictive: false, predictive_lookahead_seconds: 60, request_floor: String::new(), peak_decay: 0.98, mode: None, write_intent: None, bound_introduction: None, confirm_after_seconds: 1800, warmup_seconds: 600,
-        });
+        let g = CgroupBand::new(
+            "nix-daemon",
+            CgroupBandSpec {
+                target_ref: TargetRef {
+                    kind: "HostUnit".into(),
+                    name: "nix-daemon.service".into(),
+                    api_version: None,
+                    container: None,
+                    pod_selector: None,
+                },
+                posture_ref: None,
+                setpoint: Some(0.80),
+                grow_above: Some(0.85),
+                shrink_below: Some(0.70),
+                grow_factor: Some(1.25),
+                shrink_factor: Some(0.90),
+                floor: "1Gi".into(),
+                ceiling: "12Gi".into(),
+                cooldown_seconds: Some(600),
+                max_staleness_seconds: Some(120),
+                dry_run: true,
+                disruption_policy: Default::default(),
+                disruption_policy_rationale: None,
+                suspend: false,
+                force_limit: None,
+                force_limit_expiry: None,
+                predictive: false,
+                predictive_lookahead_seconds: 60,
+                request_floor: String::new(),
+                peak_decay: 0.98,
+                mode: None,
+                write_intent: None,
+                bound_introduction: None,
+                confirm_after_seconds: 1800,
+                warmup_seconds: 600,
+            },
+        );
         assert_eq!(g.target_ref().name, "nix-daemon.service");
     }
 
@@ -4604,7 +5206,8 @@ mod tests {
             "apiVersion": "breathe.pleme.io/v1", "kind": "MemoryBand",
             "metadata": { "name": "m" },
             "spec": { "targetRef": { "kind": "Deployment", "name": "app" } }
-        })).unwrap();
+        }))
+        .unwrap();
         assert_eq!(def.disruption_policy(), DisruptionPolicy::RestartFreeOnly);
         // a CNPG band declares allowRestart (its only resize path is a roll).
         let allow: MemoryBand = serde_json::from_value(serde_json::json!({
@@ -4621,18 +5224,30 @@ mod tests {
         cgroup.insert("nix-daemon.service".to_string(), GiB(12));
         let mut cgroup_cpu = BTreeMap::new();
         cgroup_cpu.insert("nix-daemon.service".to_string(), 8000u64);
-        let pool = BreatheNodePool::new("rio", BreatheNodePoolSpec {
-            node_name: "rio".into(),
-            arc_max_gi_b: GiB(6),
-            cgroup_max_gi_b: cgroup,
-            cgroup_cpu_max_milli: cgroup_cpu,
-            write_enabled: false, // safe default — whole node in shadow
-        });
+        let pool = BreatheNodePool::new(
+            "rio",
+            BreatheNodePoolSpec {
+                node_name: "rio".into(),
+                arc_max_gi_b: GiB(6),
+                cgroup_max_gi_b: cgroup,
+                cgroup_cpu_max_milli: cgroup_cpu,
+                write_enabled: false, // safe default — whole node in shadow
+            },
+        );
         assert_eq!(pool.spec.node_name, "rio");
         assert_eq!(pool.spec.arc_max_gi_b, GiB(6));
-        assert_eq!(pool.spec.cgroup_max_gi_b.get("nix-daemon.service"), Some(&GiB(12)));
-        assert_eq!(pool.spec.cgroup_cpu_max_milli.get("nix-daemon.service"), Some(&8000));
-        assert!(!pool.spec.write_enabled, "writeEnabled must default off (shadow-first)");
+        assert_eq!(
+            pool.spec.cgroup_max_gi_b.get("nix-daemon.service"),
+            Some(&GiB(12))
+        );
+        assert_eq!(
+            pool.spec.cgroup_cpu_max_milli.get("nix-daemon.service"),
+            Some(&8000)
+        );
+        assert!(
+            !pool.spec.write_enabled,
+            "writeEnabled must default off (shadow-first)"
+        );
     }
 
     #[test]
@@ -4641,7 +5256,10 @@ mod tests {
         // would overflow, so an overflowing ceiling is unrepresentable at admission.
         let crd = <BreatheNodePool as kube::CustomResourceExt>::crd();
         let yaml = serde_yaml::to_string(&crd).unwrap();
-        assert!(yaml.contains("maximum"), "BreatheNodePool GiB fields must emit an OpenAPI maximum");
+        assert!(
+            yaml.contains("maximum"),
+            "BreatheNodePool GiB fields must emit an OpenAPI maximum"
+        );
     }
 
     #[test]
@@ -4650,7 +5268,10 @@ mod tests {
         // a cluster-scoped CRD has no namespace in its dynamic type scope; assert
         // via the generated CRD's scope field.
         let crd = <BreatheNodePool as kube::CustomResourceExt>::crd();
-        assert_eq!(crd.spec.scope, "Cluster", "BreatheNodePool must be cluster-scoped");
+        assert_eq!(
+            crd.spec.scope, "Cluster",
+            "BreatheNodePool must be cluster-scoped"
+        );
         let _ = BreatheNodePool::kind(&());
     }
 
@@ -4667,7 +5288,10 @@ mod tests {
         use kube::Resource;
         let crd = <IsolationBand as kube::CustomResourceExt>::crd();
         assert_eq!(crd.spec.names.kind, "IsolationBand");
-        assert_eq!(crd.spec.scope, "Cluster", "IsolationBand targets Nodes — cluster-scoped like BreatheCloudPool/BreatheNodePool");
+        assert_eq!(
+            crd.spec.scope, "Cluster",
+            "IsolationBand targets Nodes — cluster-scoped like BreatheCloudPool/BreatheNodePool"
+        );
         assert_eq!(crd.spec.names.short_names.as_ref().unwrap(), &["isob"]);
         let _ = IsolationBand::kind(&());
     }
@@ -4680,25 +5304,34 @@ mod tests {
         let band: IsolationBand = serde_json::from_value(serde_json::json!({
             "apiVersion": "breathe.pleme.io/v1", "kind": "IsolationBand",
             "metadata": { "name": "origin" },
-            "spec": { "targetNodes": ["camelot-origin"] }
+            "spec": { "targetNodes": ["isolated-origin"] }
         }))
         .expect("deserializes with defaults");
-        assert_eq!(band.spec.target_nodes, vec!["camelot-origin".to_string()]);
+        assert_eq!(band.spec.target_nodes, vec!["isolated-origin".to_string()]);
         assert_eq!(band.spec.placement, PlacementIsolationKind::Dedicated);
         assert_eq!(band.spec.taint.key, ORIGIN_TAINT_KEY);
         assert_eq!(band.spec.taint.effect, "NoSchedule");
         assert_eq!(band.spec.taint.value, None);
         assert!(band.spec.allowed_workloads.is_empty());
-        assert!(!band.spec.write_enabled, "writeEnabled must default off (shadow-first)");
+        assert!(
+            !band.spec.write_enabled,
+            "writeEnabled must default off (shadow-first)"
+        );
         assert!(!band.spec.dry_run);
-        assert_eq!(band.spec.setpoint, None, "elasticity fields are None for a plain origin-guard band");
+        assert_eq!(
+            band.spec.setpoint, None,
+            "elasticity fields are None for a plain origin-guard band"
+        );
     }
 
     #[test]
     fn isolation_band_status_round_trips_and_hides_empty_unauthorized() {
         let empty = IsolationBandStatus::default();
         let js = serde_json::to_value(&empty).unwrap();
-        assert!(js.get("unauthorizedPods").is_none(), "an empty unauthorized_pods list must not serialize");
+        assert!(
+            js.get("unauthorizedPods").is_none(),
+            "an empty unauthorized_pods list must not serialize"
+        );
 
         let found = IsolationBandStatus {
             phase: Some("Protecting".into()),
@@ -4720,9 +5353,15 @@ mod tests {
         // absent: `Some(0)` is what the `Degraded` phase keys on, so a
         // round-trip that quietly folded it into `None` would silently
         // restore the very false-green this field was added to prevent.
-        let zero = IsolationBandStatus { selector_resolved: Some(0), ..Default::default() };
+        let zero = IsolationBandStatus {
+            selector_resolved: Some(0),
+            ..Default::default()
+        };
         let js = serde_json::to_string(&zero).unwrap();
-        assert!(js.contains("selectorResolved"), "Some(0) must serialize — it is a real finding, not an absence");
+        assert!(
+            js.contains("selectorResolved"),
+            "Some(0) must serialize — it is a real finding, not an absence"
+        );
         let back: IsolationBandStatus = serde_json::from_str(&js).unwrap();
         assert_eq!(back.selector_resolved, Some(0));
         assert_eq!(
@@ -4737,11 +5376,19 @@ mod tests {
         // 4 even members (no groups), pool 1000 bytes, setpoint 0.80 → band 800 →
         // 200 each. The operator's literal ask, through the CRD fold.
         let spec = QuinhaoPoolSpec {
-            pool_capacity: vec![PoolCapacityEntry { dim: "storage".into(), capacity: "1000".into() }],
+            pool_capacity: vec![PoolCapacityEntry {
+                dim: "storage".into(),
+                capacity: "1000".into(),
+            }],
             storage_band_ref: None,
             setpoint: 0.80,
             claims: (0..4)
-                .map(|i| ClaimSpec { id: format!("m{i}"), kind: ClaimantKind::User, parent_id: None, demands: vec![] })
+                .map(|i| ClaimSpec {
+                    id: format!("m{i}"),
+                    kind: ClaimantKind::User,
+                    parent_id: None,
+                    demands: vec![],
+                })
                 .collect(),
             dry_run: true,
         };
@@ -4751,7 +5398,12 @@ mod tests {
         assert_eq!(st.band.get("storage"), Some(&800));
         assert_eq!(st.observed_capacity.get("storage"), Some(&1000));
         for g in &st.grants {
-            assert_eq!(g.grants.get("storage"), Some(&200), "{} should get 200", g.id);
+            assert_eq!(
+                g.grants.get("storage"),
+                Some(&200),
+                "{} should get 200",
+                g.id
+            );
         }
         assert_eq!(st.effective_dry_run, Some(true));
     }
@@ -4761,20 +5413,57 @@ mod tests {
         // 2 groups split 800 → 400 each; group A's 2 users → 200 each; group B's
         // 1 user → 400. The hierarchy through the CRD.
         let spec = QuinhaoPoolSpec {
-            pool_capacity: vec![PoolCapacityEntry { dim: "storage".into(), capacity: "1000".into() }],
+            pool_capacity: vec![PoolCapacityEntry {
+                dim: "storage".into(),
+                capacity: "1000".into(),
+            }],
             storage_band_ref: None,
             setpoint: 0.80,
             claims: vec![
-                ClaimSpec { id: "groupA".into(), kind: ClaimantKind::Group, parent_id: None, demands: vec![] },
-                ClaimSpec { id: "groupB".into(), kind: ClaimantKind::Group, parent_id: None, demands: vec![] },
-                ClaimSpec { id: "a1".into(), kind: ClaimantKind::User, parent_id: Some("groupA".into()), demands: vec![] },
-                ClaimSpec { id: "a2".into(), kind: ClaimantKind::User, parent_id: Some("groupA".into()), demands: vec![] },
-                ClaimSpec { id: "b1".into(), kind: ClaimantKind::User, parent_id: Some("groupB".into()), demands: vec![] },
+                ClaimSpec {
+                    id: "groupA".into(),
+                    kind: ClaimantKind::Group,
+                    parent_id: None,
+                    demands: vec![],
+                },
+                ClaimSpec {
+                    id: "groupB".into(),
+                    kind: ClaimantKind::Group,
+                    parent_id: None,
+                    demands: vec![],
+                },
+                ClaimSpec {
+                    id: "a1".into(),
+                    kind: ClaimantKind::User,
+                    parent_id: Some("groupA".into()),
+                    demands: vec![],
+                },
+                ClaimSpec {
+                    id: "a2".into(),
+                    kind: ClaimantKind::User,
+                    parent_id: Some("groupA".into()),
+                    demands: vec![],
+                },
+                ClaimSpec {
+                    id: "b1".into(),
+                    kind: ClaimantKind::User,
+                    parent_id: Some("groupB".into()),
+                    demands: vec![],
+                },
             ],
             dry_run: true,
         };
         let st = spec.allocate(None);
-        let grant = |id: &str| st.grants.iter().find(|g| g.id == id).unwrap().grants.get("storage").copied().unwrap();
+        let grant = |id: &str| {
+            st.grants
+                .iter()
+                .find(|g| g.id == id)
+                .unwrap()
+                .grants
+                .get("storage")
+                .copied()
+                .unwrap()
+        };
         assert_eq!(grant("groupA"), 400);
         assert_eq!(grant("groupB"), 400);
         assert_eq!(grant("a1"), 200);
@@ -4786,14 +5475,29 @@ mod tests {
     fn quinhao_pool_storage_band_observed_capacity_overrides_the_explicit_entry() {
         // a storageBandRef-sourced 2000-byte capacity overrides the explicit 1000.
         let spec = QuinhaoPoolSpec {
-            pool_capacity: vec![PoolCapacityEntry { dim: "storage".into(), capacity: "1000".into() }],
-            storage_band_ref: Some(StorageBandRef { name: "garage-data".into(), namespace: Some("drive".into()) }),
+            pool_capacity: vec![PoolCapacityEntry {
+                dim: "storage".into(),
+                capacity: "1000".into(),
+            }],
+            storage_band_ref: Some(StorageBandRef {
+                name: "garage-data".into(),
+                namespace: Some("drive".into()),
+            }),
             setpoint: 0.80,
-            claims: vec![ClaimSpec { id: "m0".into(), kind: ClaimantKind::User, parent_id: None, demands: vec![] }],
+            claims: vec![ClaimSpec {
+                id: "m0".into(),
+                kind: ClaimantKind::User,
+                parent_id: None,
+                demands: vec![],
+            }],
             dry_run: true,
         };
         let st = spec.allocate(Some(2000));
-        assert_eq!(st.observed_capacity.get("storage"), Some(&2000), "the band's capacity wins");
+        assert_eq!(
+            st.observed_capacity.get("storage"),
+            Some(&2000),
+            "the band's capacity wins"
+        );
         assert_eq!(st.band.get("storage"), Some(&1600)); // 2000 * 0.80
         assert_eq!(st.grants[0].grants.get("storage"), Some(&1600));
     }
@@ -4802,10 +5506,18 @@ mod tests {
     fn quinhao_pool_refuses_a_malformed_forest() {
         // a user naming an unknown parent → Refused, no grants published.
         let spec = QuinhaoPoolSpec {
-            pool_capacity: vec![PoolCapacityEntry { dim: "storage".into(), capacity: "1000".into() }],
+            pool_capacity: vec![PoolCapacityEntry {
+                dim: "storage".into(),
+                capacity: "1000".into(),
+            }],
             storage_band_ref: None,
             setpoint: 0.80,
-            claims: vec![ClaimSpec { id: "u".into(), kind: ClaimantKind::User, parent_id: Some("ghost".into()), demands: vec![] }],
+            claims: vec![ClaimSpec {
+                id: "u".into(),
+                kind: ClaimantKind::User,
+                parent_id: Some("ghost".into()),
+                demands: vec![],
+            }],
             dry_run: true,
         };
         let st = spec.allocate(None);
@@ -4818,17 +5530,28 @@ mod tests {
     fn quinhao_pool_parses_quantity_strings_and_bad_quantity_refuses() {
         // a Gi quantity parses to bytes; a garbage quantity is refused.
         let ok = QuinhaoPoolSpec {
-            pool_capacity: vec![PoolCapacityEntry { dim: "storage".into(), capacity: "2Gi".into() }],
+            pool_capacity: vec![PoolCapacityEntry {
+                dim: "storage".into(),
+                capacity: "2Gi".into(),
+            }],
             storage_band_ref: None,
             setpoint: 0.80,
-            claims: vec![ClaimSpec { id: "m0".into(), kind: ClaimantKind::User, parent_id: None, demands: vec![] }],
+            claims: vec![ClaimSpec {
+                id: "m0".into(),
+                kind: ClaimantKind::User,
+                parent_id: None,
+                demands: vec![],
+            }],
             dry_run: true,
         };
         let st = ok.allocate(None);
         assert_eq!(st.observed_capacity.get("storage"), Some(&(2 * (1 << 30))));
 
         let bad = QuinhaoPoolSpec {
-            pool_capacity: vec![PoolCapacityEntry { dim: "storage".into(), capacity: "not-a-quantity".into() }],
+            pool_capacity: vec![PoolCapacityEntry {
+                dim: "storage".into(),
+                capacity: "not-a-quantity".into(),
+            }],
             storage_band_ref: None,
             setpoint: 0.80,
             claims: vec![],
@@ -4851,7 +5574,8 @@ mod tests {
                     { "id": "alice", "kind": "user", "parentId": "fam-smith" }
                 ]
             }
-        })).expect("a minimal QuinhaoPool CR must deserialize");
+        }))
+        .expect("a minimal QuinhaoPool CR must deserialize");
         assert!(pool.spec.dry_run, "dryRun defaults true (advisory-first)");
         assert_eq!(pool.spec.setpoint, 0.80);
         assert_eq!(pool.spec.claims[1].parent_id.as_deref(), Some("fam-smith"));
@@ -4877,9 +5601,18 @@ mod tests {
         };
         let j = serde_json::to_value(&layout).unwrap();
         let cr = &j["crField"];
-        assert!(cr.get("apiVersion").is_some(), "crField must serialize apiVersion (camelCase)");
-        assert!(cr.get("fieldPath").is_some(), "crField must serialize fieldPath (camelCase)");
-        assert!(cr.get("restartFree").is_some(), "crField must serialize restartFree (camelCase)");
+        assert!(
+            cr.get("apiVersion").is_some(),
+            "crField must serialize apiVersion (camelCase)"
+        );
+        assert!(
+            cr.get("fieldPath").is_some(),
+            "crField must serialize fieldPath (camelCase)"
+        );
+        assert!(
+            cr.get("restartFree").is_some(),
+            "crField must serialize restartFree (camelCase)"
+        );
         assert!(
             cr.get("api_version").is_none() && cr.get("field_path").is_none(),
             "crField must NOT emit snake_case keys (the idiom leak)"
@@ -4910,8 +5643,14 @@ mod tests {
         // apiserver validates a hand-authored CR against.
         let crd = <KubeParamBand as kube::CustomResourceExt>::crd();
         let yaml = serde_yaml::to_string(&crd).unwrap();
-        assert!(yaml.contains("fieldPath"), "the KubeParamBand CRD must advertise fieldPath (camelCase)");
-        assert!(!yaml.contains("field_path"), "the CRD must not carry the snake_case field_path");
+        assert!(
+            yaml.contains("fieldPath"),
+            "the KubeParamBand CRD must advertise fieldPath (camelCase)"
+        );
+        assert!(
+            !yaml.contains("field_path"),
+            "the CRD must not carry the snake_case field_path"
+        );
     }
 
     #[test]
@@ -4930,22 +5669,33 @@ mod tests {
                 "desiredBytes": 469_762_048u64, // 448Mi reclaim seat
                 "ownerBand": "authentik/authentik-worker-memory"
             }
-        })).expect("a camelCase PodMemoryHigh CR must deserialize");
+        }))
+        .expect("a camelCase PodMemoryHigh CR must deserialize");
         assert_eq!(pmh.spec.node_name, "rio");
         assert_eq!(pmh.spec.desired_bytes, 469_762_048);
         match pmh.spec.provider_knob() {
-            breathe_provider::HostKnob::PodCgroupMemoryHigh { driver, qos, pod_uid, container_runtime_id } => {
+            breathe_provider::HostKnob::PodCgroupMemoryHigh {
+                driver,
+                qos,
+                pod_uid,
+                container_runtime_id,
+            } => {
                 assert_eq!(driver, breathe_provider::CgroupDriver::Systemd);
                 assert_eq!(qos, "Burstable");
                 assert_eq!(pod_uid, "abc12345-6789-def0-1234-56789abcdef0");
                 assert_eq!(container_runtime_id, "containerd://deadbeefcafe");
             }
-            other => panic!("the dispatch must map to the SOFT pod memory.high knob, got {other:?}"),
+            other => {
+                panic!("the dispatch must map to the SOFT pod memory.high knob, got {other:?}")
+            }
         }
         // the generated CRD advertises the camelCase desiredBytes the apiserver validates.
         let crd = <PodMemoryHigh as kube::CustomResourceExt>::crd();
         let yaml = serde_yaml::to_string(&crd).unwrap();
-        assert!(yaml.contains("desiredBytes"), "the PodMemoryHigh CRD must advertise desiredBytes (camelCase)");
+        assert!(
+            yaml.contains("desiredBytes"),
+            "the PodMemoryHigh CRD must advertise desiredBytes (camelCase)"
+        );
         assert!(yaml.contains("containerRuntimeId"));
         // cgroupDriver defaults to systemd when omitted.
         let dflt: PodMemoryHigh = serde_json::from_value(serde_json::json!({
@@ -4971,7 +5721,9 @@ mod tests {
             .extend(spec_extra.as_object().unwrap().clone());
         let mut meta = serde_json::json!({ "name": "x", "namespace": "y" });
         if let Some(a) = annotations {
-            meta.as_object_mut().unwrap().insert("annotations".into(), a);
+            meta.as_object_mut()
+                .unwrap()
+                .insert("annotations".into(), a);
         }
         let mut obj = serde_json::json!({
             "apiVersion": "breathe.pleme.io/v1", "kind": "MemoryBand",
@@ -5012,7 +5764,7 @@ mod tests {
     // fact `76924b0` changed silently: an authored `dryRun: true` does NOT hold
     // a k8s band, and the verdict now SAYS so instead of reporting "dryRun".
 
-    /// **THE ROOT-DEFECT ROW.** The exact shape of ~70 live camelot-eks bands:
+    /// **THE ROOT-DEFECT ROW.** The exact shape of ~70 live private-estate-eks bands:
     /// `dryRun: true`, no `mode`, no `writeIntent`, confirm window long past.
     /// It is LIVE — and the typed verdict names the legacy path that promoted
     /// it, so the state is attributable instead of merely surprising.
@@ -5024,10 +5776,21 @@ mod tests {
             None,
         );
         let g = b.resolve_gate(1000 + 100_000, false);
-        assert!(g.is_live(), "dryRun has not gated a k8s band since 76924b0 — this is the truth, stated");
+        assert!(
+            g.is_live(),
+            "dryRun has not gated a k8s band since 76924b0 — this is the truth, stated"
+        );
         let w = g.witness().expect("live");
-        assert!(w.is_legacy_default(), "no writeIntent was authored ⇒ migration debt");
-        assert_eq!(w.legacy_path(), Some(LegacyPath::ConfirmGate { required_secs: 1800 }));
+        assert!(
+            w.is_legacy_default(),
+            "no writeIntent was authored ⇒ migration debt"
+        );
+        assert_eq!(
+            w.legacy_path(),
+            Some(LegacyPath::ConfirmGate {
+                required_secs: 1800
+            })
+        );
         // The bool projection is unchanged — S1 is additive, not behavioural.
         assert!(!b.effective_dry_run(1000 + 100_000));
     }
@@ -5044,7 +5807,10 @@ mod tests {
         );
         let g = held.resolve_gate(1000 + 100_000, false);
         assert!(g.is_shadow() && g.shadow_reason() == Some(gate::ShadowReason::ModeShadow));
-        assert!(g.shadow_reason().unwrap().is_authored(), "an authored hold, not an accident");
+        assert!(
+            g.shadow_reason().unwrap().is_authored(),
+            "an authored hold, not an accident"
+        );
 
         // mode says shadow; intent names an author ⇒ live, attributed.
         let live = mk_band(
@@ -5053,7 +5819,10 @@ mod tests {
             None,
         );
         let g = live.resolve_gate(0, false);
-        assert_eq!(g.witness().and_then(gate::LiveWitness::authorized_by), Some("drzzln 2026-07-26"));
+        assert_eq!(
+            g.witness().and_then(gate::LiveWitness::authorized_by),
+            Some("drzzln 2026-07-26")
+        );
     }
 
     /// An unattributed go-live never carves — it shadows with a reason that
@@ -5062,7 +5831,10 @@ mod tests {
     /// NOT a deserialize failure, which would break the watch for every band.)
     #[test]
     fn an_unattributed_write_intent_fails_safe() {
-        for bad in [serde_json::json!({ "intent": "write" }), serde_json::json!({ "intent": "write", "authorizedBy": "  " })] {
+        for bad in [
+            serde_json::json!({ "intent": "write" }),
+            serde_json::json!({ "intent": "write", "authorizedBy": "  " }),
+        ] {
             let b = mk_band(
                 serde_json::json!({ "mode": "effect", "writeIntent": bad }),
                 Some(ready_status(EPOCH_1000, serde_json::json!([]))),
@@ -5086,10 +5858,16 @@ mod tests {
         );
         assert_eq!(
             b.resolve_gate(1000 + 400, false).shadow_reason(),
-            Some(gate::ShadowReason::ConfirmPending { held_secs: 400, need_secs: 1800 })
+            Some(gate::ShadowReason::ConfirmPending {
+                held_secs: 400,
+                need_secs: 1800
+            })
         );
         let g = b.resolve_gate(1000 + 1801, false);
-        assert_eq!(g.witness().map(gate::LiveWitness::kind), Some(gate::WitnessKind::ConfirmGatePassed));
+        assert_eq!(
+            g.witness().map(gate::LiveWitness::kind),
+            Some(gate::WitnessKind::ConfirmGatePassed)
+        );
     }
 
     /// `writeIntent: frozen` holds without stopping observation — the single
@@ -5098,10 +5876,20 @@ mod tests {
     /// controller before a band ever reaches this gate.)
     #[test]
     fn frozen_intent_holds_and_subsumes_mode_suspended() {
-        let by_intent = mk_band(serde_json::json!({ "writeIntent": { "intent": "frozen" } }), None, None);
+        let by_intent = mk_band(
+            serde_json::json!({ "writeIntent": { "intent": "frozen" } }),
+            None,
+            None,
+        );
         let by_mode = mk_band(serde_json::json!({ "mode": "suspended" }), None, None);
-        assert_eq!(by_intent.resolve_gate(0, false).shadow_reason(), Some(gate::ShadowReason::Suspended));
-        assert_eq!(by_mode.resolve_gate(0, false).shadow_reason(), Some(gate::ShadowReason::Suspended));
+        assert_eq!(
+            by_intent.resolve_gate(0, false).shadow_reason(),
+            Some(gate::ShadowReason::Suspended)
+        );
+        assert_eq!(
+            by_mode.resolve_gate(0, false).shadow_reason(),
+            Some(gate::ShadowReason::Suspended)
+        );
     }
 
     /// The two-key rule survives the new axis: an external freeze outranks even
@@ -5114,7 +5902,10 @@ mod tests {
             None,
         );
         assert!(b.resolve_gate(0, false).is_live());
-        assert_eq!(b.resolve_gate(0, true).shadow_reason(), Some(gate::ShadowReason::Frozen));
+        assert_eq!(
+            b.resolve_gate(0, true).shadow_reason(),
+            Some(gate::ShadowReason::Frozen)
+        );
     }
 
     /// ADDITIVITY GUARD — the property that makes S1 safe to deploy. For every
@@ -5135,8 +5926,14 @@ mod tests {
         let statuses = [
             None,
             Some(ready_status(EPOCH_1000, serde_json::json!([]))),
-            Some(ready_status(EPOCH_1000, serde_json::json!([{ "type": "Stale", "status": "True", "reason": "R", "message": "m", "lastTransitionTime": EPOCH_1000 }]))),
-            Some(ready_status(EPOCH_1000, serde_json::json!([{ "type": "Conflict", "status": "True", "reason": "R", "message": "m", "lastTransitionTime": EPOCH_1000 }]))),
+            Some(ready_status(
+                EPOCH_1000,
+                serde_json::json!([{ "type": "Stale", "status": "True", "reason": "R", "message": "m", "lastTransitionTime": EPOCH_1000 }]),
+            )),
+            Some(ready_status(
+                EPOCH_1000,
+                serde_json::json!([{ "type": "Conflict", "status": "True", "reason": "R", "message": "m", "lastTransitionTime": EPOCH_1000 }]),
+            )),
         ];
         for spec in &shapes {
             for st in &statuses {
@@ -5183,7 +5980,8 @@ mod tests {
         // `dryRun: true`, nothing else authored — the ~70-live-band shape.
         let dr = serde_json::json!({ "dryRun": true });
         let st = ready_status(EPOCH_1000, serde_json::json!([]));
-        let target = serde_json::json!({ "kind": "Deployment", "name": "d", "apiVersion": "apps/v1" });
+        let target =
+            serde_json::json!({ "kind": "Deployment", "name": "d", "apiVersion": "apps/v1" });
 
         /// Build a CR of `$t` from the shared meta + the kind's own required
         /// fields, then hand back `(dimension_id, is_shadow)`.
@@ -5234,7 +6032,10 @@ mod tests {
                     "metric": { "prometheus": "redis_memory_used_bytes" },
                 })
             ),
-            probe!(ReplicaBand, serde_json::json!({ "metric": { "prometheus": "rate(http_requests_total[1m])" } })),
+            probe!(
+                ReplicaBand,
+                serde_json::json!({ "metric": { "prometheus": "rate(http_requests_total[1m])" } })
+            ),
             // The RESERVATION band. Proven here to be one of the EIGHT kinds for
             // which `dryRun` is inert — a `dryRun: true` RequestBand with nothing
             // else authored still resolves LIVE once its confirm window elapses.
@@ -5248,7 +6049,11 @@ mod tests {
         // Every dimension is probed exactly once — no kind quietly skipped.
         let seen: Vec<_> = probes.iter().map(|(d, _)| *d).collect();
         for d in DimensionId::ALL {
-            assert_eq!(seen.iter().filter(|x| **x == d).count(), 1, "{d} must be probed exactly once");
+            assert_eq!(
+                seen.iter().filter(|x| **x == d).count(),
+                1,
+                "{d} must be probed exactly once"
+            );
         }
 
         for (dim, is_shadow) in probes {
@@ -5278,7 +6083,10 @@ mod tests {
                 "writeIntent": intent,
             }
         })).expect("AppBand parses");
-        assert!(app.resolve_gate(i64::MAX / 2, false).is_shadow(), "the app plane can finally be held");
+        assert!(
+            app.resolve_gate(i64::MAX / 2, false).is_shadow(),
+            "the app plane can finally be held"
+        );
 
         let replica: ReplicaBand = serde_json::from_value(serde_json::json!({
             "apiVersion": "breathe.pleme.io/v1", "kind": "ReplicaBand",
@@ -5288,15 +6096,23 @@ mod tests {
                 "metric": { "prometheus": "rate(http_requests_total[1m])" },
                 "writeIntent": intent,
             }
-        })).expect("ReplicaBand parses");
+        }))
+        .expect("ReplicaBand parses");
         assert!(replica.resolve_gate(i64::MAX / 2, false).is_shadow());
     }
 
     #[test]
     fn shadow_mode_never_carves() {
-        let b = mk_band(serde_json::json!({ "mode": "shadow" }), Some(ready_status(EPOCH_1000, serde_json::json!([]))), None);
+        let b = mk_band(
+            serde_json::json!({ "mode": "shadow" }),
+            Some(ready_status(EPOCH_1000, serde_json::json!([]))),
+            None,
+        );
         assert_eq!(b.promotion_mode(), PromotionMode::Shadow);
-        assert!(b.effective_dry_run(i64::MAX / 2), "shadow must never carve, even when the window is long past");
+        assert!(
+            b.effective_dry_run(i64::MAX / 2),
+            "shadow must never carve, even when the window is long past"
+        );
     }
 
     #[test]
@@ -5411,9 +6227,19 @@ mod tests {
     #[test]
     fn shadow_confirm_effect_promotes_after_clean_window() {
         // Ready since epoch 1000, confirm_after default 1800.
-        let b = mk_band(serde_json::json!({}), Some(ready_status(EPOCH_1000, serde_json::json!([]))), None);
-        assert!(b.effective_dry_run(1000 + 100), "still shadow before the window elapses");
-        assert!(!b.effective_dry_run(1000 + 1801), "auto-promotes once the clean window has held");
+        let b = mk_band(
+            serde_json::json!({}),
+            Some(ready_status(EPOCH_1000, serde_json::json!([]))),
+            None,
+        );
+        assert!(
+            b.effective_dry_run(1000 + 100),
+            "still shadow before the window elapses"
+        );
+        assert!(
+            !b.effective_dry_run(1000 + 1801),
+            "auto-promotes once the clean window has held"
+        );
     }
 
     #[test]
@@ -5423,7 +6249,10 @@ mod tests {
             serde_json::json!([{ "type": "Conflict", "status": "True", "reason": "C", "message": "m", "lastTransitionTime": EPOCH_1000 }]),
         );
         let b = mk_band(serde_json::json!({}), Some(conflicted), None);
-        assert!(b.effective_dry_run(i64::MAX / 2), "a field-owned/Conflict band must NOT auto-promote");
+        assert!(
+            b.effective_dry_run(i64::MAX / 2),
+            "a field-owned/Conflict band must NOT auto-promote"
+        );
     }
 
     #[test]
@@ -5433,7 +6262,10 @@ mod tests {
             None, // no window elapsed, no Ready condition
             Some(serde_json::json!({ "breathe.pleme.io/confirmed": "true" })),
         );
-        assert!(!b.effective_dry_run(0), "the operator fast-path confirms immediately");
+        assert!(
+            !b.effective_dry_run(0),
+            "the operator fast-path confirms immediately"
+        );
     }
 
     // ── outorga migration (2026-07-18): the two-key `effective_dry_run_frozen` +
@@ -5447,8 +6279,14 @@ mod tests {
     #[test]
     fn effective_dry_run_frozen_key_overrides_even_effect_mode() {
         let b = mk_band(serde_json::json!({ "mode": "effect" }), None, None);
-        assert!(!b.effective_dry_run_frozen(0, false), "unfrozen + effect mode ⇒ apply");
-        assert!(b.effective_dry_run_frozen(0, true), "frozen must shadow even explicit effect mode");
+        assert!(
+            !b.effective_dry_run_frozen(0, false),
+            "unfrozen + effect mode ⇒ apply"
+        );
+        assert!(
+            b.effective_dry_run_frozen(0, true),
+            "frozen must shadow even explicit effect mode"
+        );
     }
 
     /// REGRESSION for the `breathe-host-agent/src/main.rs` bug fixed 2026-07-18:
@@ -5475,13 +6313,19 @@ mod tests {
 
         // The OLD (buggy) formula, reproduced verbatim for the comparison.
         let old_effective_dry_run = b.dry_run() || !write_enabled;
-        assert!(!old_effective_dry_run, "the bug: the raw boolean alone said 'go live now'");
+        assert!(
+            !old_effective_dry_run,
+            "the bug: the raw boolean alone said 'go live now'"
+        );
 
         // The NEW (fixed) formula: still shadow — no Ready condition has ever
         // been observed, so the ShadowConfirmEffect confirm-gate correctly
         // blocks on NotReady.
         let new_effective_dry_run = b.effective_dry_run_frozen(now, !write_enabled);
-        assert!(new_effective_dry_run, "FIX: a never-observed band must stay shadowed, not go live");
+        assert!(
+            new_effective_dry_run,
+            "FIX: a never-observed band must stay shadowed, not go live"
+        );
         assert_ne!(
             old_effective_dry_run, new_effective_dry_run,
             "the two formulas must diverge on this exact input — that divergence IS the bug"
@@ -5497,7 +6341,12 @@ mod tests {
     #[test]
     fn legacy_effective_dry_run_matches_the_old_truth_table_and_types_the_reason() {
         // (dry_run, frozen) -> is_shadow, matching `dry_run || frozen` exactly.
-        let cases = [(false, false, false), (false, true, true), (true, false, true), (true, true, true)];
+        let cases = [
+            (false, false, false),
+            (false, true, true),
+            (true, false, true),
+            (true, true, true),
+        ];
         for (dry_run, frozen, want_shadow) in cases {
             let d = legacy_effective_dry_run(dry_run, frozen);
             assert_eq!(
@@ -5518,7 +6367,11 @@ mod tests {
             Some(outorga::ShadowReason::Frozen),
             "a frozen pool/node is reported as Frozen, even with dryRun:false"
         );
-        assert_eq!(legacy_effective_dry_run(false, false).shadow_reason(), None, "an applied decision carries no shadow reason");
+        assert_eq!(
+            legacy_effective_dry_run(false, false).shadow_reason(),
+            None,
+            "an applied decision carries no shadow reason"
+        );
     }
 
     // ── ReplicaBand (the HORIZONTAL band) ─────────────────────────────────────
@@ -5533,7 +6386,8 @@ mod tests {
                 "targetRef": { "kind": "Deployment", "name": "web", "apiVersion": "apps/v1" },
                 "metric": { "prometheus": "sum(rate(http_requests_total{app='web'}[1m]))" }
             }
-        })).expect("a minimal ReplicaBand must deserialize");
+        }))
+        .expect("a minimal ReplicaBand must deserialize");
         // Floor defaults to 2 (HA) and the signal defaults to utilization.
         assert_eq!(rb.spec.floor, 2, "HA floor default is 2");
         assert_eq!(rb.spec.signal, ReplicaSignalSpec::Utilization);
@@ -5542,7 +6396,12 @@ mod tests {
         assert_eq!(rc.effective_floor(), 2);
         assert_eq!(rc.signal, ReplicaSignal::Utilization);
         // …and its actuator addresses `.spec.replicas` on the owner kind.
-        assert_eq!(rb.spec.provider_layout(), LimitLayout::Replica { kind: "Deployment".into() });
+        assert_eq!(
+            rb.spec.provider_layout(),
+            LimitLayout::Replica {
+                kind: "Deployment".into()
+            }
+        );
         // No reclaim metric ⇒ not spot-aware by default.
         assert!(rb.spec.provider_reclaim_metric().is_none());
     }
@@ -5558,9 +6417,13 @@ mod tests {
                 "metric": { "prometheus": "q" },
                 "haFloor": 3, "ceiling": 20, "signal": "queueDepth", "target": 10.0
             }
-        })).expect("deserialize");
+        }))
+        .expect("deserialize");
         // starts shadowed (no status) — the horizontal band is never live-unconfirmed.
-        assert!(rb.effective_dry_run(0), "ReplicaBand starts in shadow (ShadowConfirmEffect)");
+        assert!(
+            rb.effective_dry_run(0),
+            "ReplicaBand starts in shadow (ShadowConfirmEffect)"
+        );
         // haFloor raises the effective floor to 3.
         assert_eq!(rb.spec.replica_band_config().effective_floor(), 3);
         // and the vertical band_config it exposes for the gate carries the counts.
@@ -5573,7 +6436,10 @@ mod tests {
     fn replica_band_crd_advertises_its_camelcase_surface() {
         let crd = <ReplicaBand as kube::CustomResourceExt>::crd();
         let yaml = serde_yaml::to_string(&crd).unwrap();
-        assert!(yaml.contains("haFloor"), "the CRD must advertise haFloor (camelCase)");
+        assert!(
+            yaml.contains("haFloor"),
+            "the CRD must advertise haFloor (camelCase)"
+        );
         assert!(yaml.contains("toleranceUp"));
         assert!(yaml.contains("maxScaleDownPods"));
         assert!(yaml.contains("rband"), "the shortname is registered");
@@ -5589,10 +6455,14 @@ mod tests {
                 "targetRef": { "kind": "Deployment", "name": "web", "apiVersion": "apps/v1" },
                 "metric": { "prometheus": "q" }
             }
-        })).expect("deserialize");
+        }))
+        .expect("deserialize");
         assert_eq!(plain.spec.topology, TopologySpec::default());
         assert_eq!(plain.spec.topology.kind, TopologyKind::NonPersistent);
-        assert_eq!(plain.spec.replica_band_config().topology, Topology::NonPersistent);
+        assert_eq!(
+            plain.spec.replica_band_config().topology,
+            Topology::NonPersistent
+        );
 
         // Each authored arm bridges to the control-layer topology + raises the floor.
         let quorum: ReplicaBand = serde_json::from_value(serde_json::json!({
@@ -5610,29 +6480,39 @@ mod tests {
 
         let db: ReplicaBand = serde_json::from_value(serde_json::json!({
             "apiVersion": "breathe.pleme.io/v1", "kind": "ReplicaBand",
-            "metadata": { "name": "mysql", "namespace": "camelot" },
+            "metadata": { "name": "mysql", "namespace": "isolated" },
             "spec": {
                 "targetRef": { "kind": "StatefulSet", "name": "mysql", "apiVersion": "apps/v1" },
                 "metric": { "prometheus": "q" },
                 "topology": { "kind": "masterSlave", "primaries": 1 }, "ceiling": 8
             }
-        })).expect("deserialize");
+        }))
+        .expect("deserialize");
         assert_eq!(db.spec.topology.kind, TopologyKind::MasterSlave);
         assert_eq!(db.spec.topology.primaries, Some(1));
-        assert_eq!(db.spec.replica_band_config().topology, Topology::MasterSlave { primaries: 1 });
+        assert_eq!(
+            db.spec.replica_band_config().topology,
+            Topology::MasterSlave { primaries: 1 }
+        );
 
         let neo: ReplicaBand = serde_json::from_value(serde_json::json!({
             "apiVersion": "breathe.pleme.io/v1", "kind": "ReplicaBand",
-            "metadata": { "name": "neo4j", "namespace": "camelot" },
+            "metadata": { "name": "neo4j", "namespace": "isolated" },
             "spec": {
                 "targetRef": { "kind": "StatefulSet", "name": "neo4j", "apiVersion": "apps/v1" },
                 "metric": { "prometheus": "q" },
                 "topology": { "kind": "persistent", "replicationFactor": 3 }, "ceiling": 10
             }
-        })).expect("deserialize");
+        }))
+        .expect("deserialize");
         assert_eq!(neo.spec.topology.kind, TopologyKind::Persistent);
         assert_eq!(neo.spec.topology.replication_factor, Some(3));
-        assert_eq!(neo.spec.replica_band_config().topology, Topology::Persistent { replication_factor: 3 });
+        assert_eq!(
+            neo.spec.replica_band_config().topology,
+            Topology::Persistent {
+                replication_factor: 3
+            }
+        );
         assert_eq!(neo.spec.replica_band_config().topology_floor(), 3);
     }
 
@@ -5640,9 +6520,18 @@ mod tests {
     fn replica_band_crd_advertises_the_topology_surface() {
         let crd = <ReplicaBand as kube::CustomResourceExt>::crd();
         let yaml = serde_yaml::to_string(&crd).unwrap();
-        assert!(yaml.contains("topology"), "the CRD must advertise the topology field");
-        assert!(yaml.contains("fullyDistributed"), "the FullyDistributed arm is in the schema");
-        assert!(yaml.contains("replicationFactor"), "the Persistent factor is camelCase in the schema");
+        assert!(
+            yaml.contains("topology"),
+            "the CRD must advertise the topology field"
+        );
+        assert!(
+            yaml.contains("fullyDistributed"),
+            "the FullyDistributed arm is in the schema"
+        );
+        assert!(
+            yaml.contains("replicationFactor"),
+            "the Persistent factor is camelCase in the schema"
+        );
     }
 
     #[test]
@@ -5661,14 +6550,21 @@ mod tests {
         let mut labels: Vec<&'static str> = arms
             .iter()
             .map(|k| {
-                let spec = TopologySpec { kind: *k, replication_factor: Some(1), primaries: Some(1) };
+                let spec = TopologySpec {
+                    kind: *k,
+                    replication_factor: Some(1),
+                    primaries: Some(1),
+                };
                 spec.control().as_str()
             })
             .collect();
         labels.sort_unstable();
         let mut expected = Topology::ALL_LABELS.to_vec();
         expected.sort_unstable();
-        assert_eq!(labels, expected, "the CRD TopologyKind arms must mirror breathe_control::Topology exactly");
+        assert_eq!(
+            labels, expected,
+            "the CRD TopologyKind arms must mirror breathe_control::Topology exactly"
+        );
 
         // and the serde wire tokens are the camelCase mirror (structural-schema-safe).
         for (k, tok) in [
@@ -5688,13 +6584,14 @@ mod tests {
         // a masterSlave band pointed at a Deployment is refused (topology ↔ kind gate).
         let db_on_deploy: ReplicaBand = serde_json::from_value(serde_json::json!({
             "apiVersion": "breathe.pleme.io/v1", "kind": "ReplicaBand",
-            "metadata": { "name": "mysql", "namespace": "camelot" },
+            "metadata": { "name": "mysql", "namespace": "isolated" },
             "spec": {
                 "targetRef": { "kind": "Deployment", "name": "mysql" },
                 "metric": { "prometheus": "q" },
                 "topology": { "kind": "masterSlave", "primaries": 1 }, "ceiling": 8
             }
-        })).expect("deserializes");
+        }))
+        .expect("deserializes");
         assert_eq!(
             db_on_deploy.spec.validate_for_target(),
             Err(ReplicaError::TopologyTargetMismatch("master-slave"))
@@ -5703,24 +6600,26 @@ mod tests {
         // the SAME band on a StatefulSet validates.
         let db_on_sts: ReplicaBand = serde_json::from_value(serde_json::json!({
             "apiVersion": "breathe.pleme.io/v1", "kind": "ReplicaBand",
-            "metadata": { "name": "mysql", "namespace": "camelot" },
+            "metadata": { "name": "mysql", "namespace": "isolated" },
             "spec": {
                 "targetRef": { "kind": "StatefulSet", "name": "mysql" },
                 "metric": { "prometheus": "q" },
                 "topology": { "kind": "masterSlave", "primaries": 1 }, "ceiling": 8
             }
-        })).expect("deserializes");
+        }))
+        .expect("deserializes");
         assert_eq!(db_on_sts.spec.validate_for_target(), Ok(()));
 
         // a NonPersistent band on a Deployment is fine (stateless pods interchangeable).
         let web: ReplicaBand = serde_json::from_value(serde_json::json!({
             "apiVersion": "breathe.pleme.io/v1", "kind": "ReplicaBand",
-            "metadata": { "name": "web", "namespace": "camelot" },
+            "metadata": { "name": "web", "namespace": "isolated" },
             "spec": {
                 "targetRef": { "kind": "Deployment", "name": "web" },
                 "metric": { "prometheus": "q" }, "ceiling": 10
             }
-        })).expect("deserializes");
+        }))
+        .expect("deserializes");
         assert_eq!(web.spec.validate_for_target(), Ok(()));
     }
 
@@ -5731,7 +6630,9 @@ mod tests {
     /// reading the wrong tier.
     fn posture_fixture() -> BreathePostureSpec {
         BreathePostureSpec {
-            description: Some("test fixture — every field deliberately diverges from the compiled default".into()),
+            description: Some(
+                "test fixture — every field deliberately diverges from the compiled default".into(),
+            ),
             setpoint: 0.5,
             grow_above: 0.99,
             grow_factor: 2.0,
@@ -5742,7 +6643,7 @@ mod tests {
             disruption_policy: DisruptionPolicy::AllowConditional,
             // The request-policy axis is `None` here on purpose: this fixture
             // exercises the BAND-LAW 8-tuple fold, and leaving the new axis unset
-            // is the shape every one of the five live camelot postures actually
+            // is the shape every one of the five live the private estate postures actually
             // has. `request_policy_falls_through_the_same_three_tiers` covers the
             // Some(_) case separately.
             workload_class: None,
@@ -5794,8 +6695,14 @@ spec:
         assert_eq!(cpu.spec.shrink_factor, Some(0.9));
         assert_eq!(cpu.spec.cooldown_seconds, Some(600));
         assert_eq!(cpu.spec.max_staleness_seconds, Some(120));
-        assert_eq!(cpu.spec.disruption_policy, Some(DisruptionPolicy::RestartFreeOnly));
-        assert_eq!(cpu.spec.posture_ref, None, "no postureRef authored ⇒ None, not an error");
+        assert_eq!(
+            cpu.spec.disruption_policy,
+            Some(DisruptionPolicy::RestartFreeOnly)
+        );
+        assert_eq!(
+            cpu.spec.posture_ref, None,
+            "no postureRef authored ⇒ None, not an error"
+        );
         // And the resolved values are BYTE-IDENTICAL to before this change.
         let cfg = Band::band_config(&cpu).unwrap();
         assert_eq!(cfg.setpoint, 0.8);
@@ -5819,7 +6726,10 @@ spec:
         let band = MemoryBand::new("x", spec);
         let p = posture_fixture();
         let cfg = band.band_config_with_posture(Some(&p)).unwrap();
-        assert_eq!(cfg.setpoint, 0.95, "the CR's own explicit setpoint wins over the posture's 0.5");
+        assert_eq!(
+            cfg.setpoint, 0.95,
+            "the CR's own explicit setpoint wins over the posture's 0.5"
+        );
         assert_eq!(
             band.cooldown_seconds_with_posture(Some(&p)),
             42,
@@ -5832,7 +6742,10 @@ spec:
         );
         // A field NOT overridden on this CR still falls through to the posture —
         // proving the fold is genuinely PER-FIELD, not all-or-nothing.
-        assert_eq!(cfg.grow_above, 0.99, "unset on the CR ⇒ the posture's value, not the compiled default's 0.85");
+        assert_eq!(
+            cfg.grow_above, 0.99,
+            "unset on the CR ⇒ the posture's value, not the compiled default's 0.85"
+        );
     }
 
     #[test]
@@ -5852,7 +6765,10 @@ spec:
         assert_eq!(cfg.shrink_factor, 0.5);
         assert_eq!(band.cooldown_seconds_with_posture(Some(&p)), 999);
         assert_eq!(band.max_staleness_seconds_with_posture(Some(&p)), 555);
-        assert_eq!(band.disruption_policy_with_posture(Some(&p)), DisruptionPolicy::AllowConditional);
+        assert_eq!(
+            band.disruption_policy_with_posture(Some(&p)),
+            DisruptionPolicy::AllowConditional
+        );
     }
 
     #[test]
@@ -5870,7 +6786,10 @@ spec:
         assert_eq!(cfg.shrink_factor, 0.90);
         assert_eq!(band.cooldown_seconds_with_posture(None), 600);
         assert_eq!(band.max_staleness_seconds_with_posture(None), 120);
-        assert_eq!(band.disruption_policy_with_posture(None), DisruptionPolicy::RestartFreeOnly);
+        assert_eq!(
+            band.disruption_policy_with_posture(None),
+            DisruptionPolicy::RestartFreeOnly
+        );
         // Byte-identical to the plain (posture-blind) accessors — the existing
         // 2-tier fold (override > compiled-default) is completely unaffected.
         assert_eq!(Band::band_config(&band).unwrap().setpoint, 0.80);
@@ -5894,9 +6813,15 @@ spec:
         let band = MemoryBand::new("x", spec);
         assert_eq!(band.posture_ref(), Some("does-not-exist"));
         let cfg = band.band_config_with_posture(None).unwrap();
-        assert_eq!(cfg.setpoint, 0.80, "dangling ref ⇒ compiled default, never a panic/error");
+        assert_eq!(
+            cfg.setpoint, 0.80,
+            "dangling ref ⇒ compiled default, never a panic/error"
+        );
         assert_eq!(band.cooldown_seconds_with_posture(None), 600);
-        assert_eq!(band.disruption_policy_with_posture(None), DisruptionPolicy::RestartFreeOnly);
+        assert_eq!(
+            band.disruption_policy_with_posture(None),
+            DisruptionPolicy::RestartFreeOnly
+        );
     }
 
     #[test]
@@ -5909,11 +6834,20 @@ spec:
         }))
         .unwrap();
         assert_eq!(spec.posture_ref.as_deref(), Some("stateful-workload"));
-        assert_eq!(spec.disruption_policy, Some(DisruptionPolicy::AllowConditional));
-        assert_eq!(spec.disruption_policy_rationale.as_deref(), Some("genuinely stateful; no in-place resize available"));
+        assert_eq!(
+            spec.disruption_policy,
+            Some(DisruptionPolicy::AllowConditional)
+        );
+        assert_eq!(
+            spec.disruption_policy_rationale.as_deref(),
+            Some("genuinely stateful; no in-place resize available")
+        );
         let v = serde_json::to_value(&spec).unwrap();
         assert_eq!(v["postureRef"], "stateful-workload");
-        assert_eq!(v["disruptionPolicyRationale"], "genuinely stateful; no in-place resize available");
+        assert_eq!(
+            v["disruptionPolicyRationale"],
+            "genuinely stateful; no in-place resize available"
+        );
 
         // An UNSET postureRef/rationale/8-tuple field is omitted entirely
         // (skip_serializing_if), keeping an un-migrated CR's serialized shape
@@ -5925,7 +6859,10 @@ spec:
         let bare_v = serde_json::to_value(&bare).unwrap();
         assert!(bare_v.get("postureRef").is_none());
         assert!(bare_v.get("disruptionPolicyRationale").is_none());
-        assert!(bare_v.get("setpoint").is_none(), "an unset Option field must not appear in the serialized form");
+        assert!(
+            bare_v.get("setpoint").is_none(),
+            "an unset Option field must not appear in the serialized form"
+        );
         assert!(bare_v.get("disruptionPolicy").is_none());
     }
 
@@ -5988,14 +6925,20 @@ spec:
 
     #[test]
     fn the_three_example_postures_deserialize_and_drive_a_real_band_end_to_end() {
-        let platform: BreathePosture =
-            serde_yaml::from_str(POSTURE_PLATFORM_DEFAULT_YAML).expect("platform-default deserializes");
+        let platform: BreathePosture = serde_yaml::from_str(POSTURE_PLATFORM_DEFAULT_YAML)
+            .expect("platform-default deserializes");
         assert_eq!(platform.spec.setpoint, 0.8);
-        assert_eq!(platform.spec.disruption_policy, DisruptionPolicy::RestartFreeOnly);
+        assert_eq!(
+            platform.spec.disruption_policy,
+            DisruptionPolicy::RestartFreeOnly
+        );
 
-        let stateful: BreathePosture =
-            serde_yaml::from_str(POSTURE_STATEFUL_WORKLOAD_YAML).expect("stateful-workload deserializes");
-        assert_eq!(stateful.spec.disruption_policy, DisruptionPolicy::AllowConditional);
+        let stateful: BreathePosture = serde_yaml::from_str(POSTURE_STATEFUL_WORKLOAD_YAML)
+            .expect("stateful-workload deserializes");
+        assert_eq!(
+            stateful.spec.disruption_policy,
+            DisruptionPolicy::AllowConditional
+        );
 
         let storage: BreathePosture =
             serde_yaml::from_str(POSTURE_STORAGE_VOLUME_YAML).expect("storage-volume deserializes");
@@ -6010,7 +6953,7 @@ spec:
             r#"
 apiVersion: breathe.pleme.io/v1
 kind: CpuBand
-metadata: { name: some-cpu-band, namespace: camelot }
+metadata: { name: some-cpu-band, namespace: isolated }
 spec:
   targetRef: { kind: Deployment, name: some-workload }
   postureRef: stateful-workload
@@ -6039,7 +6982,10 @@ spec:
     #[test]
     fn bound_introduction_spec_maps_one_to_one_onto_the_control_atom() {
         for (wire, control) in [
-            (BoundIntroductionSpec::Forbidden, BoundIntroduction::Forbidden),
+            (
+                BoundIntroductionSpec::Forbidden,
+                BoundIntroduction::Forbidden,
+            ),
             (BoundIntroductionSpec::Allowed, BoundIntroduction::Allowed),
         ] {
             assert_eq!(wire.to_control(), control);
@@ -6095,7 +7041,10 @@ spec:
 "#,
         )
         .expect("deserializes");
-        assert_eq!(ceded.bound_introduction_spec(), Some(BoundIntroductionSpec::Allowed));
+        assert_eq!(
+            ceded.bound_introduction_spec(),
+            Some(BoundIntroductionSpec::Allowed)
+        );
         assert_eq!(ceded.bound_introduction(), BoundIntroduction::Allowed);
     }
 
@@ -6113,13 +7062,21 @@ spec:
     fn qos_class_mirror_covers_every_arm() {
         use breathe_invariant::isolation::QosClass;
         for q in QosClass::ALL {
-            assert_eq!(QosClassSpec::from_invariant(q).to_invariant(), q, "round-trip must be identity for {q:?}");
+            assert_eq!(
+                QosClassSpec::from_invariant(q).to_invariant(),
+                q,
+                "round-trip must be identity for {q:?}"
+            );
         }
         // …and the serde spelling matches the upstream's, so a CR and a contract
         // value are the same string on the wire.
         for q in QosClass::ALL {
             let mirrored = serde_json::to_value(QosClassSpec::from_invariant(q)).unwrap();
-            assert_eq!(mirrored, serde_json::json!(q.as_str()), "wire spelling must match upstream for {q:?}");
+            assert_eq!(
+                mirrored,
+                serde_json::json!(q.as_str()),
+                "wire spelling must match upstream for {q:?}"
+            );
         }
     }
 
@@ -6143,10 +7100,22 @@ spec:
             );
         }
         // The concrete postures, pinned so a silent upstream change is visible.
-        assert_eq!(WorkloadClassSpec::Critical.default_qos(), QosClassSpec::Guaranteed);
-        assert_eq!(WorkloadClassSpec::Standard.default_qos(), QosClassSpec::Burstable);
-        assert_eq!(WorkloadClassSpec::Batch.default_qos(), QosClassSpec::BestEffort);
-        assert_eq!(WorkloadClassSpec::Noisy.default_qos(), QosClassSpec::Burstable);
+        assert_eq!(
+            WorkloadClassSpec::Critical.default_qos(),
+            QosClassSpec::Guaranteed
+        );
+        assert_eq!(
+            WorkloadClassSpec::Standard.default_qos(),
+            QosClassSpec::Burstable
+        );
+        assert_eq!(
+            WorkloadClassSpec::Batch.default_qos(),
+            QosClassSpec::BestEffort
+        );
+        assert_eq!(
+            WorkloadClassSpec::Noisy.default_qos(),
+            QosClassSpec::Burstable
+        );
     }
 
     /// A minimal `RequestBand` parses, and every default is the safe one.
@@ -6156,7 +7125,7 @@ spec:
             r"
 apiVersion: breathe.pleme.io/v1
 kind: RequestBand
-metadata: { name: sui-request, namespace: camelot-build }
+metadata: { name: sui-request, namespace: isolated-build }
 spec:
   targetRef: { kind: Deployment, name: sui, apiVersion: apps/v1 }
   resource: memory
@@ -6230,22 +7199,40 @@ spec:
         let mut posture = posture_fixture();
         posture.workload_class = Some(WorkloadClassSpec::Critical);
         posture.qos_target = Some(QosClassSpec::Guaranteed);
-        posture.demand = Some(DemandSignalSpec { quantile: 0.99, window: "30d".into(), headroom: 0.5 });
+        posture.demand = Some(DemandSignalSpec {
+            quantile: 0.99,
+            window: "30d".into(),
+            headroom: 0.5,
+        });
 
         // Tier 3 — nothing authored anywhere: compiled defaults.
         let bare = band("");
-        assert_eq!(bare.spec.resolved_workload_class(None), WorkloadClassSpec::Standard);
+        assert_eq!(
+            bare.spec.resolved_workload_class(None),
+            WorkloadClassSpec::Standard
+        );
         assert_eq!(bare.spec.resolved_qos_target(None), QosClassSpec::Burstable);
         assert_eq!(bare.spec.resolved_demand(None), DemandSignalSpec::default());
 
         // Tier 2 — the posture fills every unset field.
-        assert_eq!(bare.spec.resolved_workload_class(Some(&posture)), WorkloadClassSpec::Critical);
-        assert_eq!(bare.spec.resolved_qos_target(Some(&posture)), QosClassSpec::Guaranteed);
+        assert_eq!(
+            bare.spec.resolved_workload_class(Some(&posture)),
+            WorkloadClassSpec::Critical
+        );
+        assert_eq!(
+            bare.spec.resolved_qos_target(Some(&posture)),
+            QosClassSpec::Guaranteed
+        );
         assert_eq!(bare.spec.resolved_demand(Some(&posture)).window, "30d");
 
         // Tier 1 — an explicit per-CR value beats the posture.
-        let explicit = band("  workloadClass: batch\n  demand: { quantile: 0.5, window: 1h, headroom: 0.0 }\n");
-        assert_eq!(explicit.spec.resolved_workload_class(Some(&posture)), WorkloadClassSpec::Batch);
+        let explicit = band(
+            "  workloadClass: batch\n  demand: { quantile: 0.5, window: 1h, headroom: 0.0 }\n",
+        );
+        assert_eq!(
+            explicit.spec.resolved_workload_class(Some(&posture)),
+            WorkloadClassSpec::Batch
+        );
         assert_eq!(explicit.spec.resolved_demand(Some(&posture)).window, "1h");
 
         // ── THE SUBTLE ONE, pinned because it is a safety property ──
@@ -6269,11 +7256,17 @@ spec:
         );
         // The band can still say so explicitly; it just has to say it out loud.
         let loud = band("  workloadClass: batch\n  qosTarget: best-effort\n");
-        assert_eq!(loud.spec.resolved_qos_target(Some(&posture)), QosClassSpec::BestEffort);
+        assert_eq!(
+            loud.spec.resolved_qos_target(Some(&posture)),
+            QosClassSpec::BestEffort
+        );
         // And with NO posture pin, the class's own default does apply.
         let mut unpinned = posture.clone();
         unpinned.qos_target = None;
-        assert_eq!(explicit.spec.resolved_qos_target(Some(&unpinned)), QosClassSpec::BestEffort);
+        assert_eq!(
+            explicit.spec.resolved_qos_target(Some(&unpinned)),
+            QosClassSpec::BestEffort
+        );
     }
 
     /// The reverse of the case above, which is the one that actually bites: a
@@ -6298,7 +7291,10 @@ spec:
         )
         .expect("deserializes");
 
-        assert_eq!(weaker.spec.resolved_workload_class(Some(&critical)), WorkloadClassSpec::Standard);
+        assert_eq!(
+            weaker.spec.resolved_workload_class(Some(&critical)),
+            WorkloadClassSpec::Standard
+        );
         assert_eq!(
             weaker.spec.resolved_qos_target(Some(&critical)),
             QosClassSpec::Guaranteed,
@@ -6307,7 +7303,7 @@ spec:
     }
 
     /// **Backward compatibility, asserted rather than assumed.** The five live
-    /// `BreathePosture` CRs on camelot-eks carry only the 8 band-law fields. If
+    /// `BreathePosture` CRs on one cluster-eks carry only the 8 band-law fields. If
     /// the request-policy axis had been added as REQUIRED, every one of them
     /// would stop deserializing and the controller would break on the postures it
     /// is currently serving. This pins that it does not.
@@ -6335,7 +7331,10 @@ spec:
         assert_eq!(p.spec.demand, None);
         // …and it round-trips without inventing the absent fields.
         let round = serde_json::to_value(&p.spec).unwrap();
-        assert!(round.get("workloadClass").is_none(), "an absent axis must not be serialized back");
+        assert!(
+            round.get("workloadClass").is_none(),
+            "an absent axis must not be serialized back"
+        );
         assert!(round.get("qosTarget").is_none());
         assert!(round.get("demand").is_none());
     }
@@ -6347,7 +7346,7 @@ spec:
             r"
 apiVersion: breathe.pleme.io/v1
 kind: RequestBand
-metadata: { name: sui-request, namespace: camelot-build }
+metadata: { name: sui-request, namespace: isolated-build }
 spec:
   targetRef: { kind: Deployment, name: sui, container: sui }
   resource: memory
@@ -6381,7 +7380,10 @@ spec:
     fn durability_defaults_to_committed() {
         let b = request_band("");
         assert_eq!(b.spec.durability, DurabilitySpec::Committed);
-        assert!(b.spec.durable_coordinate().is_err(), "and therefore reports its missing coordinate");
+        assert!(
+            b.spec.durable_coordinate().is_err(),
+            "and therefore reports its missing coordinate"
+        );
     }
 
     /// An `ephemeral` band reports a DIFFERENT reason than a misauthored
@@ -6391,8 +7393,20 @@ spec:
     #[test]
     fn ephemeral_and_missing_ref_are_distinguishable_reasons() {
         use breathe_provider::ClassTransitionBlocked as B;
-        assert_eq!(request_band("  durability: ephemeral\n").spec.durable_coordinate().unwrap_err(), B::EphemeralCannotTransition);
-        assert_eq!(request_band("  durability: committed\n").spec.durable_coordinate().unwrap_err(), B::NoManifestCoordinate);
+        assert_eq!(
+            request_band("  durability: ephemeral\n")
+                .spec
+                .durable_coordinate()
+                .unwrap_err(),
+            B::EphemeralCannotTransition
+        );
+        assert_eq!(
+            request_band("  durability: committed\n")
+                .spec
+                .durable_coordinate()
+                .unwrap_err(),
+            B::NoManifestCoordinate
+        );
     }
 
     /// The coordinate round-trips into the provider type the writer consumes —
@@ -6400,16 +7414,19 @@ spec:
     #[test]
     fn a_manifest_ref_reaches_the_writer_as_a_real_coordinate() {
         let b = request_band(
-            "  durability: committed\n  manifestRef:\n    path: clusters/camelot/apps/sui/release.yaml\n    marker: camelot-build/sui-request\n",
+            "  durability: committed\n  manifestRef:\n    path: clusters/isolated/apps/sui/release.yaml\n    marker: isolated-build/sui-request\n",
         );
-        let c = b.spec.durable_coordinate().expect("a committed band with a ref has a home");
-        assert_eq!(c.path, "clusters/camelot/apps/sui/release.yaml");
-        assert_eq!(c.marker, "camelot-build/sui-request");
+        let c = b
+            .spec
+            .durable_coordinate()
+            .expect("a committed band with a ref has a home");
+        assert_eq!(c.path, "clusters/isolated/apps/sui/release.yaml");
+        assert_eq!(c.marker, "isolated-build/sui-request");
 
         // …and it composes straight into an addressed proposal, which is the
         // only currency the durable door accepts.
         let p = breathe_provider::AddressedProposal::carve(c, "3Gi", "memory", "sui");
-        assert_eq!(p.path(), "clusters/camelot/apps/sui/release.yaml");
+        assert_eq!(p.path(), "clusters/isolated/apps/sui/release.yaml");
         assert_eq!(p.assignments().len(), 1);
     }
 
@@ -6420,7 +7437,10 @@ spec:
         let b = request_band("");
         assert!(b.spec.manifest_ref.is_none());
         let round = serde_json::to_value(&b.spec).unwrap();
-        assert!(round.get("manifestRef").is_none(), "an absent coordinate must not be serialized back");
+        assert!(
+            round.get("manifestRef").is_none(),
+            "an absent coordinate must not be serialized back"
+        );
     }
 
     /// **The cross-repo drift gate.** This is the *verbatim* spec that
@@ -6441,7 +7461,7 @@ apiVersion: breathe.pleme.io/v1
 kind: RequestBand
 metadata:
   name: sui-request-memory
-  namespace: camelot-build
+  namespace: isolated-build
 spec:
   targetRef:
     apiVersion: apps/v1
@@ -6457,8 +7477,8 @@ spec:
     windowSeconds: 604800
   durability: committed
   manifestRef:
-    path: "clusters/camelot/apps/sui/release.yaml"
-    marker: "camelot-build/sui-request"
+    path: "clusters/isolated/apps/sui/release.yaml"
+    marker: "isolated-build/sui-request"
   floor: "512Mi"
   cooldownSeconds: 600
   disruptionPolicy: restartFreeOnly
@@ -6474,8 +7494,11 @@ spec:
         assert_eq!(b.spec.durability, DurabilitySpec::Committed);
         assert_eq!(b.spec.mode, Some(PromotionMode::Shadow));
         // The whole point of the chart arm: a committed band arrives with a home.
-        let c = b.spec.durable_coordinate().expect("the rendered band carries its coordinate");
-        assert_eq!(c.marker, "camelot-build/sui-request");
+        let c = b
+            .spec
+            .durable_coordinate()
+            .expect("the rendered band carries its coordinate");
+        assert_eq!(c.marker, "isolated-build/sui-request");
     }
 
     /// The chart's MINIMAL `RequestBand` — `{enabled: true, resource: cpu}` and
@@ -6503,7 +7526,11 @@ spec:
 ",
         )
         .expect("the chart's minimal RequestBand must parse");
-        assert_eq!(b.spec.mode, Some(PromotionMode::Shadow), "one boolean must not produce a live band");
+        assert_eq!(
+            b.spec.mode,
+            Some(PromotionMode::Shadow),
+            "one boolean must not produce a live band"
+        );
         assert_eq!(
             b.spec.durable_coordinate().unwrap_err(),
             breathe_provider::ClassTransitionBlocked::NoManifestCoordinate
@@ -6516,7 +7543,10 @@ spec:
     /// status of all ten existing dimensions at once.
     #[test]
     fn the_request_status_projection_is_absent_on_every_other_kind() {
-        let s = BandStatus { phase: Some("Holding".into()), ..Default::default() };
+        let s = BandStatus {
+            phase: Some("Holding".into()),
+            ..Default::default()
+        };
         let v = serde_json::to_value(&s).unwrap();
         for f in ["qosObserved", "qosGap", "pendingProposal"] {
             assert!(v.get(f).is_none(), "{f} must serialize away when unset");
@@ -6549,7 +7579,9 @@ spec:
         )
         .expect("deserializes");
         match b.spec.provider_layout() {
-            LimitLayout::PodRequestResize { container } => assert_eq!(container.as_deref(), Some("app")),
+            LimitLayout::PodRequestResize { container } => {
+                assert_eq!(container.as_deref(), Some("app"))
+            }
             other => panic!("a RequestBand must carve PodRequestResize, got {other:?}"),
         }
     }
@@ -6662,7 +7694,8 @@ mod structural_schema_tests {
             ("RequestBand", RequestBand::crd()),
         ];
         assert_eq!(
-            crds.len(), 11,
+            crds.len(),
+            11,
             "all 11 band kinds must be covered -- every one of them carries the \
              pendingProposal/qosGap pair, so a kind omitted here is a kind whose \
              schema is unchecked"
@@ -6674,7 +7707,10 @@ mod structural_schema_tests {
                 let name = ver["name"].as_str().unwrap_or("?");
                 let mut bad = Vec::new();
                 untyped_properties(&ver["schema"]["openAPIV3Schema"], "", &mut bad);
-                offenders.extend(bad.into_iter().map(|p| [*kind, " ", name, p.as_str()].concat()));
+                offenders.extend(
+                    bad.into_iter()
+                        .map(|p| [*kind, " ", name, p.as_str()].concat()),
+                );
             }
         }
         assert!(
@@ -6706,9 +7742,12 @@ mod structural_schema_tests {
         });
         let mut bad = Vec::new();
         untyped_properties(&schema, "", &mut bad);
-        assert_eq!(bad, vec![".status.broken".to_string()],
+        assert_eq!(
+            bad,
+            vec![".status.broken".to_string()],
             "the detector must flag exactly the untyped property, and must NOT \
-             flag a typed one or an explicitly-open one");
+             flag a typed one or an explicitly-open one"
+        );
     }
 }
 
@@ -6718,7 +7757,7 @@ mod structural_schema_tests {
 // The destination named in `k8s/clusters/rio/.../generate-bands.rb`'s own header
 // ("a selector-based auto-enroll ... that materializes a band per matching
 // workload and auto-extends to every new one") and never built. The interim
-// generator ossified for months, and the measurement on camelot-eks 2026-08-05
+// generator ossified for months, and the measurement on one cluster-eks 2026-08-05
 // is what it cost: 115 bands across 2 of 11 dimensions, `requestbands: 0` while
 // 10.9 vCPU (17% of the cluster) sat reserved-and-unused, and 23% of bands
 // pointed at workloads that no longer exist.
@@ -6760,7 +7799,7 @@ pub struct EnrollmentArming {
     /// The `writeIntent` stamped on newly materialized bands.
     ///
     /// Defaults to `calibrateThenWrite`, NOT `observe`, and the difference is the
-    /// entire point. Observe never promotes itself: camelot ran 115 bands at
+    /// entire point. Observe never promotes itself: the private estate ran 115 bands at
     /// `mode: shadow` with `writeIntent: None` indefinitely, deciding correctly
     /// every tick and applying none of it, while the cluster sat at 30% requested
     /// and 13% used. Safety comes from the calibration gate — a band still

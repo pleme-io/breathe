@@ -248,7 +248,9 @@ impl BreatheDimension {
     /// (Shipped/Landing dimensions do; a Gap does not.)
     #[must_use]
     pub fn discharges_all_clauses(&self) -> bool {
-        BreatheClause::ALL.iter().all(|c| self.tier_for(*c).is_some())
+        BreatheClause::ALL
+            .iter()
+            .all(|c| self.tier_for(*c).is_some())
     }
 
     /// Is this dimension carved (a Band exists at ≥ `Landing`)?

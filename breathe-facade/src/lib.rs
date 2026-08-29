@@ -17,15 +17,15 @@
 
 use async_trait::async_trait;
 use breathe_crd::{
-    AppBand, ArcBand, BreatheNodePool, BreathePosture, CgroupBand, CgroupCpuBand, CpuBand, HostParamBand,
-    KubeParamBand, MemoryBand, ReplicaBand, RequestBand, StorageBand,
+    AppBand, ArcBand, BreatheNodePool, BreathePosture, CgroupBand, CgroupCpuBand, CpuBand,
+    HostParamBand, KubeParamBand, MemoryBand, ReplicaBand, RequestBand, StorageBand,
 };
 use kube::{
+    Client,
     api::{Api, ListParams, Patch, PatchParams},
     core::NamespaceResourceScope,
-    Client,
 };
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 /// The typed, bounded projection every surface hands back instead of the raw CR.
 ///
@@ -36,8 +36,8 @@ use serde_json::{json, Value};
 /// module existed; see [`project`]'s own docs for the measured composition.
 pub mod project;
 pub use project::{
-    project_band, project_band_list, project_object, project_object_list, strip_bookkeeping, BandView, ObjectView,
-    ProjectionView, DEFAULT_HISTORY_LIMIT,
+    BandView, DEFAULT_HISTORY_LIMIT, ObjectView, ProjectionView, project_band, project_band_list,
+    project_object, project_object_list, strip_bookkeeping,
 };
 
 pub use breathe_provider::DimensionId;
@@ -48,7 +48,9 @@ pub use breathe_provider::DimensionId;
 /// Kept as a name because it is public API of a published crate and downstream
 /// consumers (vendaval, the MCP re-export) spell it this way; it is not a
 /// distinct type any more, so it cannot drift back out of sync.
-#[deprecated(note = "renamed to DimensionId — the canonical ten-arm dimension atom in breathe-provider")]
+#[deprecated(
+    note = "renamed to DimensionId — the canonical ten-arm dimension atom in breathe-provider"
+)]
 pub type BandKind = DimensionId;
 
 #[derive(Debug, thiserror::Error)]
@@ -66,10 +68,25 @@ pub enum StoreError {
 /// band kinds.
 #[async_trait]
 pub trait BreatheStore: Send + Sync {
-    async fn list_bands(&self, kind: DimensionId, namespace: Option<String>) -> Result<Value, StoreError>;
-    async fn get_band(&self, kind: DimensionId, namespace: String, name: String) -> Result<Value, StoreError>;
+    async fn list_bands(
+        &self,
+        kind: DimensionId,
+        namespace: Option<String>,
+    ) -> Result<Value, StoreError>;
+    async fn get_band(
+        &self,
+        kind: DimensionId,
+        namespace: String,
+        name: String,
+    ) -> Result<Value, StoreError>;
     /// Merge-patch `spec` (the API/operator co-owns spec; the controller owns status).
-    async fn patch_band_spec(&self, kind: DimensionId, namespace: String, name: String, spec: Value) -> Result<Value, StoreError>;
+    async fn patch_band_spec(
+        &self,
+        kind: DimensionId,
+        namespace: String,
+        name: String,
+        spec: Value,
+    ) -> Result<Value, StoreError>;
     /// Merge-patch a band's `metadata.annotations`.
     ///
     /// Exists for one reason: `breathe.pleme.io/confirmed` (see
@@ -122,17 +139,50 @@ where
 macro_rules! on_band {
     ($client:expr, $kind:expr, $ns:expr, |$api:ident| $body:expr) => {
         match $kind {
-            DimensionId::Memory => { let $api: Api<MemoryBand> = mk_api($client, $ns); $body }
-            DimensionId::Cpu => { let $api: Api<CpuBand> = mk_api($client, $ns); $body }
-            DimensionId::Storage => { let $api: Api<StorageBand> = mk_api($client, $ns); $body }
-            DimensionId::Replica => { let $api: Api<ReplicaBand> = mk_api($client, $ns); $body }
-            DimensionId::Arc => { let $api: Api<ArcBand> = mk_api($client, $ns); $body }
-            DimensionId::Cgroup => { let $api: Api<CgroupBand> = mk_api($client, $ns); $body }
-            DimensionId::CgroupCpu => { let $api: Api<CgroupCpuBand> = mk_api($client, $ns); $body }
-            DimensionId::HostParam => { let $api: Api<HostParamBand> = mk_api($client, $ns); $body }
-            DimensionId::KubeParam => { let $api: Api<KubeParamBand> = mk_api($client, $ns); $body }
-            DimensionId::AppParam => { let $api: Api<AppBand> = mk_api($client, $ns); $body }
-            DimensionId::Request => { let $api: Api<RequestBand> = mk_api($client, $ns); $body }
+            DimensionId::Memory => {
+                let $api: Api<MemoryBand> = mk_api($client, $ns);
+                $body
+            }
+            DimensionId::Cpu => {
+                let $api: Api<CpuBand> = mk_api($client, $ns);
+                $body
+            }
+            DimensionId::Storage => {
+                let $api: Api<StorageBand> = mk_api($client, $ns);
+                $body
+            }
+            DimensionId::Replica => {
+                let $api: Api<ReplicaBand> = mk_api($client, $ns);
+                $body
+            }
+            DimensionId::Arc => {
+                let $api: Api<ArcBand> = mk_api($client, $ns);
+                $body
+            }
+            DimensionId::Cgroup => {
+                let $api: Api<CgroupBand> = mk_api($client, $ns);
+                $body
+            }
+            DimensionId::CgroupCpu => {
+                let $api: Api<CgroupCpuBand> = mk_api($client, $ns);
+                $body
+            }
+            DimensionId::HostParam => {
+                let $api: Api<HostParamBand> = mk_api($client, $ns);
+                $body
+            }
+            DimensionId::KubeParam => {
+                let $api: Api<KubeParamBand> = mk_api($client, $ns);
+                $body
+            }
+            DimensionId::AppParam => {
+                let $api: Api<AppBand> = mk_api($client, $ns);
+                $body
+            }
+            DimensionId::Request => {
+                let $api: Api<RequestBand> = mk_api($client, $ns);
+                $body
+            }
         }
     };
 }
@@ -144,7 +194,11 @@ pub struct KubeStore {
 
 impl KubeStore {
     pub async fn from_env() -> anyhow_lite::Result<Self> {
-        Ok(Self { client: Client::try_default().await.map_err(|e| anyhow_lite::Error(e.to_string()))? })
+        Ok(Self {
+            client: Client::try_default()
+                .await
+                .map_err(|e| anyhow_lite::Error(e.to_string()))?,
+        })
     }
     #[must_use]
     pub fn new(client: Client) -> Self {
@@ -155,7 +209,7 @@ impl KubeStore {
     /// connection this facade already holds, rather than opening a second
     /// kubeconfig-derived client. breathe-facade owns connection setup once;
     /// this is the seam other in-process consumers (e.g. vendaval's
-    /// `CamelotStormEnv`) reuse it through.
+    /// `StormEnv`) reuse it through.
     #[must_use]
     pub fn client(&self) -> &Client {
         &self.client
@@ -206,23 +260,41 @@ pub fn catalog_json() -> Value {
 
 #[async_trait]
 impl BreatheStore for KubeStore {
-    async fn list_bands(&self, kind: DimensionId, namespace: Option<String>) -> Result<Value, StoreError> {
+    async fn list_bands(
+        &self,
+        kind: DimensionId,
+        namespace: Option<String>,
+    ) -> Result<Value, StoreError> {
         let ns = namespace.as_deref();
         on_band!(&self.client, kind, ns, |api| {
             let l = api.list(&ListParams::default()).await.map_err(ke)?;
             serde_json::to_value(l.items).map_err(se)
         })
     }
-    async fn get_band(&self, kind: DimensionId, namespace: String, name: String) -> Result<Value, StoreError> {
+    async fn get_band(
+        &self,
+        kind: DimensionId,
+        namespace: String,
+        name: String,
+    ) -> Result<Value, StoreError> {
         on_band!(&self.client, kind, Some(namespace.as_str()), |api| {
             let o = api.get(&name).await.map_err(ke)?;
             serde_json::to_value(o).map_err(se)
         })
     }
-    async fn patch_band_spec(&self, kind: DimensionId, namespace: String, name: String, spec: Value) -> Result<Value, StoreError> {
+    async fn patch_band_spec(
+        &self,
+        kind: DimensionId,
+        namespace: String,
+        name: String,
+        spec: Value,
+    ) -> Result<Value, StoreError> {
         let body = json!({ "spec": spec });
         on_band!(&self.client, kind, Some(namespace.as_str()), |api| {
-            let o = api.patch(&name, &PatchParams::default(), &Patch::Merge(&body)).await.map_err(ke)?;
+            let o = api
+                .patch(&name, &PatchParams::default(), &Patch::Merge(&body))
+                .await
+                .map_err(ke)?;
             serde_json::to_value(o).map_err(se)
         })
     }
@@ -235,7 +307,10 @@ impl BreatheStore for KubeStore {
     ) -> Result<Value, StoreError> {
         let body = json!({ "metadata": { "annotations": annotations } });
         on_band!(&self.client, kind, Some(namespace.as_str()), |api| {
-            let o = api.patch(&name, &PatchParams::default(), &Patch::Merge(&body)).await.map_err(ke)?;
+            let o = api
+                .patch(&name, &PatchParams::default(), &Patch::Merge(&body))
+                .await
+                .map_err(ke)?;
             serde_json::to_value(o).map_err(se)
         })
     }
@@ -252,7 +327,10 @@ impl BreatheStore for KubeStore {
     async fn patch_pool_spec(&self, name: String, spec: Value) -> Result<Value, StoreError> {
         let api: Api<BreatheNodePool> = Api::all(self.client.clone());
         let body = json!({ "spec": spec });
-        let o = api.patch(&name, &PatchParams::default(), &Patch::Merge(&body)).await.map_err(ke)?;
+        let o = api
+            .patch(&name, &PatchParams::default(), &Patch::Merge(&body))
+            .await
+            .map_err(ke)?;
         serde_json::to_value(o).map_err(se)
     }
     async fn list_postures(&self) -> Result<Value, StoreError> {
@@ -268,7 +346,10 @@ impl BreatheStore for KubeStore {
     async fn patch_posture_spec(&self, name: String, spec: Value) -> Result<Value, StoreError> {
         let api: Api<BreathePosture> = Api::all(self.client.clone());
         let body = json!({ "spec": spec });
-        let o = api.patch(&name, &PatchParams::default(), &Patch::Merge(&body)).await.map_err(ke)?;
+        let o = api
+            .patch(&name, &PatchParams::default(), &Patch::Merge(&body))
+            .await
+            .map_err(ke)?;
         serde_json::to_value(o).map_err(se)
     }
     fn catalog(&self) -> Value {
@@ -296,7 +377,13 @@ mod tests {
         // (it previously hard-coded 8 and went stale when `kube-param` was added).
         assert_eq!(dims.len(), breathe_catalog::ALL_DIMENSIONS.len());
         assert!(dims.iter().any(|d| d["id"] == "arc" && d["isHost"] == true));
-        assert!(dims.iter().any(|d| d["id"] == "cgroup-cpu" && d["isHost"] == true));
-        assert!(dims.iter().any(|d| d["id"] == "memory" && d["isHost"] == false));
+        assert!(
+            dims.iter()
+                .any(|d| d["id"] == "cgroup-cpu" && d["isHost"] == true)
+        );
+        assert!(
+            dims.iter()
+                .any(|d| d["id"] == "memory" && d["isHost"] == false)
+        );
     }
 }

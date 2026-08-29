@@ -467,7 +467,7 @@ observed to fail may be checking nothing.** `TargetFound` has never gone
 `False` on this cluster. That is not evidence it is working.
 
 **The two failure modes are opposite and both live** (measured on
-`camelot-eks`, 2026-07-26):
+`private-estate-eks`, 2026-07-26):
 
 | | **Under-match (governs nothing)** | **Over-match (governs a stranger)** |
 |---|---|---|
@@ -476,14 +476,14 @@ observed to fail may be checking nothing.** `TargetFound` has never gone
 | Symptom | `Dormant` / phantom capacity, forever | carves sized off a **sibling workload's** metrics |
 | `TargetFound` | **`True`** | **`True`** |
 
-**Under-match, measured.** `camelot-ci/builders-amd64-cpu` carries
+**Under-match, measured.** `builder-ci/builders-amd64-cpu` carries
 `podSelector: pleme.io/breathe-class=builders, pleme.io/workload=nix-build,
-actions.github.com/scale-set-name=camelot-builder-pleme-eks` — a **three-label
+actions.github.com/scale-set-name=the self-hosted builder pool` — a **three-label
 conjunction**. The live runner pod
-(`camelot-builder-pleme-eks-qn22f-runner-tj4nk`) carries the first and third
+(`the self-hosted builder pool-qn22f-runner-tj4nk`) carries the first and third
 labels and **does not carry `pleme.io/workload` at all**. Two of three match;
 the conjunction selects **zero pods** while the scale set is actively running
-a build. Its `targetRef.name`, `camelot-ci-arc-builders-amd64`, resolves to
+a build. Its `targetRef.name`, `builder-ci-arc-builders-amd64`, resolves to
 **no object** (`EphemeralRunner … not found`). Yet after **152 carves** its
 condition reads `TargetFound=True`, reason `Resolved`, message *"targetRef
 resolves to a live object."* **Both** halves of that sentence are false and
@@ -497,9 +497,9 @@ with a *different* workload that has **its own band**:
 | Band | carves | prefix over-matches |
 |---|---|---|
 | `keda/keda-operator-cpu` | **321** | `keda-operator-metrics-apiserver-*` (owned by `keda-operator-metrics-apiserver-cpu`) |
-| `camelot-ci-secrets/external-secrets-cpu` | **195** | `external-secrets-cert-controller-*`, `external-secrets-webhook-*` (both separately banded) |
-| `camelot-build/sui-cpu` | **122** | `sui-cache-pg-*`, `sui-cache-redis-*` (both separately banded) |
-| `camelot/rustfs-cpu` | **22** | `rustfs-bootstrap-buckets-v2-*` (a Job pod) |
+| `builder-ci-secrets/external-secrets-cpu` | **195** | `external-secrets-cert-controller-*`, `external-secrets-webhook-*` (both separately banded) |
+| `private-estate-build/sui-cpu` | **122** | `sui-cache-pg-*`, `sui-cache-redis-*` (both separately banded) |
+| `the private estate/rustfs-cpu` | **22** | `rustfs-bootstrap-buckets-v2-*` (a Job pod) |
 
 Because the metric is a **max** across the matched set, the larger sibling
 dominates: `keda-operator-cpu` has been sizing itself off a pod that a second

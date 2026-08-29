@@ -2,7 +2,7 @@
 //!
 //! Every band this agent reconciles carves WITHIN the host. None of them can say
 //! whether the host should exist. On 2026-08-02 that gap was measured on
-//! camelot-eks: five `m6a.2xlarge` ON-DEMAND nodes sat at 19-42m CPU holding ARC
+//! private-estate-eks: five `m6a.2xlarge` ON-DEMAND nodes sat at 19-42m CPU holding ARC
 //! runner pods that had claimed no job, invisible to Karpenter's `WhenEmpty`
 //! consolidation (the pods existed) and invisible to breathe (no node-level
 //! opinion existed). This closes that.
@@ -19,11 +19,11 @@
 
 use std::{sync::Arc, time::Duration};
 
-use breathe_nodewaste::{classify, NodeUsage, Phase, PodFact, Thresholds, Verdict};
+use breathe_nodewaste::{NodeUsage, Phase, PodFact, Thresholds, Verdict, classify};
 use k8s_openapi::api::core::v1::{Node, Pod};
 use kube::{
-    api::{Api, ListParams},
     Client, ResourceExt,
+    api::{Api, ListParams},
 };
 
 /// One `/proc/stat` reading. CPU is a counter, so a rate needs two samples.
@@ -47,7 +47,10 @@ fn read_cpu_ticks(host_root: &str) -> Option<CpuTicks> {
     let total: u64 = vals.iter().sum();
     // idle = field 3, iowait = field 4. Everything else is busy.
     let idle = vals[3] + vals.get(4).copied().unwrap_or(0);
-    Some(CpuTicks { busy: total.saturating_sub(idle), total })
+    Some(CpuTicks {
+        busy: total.saturating_sub(idle),
+        total,
+    })
 }
 
 /// Memory in use as a percent of capacity, from `MemTotal - MemAvailable`.
@@ -106,10 +109,8 @@ fn emit(node: &str, v: &breathe_nodewaste::NodeVerdict) {
         .set(f64::from(v.usage.millicpu));
     metrics::gauge!("breathe_node_mem_percent", "node" => node.to_owned())
         .set(f64::from(v.usage.mem_pct));
-    metrics::gauge!("breathe_node_holders", "node" => node.to_owned())
-        .set(v.holders as f64);
-    metrics::gauge!("breathe_node_live_pods", "node" => node.to_owned())
-        .set(v.live as f64);
+    metrics::gauge!("breathe_node_holders", "node" => node.to_owned()).set(v.holders as f64);
+    metrics::gauge!("breathe_node_live_pods", "node" => node.to_owned()).set(v.live as f64);
     // The load-bearing one. A single series an alert or the auction layer can
     // read without re-deriving any of the rules that make it correct.
     metrics::gauge!(
@@ -153,11 +154,16 @@ pub async fn run(client: Client, node_name: String, interval: Duration) {
                 } else {
                     // ticks are per-CPU-aggregate, so busy/total * 1000 is
                     // millicores-per-core; scale by core count for node millicpu.
-                    let cores = u64::from(std::thread::available_parallelism().map_or(1u32, |n| {
-                        u32::try_from(n.get()).unwrap_or(1)
-                    }));
+                    let cores = u64::from(
+                        std::thread::available_parallelism()
+                            .map_or(1u32, |n| u32::try_from(n.get()).unwrap_or(1)),
+                    );
                     let millicpu = u32::try_from(db * 1000 * cores / dt).unwrap_or(u32::MAX);
-                    NodeUsage { millicpu, mem_pct, known: true }
+                    NodeUsage {
+                        millicpu,
+                        mem_pct,
+                        known: true,
+                    }
                 }
             }
             (Some(now), _, _) => {
@@ -183,9 +189,7 @@ pub async fn run(client: Client, node_name: String, interval: Duration) {
                 .and_then(|t| {
                     // k8s Time wraps a chrono DateTime; go through SystemTime so
                     // this crate needs no chrono dependency of its own.
-                    std::time::SystemTime::from(t.0)
-                        .elapsed()
-                        .ok()
+                    std::time::SystemTime::from(t.0).elapsed().ok()
                 })
                 .unwrap_or_default(),
             Err(_) => Duration::default(),
@@ -245,7 +249,10 @@ mod tests {
         let pod: Pod = serde_json::from_value(json).unwrap();
         let f = &pod_facts(&[pod])[0];
         assert!(f.terminating);
-        assert!(!f.is_live(), "a wedged pod blocks WhenEmpty while doing no work");
+        assert!(
+            !f.is_live(),
+            "a wedged pod blocks WhenEmpty while doing no work"
+        );
     }
 
     #[test]
@@ -262,7 +269,8 @@ mod tests {
     fn a_pod_with_no_owner_still_holds_the_node() {
         // A bare pod has no controller to recreate it, so it holds its node just
         // as firmly as a Deployment's does.
-        let json = serde_json::json!({"metadata": {"name": "bare"}, "status": {"phase": "Running"}});
+        let json =
+            serde_json::json!({"metadata": {"name": "bare"}, "status": {"phase": "Running"}});
         let pod: Pod = serde_json::from_value(json).unwrap();
         let f = &pod_facts(&[pod])[0];
         assert!(!f.daemonset && !f.stateful && f.is_live());
@@ -277,11 +285,15 @@ mod tests {
         let pod: Pod = serde_json::from_value(json).unwrap();
         let v = classify(
             &pod_facts(&[pod]),
-            NodeUsage { millicpu: 21, mem_pct: 4, known: true },
+            NodeUsage {
+                millicpu: 21,
+                mem_pct: 4,
+                known: true,
+            },
             Duration::from_secs(3 * 3600),
             Thresholds::default(),
         );
         assert_eq!(v.verdict, Verdict::Idle);
-        assert!(v.verdict.is_waste(), "this is the measured camelot shape");
+        assert!(v.verdict.is_waste(), "this is the measured isolated shape");
     }
 }

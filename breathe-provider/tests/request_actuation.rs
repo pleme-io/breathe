@@ -11,14 +11,14 @@
 //! happen when it must not — under a shadow gate, on a class transition, past
 //! allocatable, or downward.
 
-use breathe_control::{decide_with, BandConfig, Decision, Directionality, Reclaim, RequestLaw};
+use breathe_control::{BandConfig, Decision, Directionality, Reclaim, RequestLaw, decide_with};
 use breathe_control::{clamp_to_directionality, clamp_to_reclaim};
 use breathe_invariant::isolation::{IsolationPosture, PlacementIsolation, QosClass, WorkloadClass};
 use breathe_provider::gate::{authored_write_gate, legacy_two_state_gate};
 use breathe_provider::mock::MockRequestActuator;
 use breathe_provider::request::{
-    plan_request_carve, ClassPreserved, ContainerResources, Durability, MemoryResizePolicy,
-    PodResources, RequestActuator, RequestCarveInput, RequestCarvePlan, RequestResource,
+    ClassPreserved, ContainerResources, Durability, MemoryResizePolicy, PodResources,
+    RequestActuator, RequestCarveInput, RequestCarvePlan, RequestResource, plan_request_carve,
 };
 use breathe_provider::{LimitLayout, Target};
 
@@ -27,7 +27,7 @@ const GI: u64 = 1 << 30;
 
 fn target() -> Target {
     Target {
-        namespace: "camelot-build".into(),
+        namespace: "isolated-build".into(),
         name: "sui-cache-pg".into(),
         kind: "StatefulSet".into(),
         api_version: "apps/v1".into(),
@@ -48,8 +48,15 @@ fn observed(request: u64, limit: u64) -> PodResources {
 }
 
 fn open_posture() -> IsolationPosture {
-    IsolationPosture::try_seal(WorkloadClass::Standard, QosClass::Burstable, 0, 0, PlacementIsolation::CoLocate, false)
-        .expect("Standard/Burstable with no floor is a legal posture")
+    IsolationPosture::try_seal(
+        WorkloadClass::Standard,
+        QosClass::Burstable,
+        0,
+        0,
+        PlacementIsolation::CoLocate,
+        false,
+    )
+    .expect("Standard/Burstable with no floor is a legal posture")
 }
 
 /// The band's decision for a demand reading — the real `breathe-control` path,
@@ -67,7 +74,11 @@ fn decide(demand: u64, current_request: u64, cfg: &BandConfig) -> Decision {
 }
 
 fn cfg() -> BandConfig {
-    BandConfig { floor_bytes: 64 * MI, ceiling_bytes: 8 * GI, ..BandConfig::default() }
+    BandConfig {
+        floor_bytes: 64 * MI,
+        ceiling_bytes: 8 * GI,
+        ..BandConfig::default()
+    }
 }
 
 fn input<'a>(
@@ -83,7 +94,10 @@ fn input<'a>(
         observed: obs,
         decision,
         posture,
-        headroom: breathe_provider::request::AllocatableHeadroom { per_node: 8 * GI, observed_at_epoch: 1 },
+        headroom: breathe_provider::request::AllocatableHeadroom {
+            per_node: 8 * GI,
+            observed_at_epoch: 1,
+        },
         replicas: 3,
         durability: Durability::Committed,
         qos_target: QosClass::Burstable,
@@ -108,14 +122,18 @@ async fn the_sui_cache_pg_shape_is_carved_end_to_end() {
     let high_water = 202_800 * 1024;
 
     let decision = decide(high_water, 128 * MI, &cfg());
-    let RequestCarvePlan::InPlace(carve) = plan_request_carve(&input(&t, &obs, &posture, decision)) else {
+    let RequestCarvePlan::InPlace(carve) = plan_request_carve(&input(&t, &obs, &posture, decision))
+    else {
         panic!("the band must plan a reservation raise")
     };
 
     let actuator = MockRequestActuator::new();
     let gate = authored_write_gate("drzzln: request-band end-to-end");
     let witness = gate.witness().expect("an authored write resolves Live");
-    actuator.resize_in_place(witness, carve.preserved(), carve.patch()).await.expect("the carve applies");
+    actuator
+        .resize_in_place(witness, carve.preserved(), carve.patch())
+        .await
+        .expect("the carve applies");
 
     let carves = actuator.carves();
     assert_eq!(carves.len(), 1, "exactly one write");
@@ -125,7 +143,12 @@ async fn the_sui_cache_pg_shape_is_carved_end_to_end() {
     // layout. A MemoryBand's patch would carry `PodResize` and move a limit.
     assert!(matches!(patch.layout, LimitLayout::PodRequestResize { .. }));
     assert_eq!(patch.resource, "memory");
-    assert!(patch.value > 128 * MI, "the reservation RISES: {} > {}", patch.value, 128 * MI);
+    assert!(
+        patch.value > 128 * MI,
+        "the reservation RISES: {} > {}",
+        patch.value,
+        128 * MI
+    );
     assert!(patch.value < GI, "and stays under the never-binding limit");
     assert_eq!(patch.target.name, "sui-cache-pg");
     assert_eq!(patch.field_manager, "breathe-request");
@@ -136,7 +159,10 @@ async fn the_sui_cache_pg_shape_is_carved_end_to_end() {
     assert_eq!(proof.container(), "db");
 
     // I5 — and the plan is honest that this value does not survive a rollout.
-    assert!(carve.durability_gap(), "a Committed band with no durable writer must report the gap");
+    assert!(
+        carve.durability_gap(),
+        "a Committed band with no durable writer must report the gap"
+    );
 }
 
 /// **A SHADOW TICK WRITES NOTHING.** The band computes a real decision and a
@@ -161,7 +187,11 @@ async fn a_shadow_gated_tick_plans_a_carve_and_writes_nothing() {
     assert!(gate.witness().is_none(), "a shadow gate yields NO witness");
     // …and with no witness there is no call to make: `resize_in_place` cannot be
     // invoked without one. The absence of a witness is the absence of a write.
-    assert_eq!(actuator.write_count(), 0, "a shadow tick must record zero writes");
+    assert_eq!(
+        actuator.write_count(),
+        0,
+        "a shadow tick must record zero writes"
+    );
 }
 
 /// A class transition never reaches the actuator — there is no call to make.
@@ -169,11 +199,24 @@ async fn a_shadow_gated_tick_plans_a_carve_and_writes_nothing() {
 async fn a_class_transition_never_reaches_the_in_place_door() {
     let t = target();
     // BestEffort: no requests, no limits anywhere.
-    let obs = PodResources::new(vec![ContainerResources { name: "db".into(), ..Default::default() }]);
+    let obs = PodResources::new(vec![ContainerResources {
+        name: "db".into(),
+        ..Default::default()
+    }]);
     let posture = open_posture();
 
-    let plan = plan_request_carve(&input(&t, &obs, &posture, Decision::Grow { from: 0, to: 256 * MI }));
-    let RequestCarvePlan::Transition(proposal) = &plan else { panic!("expected a Transition, got {plan:?}") };
+    let plan = plan_request_carve(&input(
+        &t,
+        &obs,
+        &posture,
+        Decision::Grow {
+            from: 0,
+            to: 256 * MI,
+        },
+    ));
+    let RequestCarvePlan::Transition(proposal) = &plan else {
+        panic!("expected a Transition, got {plan:?}")
+    };
     assert_eq!(proposal.from, QosClass::BestEffort);
     assert_eq!(proposal.to, QosClass::Burstable);
     assert!(!plan.writes());
@@ -195,8 +238,19 @@ async fn a_carve_past_allocatable_never_reaches_the_actuator() {
     let obs = observed(128 * MI, 8 * GI);
     let posture = open_posture();
 
-    let mut i = input(&t, &obs, &posture, Decision::Grow { from: 128 * MI, to: 4 * GI });
-    i.headroom = breathe_provider::request::AllocatableHeadroom { per_node: GI, observed_at_epoch: 1 };
+    let mut i = input(
+        &t,
+        &obs,
+        &posture,
+        Decision::Grow {
+            from: 128 * MI,
+            to: 4 * GI,
+        },
+    );
+    i.headroom = breathe_provider::request::AllocatableHeadroom {
+        per_node: GI,
+        observed_at_epoch: 1,
+    };
     let plan = plan_request_carve(&i);
     assert!(!plan.writes(), "expected a refusal, got {plan:?}");
 
@@ -212,19 +266,24 @@ async fn an_actuation_failure_is_typed_and_never_a_silent_ok() {
     let obs = observed(128 * MI, GI);
     let posture = open_posture();
     let decision = decide(600 * MI, 128 * MI, &cfg());
-    let RequestCarvePlan::InPlace(carve) = plan_request_carve(&input(&t, &obs, &posture, decision)) else {
+    let RequestCarvePlan::InPlace(carve) = plan_request_carve(&input(&t, &obs, &posture, decision))
+    else {
         panic!("expected InPlace")
     };
 
-    let actuator =
-        MockRequestActuator::failing(breathe_provider::ProviderError::ApiTransient("apiserver said no".into()));
+    let actuator = MockRequestActuator::failing(breathe_provider::ProviderError::ApiTransient(
+        "apiserver said no".into(),
+    ));
     let gate = authored_write_gate("drzzln: failure path");
     let witness = gate.witness().expect("Live");
     let err = actuator
         .resize_in_place(witness, carve.preserved(), carve.patch())
         .await
         .expect_err("a failed carve must surface as an error");
-    assert!(matches!(err, breathe_provider::ProviderError::ApiTransient(_)));
+    assert!(matches!(
+        err,
+        breathe_provider::ProviderError::ApiTransient(_)
+    ));
     assert_eq!(actuator.write_count(), 0, "a failed carve records no write");
 }
 
@@ -234,7 +293,8 @@ async fn an_actuation_failure_is_typed_and_never_a_silent_ok() {
 #[test]
 fn the_witness_names_the_exact_change_it_authorizes() {
     let obs = observed(128 * MI, GI);
-    let w = ClassPreserved::check(&obs, "db", RequestResource::Memory, 512 * MI).expect("class preserved");
+    let w = ClassPreserved::check(&obs, "db", RequestResource::Memory, 512 * MI)
+        .expect("class preserved");
     assert_eq!(w.container(), "db");
     assert_eq!(w.resource(), RequestResource::Memory);
     assert_eq!(w.to(), 512 * MI);

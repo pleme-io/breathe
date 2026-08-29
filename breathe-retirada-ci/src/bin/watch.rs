@@ -82,7 +82,7 @@ struct Args {
 
     /// Only jobs whose labels start with this are ever considered —
     /// never touches a job on a different runner pool.
-    #[arg(long, default_value = "camelot-builder-pleme")]
+    #[arg(long, default_value = "private-estate-builder-pleme")]
     label_prefix: String,
 
     /// Fixed threshold when `--disable-adaptive-threshold` is set;
@@ -231,10 +231,7 @@ async fn run_pass(
                 .context("list_jobs")?;
 
             for job in jobs.items {
-                let labels_match = job
-                    .labels
-                    .iter()
-                    .any(|l| l.starts_with(&args.label_prefix));
+                let labels_match = job.labels.iter().any(|l| l.starts_with(&args.label_prefix));
                 if !labels_match || job.status != Status::Queued {
                     continue;
                 }

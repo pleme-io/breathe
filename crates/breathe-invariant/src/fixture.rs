@@ -17,7 +17,9 @@ use crate::dimension::{DimensionId, Maturity};
 
 /// The catalog's default setpoint for `id`, used to build a faithful carve.
 fn setpoint_for(id: DimensionId) -> crate::setpoint::UtilizationSetpoint {
-    catalog::dimension(id).expect("catalogued dimension").setpoint
+    catalog::dimension(id)
+        .expect("catalogued dimension")
+        .setpoint
 }
 
 /// A conformant single-dimension profile: the dimension carved to its

@@ -36,7 +36,10 @@ use UnrepTier::{CeilingC1, CeilingC2, OnlyMitigated, ParseTimeRejected};
 
 // ── clause-status shorthands ─────────────────────────────────────────────
 const fn cs(clause: BreatheClause, tier: UnrepTier) -> ClauseStatus {
-    ClauseStatus { clause, tier: Some(tier) }
+    ClauseStatus {
+        clause,
+        tier: Some(tier),
+    }
 }
 /// The undischarged-clause shorthand — a clause a Gap dimension does not discharge
 /// at all (`tier: None`). Retained now that DatabaseBand promoted Gap→Landing (no
@@ -280,14 +283,21 @@ const RESERVATION: BreatheDimension = BreatheDimension {
         cs(DiscoveryMolded, OnlyMitigated),
         cs(DualPurpose, OnlyMitigated),
     ],
-    note: "TWO actuators, and the split is a k8s API fact not a design taste: a QoS-class change through the pods/resize subresource is refused unconditionally (release-1.33 validation.go:5665, the exact minor camelot-eks runs), so a within-class request change is an in-place SsaPatch and a class transition is a template write — disjoint payload types, no conversion, so routing one through the other's door is a compile error. Direction is grow-only at M0 (RequestShrinkEvidence is an empty enum). QoS itself is NOT a band: it is a 3-valued class k8s derives, so banding it would invent an ordering k8s does not have.",
+    note: "TWO actuators, and the split is a k8s API fact not a design taste: a QoS-class change through the pods/resize subresource is refused unconditionally (release-1.33 validation.go:5665, the exact minor isolated-eks runs), so a within-class request change is an in-place SsaPatch and a class transition is a template write — disjoint payload types, no conversion, so routing one through the other's door is a compile error. Direction is grow-only at M0 (RequestShrinkEvidence is an empty enum). QoS itself is NOT a band: it is a 3-valued class k8s derives, so banding it would invent an ordering k8s does not have.",
 };
 
 /// The full breathe dimension catalog. Order: strongest maturity first, then
 /// canonical. Adding a dimension = a `const` + one entry here + one matrix row
 /// (same commit; the matrix enforces it).
-pub const CATALOG: &[&BreatheDimension] =
-    &[&MEMORY, &CPU, &REPLICA, &STORAGE, &ISOLATION, &DATABASE, &RESERVATION];
+pub const CATALOG: &[&BreatheDimension] = &[
+    &MEMORY,
+    &CPU,
+    &REPLICA,
+    &STORAGE,
+    &ISOLATION,
+    &DATABASE,
+    &RESERVATION,
+];
 
 /// Look up a dimension by id.
 #[must_use]
@@ -340,7 +350,10 @@ mod tests {
     fn catalog_covers_every_dimension_id() {
         // The catalog is a complete partition of DimensionId::ALL.
         for id in DimensionId::ALL {
-            assert!(dimension(id).is_some(), "dimension {id:?} missing from CATALOG");
+            assert!(
+                dimension(id).is_some(),
+                "dimension {id:?} missing from CATALOG"
+            );
         }
         assert_eq!(CATALOG.len(), DimensionId::ALL.len());
     }
@@ -350,7 +363,12 @@ mod tests {
         for d in CATALOG {
             for clause in BreatheClause::ALL {
                 let n = d.clauses.iter().filter(|c| c.clause == clause).count();
-                assert_eq!(n, 1, "dimension {} must declare clause {clause:?} exactly once (found {n})", d.id.as_str());
+                assert_eq!(
+                    n,
+                    1,
+                    "dimension {} must declare clause {clause:?} exactly once (found {n})",
+                    d.id.as_str()
+                );
             }
             assert_eq!(
                 d.clauses.len(),
@@ -364,7 +382,11 @@ mod tests {
     #[test]
     fn maturity_histogram_partitions_the_catalog() {
         let (g, l, s) = maturity_histogram();
-        assert_eq!(g + l + s, CATALOG.len(), "maturity histogram must sum to catalog size");
+        assert_eq!(
+            g + l + s,
+            CATALOG.len(),
+            "maturity histogram must sum to catalog size"
+        );
         // Tier-honest snapshot of the CURRENT fleet state (2026-07):
         // memory/cpu/replica SHIPPED; storage+isolation+database+request LANDING;
         // 0 GAP. DatabaseBand promoted Gap→Landing with breathe-invariant::database
@@ -373,7 +395,11 @@ mod tests {
         // + carve law + actuator algebra ship and are CI-tested, no controller
         // watches the kind, nothing commits (BREATHABILITY.md §II.8.5).
         // Update deliberately when a dimension advances — this line IS the ledger.
-        assert_eq!((g, l, s), (0, 4, 3), "breathe dimension maturity ledger drifted — update deliberately, never round up");
+        assert_eq!(
+            (g, l, s),
+            (0, 4, 3),
+            "breathe dimension maturity ledger drifted — update deliberately, never round up"
+        );
     }
 
     #[test]
@@ -388,7 +414,10 @@ mod tests {
                     assert!(
                         t.rank() <= ach.rank(),
                         "dimension {} rounds clause {:?} UP: claims {:?}, achievable {:?}",
-                        d.id.as_str(), c.clause, t, ach
+                        d.id.as_str(),
+                        c.clause,
+                        t,
+                        ach
                     );
                 }
             }
@@ -402,7 +431,8 @@ mod tests {
                 Maturity::Shipped | Maturity::Landing => assert!(
                     d.discharges_all_clauses(),
                     "{} is {} but leaves a clause undischarged",
-                    d.id.as_str(), d.maturity.as_str()
+                    d.id.as_str(),
+                    d.maturity.as_str()
                 ),
                 Maturity::Gap => assert!(
                     !d.discharges_all_clauses(),
@@ -435,9 +465,21 @@ mod tests {
         // entry MUST name BOTH effects (nonempty). A Band that named only one
         // would be claiming a tradeoff — forbidden by construction.
         for d in CATALOG {
-            assert!(!d.cost_effect.is_empty(), "dimension {} names no cost effect", d.id.as_str());
-            assert!(!d.resiliency_effect.is_empty(), "dimension {} names no resiliency effect", d.id.as_str());
-            assert!(!d.doctrine_ref.is_empty(), "dimension {} has no doctrine reference", d.id.as_str());
+            assert!(
+                !d.cost_effect.is_empty(),
+                "dimension {} names no cost effect",
+                d.id.as_str()
+            );
+            assert!(
+                !d.resiliency_effect.is_empty(),
+                "dimension {} names no resiliency effect",
+                d.id.as_str()
+            );
+            assert!(
+                !d.doctrine_ref.is_empty(),
+                "dimension {} has no doctrine reference",
+                d.id.as_str()
+            );
         }
     }
 

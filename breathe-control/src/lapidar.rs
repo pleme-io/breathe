@@ -112,19 +112,33 @@ pub fn analyze(observations: &[BandObservation], setpoint: f64) -> ControlQualit
         };
     }
     let nf = n as f64;
-    let mean_waste = observations.iter().map(BandObservation::waste_frac).sum::<f64>() / nf;
+    let mean_waste = observations
+        .iter()
+        .map(BandObservation::waste_frac)
+        .sum::<f64>()
+        / nf;
     let sq_err = observations
         .iter()
         .map(|o| (o.util - setpoint) * (o.util - setpoint))
         .sum::<f64>()
         / nf;
     let setpoint_rmse = sq_err.sqrt();
-    let breach_frac = observations.iter().filter(|o| o.util >= BREACH_THRESHOLD).count() as f64 / nf;
+    let breach_frac = observations
+        .iter()
+        .filter(|o| o.util >= BREACH_THRESHOLD)
+        .count() as f64
+        / nf;
 
-    let carve_attempts = observations.iter().filter(|o| o.carved || o.carve_failed).count();
+    let carve_attempts = observations
+        .iter()
+        .filter(|o| o.carved || o.carve_failed)
+        .count();
     let carve_failures = observations.iter().filter(|o| o.carve_failed).count();
-    let carve_failure_rate =
-        if carve_attempts == 0 { 0.0 } else { carve_failures as f64 / carve_attempts as f64 };
+    let carve_failure_rate = if carve_attempts == 0 {
+        0.0
+    } else {
+        carve_failures as f64 / carve_attempts as f64
+    };
 
     // Oscillation: among successful directional carves, how often the direction
     // reverses tick-to-tick (grow then shrink then grow = thrash).
@@ -136,7 +150,14 @@ pub fn analyze(observations: &[BandObservation], setpoint: f64) -> ControlQualit
         reversals as f64 / (dirs.len() - 1) as f64
     };
 
-    ControlQuality { mean_waste, setpoint_rmse, oscillation, carve_failure_rate, breach_frac, samples: n }
+    ControlQuality {
+        mean_waste,
+        setpoint_rmse,
+        oscillation,
+        carve_failure_rate,
+        breach_frac,
+        samples: n,
+    }
 }
 
 /// The band parameter a [`Suggestion`] tunes (a subset of [`crate::BandConfig`]
@@ -211,7 +232,11 @@ pub fn suggest(q: &ControlQuality, cfg: &crate::BandConfig) -> Option<Suggestion
 
     // 1) SAFETY: any breach → lower the setpoint to buy headroom.
     if q.breach_frac > 0.0 {
-        let to = clamp(cfg.setpoint - SETPOINT_STEP, cfg.shrink_below, cfg.grow_above);
+        let to = clamp(
+            cfg.setpoint - SETPOINT_STEP,
+            cfg.shrink_below,
+            cfg.grow_above,
+        );
         if to < cfg.setpoint {
             return Some(Suggestion {
                 param: TunedParam::Setpoint,
@@ -238,7 +263,11 @@ pub fn suggest(q: &ControlQuality, cfg: &crate::BandConfig) -> Option<Suggestion
     // 3) EFFICIENCY: persistent waste with NO breaches and calm control →
     //    raise the setpoint toward fuller utilization.
     if q.mean_waste > WASTE_FLOOR && q.breach_frac == 0.0 && q.oscillation <= OSC_CEILING {
-        let to = clamp(cfg.setpoint + SETPOINT_STEP, cfg.shrink_below, cfg.grow_above);
+        let to = clamp(
+            cfg.setpoint + SETPOINT_STEP,
+            cfg.shrink_below,
+            cfg.grow_above,
+        );
         if to > cfg.setpoint {
             return Some(Suggestion {
                 param: TunedParam::Setpoint,
@@ -260,10 +289,18 @@ pub enum Lapidacao {
     /// No trial in flight — collecting the baseline window.
     Observing,
     /// `suggestion` has been APPLIED; WATCHING its effect against `baseline`.
-    Trial { suggestion: Suggestion, baseline: f64 },
+    Trial {
+        suggestion: Suggestion,
+        baseline: f64,
+    },
     /// The trial concluded. `accepted` ⇒ keep the change; else the controller
     /// reverts `suggestion` (param back to `suggestion.from`).
-    Settled { suggestion: Suggestion, accepted: bool, baseline: f64, trial: f64 },
+    Settled {
+        suggestion: Suggestion,
+        accepted: bool,
+        baseline: f64,
+        trial: f64,
+    },
 }
 
 /// Advance the loop given the latest analyzed `quality`.
@@ -279,12 +316,23 @@ pub enum Lapidacao {
 pub fn step(state: Lapidacao, quality: &ControlQuality, cfg: &crate::BandConfig) -> Lapidacao {
     match state {
         Lapidacao::Observing => match suggest(quality, cfg) {
-            Some(suggestion) => Lapidacao::Trial { suggestion, baseline: quality.score() },
+            Some(suggestion) => Lapidacao::Trial {
+                suggestion,
+                baseline: quality.score(),
+            },
             None => Lapidacao::Observing,
         },
-        Lapidacao::Trial { suggestion, baseline } => {
+        Lapidacao::Trial {
+            suggestion,
+            baseline,
+        } => {
             let trial = quality.score();
-            Lapidacao::Settled { suggestion, accepted: trial < baseline, baseline, trial }
+            Lapidacao::Settled {
+                suggestion,
+                accepted: trial < baseline,
+                baseline,
+                trial,
+            }
         }
         Lapidacao::Settled { .. } => Lapidacao::Observing,
     }
@@ -296,7 +344,15 @@ mod tests {
     use crate::BandConfig;
 
     fn obs(util: f64, used: u64, limit: u64) -> BandObservation {
-        BandObservation { util, used, limit, carved: false, grow: None, carve_failed: false, restarted: false }
+        BandObservation {
+            util,
+            used,
+            limit,
+            carved: false,
+            grow: None,
+            carve_failed: false,
+            restarted: false,
+        }
     }
 
     #[test]
@@ -323,20 +379,47 @@ mod tests {
         let q = analyze(&win, 0.80);
         assert!((q.breach_frac - 1.0 / 3.0).abs() < 1e-9);
         // 3 carve attempts (carved, failed, carved), 1 failed.
-        assert!((q.carve_failure_rate - 1.0 / 3.0).abs() < 1e-9, "1 failed of 3 attempts");
+        assert!(
+            (q.carve_failure_rate - 1.0 / 3.0).abs() < 1e-9,
+            "1 failed of 3 attempts"
+        );
         assert_eq!(q.oscillation, 1.0, "grow then shrink = full reversal");
     }
 
     #[test]
     fn score_weights_breach_over_waste() {
-        let breachy = ControlQuality { mean_waste: 0.0, setpoint_rmse: 0.0, oscillation: 0.0, carve_failure_rate: 0.0, breach_frac: 0.5, samples: 20 };
-        let wasteful = ControlQuality { mean_waste: 0.9, setpoint_rmse: 0.7, oscillation: 0.0, carve_failure_rate: 0.0, breach_frac: 0.0, samples: 20 };
-        assert!(breachy.score() > wasteful.score(), "a breach must outweigh waste");
+        let breachy = ControlQuality {
+            mean_waste: 0.0,
+            setpoint_rmse: 0.0,
+            oscillation: 0.0,
+            carve_failure_rate: 0.0,
+            breach_frac: 0.5,
+            samples: 20,
+        };
+        let wasteful = ControlQuality {
+            mean_waste: 0.9,
+            setpoint_rmse: 0.7,
+            oscillation: 0.0,
+            carve_failure_rate: 0.0,
+            breach_frac: 0.0,
+            samples: 20,
+        };
+        assert!(
+            breachy.score() > wasteful.score(),
+            "a breach must outweigh waste"
+        );
     }
 
     #[test]
     fn suggest_lowers_setpoint_on_breach() {
-        let q = ControlQuality { mean_waste: 0.0, setpoint_rmse: 0.1, oscillation: 0.0, carve_failure_rate: 0.0, breach_frac: 0.2, samples: 20 };
+        let q = ControlQuality {
+            mean_waste: 0.0,
+            setpoint_rmse: 0.1,
+            oscillation: 0.0,
+            carve_failure_rate: 0.0,
+            breach_frac: 0.2,
+            samples: 20,
+        };
         let s = suggest(&q, &BandConfig::default()).expect("breach must suggest");
         assert_eq!(s.param, TunedParam::Setpoint);
         assert!(s.to < s.from, "setpoint lowered for headroom");
@@ -344,7 +427,14 @@ mod tests {
 
     #[test]
     fn suggest_raises_setpoint_on_waste_when_safe() {
-        let q = ControlQuality { mean_waste: 0.6, setpoint_rmse: 0.2, oscillation: 0.0, carve_failure_rate: 0.0, breach_frac: 0.0, samples: 20 };
+        let q = ControlQuality {
+            mean_waste: 0.6,
+            setpoint_rmse: 0.2,
+            oscillation: 0.0,
+            carve_failure_rate: 0.0,
+            breach_frac: 0.0,
+            samples: 20,
+        };
         let s = suggest(&q, &BandConfig::default()).expect("waste must suggest");
         assert_eq!(s.param, TunedParam::Setpoint);
         assert!(s.to > s.from, "setpoint raised toward efficiency");
@@ -352,7 +442,14 @@ mod tests {
 
     #[test]
     fn suggest_widens_deadband_on_thrash() {
-        let q = ControlQuality { mean_waste: 0.0, setpoint_rmse: 0.1, oscillation: 0.8, carve_failure_rate: 0.0, breach_frac: 0.0, samples: 20 };
+        let q = ControlQuality {
+            mean_waste: 0.0,
+            setpoint_rmse: 0.1,
+            oscillation: 0.8,
+            carve_failure_rate: 0.0,
+            breach_frac: 0.0,
+            samples: 20,
+        };
         let s = suggest(&q, &BandConfig::default()).expect("thrash must suggest");
         assert_eq!(s.param, TunedParam::GrowAbove);
         assert!(s.to > s.from);
@@ -360,38 +457,103 @@ mod tests {
 
     #[test]
     fn suggest_none_when_well_tuned_or_thin_data() {
-        let good = ControlQuality { mean_waste: 0.05, setpoint_rmse: 0.05, oscillation: 0.0, carve_failure_rate: 0.0, breach_frac: 0.0, samples: 20 };
-        assert!(suggest(&good, &BandConfig::default()).is_none(), "well-tuned → no change");
-        let thin = ControlQuality { mean_waste: 0.9, setpoint_rmse: 0.7, oscillation: 0.0, carve_failure_rate: 0.0, breach_frac: 0.3, samples: 3 };
-        assert!(suggest(&thin, &BandConfig::default()).is_none(), "too few samples → no change");
+        let good = ControlQuality {
+            mean_waste: 0.05,
+            setpoint_rmse: 0.05,
+            oscillation: 0.0,
+            carve_failure_rate: 0.0,
+            breach_frac: 0.0,
+            samples: 20,
+        };
+        assert!(
+            suggest(&good, &BandConfig::default()).is_none(),
+            "well-tuned → no change"
+        );
+        let thin = ControlQuality {
+            mean_waste: 0.9,
+            setpoint_rmse: 0.7,
+            oscillation: 0.0,
+            carve_failure_rate: 0.0,
+            breach_frac: 0.3,
+            samples: 3,
+        };
+        assert!(
+            suggest(&thin, &BandConfig::default()).is_none(),
+            "too few samples → no change"
+        );
     }
 
     #[test]
     fn loop_accepts_an_improving_trial() {
         let cfg = BandConfig::default();
         // Observing → a wasteful baseline suggests raising setpoint.
-        let baseline_q = ControlQuality { mean_waste: 0.6, setpoint_rmse: 0.2, oscillation: 0.0, carve_failure_rate: 0.0, breach_frac: 0.0, samples: 20 };
+        let baseline_q = ControlQuality {
+            mean_waste: 0.6,
+            setpoint_rmse: 0.2,
+            oscillation: 0.0,
+            carve_failure_rate: 0.0,
+            breach_frac: 0.0,
+            samples: 20,
+        };
         let st = step(Lapidacao::Observing, &baseline_q, &cfg);
-        let Lapidacao::Trial { ref suggestion, baseline } = st else { panic!("must enter Trial") };
+        let Lapidacao::Trial {
+            ref suggestion,
+            baseline,
+        } = st
+        else {
+            panic!("must enter Trial")
+        };
         assert_eq!(suggestion.param, TunedParam::Setpoint);
         // Post-change window is BETTER (less waste) → accept.
-        let better_q = ControlQuality { mean_waste: 0.3, setpoint_rmse: 0.15, oscillation: 0.0, carve_failure_rate: 0.0, breach_frac: 0.0, samples: 20 };
+        let better_q = ControlQuality {
+            mean_waste: 0.3,
+            setpoint_rmse: 0.15,
+            oscillation: 0.0,
+            carve_failure_rate: 0.0,
+            breach_frac: 0.0,
+            samples: 20,
+        };
         assert!(better_q.score() < baseline);
         let settled = step(st, &better_q, &cfg);
-        let Lapidacao::Settled { accepted, .. } = settled else { panic!("must settle") };
+        let Lapidacao::Settled { accepted, .. } = settled else {
+            panic!("must settle")
+        };
         assert!(accepted, "an improving trial is kept");
-        assert_eq!(step(settled, &better_q, &cfg), Lapidacao::Observing, "folds back to Observing");
+        assert_eq!(
+            step(settled, &better_q, &cfg),
+            Lapidacao::Observing,
+            "folds back to Observing"
+        );
     }
 
     #[test]
     fn loop_reverts_a_regressing_trial() {
         let cfg = BandConfig::default();
-        let baseline_q = ControlQuality { mean_waste: 0.6, setpoint_rmse: 0.2, oscillation: 0.0, carve_failure_rate: 0.0, breach_frac: 0.0, samples: 20 };
+        let baseline_q = ControlQuality {
+            mean_waste: 0.6,
+            setpoint_rmse: 0.2,
+            oscillation: 0.0,
+            carve_failure_rate: 0.0,
+            breach_frac: 0.0,
+            samples: 20,
+        };
         let st = step(Lapidacao::Observing, &baseline_q, &cfg);
         // Post-change window REGRESSED (a breach appeared) → revert.
-        let worse_q = ControlQuality { mean_waste: 0.3, setpoint_rmse: 0.2, oscillation: 0.0, carve_failure_rate: 0.0, breach_frac: 0.2, samples: 20 };
+        let worse_q = ControlQuality {
+            mean_waste: 0.3,
+            setpoint_rmse: 0.2,
+            oscillation: 0.0,
+            carve_failure_rate: 0.0,
+            breach_frac: 0.2,
+            samples: 20,
+        };
         let settled = step(st, &worse_q, &cfg);
-        let Lapidacao::Settled { accepted, .. } = settled else { panic!("must settle") };
-        assert!(!accepted, "a regressing trial is reverted — careful, never a leap");
+        let Lapidacao::Settled { accepted, .. } = settled else {
+            panic!("must settle")
+        };
+        assert!(
+            !accepted,
+            "a regressing trial is reverted — careful, never a leap"
+        );
     }
 }

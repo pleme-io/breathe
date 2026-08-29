@@ -24,7 +24,7 @@ pub enum AuctionClause {
     /// **A1 Never-on-demand.** Every pool is 100 % spot. CAPACITY IS NOT AN AXIS —
     /// there is no on-demand arm to permute over. In this crate the state is truly
     /// unrepresentable (no field, no enum arm carries on-demand); at the Ruby DSL
-    /// boundary it is parse-rejected (`CamelotBuilderNodeGroup::reject_on_demand!`
+    /// boundary it is parse-rejected (`the builder node-group architecture::reject_on_demand!`
     /// refuses every on-demand-shaped key + the removed `perf_class`). The removed
     /// `guaranteed-wake`/`dedicated` perf classes are named receipts of the ban.
     NeverOnDemand,

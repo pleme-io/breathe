@@ -132,33 +132,189 @@ pub struct HandleSpec {
 
 /// The catalog. One row per [`Handle`]; the reflection tests enforce the bijection.
 pub const HANDLE_CATALOG: &[HandleSpec] = &[
-    HandleSpec { handle: Handle::CpuMax, name: "cpu-max", field: "cpu.max", plane: HandlePlane::Cgroup, semantics: ControlSemantics::Cap, unit: "millicores", purpose: "cap CPU bandwidth (work-conserving)" },
-    HandleSpec { handle: Handle::CpuWeight, name: "cpu-weight", field: "cpu.weight", plane: HandlePlane::Cgroup, semantics: ControlSemantics::Weight, unit: "weight(1..=10000)", purpose: "proportional CPU share under contention" },
-    HandleSpec { handle: Handle::CpuUclampMin, name: "cpu-uclamp-min", field: "cpu.uclamp.min", plane: HandlePlane::Cgroup, semantics: ControlSemantics::Reservation, unit: "percent", purpose: "performance-hint floor (schedutil)" },
-    HandleSpec { handle: Handle::MemoryMax, name: "memory-max", field: "memory.max", plane: HandlePlane::Cgroup, semantics: ControlSemantics::HardLimit, unit: "bytes", purpose: "hard memory limit (OOM cliff)" },
-    HandleSpec { handle: Handle::MemoryHigh, name: "memory-high", field: "memory.high", plane: HandlePlane::Cgroup, semantics: ControlSemantics::Cap, unit: "bytes", purpose: "throttle/reclaim ceiling (no kill) — the breathable memory cap" },
-    HandleSpec { handle: Handle::MemoryLow, name: "memory-low", field: "memory.low", plane: HandlePlane::Cgroup, semantics: ControlSemantics::Reservation, unit: "bytes", purpose: "best-effort reclaim protection" },
-    HandleSpec { handle: Handle::MemoryMin, name: "memory-min", field: "memory.min", plane: HandlePlane::Cgroup, semantics: ControlSemantics::Reservation, unit: "bytes", purpose: "hard reclaim protection (never reclaimed)" },
-    HandleSpec { handle: Handle::MemorySwapMax, name: "memory-swap-max", field: "memory.swap.max", plane: HandlePlane::Cgroup, semantics: ControlSemantics::HardLimit, unit: "bytes", purpose: "swap hard limit" },
-    HandleSpec { handle: Handle::IoWeight, name: "io-weight", field: "io.weight", plane: HandlePlane::Cgroup, semantics: ControlSemantics::Weight, unit: "weight(1..=10000)", purpose: "proportional IO share under contention" },
-    HandleSpec { handle: Handle::IoMax, name: "io-max", field: "io.max", plane: HandlePlane::Cgroup, semantics: ControlSemantics::Cap, unit: "bps-or-iops", purpose: "IO bandwidth/iops cap per device" },
-    HandleSpec { handle: Handle::IoLatency, name: "io-latency", field: "io.latency", plane: HandlePlane::Cgroup, semantics: ControlSemantics::Reservation, unit: "microseconds", purpose: "target-latency QoS protection" },
-    HandleSpec { handle: Handle::PidsMax, name: "pids-max", field: "pids.max", plane: HandlePlane::Cgroup, semantics: ControlSemantics::HardLimit, unit: "count", purpose: "task-count hard limit" },
-    HandleSpec { handle: Handle::K8sMemoryLimit, name: "k8s-memory-limit", field: "resources.limits.memory", plane: HandlePlane::Kubernetes, semantics: ControlSemantics::HardLimit, unit: "bytes", purpose: "pod memory limit → memory.max" },
-    HandleSpec { handle: Handle::K8sMemoryRequest, name: "k8s-memory-request", field: "resources.requests.memory", plane: HandlePlane::Kubernetes, semantics: ControlSemantics::Reservation, unit: "bytes", purpose: "pod memory request → scheduling + memory.min" },
-    HandleSpec { handle: Handle::K8sCpuLimit, name: "k8s-cpu-limit", field: "resources.limits.cpu", plane: HandlePlane::Kubernetes, semantics: ControlSemantics::Cap, unit: "millicores", purpose: "pod cpu limit → cpu.max" },
-    HandleSpec { handle: Handle::K8sCpuRequest, name: "k8s-cpu-request", field: "resources.requests.cpu", plane: HandlePlane::Kubernetes, semantics: ControlSemantics::Weight, unit: "millicores", purpose: "pod cpu request → cpu.weight + scheduling" },
-    HandleSpec { handle: Handle::K8sReplicas, name: "k8s-replicas", field: "spec.replicas", plane: HandlePlane::Kubernetes, semantics: ControlSemantics::Count, unit: "count", purpose: "workload replica count" },
-    HandleSpec { handle: Handle::HostArcMax, name: "host-arc-max", field: "zfs_arc_max", plane: HandlePlane::Host, semantics: ControlSemantics::Cap, unit: "bytes", purpose: "live ZFS ARC ceiling" },
+    HandleSpec {
+        handle: Handle::CpuMax,
+        name: "cpu-max",
+        field: "cpu.max",
+        plane: HandlePlane::Cgroup,
+        semantics: ControlSemantics::Cap,
+        unit: "millicores",
+        purpose: "cap CPU bandwidth (work-conserving)",
+    },
+    HandleSpec {
+        handle: Handle::CpuWeight,
+        name: "cpu-weight",
+        field: "cpu.weight",
+        plane: HandlePlane::Cgroup,
+        semantics: ControlSemantics::Weight,
+        unit: "weight(1..=10000)",
+        purpose: "proportional CPU share under contention",
+    },
+    HandleSpec {
+        handle: Handle::CpuUclampMin,
+        name: "cpu-uclamp-min",
+        field: "cpu.uclamp.min",
+        plane: HandlePlane::Cgroup,
+        semantics: ControlSemantics::Reservation,
+        unit: "percent",
+        purpose: "performance-hint floor (schedutil)",
+    },
+    HandleSpec {
+        handle: Handle::MemoryMax,
+        name: "memory-max",
+        field: "memory.max",
+        plane: HandlePlane::Cgroup,
+        semantics: ControlSemantics::HardLimit,
+        unit: "bytes",
+        purpose: "hard memory limit (OOM cliff)",
+    },
+    HandleSpec {
+        handle: Handle::MemoryHigh,
+        name: "memory-high",
+        field: "memory.high",
+        plane: HandlePlane::Cgroup,
+        semantics: ControlSemantics::Cap,
+        unit: "bytes",
+        purpose: "throttle/reclaim ceiling (no kill) — the breathable memory cap",
+    },
+    HandleSpec {
+        handle: Handle::MemoryLow,
+        name: "memory-low",
+        field: "memory.low",
+        plane: HandlePlane::Cgroup,
+        semantics: ControlSemantics::Reservation,
+        unit: "bytes",
+        purpose: "best-effort reclaim protection",
+    },
+    HandleSpec {
+        handle: Handle::MemoryMin,
+        name: "memory-min",
+        field: "memory.min",
+        plane: HandlePlane::Cgroup,
+        semantics: ControlSemantics::Reservation,
+        unit: "bytes",
+        purpose: "hard reclaim protection (never reclaimed)",
+    },
+    HandleSpec {
+        handle: Handle::MemorySwapMax,
+        name: "memory-swap-max",
+        field: "memory.swap.max",
+        plane: HandlePlane::Cgroup,
+        semantics: ControlSemantics::HardLimit,
+        unit: "bytes",
+        purpose: "swap hard limit",
+    },
+    HandleSpec {
+        handle: Handle::IoWeight,
+        name: "io-weight",
+        field: "io.weight",
+        plane: HandlePlane::Cgroup,
+        semantics: ControlSemantics::Weight,
+        unit: "weight(1..=10000)",
+        purpose: "proportional IO share under contention",
+    },
+    HandleSpec {
+        handle: Handle::IoMax,
+        name: "io-max",
+        field: "io.max",
+        plane: HandlePlane::Cgroup,
+        semantics: ControlSemantics::Cap,
+        unit: "bps-or-iops",
+        purpose: "IO bandwidth/iops cap per device",
+    },
+    HandleSpec {
+        handle: Handle::IoLatency,
+        name: "io-latency",
+        field: "io.latency",
+        plane: HandlePlane::Cgroup,
+        semantics: ControlSemantics::Reservation,
+        unit: "microseconds",
+        purpose: "target-latency QoS protection",
+    },
+    HandleSpec {
+        handle: Handle::PidsMax,
+        name: "pids-max",
+        field: "pids.max",
+        plane: HandlePlane::Cgroup,
+        semantics: ControlSemantics::HardLimit,
+        unit: "count",
+        purpose: "task-count hard limit",
+    },
+    HandleSpec {
+        handle: Handle::K8sMemoryLimit,
+        name: "k8s-memory-limit",
+        field: "resources.limits.memory",
+        plane: HandlePlane::Kubernetes,
+        semantics: ControlSemantics::HardLimit,
+        unit: "bytes",
+        purpose: "pod memory limit → memory.max",
+    },
+    HandleSpec {
+        handle: Handle::K8sMemoryRequest,
+        name: "k8s-memory-request",
+        field: "resources.requests.memory",
+        plane: HandlePlane::Kubernetes,
+        semantics: ControlSemantics::Reservation,
+        unit: "bytes",
+        purpose: "pod memory request → scheduling + memory.min",
+    },
+    HandleSpec {
+        handle: Handle::K8sCpuLimit,
+        name: "k8s-cpu-limit",
+        field: "resources.limits.cpu",
+        plane: HandlePlane::Kubernetes,
+        semantics: ControlSemantics::Cap,
+        unit: "millicores",
+        purpose: "pod cpu limit → cpu.max",
+    },
+    HandleSpec {
+        handle: Handle::K8sCpuRequest,
+        name: "k8s-cpu-request",
+        field: "resources.requests.cpu",
+        plane: HandlePlane::Kubernetes,
+        semantics: ControlSemantics::Weight,
+        unit: "millicores",
+        purpose: "pod cpu request → cpu.weight + scheduling",
+    },
+    HandleSpec {
+        handle: Handle::K8sReplicas,
+        name: "k8s-replicas",
+        field: "spec.replicas",
+        plane: HandlePlane::Kubernetes,
+        semantics: ControlSemantics::Count,
+        unit: "count",
+        purpose: "workload replica count",
+    },
+    HandleSpec {
+        handle: Handle::HostArcMax,
+        name: "host-arc-max",
+        field: "zfs_arc_max",
+        plane: HandlePlane::Host,
+        semantics: ControlSemantics::Cap,
+        unit: "bytes",
+        purpose: "live ZFS ARC ceiling",
+    },
 ];
 
 /// Every handle — the domain side of the catalog bijection.
 pub const ALL_HANDLES: [Handle; 18] = [
-    Handle::CpuMax, Handle::CpuWeight, Handle::CpuUclampMin,
-    Handle::MemoryMax, Handle::MemoryHigh, Handle::MemoryLow, Handle::MemoryMin, Handle::MemorySwapMax,
-    Handle::IoWeight, Handle::IoMax, Handle::IoLatency,
+    Handle::CpuMax,
+    Handle::CpuWeight,
+    Handle::CpuUclampMin,
+    Handle::MemoryMax,
+    Handle::MemoryHigh,
+    Handle::MemoryLow,
+    Handle::MemoryMin,
+    Handle::MemorySwapMax,
+    Handle::IoWeight,
+    Handle::IoMax,
+    Handle::IoLatency,
     Handle::PidsMax,
-    Handle::K8sMemoryLimit, Handle::K8sMemoryRequest, Handle::K8sCpuLimit, Handle::K8sCpuRequest, Handle::K8sReplicas,
+    Handle::K8sMemoryLimit,
+    Handle::K8sMemoryRequest,
+    Handle::K8sCpuLimit,
+    Handle::K8sCpuRequest,
+    Handle::K8sReplicas,
     Handle::HostArcMax,
 ];
 
@@ -214,7 +370,12 @@ pub fn steer_diff(current: &ResourceMap, desired: &ResourceMap) -> Vec<HandleDel
     for (&handle, &to) in desired {
         let from = current.get(&handle).copied();
         if from != Some(to) {
-            out.push(HandleDelta { handle, from, to, semantics: handle.semantics() });
+            out.push(HandleDelta {
+                handle,
+                from,
+                to,
+                semantics: handle.semantics(),
+            });
         }
     }
     out
@@ -232,15 +393,23 @@ pub fn partition_diff(diff: &[HandleDelta]) -> (Vec<HandleDelta>, Vec<HandleDelt
 #[cfg(test)]
 mod tests {
     use super::{
-        partition_diff, steer_diff, ControlSemantics, Handle, HandleDelta, ResourceMap, ALL_HANDLES,
-        HANDLE_CATALOG,
+        ALL_HANDLES, ControlSemantics, HANDLE_CATALOG, Handle, HandleDelta, ResourceMap,
+        partition_diff, steer_diff,
     };
 
     #[test]
     fn catalog_has_one_row_per_handle() {
-        assert_eq!(HANDLE_CATALOG.len(), ALL_HANDLES.len(), "row count == handle count");
+        assert_eq!(
+            HANDLE_CATALOG.len(),
+            ALL_HANDLES.len(),
+            "row count == handle count"
+        );
         for h in ALL_HANDLES {
-            assert_eq!(HANDLE_CATALOG.iter().filter(|s| s.handle == h).count(), 1, "exactly one row for {h:?}");
+            assert_eq!(
+                HANDLE_CATALOG.iter().filter(|s| s.handle == h).count(),
+                1,
+                "exactly one row for {h:?}"
+            );
         }
     }
 
@@ -257,7 +426,11 @@ mod tests {
     fn fields_are_unique() {
         for (i, a) in HANDLE_CATALOG.iter().enumerate() {
             for b in &HANDLE_CATALOG[i + 1..] {
-                assert_ne!(a.field, b.field, "two handles write {} — field collision", a.field);
+                assert_ne!(
+                    a.field, b.field,
+                    "two handles write {} — field collision",
+                    a.field
+                );
             }
         }
     }
@@ -268,11 +441,21 @@ mod tests {
         // (weight/reservation) — never both, never neither. The load-bearing law.
         for h in ALL_HANDLES {
             let sem = h.semantics();
-            assert_ne!(sem.is_breathed(), sem.is_steered(), "{h:?}: must be exactly one of breathed/steered");
+            assert_ne!(
+                sem.is_breathed(),
+                sem.is_steered(),
+                "{h:?}: must be exactly one of breathed/steered"
+            );
         }
         // and both sides are non-empty (we actually have weights to steer)
-        assert!(ALL_HANDLES.iter().any(|h| h.is_steered()), "no steerable handles — where are the weights?");
-        assert!(ALL_HANDLES.iter().any(|h| h.is_breathed()), "no breathed handles");
+        assert!(
+            ALL_HANDLES.iter().any(|h| h.is_steered()),
+            "no steerable handles — where are the weights?"
+        );
+        assert!(
+            ALL_HANDLES.iter().any(|h| h.is_breathed()),
+            "no breathed handles"
+        );
     }
 
     #[test]
@@ -280,7 +463,10 @@ mod tests {
         // The operator's point: weights are set on the fly, never breathed.
         for h in [Handle::CpuWeight, Handle::IoWeight, Handle::K8sCpuRequest] {
             assert_eq!(h.semantics(), ControlSemantics::Weight);
-            assert!(h.is_steered() && !h.is_breathed(), "{h:?} (a weight) must be steered, not breathed");
+            assert!(
+                h.is_steered() && !h.is_breathed(),
+                "{h:?} (a weight) must be steered, not breathed"
+            );
         }
     }
 
@@ -306,8 +492,24 @@ mod tests {
         assert_eq!(diff.len(), 2);
         // deterministic BTreeMap order: CpuWeight (variant 1) before IoWeight (variant 8)
         assert_eq!(diff[0].handle, Handle::CpuWeight);
-        assert_eq!(diff[0], HandleDelta { handle: Handle::CpuWeight, from: Some(100), to: 400, semantics: ControlSemantics::Weight });
-        assert_eq!(diff[1], HandleDelta { handle: Handle::IoWeight, from: None, to: 200, semantics: ControlSemantics::Weight });
+        assert_eq!(
+            diff[0],
+            HandleDelta {
+                handle: Handle::CpuWeight,
+                from: Some(100),
+                to: 400,
+                semantics: ControlSemantics::Weight
+            }
+        );
+        assert_eq!(
+            diff[1],
+            HandleDelta {
+                handle: Handle::IoWeight,
+                from: None,
+                to: 200,
+                semantics: ControlSemantics::Weight
+            }
+        );
     }
 
     #[test]

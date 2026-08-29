@@ -102,7 +102,8 @@ impl KubeCluster {
         // current `.spec.replicas` via the existing typed reader (LimitLayout::Replica).
         // read_limit returns u64; a replica count never approaches u32::MAX, but a
         // pathological read saturates rather than wraps (never a panic).
-        let current_replicas = u32::try_from(self.read_limit(target, layout, "count").await?).unwrap_or(u32::MAX);
+        let current_replicas =
+            u32::try_from(self.read_limit(target, layout, "count").await?).unwrap_or(u32::MAX);
 
         // driving signal — RAW f64 (utilization ratios must not be u64-truncated).
         let (signal_value, staleness_secs) = match signal {
@@ -110,7 +111,7 @@ impl KubeCluster {
             other => {
                 return Err(ProviderError::ApiPermanent(format!(
                     "horizontal band signal must be a PromQL work-rate/utilization query, got {other:?}"
-                )))
+                )));
             }
         };
 
@@ -121,14 +122,23 @@ impl KubeCluster {
                 Ok((v, _)) if v.is_finite() && v > 0.0 => {
                     // ceil to cover the whole doomed set; cap into u32 range.
                     let n = v.ceil();
-                    if n >= f64::from(u32::MAX) { u32::MAX } else { n as u32 }
+                    if n >= f64::from(u32::MAX) {
+                        u32::MAX
+                    } else {
+                        n as u32
+                    }
                 }
                 _ => 0,
             },
             _ => 0,
         };
 
-        Ok(KubeReplicaEnv { current_replicas, signal_value, reclaim_pending, staleness_secs })
+        Ok(KubeReplicaEnv {
+            current_replicas,
+            signal_value,
+            reclaim_pending,
+            staleness_secs,
+        })
     }
 }
 
@@ -138,15 +148,30 @@ mod tests {
 
     #[test]
     fn snapshot_serves_the_replica_environment_contract() {
-        let env = KubeReplicaEnv { current_replicas: 4, signal_value: 0.9, reclaim_pending: 1, staleness_secs: 3 };
+        let env = KubeReplicaEnv {
+            current_replicas: 4,
+            signal_value: 0.9,
+            reclaim_pending: 1,
+            staleness_secs: 3,
+        };
         assert_eq!(env.current_replicas(), Ok(4));
         assert_eq!(env.signal_value(), Ok(0.9));
         assert_eq!(env.reclaim_pending(), 1);
         assert_eq!(env.window_max_desired(), None);
         assert_eq!(env.staleness_secs(), 3);
         // it drives the pure interpreter exactly like the mock does.
-        let cfg = breathe_control::replica::ReplicaBandConfig { ceiling: 50, ..Default::default() };
+        let cfg = breathe_control::replica::ReplicaBandConfig {
+            ceiling: 50,
+            ..Default::default()
+        };
         let d = breathe_control::replica::interpret_replica(&cfg, &env).expect("decides");
-        assert_eq!(d, breathe_control::replica::ReplicaDecision::SpotScaleOut { from: 4, to: 5, reclaim: 1 });
+        assert_eq!(
+            d,
+            breathe_control::replica::ReplicaDecision::SpotScaleOut {
+                from: 4,
+                to: 5,
+                reclaim: 1
+            }
+        );
     }
 }

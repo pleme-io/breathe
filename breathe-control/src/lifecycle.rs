@@ -88,7 +88,13 @@ impl PhaseTag {
     /// All five phases — the partition the never-stuck reachability tests iterate.
     #[must_use]
     pub fn all() -> [Self; 5] {
-        [Self::Zero, Self::Wake, Self::Settle, Self::Steady, Self::Idle]
+        [
+            Self::Zero,
+            Self::Wake,
+            Self::Settle,
+            Self::Steady,
+            Self::Idle,
+        ]
     }
 
     /// The legal outgoing edges of THIS phase (the runtime mirror of `Phase::EXITS`).
@@ -239,7 +245,10 @@ impl<P: Phase> Lifecycle<P> {
     }
 
     fn advance<Q: Phase>(self, carry: LifecycleCarry) -> Lifecycle<Q> {
-        Lifecycle { carry, _phase: core::marker::PhantomData }
+        Lifecycle {
+            carry,
+            _phase: core::marker::PhantomData,
+        }
     }
 }
 
@@ -248,7 +257,10 @@ impl Lifecycle<Zero> {
     #[must_use]
     pub fn start(now_epoch: i64) -> Self {
         Lifecycle {
-            carry: LifecycleCarry { phase_entered_epoch: now_epoch, ..LifecycleCarry::default() },
+            carry: LifecycleCarry {
+                phase_entered_epoch: now_epoch,
+                ..LifecycleCarry::default()
+            },
             _phase: core::marker::PhantomData,
         }
     }
@@ -272,7 +284,10 @@ impl Lifecycle<Wake> {
     /// startup-observed minimum is frozen here as the durable floor (rule (c)).
     #[must_use]
     pub fn settle(self, now_epoch: i64) -> Lifecycle<Settle> {
-        self.advance(LifecycleCarry { phase_entered_epoch: now_epoch, ..self.carry })
+        self.advance(LifecycleCarry {
+            phase_entered_epoch: now_epoch,
+            ..self.carry
+        })
     }
 }
 
@@ -280,7 +295,11 @@ impl Lifecycle<Settle> {
     /// Settle → Steady: the tightening trajectory reached the setpoint.
     #[must_use]
     pub fn reach_setpoint(self, now_epoch: i64) -> Lifecycle<Steady> {
-        self.advance(LifecycleCarry { phase_entered_epoch: now_epoch, shadow_confirmed_for: None, ..self.carry })
+        self.advance(LifecycleCarry {
+            phase_entered_epoch: now_epoch,
+            shadow_confirmed_for: None,
+            ..self.carry
+        })
     }
 
     /// Settle → Wake: a struggling workload always expands — a harmful tighten, an
@@ -300,7 +319,10 @@ impl Lifecycle<Steady> {
     /// Steady → Idle: sustained idle; enter the drain-ahead window before zero.
     #[must_use]
     pub fn go_idle(self, now_epoch: i64) -> Lifecycle<Idle> {
-        self.advance(LifecycleCarry { phase_entered_epoch: now_epoch, ..self.carry })
+        self.advance(LifecycleCarry {
+            phase_entered_epoch: now_epoch,
+            ..self.carry
+        })
     }
 
     /// Steady → Wake: a struggling steady workload always expands (rule (b) exit).
@@ -319,14 +341,21 @@ impl Lifecycle<Idle> {
     /// Idle → Zero: the idle timer elapsed; scale to zero (the cheapest rest).
     #[must_use]
     pub fn rest(self, now_epoch: i64) -> Lifecycle<Zero> {
-        self.advance(LifecycleCarry { phase_entered_epoch: now_epoch, current_limit: 0, ..self.carry })
+        self.advance(LifecycleCarry {
+            phase_entered_epoch: now_epoch,
+            current_limit: 0,
+            ..self.carry
+        })
     }
 
     /// Idle → Steady: load returned before the idle timer elapsed; re-load at the
     /// setpoint (the workload is already warm — no cold-start needed).
     #[must_use]
     pub fn reload(self, now_epoch: i64) -> Lifecycle<Steady> {
-        self.advance(LifecycleCarry { phase_entered_epoch: now_epoch, ..self.carry })
+        self.advance(LifecycleCarry {
+            phase_entered_epoch: now_epoch,
+            ..self.carry
+        })
     }
 }
 
@@ -579,9 +608,14 @@ impl std::fmt::Display for Uncertainty {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::MetricMissing => f.write_str("metric missing (no fresh working-set reading)"),
-            Self::ZeroUsed => f.write_str("zero working-set from a running workload (degraded metric)"),
+            Self::ZeroUsed => {
+                f.write_str("zero working-set from a running workload (degraded metric)")
+            }
             Self::NoCapacity => f.write_str("no capacity denominator"),
-            Self::WithinWarmup { observed_for, warmup } => {
+            Self::WithinWarmup {
+                observed_for,
+                warmup,
+            } => {
                 write!(f, "within warmup window ({observed_for}s of {warmup}s)")
             }
         }
@@ -621,9 +655,16 @@ impl Confirmed {
             return Err(Uncertainty::NoCapacity);
         }
         if m.observed_for_secs < warmup_seconds {
-            return Err(Uncertainty::WithinWarmup { observed_for: m.observed_for_secs, warmup: warmup_seconds });
+            return Err(Uncertainty::WithinWarmup {
+                observed_for: m.observed_for_secs,
+                warmup: warmup_seconds,
+            });
         }
-        Ok(Self { used, capacity: m.capacity, peak_used: m.peak_used.max(used) })
+        Ok(Self {
+            used,
+            capacity: m.capacity,
+            peak_used: m.peak_used.max(used),
+        })
     }
 
     /// The confirmed working set (bytes).
@@ -673,15 +714,29 @@ impl ShadowProvenStep {
     /// The `_proof` parameter is load-bearing, not decorative: it makes a tighten
     /// step *unconstructible* without a [`Confirmed`] metric (rule (a)).
     #[must_use]
-    #[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-    pub fn plan(from: u64, steady_target: u64, floor: u64, step_factor: f64, _proof: &Confirmed) -> Option<Self> {
+    #[allow(
+        clippy::cast_precision_loss,
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss
+    )]
+    pub fn plan(
+        from: u64,
+        steady_target: u64,
+        floor: u64,
+        step_factor: f64,
+        _proof: &Confirmed,
+    ) -> Option<Self> {
         // The descent bottoms out at the higher of the steady target and the
         // proven-need floor — never tighten past either.
         let bottom = steady_target.max(floor);
         if from <= bottom {
             return None; // already tight — no step; caller reaches setpoint.
         }
-        let factor = if step_factor > 0.0 && step_factor < 1.0 { step_factor } else { 0.9 };
+        let factor = if step_factor > 0.0 && step_factor < 1.0 {
+            step_factor
+        } else {
+            0.9
+        };
         let stepped = ((from as f64) * factor).floor() as u64;
         // Clamp: never below the bottom, and always at least one byte of progress
         // (a factor that rounds to `from` still advances by snapping to `from - 1`
@@ -720,7 +775,10 @@ pub enum TightenOutcome {
 /// post-step [`lapidar::ControlQuality`] window and calls this; a `Reverted` outcome
 /// drives Settle → Wake (re-expand) or restores the prior limit. Pure — no I/O.
 #[must_use]
-pub fn tighten_settled(pre_step: &lapidar::ControlQuality, post_step: &lapidar::ControlQuality) -> TightenOutcome {
+pub fn tighten_settled(
+    pre_step: &lapidar::ControlQuality,
+    post_step: &lapidar::ControlQuality,
+) -> TightenOutcome {
     if post_step.score() < pre_step.score() {
         TightenOutcome::Kept
     } else {
@@ -807,7 +865,9 @@ impl std::fmt::Display for LifecycleConfigError {
             Self::BadExpansionFactor => f.write_str("expansion_factor must be ≥ 1.0"),
             Self::BadStepFactor => f.write_str("settle_step_factor must be in (0, 1)"),
             Self::BadIdleThreshold => f.write_str("idle_below must be in (0, 1]"),
-            Self::ZeroDuration => f.write_str("idle_to_zero / expansion_max / settle_max must be > 0"),
+            Self::ZeroDuration => {
+                f.write_str("idle_to_zero / expansion_max / settle_max must be > 0")
+            }
         }
     }
 }
@@ -823,7 +883,9 @@ impl LifecycleConfig {
     /// # Errors
     /// A typed [`LifecycleConfigError`] naming the first violated invariant.
     pub fn validate(&self) -> Result<(), LifecycleConfigError> {
-        self.steady.validate().map_err(LifecycleConfigError::BadSteadyBand)?;
+        self.steady
+            .validate()
+            .map_err(LifecycleConfigError::BadSteadyBand)?;
         if self.expansion_factor < 1.0 || !self.expansion_factor.is_finite() {
             return Err(LifecycleConfigError::BadExpansionFactor);
         }
@@ -833,7 +895,8 @@ impl LifecycleConfig {
         if !(self.idle_below > 0.0 && self.idle_below <= 1.0) {
             return Err(LifecycleConfigError::BadIdleThreshold);
         }
-        if self.idle_to_zero_secs == 0 || self.expansion_max_secs == 0 || self.settle_max_secs == 0 {
+        if self.idle_to_zero_secs == 0 || self.expansion_max_secs == 0 || self.settle_max_secs == 0
+        {
             return Err(LifecycleConfigError::ZeroDuration);
         }
         Ok(())
@@ -845,12 +908,24 @@ impl LifecycleConfig {
     /// A workload with no reading yet gets `expansion_factor ×` the steady floor —
     /// never zero, never below the request floor (uncertainty → expand, rule (a)).
     #[must_use]
-    #[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    #[allow(
+        clippy::cast_precision_loss,
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss
+    )]
     pub fn expansion_limit(&self, startup_ws: u64) -> u64 {
-        let setpoint = if self.steady.setpoint <= 0.0 { 1.0 } else { self.steady.setpoint };
-        let seed = startup_ws.max(self.steady.request_floor_bytes).max(self.steady.floor_bytes);
+        let setpoint = if self.steady.setpoint <= 0.0 {
+            1.0
+        } else {
+            self.steady.setpoint
+        };
+        let seed = startup_ws
+            .max(self.steady.request_floor_bytes)
+            .max(self.steady.floor_bytes);
         let expanded = ((seed as f64) * self.expansion_factor / setpoint).ceil() as u64;
-        expanded.clamp(self.steady.floor_bytes, self.steady.ceiling_bytes).max(1)
+        expanded
+            .clamp(self.steady.floor_bytes, self.steady.ceiling_bytes)
+            .max(1)
     }
 
     /// The steady-state TARGET limit the tighten trajectory descends toward, given the
@@ -938,18 +1013,30 @@ pub enum LifecycleDecision {
     /// never-stuck timers force progress.
     Hold,
     /// Zero → Wake: seat the generous startup band. `reason` is the wake trigger.
-    Wake { expansion_limit: u64, reason: WakeReason },
+    Wake {
+        expansion_limit: u64,
+        reason: WakeReason,
+    },
     /// Grow headroom WITHIN Wake/Settle/Steady without changing phase — the
     /// uncertainty (rule (a)) / struggle (rule (b)) response. Never a downward move.
-    Expand { to_limit: u64, reason: StruggleReason },
+    Expand {
+        to_limit: u64,
+        reason: StruggleReason,
+    },
     /// Settle: one shadow-tighten step. `shadow_only` ⇒ observe + attest, do not
     /// write (rule (d)); `false` ⇒ the step was shadow-confirmed and now effects.
-    Tighten { step: ShadowProvenStep, shadow_only: bool },
+    Tighten {
+        step: ShadowProvenStep,
+        shadow_only: bool,
+    },
     /// Settle → Steady: the trajectory reached the setpoint. `limit` is the seated
     /// steady limit.
     ReachedSetpoint { limit: u64 },
     /// Settle/Steady → Wake: a struggling workload always expands (rule (b) exit).
-    ReExpand { expansion_limit: u64, reason: StruggleReason },
+    ReExpand {
+        expansion_limit: u64,
+        reason: StruggleReason,
+    },
     /// Steady → Idle: sustained idle; enter the drain-ahead window. `time_to_zero_secs`
     /// is how long Idle rests before Zero.
     Idle { time_to_zero_secs: u64 },
@@ -981,7 +1068,13 @@ impl LifecycleDecision {
     /// clamped to the proven-need floor.
     #[must_use]
     pub fn is_downward_carve(self) -> bool {
-        matches!(self, Self::Tighten { shadow_only: false, .. })
+        matches!(
+            self,
+            Self::Tighten {
+                shadow_only: false,
+                ..
+            }
+        )
     }
 }
 
@@ -1002,13 +1095,22 @@ impl LifecycleDecision {
 /// Only if neither fires does the phase logic run, and every phase's timeout escape
 /// guarantees a non-`Hold` progressing decision eventually (rule (b): no trap).
 #[must_use]
-pub fn fuse(phase: PhaseTag, cfg: &LifecycleConfig, sig: &Signals, carry: &LifecycleCarry, gate: LifecycleGate) -> LifecycleDecision {
+pub fn fuse(
+    phase: PhaseTag,
+    cfg: &LifecycleConfig,
+    sig: &Signals,
+    carry: &LifecycleCarry,
+    gate: LifecycleGate,
+) -> LifecycleDecision {
     // Zero rests until a wake trigger; uncertainty at Zero is fine (nothing to starve).
     if phase == PhaseTag::Zero {
         return match sig.any_wake() {
             Some(reason) => {
                 let seed = sig.metrics.used.unwrap_or(0);
-                LifecycleDecision::Wake { expansion_limit: cfg.expansion_limit(seed), reason }
+                LifecycleDecision::Wake {
+                    expansion_limit: cfg.expansion_limit(seed),
+                    reason,
+                }
             }
             None => LifecycleDecision::Hold,
         };
@@ -1026,8 +1128,14 @@ pub fn fuse(phase: PhaseTag, cfg: &LifecycleConfig, sig: &Signals, carry: &Lifec
         // ReExpand (→ Wake); from Wake it is an in-phase Expand.
         let grown = grow_headroom(carry.current_limit, cfg);
         return match phase {
-            PhaseTag::Settle | PhaseTag::Steady => LifecycleDecision::ReExpand { expansion_limit: grown, reason },
-            _ => LifecycleDecision::Expand { to_limit: grown, reason },
+            PhaseTag::Settle | PhaseTag::Steady => LifecycleDecision::ReExpand {
+                expansion_limit: grown,
+                reason,
+            },
+            _ => LifecycleDecision::Expand {
+                to_limit: grown,
+                reason,
+            },
         };
     }
     // SAFETY: `confirmed` is `Ok` here (the `is_err()` arm returned above).
@@ -1044,18 +1152,36 @@ pub fn fuse(phase: PhaseTag, cfg: &LifecycleConfig, sig: &Signals, carry: &Lifec
 
 /// Grow the current limit by the expansion factor, clamped into the steady band's
 /// operating range and never below the current limit (a grow only ever buys headroom).
-#[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+#[allow(
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss
+)]
 fn grow_headroom(current: u64, cfg: &LifecycleConfig) -> u64 {
-    let factor = if cfg.expansion_factor >= 1.0 { cfg.expansion_factor } else { 1.0 };
+    let factor = if cfg.expansion_factor >= 1.0 {
+        cfg.expansion_factor
+    } else {
+        1.0
+    };
     let grown = ((current.max(cfg.steady.floor_bytes) as f64) * factor).ceil() as u64;
-    grown.clamp(current.max(cfg.steady.floor_bytes), cfg.steady.ceiling_bytes).max(current)
+    grown
+        .clamp(
+            current.max(cfg.steady.floor_bytes),
+            cfg.steady.ceiling_bytes,
+        )
+        .max(current)
 }
 
 /// Wake logic: hold the generous band until the workload STABILIZES (a confirmed
 /// reading below the expansion setpoint, past warmup), then begin Settle. A never-
 /// stuck TIMEOUT forces Settle if Wake has run longer than `expansion_max_secs` — Wake
 /// can never trap.
-fn fuse_wake(cfg: &LifecycleConfig, sig: &Signals, proof: &Confirmed, carry: &LifecycleCarry) -> LifecycleDecision {
+fn fuse_wake(
+    cfg: &LifecycleConfig,
+    sig: &Signals,
+    proof: &Confirmed,
+    carry: &LifecycleCarry,
+) -> LifecycleDecision {
     let age = sig.now_epoch.saturating_sub(carry.phase_entered_epoch);
     let timed_out = age >= 0 && (age as u64) >= cfg.expansion_max_secs;
     // Stabilized when utilization has settled comfortably below the steady setpoint
@@ -1069,11 +1195,22 @@ fn fuse_wake(cfg: &LifecycleConfig, sig: &Signals, proof: &Confirmed, carry: &Li
         // uniform. Compute the first step here.
         let floor = cfg.tighten_floor(proof, carry.startup_observed_min);
         let steady_target = cfg.steady_target(proof);
-        match ShadowProvenStep::plan(carry.current_limit, steady_target, floor, cfg.settle_step_factor, proof) {
+        match ShadowProvenStep::plan(
+            carry.current_limit,
+            steady_target,
+            floor,
+            cfg.settle_step_factor,
+            proof,
+        ) {
             // There IS slack to tighten — begin the descent (shadow the first step).
-            Some(step) => LifecycleDecision::Tighten { step, shadow_only: true },
+            Some(step) => LifecycleDecision::Tighten {
+                step,
+                shadow_only: true,
+            },
             // Already at/under the setpoint target — nothing to tighten; go steady.
-            None => LifecycleDecision::ReachedSetpoint { limit: carry.current_limit.max(floor) },
+            None => LifecycleDecision::ReachedSetpoint {
+                limit: carry.current_limit.max(floor),
+            },
         }
     } else {
         LifecycleDecision::Hold // still cold-starting under the generous band.
@@ -1085,18 +1222,34 @@ fn fuse_wake(cfg: &LifecycleConfig, sig: &Signals, proof: &Confirmed, carry: &Li
 /// marks this `from` clean (rule (d)). When there is no step left, reach the setpoint.
 /// A never-stuck TIMEOUT forces ReachedSetpoint at the current proven-need floor if
 /// Settle has run longer than `settle_max_secs` — Settle can never trap.
-fn fuse_settle(cfg: &LifecycleConfig, sig: &Signals, proof: &Confirmed, carry: &LifecycleCarry, gate: LifecycleGate) -> LifecycleDecision {
+fn fuse_settle(
+    cfg: &LifecycleConfig,
+    sig: &Signals,
+    proof: &Confirmed,
+    carry: &LifecycleCarry,
+    gate: LifecycleGate,
+) -> LifecycleDecision {
     let age = sig.now_epoch.saturating_sub(carry.phase_entered_epoch);
     let timed_out = age >= 0 && (age as u64) >= cfg.settle_max_secs;
     let floor = cfg.tighten_floor(proof, carry.startup_observed_min);
     let steady_target = cfg.steady_target(proof);
 
-    match ShadowProvenStep::plan(carry.current_limit, steady_target, floor, cfg.settle_step_factor, proof) {
-        None => LifecycleDecision::ReachedSetpoint { limit: carry.current_limit.max(floor) },
+    match ShadowProvenStep::plan(
+        carry.current_limit,
+        steady_target,
+        floor,
+        cfg.settle_step_factor,
+        proof,
+    ) {
+        None => LifecycleDecision::ReachedSetpoint {
+            limit: carry.current_limit.max(floor),
+        },
         Some(step) => {
             if timed_out {
                 // Escape: stop stepping, land at the current floor-clamped limit.
-                return LifecycleDecision::ReachedSetpoint { limit: carry.current_limit.max(floor) };
+                return LifecycleDecision::ReachedSetpoint {
+                    limit: carry.current_limit.max(floor),
+                };
             }
             // Shadow unless this exact `from` has been confirmed clean AND the tick is
             // live (not a dry-run band). A dry-run band always shadows (never writes).
@@ -1111,12 +1264,20 @@ fn fuse_settle(cfg: &LifecycleConfig, sig: &Signals, proof: &Confirmed, carry: &
 /// cost-over-budget or an off-schedule signal also arms Idle (cost-driven zero). The
 /// vertical [`crate::decide`] law runs UNCHANGED in this phase for right-sizing — this
 /// only governs the lifecycle transition.
-fn fuse_steady(cfg: &LifecycleConfig, sig: &Signals, proof: &Confirmed, _carry: &LifecycleCarry) -> LifecycleDecision {
+fn fuse_steady(
+    cfg: &LifecycleConfig,
+    sig: &Signals,
+    proof: &Confirmed,
+    _carry: &LifecycleCarry,
+) -> LifecycleDecision {
     let idle_by_util = proof.util() < cfg.idle_below && !sig.load.is_some_and(Load::is_active);
     let idle_by_cost = sig.cost_over_budget;
-    let idle_by_schedule = sig.schedule_active == Some(false) && !sig.load.is_some_and(Load::is_active);
+    let idle_by_schedule =
+        sig.schedule_active == Some(false) && !sig.load.is_some_and(Load::is_active);
     if idle_by_util || idle_by_cost || idle_by_schedule {
-        LifecycleDecision::Idle { time_to_zero_secs: cfg.idle_to_zero_secs }
+        LifecycleDecision::Idle {
+            time_to_zero_secs: cfg.idle_to_zero_secs,
+        }
     } else {
         LifecycleDecision::Hold
     }
@@ -1216,9 +1377,13 @@ pub fn plan_lifecycle_tick<E: NervousSystem>(
 
     let (actuate, scale_to_zero) = match decision {
         // UPWARD moves are never gated — buying headroom is always safe.
-        LifecycleDecision::Wake { expansion_limit, .. } => (Some(expansion_limit), false),
+        LifecycleDecision::Wake {
+            expansion_limit, ..
+        } => (Some(expansion_limit), false),
         LifecycleDecision::Expand { to_limit, .. } => (Some(to_limit), false),
-        LifecycleDecision::ReExpand { expansion_limit, .. } => (Some(expansion_limit), false),
+        LifecycleDecision::ReExpand {
+            expansion_limit, ..
+        } => (Some(expansion_limit), false),
         // A DOWNWARD tighten writes only when confirmed + live + not cooling down.
         LifecycleDecision::Tighten { step, shadow_only } => {
             if shadow_only || gate.in_cooldown {
@@ -1232,10 +1397,17 @@ pub fn plan_lifecycle_tick<E: NervousSystem>(
         // Scale-to-zero routes to the scaler, not a vertical write.
         LifecycleDecision::ScaleToZero => (None, true),
         // Holds / idle-arming / reload change no limit this tick.
-        LifecycleDecision::Hold | LifecycleDecision::Idle { .. } | LifecycleDecision::Reload => (None, false),
+        LifecycleDecision::Hold | LifecycleDecision::Idle { .. } | LifecycleDecision::Reload => {
+            (None, false)
+        }
     };
 
-    Ok(LifecycleTickPlan { decision, next_phase, actuate, scale_to_zero })
+    Ok(LifecycleTickPlan {
+        decision,
+        next_phase,
+        actuate,
+        scale_to_zero,
+    })
 }
 
 /// A canned [`NervousSystem`] for tests + shadow dry-runs — every input is a field, so
@@ -1343,11 +1515,20 @@ mod tests {
 
     // A confirmed-able metric: past warmup, non-zero used, real capacity.
     fn metrics(used: u64, capacity: u64) -> Metrics {
-        Metrics { used: Some(used), capacity, observed_for_secs: 10_000, peak_used: used }
+        Metrics {
+            used: Some(used),
+            capacity,
+            observed_for_secs: 10_000,
+            peak_used: used,
+        }
     }
 
     fn healthy_env(m: Metrics) -> MockNervousSystem {
-        MockNervousSystem { metrics: m, now_epoch: 1_000_000, ..MockNervousSystem::default() }
+        MockNervousSystem {
+            metrics: m,
+            now_epoch: 1_000_000,
+            ..MockNervousSystem::default()
+        }
     }
 
     // ---- config parse gate (parse-time-rejected tier) ----
@@ -1359,24 +1540,43 @@ mod tests {
 
     #[test]
     fn config_rejects_non_expanding_factor() {
-        let c = LifecycleConfig { expansion_factor: 0.9, ..cfg() };
+        let c = LifecycleConfig {
+            expansion_factor: 0.9,
+            ..cfg()
+        };
         assert_eq!(c.validate(), Err(LifecycleConfigError::BadExpansionFactor));
     }
 
     #[test]
     fn config_rejects_non_descending_step() {
         for bad in [0.0, 1.0, 1.5, -0.1] {
-            let c = LifecycleConfig { settle_step_factor: bad, ..cfg() };
-            assert_eq!(c.validate(), Err(LifecycleConfigError::BadStepFactor), "step {bad}");
+            let c = LifecycleConfig {
+                settle_step_factor: bad,
+                ..cfg()
+            };
+            assert_eq!(
+                c.validate(),
+                Err(LifecycleConfigError::BadStepFactor),
+                "step {bad}"
+            );
         }
     }
 
     #[test]
     fn config_rejects_zero_timers() {
         for c in [
-            LifecycleConfig { idle_to_zero_secs: 0, ..cfg() },
-            LifecycleConfig { expansion_max_secs: 0, ..cfg() },
-            LifecycleConfig { settle_max_secs: 0, ..cfg() },
+            LifecycleConfig {
+                idle_to_zero_secs: 0,
+                ..cfg()
+            },
+            LifecycleConfig {
+                expansion_max_secs: 0,
+                ..cfg()
+            },
+            LifecycleConfig {
+                settle_max_secs: 0,
+                ..cfg()
+            },
         ] {
             assert_eq!(c.validate(), Err(LifecycleConfigError::ZeroDuration));
         }
@@ -1384,16 +1584,34 @@ mod tests {
 
     #[test]
     fn config_folds_in_bad_steady_band() {
-        let steady = BandConfig { setpoint: 2.0, ..BandConfig::default() };
+        let steady = BandConfig {
+            setpoint: 2.0,
+            ..BandConfig::default()
+        };
         let c = LifecycleConfig { steady, ..cfg() };
-        assert!(matches!(c.validate(), Err(LifecycleConfigError::BadSteadyBand(_))));
+        assert!(matches!(
+            c.validate(),
+            Err(LifecycleConfigError::BadSteadyBand(_))
+        ));
     }
 
     #[test]
     fn plan_rejects_bad_config() {
-        let c = LifecycleConfig { expansion_factor: 0.5, ..cfg() };
+        let c = LifecycleConfig {
+            expansion_factor: 0.5,
+            ..cfg()
+        };
         let env = healthy_env(metrics(500 << 20, 1 << 30));
-        let r = plan_lifecycle_tick(PhaseTag::Steady, &c, &env, LifecycleGate { dry_run: false, in_cooldown: false }, &LifecycleCarry::default());
+        let r = plan_lifecycle_tick(
+            PhaseTag::Steady,
+            &c,
+            &env,
+            LifecycleGate {
+                dry_run: false,
+                in_cooldown: false,
+            },
+            &LifecycleCarry::default(),
+        );
         assert!(matches!(r, Err(LifecycleError::BadConfig(_))));
     }
 
@@ -1401,26 +1619,52 @@ mod tests {
 
     #[test]
     fn confirmed_rejects_missing_metric() {
-        let m = Metrics { used: None, capacity: 1 << 30, observed_for_secs: 10_000, peak_used: 0 };
+        let m = Metrics {
+            used: None,
+            capacity: 1 << 30,
+            observed_for_secs: 10_000,
+            peak_used: 0,
+        };
         assert_eq!(Confirmed::parse(m, 600), Err(Uncertainty::MetricMissing));
     }
 
     #[test]
     fn confirmed_rejects_zero_used() {
-        let m = Metrics { used: Some(0), capacity: 1 << 30, observed_for_secs: 10_000, peak_used: 0 };
+        let m = Metrics {
+            used: Some(0),
+            capacity: 1 << 30,
+            observed_for_secs: 10_000,
+            peak_used: 0,
+        };
         assert_eq!(Confirmed::parse(m, 600), Err(Uncertainty::ZeroUsed));
     }
 
     #[test]
     fn confirmed_rejects_no_capacity() {
-        let m = Metrics { used: Some(100), capacity: 0, observed_for_secs: 10_000, peak_used: 100 };
+        let m = Metrics {
+            used: Some(100),
+            capacity: 0,
+            observed_for_secs: 10_000,
+            peak_used: 100,
+        };
         assert_eq!(Confirmed::parse(m, 600), Err(Uncertainty::NoCapacity));
     }
 
     #[test]
     fn confirmed_rejects_within_warmup() {
-        let m = Metrics { used: Some(100), capacity: 1 << 30, observed_for_secs: 30, peak_used: 100 };
-        assert_eq!(Confirmed::parse(m, 600), Err(Uncertainty::WithinWarmup { observed_for: 30, warmup: 600 }));
+        let m = Metrics {
+            used: Some(100),
+            capacity: 1 << 30,
+            observed_for_secs: 30,
+            peak_used: 100,
+        };
+        assert_eq!(
+            Confirmed::parse(m, 600),
+            Err(Uncertainty::WithinWarmup {
+                observed_for: 30,
+                warmup: 600
+            })
+        );
     }
 
     #[test]
@@ -1442,8 +1686,18 @@ mod tests {
         let steady_target = 600 << 20;
         let mut steps = 0;
         while let Some(step) = ShadowProvenStep::plan(from, steady_target, floor, 0.90, &proof) {
-            assert!(step.to() < step.from(), "monotone descent: {} < {}", step.to(), step.from());
-            assert!(step.to() >= floor, "never below the proven-need floor: {} >= {}", step.to(), floor);
+            assert!(
+                step.to() < step.from(),
+                "monotone descent: {} < {}",
+                step.to(),
+                step.from()
+            );
+            assert!(
+                step.to() >= floor,
+                "never below the proven-need floor: {} >= {}",
+                step.to(),
+                floor
+            );
             from = step.to();
             steps += 1;
             assert!(steps < 1000, "must terminate");
@@ -1468,7 +1722,12 @@ mod tests {
         let steady_target = 300 << 20; // 300Mi setpoint target (below the floor)
         let mut from = 4u64 << 30;
         while let Some(step) = ShadowProvenStep::plan(from, steady_target, floor, 0.90, &proof) {
-            assert!(step.to() >= floor, "floor dominates: {} >= {}", step.to(), floor);
+            assert!(
+                step.to() >= floor,
+                "floor dominates: {} >= {}",
+                step.to(),
+                floor
+            );
             from = step.to();
         }
         assert!(from >= floor);
@@ -1500,9 +1759,16 @@ mod tests {
         assert_eq!(re.tag(), PhaseTag::Wake);
         assert!(re.carry().current_limit >= 3 << 30);
         // Steady → Wake (struggling re-expand) + Idle → Steady (reload).
-        let steady = Lifecycle::<Zero>::start(0).wake(1 << 30, 1).settle(2).reach_setpoint(3);
+        let steady = Lifecycle::<Zero>::start(0)
+            .wake(1 << 30, 1)
+            .settle(2)
+            .reach_setpoint(3);
         assert_eq!(steady.re_expand(2 << 30, 4).tag(), PhaseTag::Wake);
-        let idle = Lifecycle::<Zero>::start(0).wake(1 << 30, 1).settle(2).reach_setpoint(3).go_idle(4);
+        let idle = Lifecycle::<Zero>::start(0)
+            .wake(1 << 30, 1)
+            .settle(2)
+            .reach_setpoint(3)
+            .go_idle(4);
         assert_eq!(idle.reload(5).tag(), PhaseTag::Steady);
     }
 
@@ -1535,8 +1801,16 @@ mod tests {
                     }
                 }
             }
-            assert!(seen.contains(&PhaseTag::Steady), "{} cannot reach Steady", start.as_str());
-            assert!(seen.contains(&PhaseTag::Zero), "{} cannot reach Zero", start.as_str());
+            assert!(
+                seen.contains(&PhaseTag::Steady),
+                "{} cannot reach Steady",
+                start.as_str()
+            );
+            assert!(
+                seen.contains(&PhaseTag::Zero),
+                "{} cannot reach Zero",
+                start.as_str()
+            );
         }
     }
 
@@ -1544,7 +1818,11 @@ mod tests {
     fn no_dead_ends_and_edges_are_within_the_phase_set() {
         let edges = legal_edges();
         for p in PhaseTag::all() {
-            assert!(edges.iter().any(|&(a, _)| a == p), "{} has no outgoing edge", p.as_str());
+            assert!(
+                edges.iter().any(|&(a, _)| a == p),
+                "{} has no outgoing edge",
+                p.as_str()
+            );
         }
     }
 
@@ -1562,10 +1840,29 @@ mod tests {
         for phase in PhaseTag::all() {
             for sig in signal_matrix() {
                 for dry in [false, true] {
-                    let carry = LifecycleCarry { current_limit: 2 << 30, phase_entered_epoch: 0, ..LifecycleCarry::default() };
-                    let d = fuse(phase, &c, &sig, &carry, LifecycleGate { dry_run: dry, in_cooldown: false });
+                    let carry = LifecycleCarry {
+                        current_limit: 2 << 30,
+                        phase_entered_epoch: 0,
+                        ..LifecycleCarry::default()
+                    };
+                    let d = fuse(
+                        phase,
+                        &c,
+                        &sig,
+                        &carry,
+                        LifecycleGate {
+                            dry_run: dry,
+                            in_cooldown: false,
+                        },
+                    );
                     let np = d.next_phase(phase);
-                    assert!(is_ok(phase, np), "illegal edge {} → {} from {:?}", phase.as_str(), np.as_str(), d);
+                    assert!(
+                        is_ok(phase, np),
+                        "illegal edge {} → {} from {:?}",
+                        phase.as_str(),
+                        np.as_str(),
+                        d
+                    );
                 }
             }
         }
@@ -1578,27 +1875,81 @@ mod tests {
         let c = cfg();
         // Every "uncertain" metric shape in a non-Zero phase → NOT a downward tighten.
         let uncertain = [
-            Metrics { used: None, capacity: 1 << 30, observed_for_secs: 10_000, peak_used: 0 }, // missing
-            Metrics { used: Some(0), capacity: 1 << 30, observed_for_secs: 10_000, peak_used: 0 }, // zero
-            Metrics { used: Some(100), capacity: 0, observed_for_secs: 10_000, peak_used: 100 }, // no cap
-            Metrics { used: Some(100), capacity: 1 << 30, observed_for_secs: 5, peak_used: 100 }, // warmup
+            Metrics {
+                used: None,
+                capacity: 1 << 30,
+                observed_for_secs: 10_000,
+                peak_used: 0,
+            }, // missing
+            Metrics {
+                used: Some(0),
+                capacity: 1 << 30,
+                observed_for_secs: 10_000,
+                peak_used: 0,
+            }, // zero
+            Metrics {
+                used: Some(100),
+                capacity: 0,
+                observed_for_secs: 10_000,
+                peak_used: 100,
+            }, // no cap
+            Metrics {
+                used: Some(100),
+                capacity: 1 << 30,
+                observed_for_secs: 5,
+                peak_used: 100,
+            }, // warmup
         ];
-        for phase in [PhaseTag::Wake, PhaseTag::Settle, PhaseTag::Steady, PhaseTag::Idle] {
+        for phase in [
+            PhaseTag::Wake,
+            PhaseTag::Settle,
+            PhaseTag::Steady,
+            PhaseTag::Idle,
+        ] {
             for m in uncertain {
                 let sig = Signals {
-                    metrics: m, readiness: None, load: None, health: Health::default(),
-                    dependency_ready: None, spot_reclaim_pending: false, schedule_active: None,
-                    cost_over_budget: false, now_epoch: 100,
+                    metrics: m,
+                    readiness: None,
+                    load: None,
+                    health: Health::default(),
+                    dependency_ready: None,
+                    spot_reclaim_pending: false,
+                    schedule_active: None,
+                    cost_over_budget: false,
+                    now_epoch: 100,
                 };
-                let carry = LifecycleCarry { current_limit: 1 << 30, ..LifecycleCarry::default() };
-                let d = fuse(phase, &c, &sig, &carry, LifecycleGate { dry_run: false, in_cooldown: false });
-                assert!(!d.is_downward_carve(), "uncertainty must not tighten: {phase:?} {m:?} → {d:?}");
+                let carry = LifecycleCarry {
+                    current_limit: 1 << 30,
+                    ..LifecycleCarry::default()
+                };
+                let d = fuse(
+                    phase,
+                    &c,
+                    &sig,
+                    &carry,
+                    LifecycleGate {
+                        dry_run: false,
+                        in_cooldown: false,
+                    },
+                );
+                assert!(
+                    !d.is_downward_carve(),
+                    "uncertainty must not tighten: {phase:?} {m:?} → {d:?}"
+                );
                 // In the running phases the uncertainty response is an expand/re-expand
                 // that never drops below the current limit.
                 if matches!(phase, PhaseTag::Wake | PhaseTag::Settle | PhaseTag::Steady) {
                     match d {
-                        LifecycleDecision::Expand { to_limit, .. } | LifecycleDecision::ReExpand { expansion_limit: to_limit, .. } => {
-                            assert!(to_limit >= carry.current_limit, "expand never shrinks: {to_limit} >= {}", carry.current_limit);
+                        LifecycleDecision::Expand { to_limit, .. }
+                        | LifecycleDecision::ReExpand {
+                            expansion_limit: to_limit,
+                            ..
+                        } => {
+                            assert!(
+                                to_limit >= carry.current_limit,
+                                "expand never shrinks: {to_limit} >= {}",
+                                carry.current_limit
+                            );
                         }
                         other => panic!("uncertainty in {phase:?} must expand, got {other:?}"),
                     }
@@ -1613,21 +1964,51 @@ mod tests {
         // A confirmable metric BUT the workload is struggling (OOM / restart / probe).
         let good = metrics(300 << 20, 4 << 30);
         let struggles = [
-            Health { oom: true, ..Health::default() },
-            Health { restarts: 3, ..Health::default() },
-            Health { probe_failures: 2, ..Health::default() },
+            Health {
+                oom: true,
+                ..Health::default()
+            },
+            Health {
+                restarts: 3,
+                ..Health::default()
+            },
+            Health {
+                probe_failures: 2,
+                ..Health::default()
+            },
         ];
         for phase in [PhaseTag::Settle, PhaseTag::Steady] {
             for h in struggles {
                 let sig = Signals {
-                    metrics: good, readiness: None, load: None, health: h,
-                    dependency_ready: None, spot_reclaim_pending: false, schedule_active: None,
-                    cost_over_budget: false, now_epoch: 100,
+                    metrics: good,
+                    readiness: None,
+                    load: None,
+                    health: h,
+                    dependency_ready: None,
+                    spot_reclaim_pending: false,
+                    schedule_active: None,
+                    cost_over_budget: false,
+                    now_epoch: 100,
                 };
-                let carry = LifecycleCarry { current_limit: 1 << 30, ..LifecycleCarry::default() };
-                let d = fuse(phase, &c, &sig, &carry, LifecycleGate { dry_run: false, in_cooldown: false });
+                let carry = LifecycleCarry {
+                    current_limit: 1 << 30,
+                    ..LifecycleCarry::default()
+                };
+                let d = fuse(
+                    phase,
+                    &c,
+                    &sig,
+                    &carry,
+                    LifecycleGate {
+                        dry_run: false,
+                        in_cooldown: false,
+                    },
+                );
                 assert!(!d.is_downward_carve(), "struggle must not tighten");
-                assert!(matches!(d, LifecycleDecision::ReExpand { .. }), "struggle in {phase:?} → re-expand, got {d:?}");
+                assert!(
+                    matches!(d, LifecycleDecision::ReExpand { .. }),
+                    "struggle in {phase:?} → re-expand, got {d:?}"
+                );
             }
         }
     }
@@ -1639,15 +2020,64 @@ mod tests {
         let c = cfg();
         // A Wake that never "stabilizes" (util pinned ABOVE setpoint) must still leave
         // Wake once expansion_max_secs elapses.
-        let hot = Metrics { used: Some(950 << 20), capacity: 1 << 30, observed_for_secs: 10_000, peak_used: 950 << 20 };
-        let carry = LifecycleCarry { current_limit: 4 << 30, phase_entered_epoch: 0, ..LifecycleCarry::default() };
+        let hot = Metrics {
+            used: Some(950 << 20),
+            capacity: 1 << 30,
+            observed_for_secs: 10_000,
+            peak_used: 950 << 20,
+        };
+        let carry = LifecycleCarry {
+            current_limit: 4 << 30,
+            phase_entered_epoch: 0,
+            ..LifecycleCarry::default()
+        };
         // Before timeout: holds (still cold-starting, util above setpoint).
-        let sig_early = Signals { metrics: hot, readiness: None, load: None, health: Health::default(), dependency_ready: None, spot_reclaim_pending: false, schedule_active: None, cost_over_budget: false, now_epoch: 10 };
-        assert_eq!(fuse(PhaseTag::Wake, &c, &sig_early, &carry, LifecycleGate { dry_run: false, in_cooldown: false }), LifecycleDecision::Hold);
+        let sig_early = Signals {
+            metrics: hot,
+            readiness: None,
+            load: None,
+            health: Health::default(),
+            dependency_ready: None,
+            spot_reclaim_pending: false,
+            schedule_active: None,
+            cost_over_budget: false,
+            now_epoch: 10,
+        };
+        assert_eq!(
+            fuse(
+                PhaseTag::Wake,
+                &c,
+                &sig_early,
+                &carry,
+                LifecycleGate {
+                    dry_run: false,
+                    in_cooldown: false
+                }
+            ),
+            LifecycleDecision::Hold
+        );
         // After timeout: forced forward (a tighten step or reached-setpoint — leaves Wake logic's hold).
-        let sig_late = Signals { now_epoch: (c.expansion_max_secs + 1) as i64, ..sig_early };
-        let d = fuse(PhaseTag::Wake, &c, &sig_late, &carry, LifecycleGate { dry_run: false, in_cooldown: false });
-        assert!(matches!(d, LifecycleDecision::Tighten { .. } | LifecycleDecision::ReachedSetpoint { .. }), "wake must escape, got {d:?}");
+        let sig_late = Signals {
+            now_epoch: (c.expansion_max_secs + 1) as i64,
+            ..sig_early
+        };
+        let d = fuse(
+            PhaseTag::Wake,
+            &c,
+            &sig_late,
+            &carry,
+            LifecycleGate {
+                dry_run: false,
+                in_cooldown: false,
+            },
+        );
+        assert!(
+            matches!(
+                d,
+                LifecycleDecision::Tighten { .. } | LifecycleDecision::ReachedSetpoint { .. }
+            ),
+            "wake must escape, got {d:?}"
+        );
     }
 
     #[test]
@@ -1656,19 +2086,72 @@ mod tests {
         // A Settle with lots of slack (so a step always exists) must still reach the
         // setpoint once settle_max_secs elapses rather than stepping forever.
         let good = metrics(300 << 20, 8 << 30);
-        let carry = LifecycleCarry { current_limit: 8 << 30, phase_entered_epoch: 0, shadow_confirmed_for: None, startup_observed_min: 0 };
-        let sig_late = Signals { metrics: good, readiness: None, load: None, health: Health::default(), dependency_ready: None, spot_reclaim_pending: false, schedule_active: None, cost_over_budget: false, now_epoch: (c.settle_max_secs + 1) as i64 };
-        let d = fuse(PhaseTag::Settle, &c, &sig_late, &carry, LifecycleGate { dry_run: false, in_cooldown: false });
-        assert!(matches!(d, LifecycleDecision::ReachedSetpoint { .. }), "settle must escape to steady, got {d:?}");
+        let carry = LifecycleCarry {
+            current_limit: 8 << 30,
+            phase_entered_epoch: 0,
+            shadow_confirmed_for: None,
+            startup_observed_min: 0,
+        };
+        let sig_late = Signals {
+            metrics: good,
+            readiness: None,
+            load: None,
+            health: Health::default(),
+            dependency_ready: None,
+            spot_reclaim_pending: false,
+            schedule_active: None,
+            cost_over_budget: false,
+            now_epoch: (c.settle_max_secs + 1) as i64,
+        };
+        let d = fuse(
+            PhaseTag::Settle,
+            &c,
+            &sig_late,
+            &carry,
+            LifecycleGate {
+                dry_run: false,
+                in_cooldown: false,
+            },
+        );
+        assert!(
+            matches!(d, LifecycleDecision::ReachedSetpoint { .. }),
+            "settle must escape to steady, got {d:?}"
+        );
     }
 
     #[test]
     fn idle_times_out_into_zero() {
         let c = cfg();
         let good = metrics(10 << 20, 1 << 30); // near-idle
-        let carry = LifecycleCarry { current_limit: 1 << 30, phase_entered_epoch: 0, ..LifecycleCarry::default() };
-        let sig = Signals { metrics: good, readiness: None, load: Some(Load::default()), health: Health::default(), dependency_ready: None, spot_reclaim_pending: false, schedule_active: None, cost_over_budget: false, now_epoch: (c.idle_to_zero_secs + 1) as i64 };
-        assert_eq!(fuse(PhaseTag::Idle, &c, &sig, &carry, LifecycleGate { dry_run: false, in_cooldown: false }), LifecycleDecision::ScaleToZero);
+        let carry = LifecycleCarry {
+            current_limit: 1 << 30,
+            phase_entered_epoch: 0,
+            ..LifecycleCarry::default()
+        };
+        let sig = Signals {
+            metrics: good,
+            readiness: None,
+            load: Some(Load::default()),
+            health: Health::default(),
+            dependency_ready: None,
+            spot_reclaim_pending: false,
+            schedule_active: None,
+            cost_over_budget: false,
+            now_epoch: (c.idle_to_zero_secs + 1) as i64,
+        };
+        assert_eq!(
+            fuse(
+                PhaseTag::Idle,
+                &c,
+                &sig,
+                &carry,
+                LifecycleGate {
+                    dry_run: false,
+                    in_cooldown: false
+                }
+            ),
+            LifecycleDecision::ScaleToZero
+        );
     }
 
     // ---- the wake trigger (OR-fusion) ----
@@ -1677,21 +2160,133 @@ mod tests {
     fn zero_wakes_on_any_trigger_and_rests_otherwise() {
         let c = cfg();
         let carry = LifecycleCarry::default();
-        let base = Signals { metrics: Metrics::default(), readiness: None, load: None, health: Health::default(), dependency_ready: None, spot_reclaim_pending: false, schedule_active: None, cost_over_budget: false, now_epoch: 0 };
+        let base = Signals {
+            metrics: Metrics::default(),
+            readiness: None,
+            load: None,
+            health: Health::default(),
+            dependency_ready: None,
+            spot_reclaim_pending: false,
+            schedule_active: None,
+            cost_over_budget: false,
+            now_epoch: 0,
+        };
         // No trigger → rest.
-        assert_eq!(fuse(PhaseTag::Zero, &c, &base, &carry, LifecycleGate { dry_run: false, in_cooldown: false }), LifecycleDecision::Hold);
+        assert_eq!(
+            fuse(
+                PhaseTag::Zero,
+                &c,
+                &base,
+                &carry,
+                LifecycleGate {
+                    dry_run: false,
+                    in_cooldown: false
+                }
+            ),
+            LifecycleDecision::Hold
+        );
         // Each trigger wakes.
-        let load = Signals { load: Some(Load { rps: 5.0, queue_depth: 0 }), ..base };
-        assert!(matches!(fuse(PhaseTag::Zero, &c, &load, &carry, LifecycleGate { dry_run: false, in_cooldown: false }), LifecycleDecision::Wake { reason: WakeReason::Load, .. }));
-        let sched = Signals { schedule_active: Some(true), ..base };
-        assert!(matches!(fuse(PhaseTag::Zero, &c, &sched, &carry, LifecycleGate { dry_run: false, in_cooldown: false }), LifecycleDecision::Wake { reason: WakeReason::Schedule, .. }));
-        let ready = Signals { readiness: Some(true), ..base };
-        assert!(matches!(fuse(PhaseTag::Zero, &c, &ready, &carry, LifecycleGate { dry_run: false, in_cooldown: false }), LifecycleDecision::Wake { reason: WakeReason::Readiness, .. }));
-        let dep = Signals { dependency_ready: Some(true), ..base };
-        assert!(matches!(fuse(PhaseTag::Zero, &c, &dep, &carry, LifecycleGate { dry_run: false, in_cooldown: false }), LifecycleDecision::Wake { reason: WakeReason::Dependency, .. }));
+        let load = Signals {
+            load: Some(Load {
+                rps: 5.0,
+                queue_depth: 0,
+            }),
+            ..base
+        };
+        assert!(matches!(
+            fuse(
+                PhaseTag::Zero,
+                &c,
+                &load,
+                &carry,
+                LifecycleGate {
+                    dry_run: false,
+                    in_cooldown: false
+                }
+            ),
+            LifecycleDecision::Wake {
+                reason: WakeReason::Load,
+                ..
+            }
+        ));
+        let sched = Signals {
+            schedule_active: Some(true),
+            ..base
+        };
+        assert!(matches!(
+            fuse(
+                PhaseTag::Zero,
+                &c,
+                &sched,
+                &carry,
+                LifecycleGate {
+                    dry_run: false,
+                    in_cooldown: false
+                }
+            ),
+            LifecycleDecision::Wake {
+                reason: WakeReason::Schedule,
+                ..
+            }
+        ));
+        let ready = Signals {
+            readiness: Some(true),
+            ..base
+        };
+        assert!(matches!(
+            fuse(
+                PhaseTag::Zero,
+                &c,
+                &ready,
+                &carry,
+                LifecycleGate {
+                    dry_run: false,
+                    in_cooldown: false
+                }
+            ),
+            LifecycleDecision::Wake {
+                reason: WakeReason::Readiness,
+                ..
+            }
+        ));
+        let dep = Signals {
+            dependency_ready: Some(true),
+            ..base
+        };
+        assert!(matches!(
+            fuse(
+                PhaseTag::Zero,
+                &c,
+                &dep,
+                &carry,
+                LifecycleGate {
+                    dry_run: false,
+                    in_cooldown: false
+                }
+            ),
+            LifecycleDecision::Wake {
+                reason: WakeReason::Dependency,
+                ..
+            }
+        ));
         // Cost / reclaim never WAKE a resting workload.
-        let cost = Signals { cost_over_budget: true, ..base };
-        assert_eq!(fuse(PhaseTag::Zero, &c, &cost, &carry, LifecycleGate { dry_run: false, in_cooldown: false }), LifecycleDecision::Hold);
+        let cost = Signals {
+            cost_over_budget: true,
+            ..base
+        };
+        assert_eq!(
+            fuse(
+                PhaseTag::Zero,
+                &c,
+                &cost,
+                &carry,
+                LifecycleGate {
+                    dry_run: false,
+                    in_cooldown: false
+                }
+            ),
+            LifecycleDecision::Hold
+        );
     }
 
     // ---- rule (d): shadow → confirm → effect on the tighten step ----
@@ -1702,46 +2297,178 @@ mod tests {
         let good = metrics(300 << 20, 8 << 30);
         let from = 8u64 << 30;
         // Unconfirmed → shadow_only (no downward write).
-        let carry_shadow = LifecycleCarry { current_limit: from, phase_entered_epoch: 0, shadow_confirmed_for: None, startup_observed_min: 0 };
-        let sig = Signals { metrics: good, readiness: None, load: None, health: Health::default(), dependency_ready: None, spot_reclaim_pending: false, schedule_active: None, cost_over_budget: false, now_epoch: 10 };
-        let d1 = fuse(PhaseTag::Settle, &c, &sig, &carry_shadow, LifecycleGate { dry_run: false, in_cooldown: false });
-        let LifecycleDecision::Tighten { step, shadow_only } = d1 else { panic!("expected tighten, got {d1:?}") };
+        let carry_shadow = LifecycleCarry {
+            current_limit: from,
+            phase_entered_epoch: 0,
+            shadow_confirmed_for: None,
+            startup_observed_min: 0,
+        };
+        let sig = Signals {
+            metrics: good,
+            readiness: None,
+            load: None,
+            health: Health::default(),
+            dependency_ready: None,
+            spot_reclaim_pending: false,
+            schedule_active: None,
+            cost_over_budget: false,
+            now_epoch: 10,
+        };
+        let d1 = fuse(
+            PhaseTag::Settle,
+            &c,
+            &sig,
+            &carry_shadow,
+            LifecycleGate {
+                dry_run: false,
+                in_cooldown: false,
+            },
+        );
+        let LifecycleDecision::Tighten { step, shadow_only } = d1 else {
+            panic!("expected tighten, got {d1:?}")
+        };
         assert!(shadow_only, "first sight of a step shadows");
         // Confirmed for THIS from → effects.
-        let carry_confirmed = LifecycleCarry { shadow_confirmed_for: Some(step.from()), ..carry_shadow };
-        let d2 = fuse(PhaseTag::Settle, &c, &sig, &carry_confirmed, LifecycleGate { dry_run: false, in_cooldown: false });
-        assert!(matches!(d2, LifecycleDecision::Tighten { shadow_only: false, .. }), "confirmed step effects, got {d2:?}");
+        let carry_confirmed = LifecycleCarry {
+            shadow_confirmed_for: Some(step.from()),
+            ..carry_shadow
+        };
+        let d2 = fuse(
+            PhaseTag::Settle,
+            &c,
+            &sig,
+            &carry_confirmed,
+            LifecycleGate {
+                dry_run: false,
+                in_cooldown: false,
+            },
+        );
+        assert!(
+            matches!(
+                d2,
+                LifecycleDecision::Tighten {
+                    shadow_only: false,
+                    ..
+                }
+            ),
+            "confirmed step effects, got {d2:?}"
+        );
         // A dry-run band always shadows, even when confirmed.
-        let d3 = fuse(PhaseTag::Settle, &c, &sig, &carry_confirmed, LifecycleGate { dry_run: true, in_cooldown: false });
-        assert!(matches!(d3, LifecycleDecision::Tighten { shadow_only: true, .. }), "dry-run always shadows");
+        let d3 = fuse(
+            PhaseTag::Settle,
+            &c,
+            &sig,
+            &carry_confirmed,
+            LifecycleGate {
+                dry_run: true,
+                in_cooldown: false,
+            },
+        );
+        assert!(
+            matches!(
+                d3,
+                LifecycleDecision::Tighten {
+                    shadow_only: true,
+                    ..
+                }
+            ),
+            "dry-run always shadows"
+        );
     }
 
     #[test]
     fn plan_never_writes_downward_under_shadow_or_cooldown() {
         let c = cfg();
         let good = metrics(300 << 20, 8 << 30);
-        let env = MockNervousSystem { metrics: good, now_epoch: 10, ..MockNervousSystem::default() };
-        let carry = LifecycleCarry { current_limit: 8 << 30, shadow_confirmed_for: Some(8 << 30), ..LifecycleCarry::default() };
+        let env = MockNervousSystem {
+            metrics: good,
+            now_epoch: 10,
+            ..MockNervousSystem::default()
+        };
+        let carry = LifecycleCarry {
+            current_limit: 8 << 30,
+            shadow_confirmed_for: Some(8 << 30),
+            ..LifecycleCarry::default()
+        };
         // dry-run → no actuation.
-        let p_shadow = plan_lifecycle_tick(PhaseTag::Settle, &c, &env, LifecycleGate { dry_run: true, in_cooldown: false }, &carry).unwrap();
+        let p_shadow = plan_lifecycle_tick(
+            PhaseTag::Settle,
+            &c,
+            &env,
+            LifecycleGate {
+                dry_run: true,
+                in_cooldown: false,
+            },
+            &carry,
+        )
+        .unwrap();
         assert_eq!(p_shadow.actuate, None, "shadow tighten never writes");
         // cooldown → no actuation even when confirmed + live.
-        let p_cool = plan_lifecycle_tick(PhaseTag::Settle, &c, &env, LifecycleGate { dry_run: false, in_cooldown: true }, &carry).unwrap();
+        let p_cool = plan_lifecycle_tick(
+            PhaseTag::Settle,
+            &c,
+            &env,
+            LifecycleGate {
+                dry_run: false,
+                in_cooldown: true,
+            },
+            &carry,
+        )
+        .unwrap();
         assert_eq!(p_cool.actuate, None, "cooldown holds the tighten");
         // confirmed + live + no cooldown → writes the tighter limit.
-        let p_live = plan_lifecycle_tick(PhaseTag::Settle, &c, &env, LifecycleGate { dry_run: false, in_cooldown: false }, &carry).unwrap();
-        assert!(p_live.actuate.is_some_and(|to| to < 8 << 30), "confirmed live tighten writes downward: {:?}", p_live.actuate);
+        let p_live = plan_lifecycle_tick(
+            PhaseTag::Settle,
+            &c,
+            &env,
+            LifecycleGate {
+                dry_run: false,
+                in_cooldown: false,
+            },
+            &carry,
+        )
+        .unwrap();
+        assert!(
+            p_live.actuate.is_some_and(|to| to < 8 << 30),
+            "confirmed live tighten writes downward: {:?}",
+            p_live.actuate
+        );
     }
 
     #[test]
     fn expand_always_actuates_upward_never_gated() {
         let c = cfg();
         // Missing metric in Steady → ReExpand, must actuate upward regardless of gate.
-        let env = MockNervousSystem { metrics: Metrics { used: None, capacity: 1 << 30, observed_for_secs: 10_000, peak_used: 0 }, now_epoch: 10, ..MockNervousSystem::default() };
-        let carry = LifecycleCarry { current_limit: 1 << 30, ..LifecycleCarry::default() };
-        for gate in [LifecycleGate { dry_run: true, in_cooldown: true }, LifecycleGate { dry_run: false, in_cooldown: false }] {
+        let env = MockNervousSystem {
+            metrics: Metrics {
+                used: None,
+                capacity: 1 << 30,
+                observed_for_secs: 10_000,
+                peak_used: 0,
+            },
+            now_epoch: 10,
+            ..MockNervousSystem::default()
+        };
+        let carry = LifecycleCarry {
+            current_limit: 1 << 30,
+            ..LifecycleCarry::default()
+        };
+        for gate in [
+            LifecycleGate {
+                dry_run: true,
+                in_cooldown: true,
+            },
+            LifecycleGate {
+                dry_run: false,
+                in_cooldown: false,
+            },
+        ] {
             let p = plan_lifecycle_tick(PhaseTag::Steady, &c, &env, gate, &carry).unwrap();
-            assert!(p.actuate.is_some_and(|to| to >= 1 << 30), "expand actuates upward even under shadow/cooldown: {:?}", p.actuate);
+            assert!(
+                p.actuate.is_some_and(|to| to >= 1 << 30),
+                "expand actuates upward even under shadow/cooldown: {:?}",
+                p.actuate
+            );
             assert_eq!(p.next_phase, PhaseTag::Wake);
         }
     }
@@ -1750,12 +2477,33 @@ mod tests {
 
     #[test]
     fn tighten_settled_reuses_lapidar_accept_rule() {
-        let pre = ControlQuality { mean_waste: 0.6, setpoint_rmse: 0.2, oscillation: 0.0, carve_failure_rate: 0.0, breach_frac: 0.0, samples: 20 };
+        let pre = ControlQuality {
+            mean_waste: 0.6,
+            setpoint_rmse: 0.2,
+            oscillation: 0.0,
+            carve_failure_rate: 0.0,
+            breach_frac: 0.0,
+            samples: 20,
+        };
         // A step that INTRODUCED a breach regresses (safety-first) → revert.
-        let worse = ControlQuality { mean_waste: 0.3, setpoint_rmse: 0.2, oscillation: 0.0, carve_failure_rate: 0.0, breach_frac: 0.2, samples: 20 };
+        let worse = ControlQuality {
+            mean_waste: 0.3,
+            setpoint_rmse: 0.2,
+            oscillation: 0.0,
+            carve_failure_rate: 0.0,
+            breach_frac: 0.2,
+            samples: 20,
+        };
         assert_eq!(tighten_settled(&pre, &worse), TightenOutcome::Reverted);
         // A step that cut waste with no breach improves → keep.
-        let better = ControlQuality { mean_waste: 0.2, setpoint_rmse: 0.15, oscillation: 0.0, carve_failure_rate: 0.0, breach_frac: 0.0, samples: 20 };
+        let better = ControlQuality {
+            mean_waste: 0.2,
+            setpoint_rmse: 0.15,
+            oscillation: 0.0,
+            carve_failure_rate: 0.0,
+            breach_frac: 0.0,
+            samples: 20,
+        };
         assert_eq!(tighten_settled(&pre, &better), TightenOutcome::Kept);
         // A tie reverts (never a change without a proven win — lapidar's rule).
         assert_eq!(tighten_settled(&pre, &pre), TightenOutcome::Reverted);
@@ -1771,7 +2519,10 @@ mod tests {
         // steady target for the same ws.
         let proof = Confirmed::parse(metrics(ws, expansion), 600).unwrap();
         let steady = c.steady_target(&proof);
-        assert!(expansion > steady, "startup band ({expansion}) must exceed the steady target ({steady})");
+        assert!(
+            expansion > steady,
+            "startup band ({expansion}) must exceed the steady target ({steady})"
+        );
         // Roughly expansion_factor × the steady headroom.
         assert!(expansion >= (ws as f64 * c.expansion_factor / c.steady.setpoint) as u64 - 1);
     }
@@ -1781,7 +2532,10 @@ mod tests {
         let c = cfg();
         // No startup reading (0) → still a generous, non-zero band (uncertainty → expand).
         let e = c.expansion_limit(0);
-        assert!(e >= c.steady.floor_bytes, "no-reading expansion floors at the config floor");
+        assert!(
+            e >= c.steady.floor_bytes,
+            "no-reading expansion floors at the config floor"
+        );
         assert!(e > 0);
     }
 
@@ -1790,20 +2544,43 @@ mod tests {
     #[test]
     fn end_to_end_zero_to_steady_to_zero() {
         let c = cfg();
-        let gate = LifecycleGate { dry_run: false, in_cooldown: false };
+        let gate = LifecycleGate {
+            dry_run: false,
+            in_cooldown: false,
+        };
 
         // Zero + load → Wake.
         let z = Lifecycle::<Zero>::start(0);
-        let env = MockNervousSystem { metrics: Metrics::default(), load: Some(Load { rps: 20.0, queue_depth: 0 }), now_epoch: 1, ..MockNervousSystem::default() };
+        let env = MockNervousSystem {
+            metrics: Metrics::default(),
+            load: Some(Load {
+                rps: 20.0,
+                queue_depth: 0,
+            }),
+            now_epoch: 1,
+            ..MockNervousSystem::default()
+        };
         let p = plan_lifecycle_tick(z.tag(), &c, &env, gate, &z.carry()).unwrap();
-        let LifecycleDecision::Wake { expansion_limit, .. } = p.decision else { panic!("wake") };
+        let LifecycleDecision::Wake {
+            expansion_limit, ..
+        } = p.decision
+        else {
+            panic!("wake")
+        };
         let w = z.wake(expansion_limit, 1);
         assert_eq!(p.next_phase, PhaseTag::Wake);
 
         // Wake stabilized (util below setpoint under the generous band) → begin settle.
-        let env = MockNervousSystem { metrics: metrics(300 << 20, expansion_limit), now_epoch: 100, ..MockNervousSystem::default() };
+        let env = MockNervousSystem {
+            metrics: metrics(300 << 20, expansion_limit),
+            now_epoch: 100,
+            ..MockNervousSystem::default()
+        };
         let p = plan_lifecycle_tick(w.tag(), &c, &env, gate, &w.carry()).unwrap();
-        assert!(matches!(p.decision, LifecycleDecision::Tighten { .. } | LifecycleDecision::ReachedSetpoint { .. }));
+        assert!(matches!(
+            p.decision,
+            LifecycleDecision::Tighten { .. } | LifecycleDecision::ReachedSetpoint { .. }
+        ));
         let s = w.settle(100);
 
         // Settle: confirm + effect steps until ReachedSetpoint.
@@ -1812,7 +2589,11 @@ mod tests {
         loop {
             guard += 1;
             assert!(guard < 500, "settle must terminate");
-            let env = MockNervousSystem { metrics: metrics(300 << 20, carry.current_limit.max(1)), now_epoch: 200, ..MockNervousSystem::default() };
+            let env = MockNervousSystem {
+                metrics: metrics(300 << 20, carry.current_limit.max(1)),
+                now_epoch: 200,
+                ..MockNervousSystem::default()
+            };
             let p = plan_lifecycle_tick(PhaseTag::Settle, &c, &env, gate, &carry).unwrap();
             match p.decision {
                 LifecycleDecision::Tighten { step, shadow_only } => {
@@ -1837,11 +2618,25 @@ mod tests {
         assert!(carry.current_limit >= crate::soft_min(300 << 20, &c.steady));
 
         // Steady idle → Idle → (timer) → Zero.
-        let env = MockNervousSystem { metrics: metrics(5 << 20, carry.current_limit), load: Some(Load::default()), now_epoch: 400, ..MockNervousSystem::default() };
+        let env = MockNervousSystem {
+            metrics: metrics(5 << 20, carry.current_limit),
+            load: Some(Load::default()),
+            now_epoch: 400,
+            ..MockNervousSystem::default()
+        };
         let p = plan_lifecycle_tick(PhaseTag::Steady, &c, &env, gate, &carry).unwrap();
-        assert!(matches!(p.decision, LifecycleDecision::Idle { .. }), "sustained idle arms Idle, got {:?}", p.decision);
+        assert!(
+            matches!(p.decision, LifecycleDecision::Idle { .. }),
+            "sustained idle arms Idle, got {:?}",
+            p.decision
+        );
         let idle = steady.go_idle(400);
-        let env = MockNervousSystem { metrics: metrics(5 << 20, carry.current_limit), load: Some(Load::default()), now_epoch: 400 + (c.idle_to_zero_secs as i64) + 1, ..MockNervousSystem::default() };
+        let env = MockNervousSystem {
+            metrics: metrics(5 << 20, carry.current_limit),
+            load: Some(Load::default()),
+            now_epoch: 400 + (c.idle_to_zero_secs as i64) + 1,
+            ..MockNervousSystem::default()
+        };
         let p = plan_lifecycle_tick(PhaseTag::Idle, &c, &env, gate, &idle.carry()).unwrap();
         assert_eq!(p.decision, LifecycleDecision::ScaleToZero);
         assert!(p.scale_to_zero);
@@ -1854,23 +2649,71 @@ mod tests {
     fn signal_matrix() -> Vec<Signals> {
         let mut out = Vec::new();
         let metric_shapes = [
-            Metrics { used: None, capacity: 1 << 30, observed_for_secs: 10_000, peak_used: 0 },
-            Metrics { used: Some(0), capacity: 1 << 30, observed_for_secs: 10_000, peak_used: 0 },
-            Metrics { used: Some(300 << 20), capacity: 8 << 30, observed_for_secs: 10_000, peak_used: 300 << 20 },
-            Metrics { used: Some(950 << 20), capacity: 1 << 30, observed_for_secs: 10_000, peak_used: 950 << 20 },
-            Metrics { used: Some(5 << 20), capacity: 1 << 30, observed_for_secs: 5, peak_used: 5 << 20 },
+            Metrics {
+                used: None,
+                capacity: 1 << 30,
+                observed_for_secs: 10_000,
+                peak_used: 0,
+            },
+            Metrics {
+                used: Some(0),
+                capacity: 1 << 30,
+                observed_for_secs: 10_000,
+                peak_used: 0,
+            },
+            Metrics {
+                used: Some(300 << 20),
+                capacity: 8 << 30,
+                observed_for_secs: 10_000,
+                peak_used: 300 << 20,
+            },
+            Metrics {
+                used: Some(950 << 20),
+                capacity: 1 << 30,
+                observed_for_secs: 10_000,
+                peak_used: 950 << 20,
+            },
+            Metrics {
+                used: Some(5 << 20),
+                capacity: 1 << 30,
+                observed_for_secs: 5,
+                peak_used: 5 << 20,
+            },
         ];
-        let loads = [None, Some(Load::default()), Some(Load { rps: 50.0, queue_depth: 10 })];
-        let healths = [Health::default(), Health { oom: true, ..Health::default() }, Health { restarts: 2, ..Health::default() }];
+        let loads = [
+            None,
+            Some(Load::default()),
+            Some(Load {
+                rps: 50.0,
+                queue_depth: 10,
+            }),
+        ];
+        let healths = [
+            Health::default(),
+            Health {
+                oom: true,
+                ..Health::default()
+            },
+            Health {
+                restarts: 2,
+                ..Health::default()
+            },
+        ];
         let now_pts = [0i64, 100, 10_000];
         for m in metric_shapes {
             for l in loads {
                 for h in healths {
                     for now in now_pts {
                         out.push(Signals {
-                            metrics: m, readiness: None, load: l, health: h,
-                            dependency_ready: None, spot_reclaim_pending: false,
-                            schedule_active: None, cost_over_budget: false, now_epoch: now,
+                            metrics: m,
+                            readiness: None,
+                            load: l,
+                            health: h,
+                            dependency_ready: None,
+                            spot_reclaim_pending: false,
+                            schedule_active: None,
+                            cost_over_budget: false,
+                            now_epoch: now,
                         });
                     }
                 }
@@ -1887,20 +2730,42 @@ mod tests {
                 for dry in [false, true] {
                     for cool in [false, true] {
                         for limit in [0u64, 256 << 20, 1 << 30, 8 << 30] {
-                            let carry = LifecycleCarry { current_limit: limit, phase_entered_epoch: 0, shadow_confirmed_for: Some(limit), startup_observed_min: 128 << 20 };
-                            let gate = LifecycleGate { dry_run: dry, in_cooldown: cool };
+                            let carry = LifecycleCarry {
+                                current_limit: limit,
+                                phase_entered_epoch: 0,
+                                shadow_confirmed_for: Some(limit),
+                                startup_observed_min: 128 << 20,
+                            };
+                            let gate = LifecycleGate {
+                                dry_run: dry,
+                                in_cooldown: cool,
+                            };
                             // Total: never panics.
                             let d = fuse(phase, &c, &sig, &carry, gate);
                             // If uncertain (metric cannot confirm) OR struggling → never a downward carve.
-                            let uncertain = Confirmed::parse(sig.metrics, c.steady.warmup_seconds).is_err();
+                            let uncertain =
+                                Confirmed::parse(sig.metrics, c.steady.warmup_seconds).is_err();
                             if uncertain || sig.is_struggling() {
-                                assert!(!d.is_downward_carve(), "downward carve under uncertainty/struggle: {phase:?} {sig:?} {d:?}");
+                                assert!(
+                                    !d.is_downward_carve(),
+                                    "downward carve under uncertainty/struggle: {phase:?} {sig:?} {d:?}"
+                                );
                             }
                             // A downward carve ALWAYS carries a step floored to the proven need.
-                            if let LifecycleDecision::Tighten { step, shadow_only: false } = d {
-                                let proof = Confirmed::parse(sig.metrics, c.steady.warmup_seconds).unwrap();
+                            if let LifecycleDecision::Tighten {
+                                step,
+                                shadow_only: false,
+                            } = d
+                            {
+                                let proof =
+                                    Confirmed::parse(sig.metrics, c.steady.warmup_seconds).unwrap();
                                 let floor = c.tighten_floor(&proof, carry.startup_observed_min);
-                                assert!(step.to() >= floor, "tighten below proven-need floor: {} < {}", step.to(), floor);
+                                assert!(
+                                    step.to() >= floor,
+                                    "tighten below proven-need floor: {} < {}",
+                                    step.to(),
+                                    floor
+                                );
                             }
                         }
                     }

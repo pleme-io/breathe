@@ -9,7 +9,7 @@
 //! Three properties worth stating because they are the measured defects, fixed:
 //!
 //! - **Bands are owned.** Every materialized band carries an `ownerReference` to
-//!   its workload, so the apiserver collects it when the target dies. camelot's
+//!   its workload, so the apiserver collects it when the target dies. the private estate's
 //!   14 `TargetNotFound` + 12 `Error` bands exist because nothing did this.
 //! - **Bands are armed.** `calibrateThenWrite` by default, so a band climbs to
 //!   effect on its own clean observation rather than sitting in shadow forever.
@@ -28,7 +28,9 @@ use breathe_discovery::{BandDimension, Tunable, WorkloadClass, WorkloadKind, Wor
 use k8s_openapi::api::apps::v1::{DaemonSet, Deployment, StatefulSet};
 use k8s_openapi::api::autoscaling::v2::HorizontalPodAutoscaler;
 use k8s_openapi::api::core::v1::PodTemplateSpec;
-use kube::api::{Api, ApiResource, DeleteParams, DynamicObject, GroupVersionKind, ListParams, Patch, PatchParams};
+use kube::api::{
+    Api, ApiResource, DeleteParams, DynamicObject, GroupVersionKind, ListParams, Patch, PatchParams,
+};
 use kube::runtime::controller::Action as CtrlAction;
 use kube::{Client, Resource, ResourceExt};
 use serde_json::json;
@@ -73,7 +75,9 @@ pub fn namespace_matches(ns: &str, include: &[String], exclude: &[String]) -> bo
 
 /// Read a pod template into the resource-shape flags the derivation needs.
 fn observe_resources(tpl: &PodTemplateSpec, shape: &mut WorkloadShape) {
-    let Some(spec) = tpl.spec.as_ref() else { return };
+    let Some(spec) = tpl.spec.as_ref() else {
+        return;
+    };
     for c in &spec.containers {
         let Some(res) = c.resources.as_ref() else {
             continue;
@@ -153,10 +157,14 @@ pub async fn reconcile_policy(
     let name = policy.name_any();
 
     if policy.spec.suspend {
-        patch_status(&ctx.client, &policy, BreathePolicyStatus {
-            phase: Some("Suspended".into()),
-            ..Default::default()
-        })
+        patch_status(
+            &ctx.client,
+            &policy,
+            BreathePolicyStatus {
+                phase: Some("Suspended".into()),
+                ..Default::default()
+            },
+        )
         .await?;
         return Ok(CtrlAction::requeue(ctx.requeue));
     }
@@ -190,10 +198,12 @@ pub async fn reconcile_policy(
 
     let inc = &policy.spec.selector.namespaces;
     let exc = &policy.spec.selector.exclude_namespaces;
-    let lp = policy.spec.selector.match_labels.as_ref().map_or_else(
-        ListParams::default,
-        |l| ListParams::default().labels(l),
-    );
+    let lp = policy
+        .spec
+        .selector
+        .match_labels
+        .as_ref()
+        .map_or_else(ListParams::default, |l| ListParams::default().labels(l));
 
     // ---- observe -----------------------------------------------------------
     let mut shapes: Vec<(WorkloadShape, OwnerRef)> = Vec::new();
@@ -285,7 +295,11 @@ pub async fn reconcile_policy(
                 namespace: ns,
                 name: b.name_any(),
                 dimension: dim,
-                owned: b.metadata.owner_references.as_ref().is_some_and(|o| !o.is_empty()),
+                owned: b
+                    .metadata
+                    .owner_references
+                    .as_ref()
+                    .is_some_and(|o| !o.is_empty()),
             });
         }
     }
@@ -302,15 +316,16 @@ pub async fn reconcile_policy(
                     .iter()
                     .any(|b| b.namespace == plan.namespace && b.name == plan.name);
                 if plan_only {
-                    if is_adopt { adopted += 1 } else { created += 1 }
+                    if is_adopt {
+                        adopted += 1
+                    } else {
+                        created += 1
+                    }
                     continue;
                 }
                 let ar = ApiResource::from_gvk(&band_gvk(plan.dimension));
-                let api: Api<DynamicObject> = Api::namespaced_with(
-                    ctx.client.clone(),
-                    &plan.namespace,
-                    &ar,
-                );
+                let api: Api<DynamicObject> =
+                    Api::namespaced_with(ctx.client.clone(), &plan.namespace, &ar);
                 let mut obj = band_object(&plan, &policy);
                 obj.metadata.owner_references =
                     serde_json::from_value(owner_reference(&plan.owner)).ok();
@@ -345,7 +360,7 @@ pub async fn reconcile_policy(
                 // This guard is evaluated BEFORE the planOnly branch on purpose.
                 // With it after, a plan counts every retire candidate while a real
                 // run skips the unowned ones, so the plan overstates deletions —
-                // measured on camelot's first plan as retired=36 where a real
+                // measured on one cluster's first plan as retired=36 where a real
                 // first pass would retire 0, since nothing is owned until this
                 // loop has adopted it. A plan that does not predict the run is
                 // worse than no plan: it is read as a forecast.
@@ -463,16 +478,16 @@ mod tests {
     /// Exclusion beats inclusion: the two failure modes are not symmetric.
     #[test]
     fn exclusion_wins_over_inclusion() {
-        let inc = vec!["camelot".to_owned()];
-        let exc = vec!["camelot".to_owned()];
-        assert!(!namespace_matches("camelot", &inc, &exc));
-        assert!(namespace_matches("camelot", &inc, &[]));
+        let inc = vec!["isolated".to_owned()];
+        let exc = vec!["isolated".to_owned()];
+        assert!(!namespace_matches("isolated", &inc, &exc));
+        assert!(namespace_matches("isolated", &inc, &[]));
     }
 
     #[test]
     fn empty_include_means_all_but_excluded() {
         let exc = vec!["kube-system".to_owned()];
-        assert!(namespace_matches("camelot", &[], &exc));
+        assert!(namespace_matches("isolated", &[], &exc));
         assert!(!namespace_matches("kube-system", &[], &exc));
     }
 

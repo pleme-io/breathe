@@ -9,8 +9,8 @@
 
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use breathe_control::{BandConfig, Decision, Observation};
 use breathe_control::replica::{ReplicaDecision, ReplicaTickPlan};
+use breathe_control::{BandConfig, Decision, Observation};
 use breathe_core::{TickOutcome, TickReceipt};
 use breathe_crd::{Band, BandStatus, Condition, TrendSample};
 use breathe_provider::{ClassCooldowns, DisruptionPolicy, EdgeTier, ProviderError};
@@ -21,17 +21,20 @@ use breathe_provider::{ClassCooldowns, DisruptionPolicy, EdgeTier, ProviderError
 // controller + agent can name them via `breathe_runtime::…` without a direct
 // breathe-store dependency.
 pub use breathe_store::{CounterClass, CumulativeCounters, DecisionEntry};
-use metrics::{counter, gauge, Label};
 use kube::{
-    api::{Api, Patch, PatchParams},
     Client,
+    api::{Api, Patch, PatchParams},
 };
+use metrics::{Label, counter, gauge};
 use serde_json::json;
 
 /// Unix epoch seconds (monotonic enough for cooldown bookkeeping; 0 on error).
 #[must_use]
 pub fn now_secs() -> i64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0)
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
 }
 
 /// The current time as an RFC3339 string (condition/sample/overview timestamps).
@@ -180,7 +183,11 @@ pub fn event_for(receipt: &TickReceipt) -> Option<(EventKind, &'static str, Stri
 /// phase changed from the prior tick — so a band resting in `Holding`/`AtFloor`
 /// produces ~0 events instead of one per 15s tick (no etcd flood).
 #[must_use]
-pub fn should_emit_event(receipt: &TickReceipt, new_phase: Option<&str>, prior_phase: Option<&str>) -> bool {
+pub fn should_emit_event(
+    receipt: &TickReceipt,
+    new_phase: Option<&str>,
+    prior_phase: Option<&str>,
+) -> bool {
     matches!(receipt, TickReceipt::Applied { .. }) || new_phase != prior_phase
 }
 
@@ -216,7 +223,11 @@ fn upsert_condition(
 /// always returned (a `Patch::Merge` cannot delete a stale element). `kubectl wait
 /// --for=condition=Converged` and Flux/Argo health-gating key off these.
 #[must_use]
-pub fn conditions_for(outcome: &TickOutcome, prior: &[Condition], generation: Option<i64>) -> Vec<Condition> {
+pub fn conditions_for(
+    outcome: &TickOutcome,
+    prior: &[Condition],
+    generation: Option<i64>,
+) -> Vec<Condition> {
     let now = chrono::Utc::now().to_rfc3339();
     let r = &outcome.receipt;
     // OBSERVABLE = "there is a metric/limit to reason on THIS TICK". `NoLimit` is
@@ -226,7 +237,7 @@ pub fn conditions_for(outcome: &TickOutcome, prior: &[Condition], generation: Op
     // not an observability failure, and calling it `Ready=False` started a
     // 1800s timer that ended in `HealthVerdict::Stuck` FOREVER for every target
     // that legitimately declares no limit (`coredns` / `ebs-csi-controller` on
-    // camelot-eks: no cpu limit in their manifests, which is exactly the case the
+    // private-estate-eks: no cpu limit in their manifests, which is exactly the case the
     // guard exists to respect). `NoLimit` is carried by `Supported=False` below —
     // the condition purpose-built for "correct, permanent, needs operator action".
     //
@@ -237,9 +248,9 @@ pub fn conditions_for(outcome: &TickOutcome, prior: &[Condition], generation: Op
     // on 2026-08-07 that cost a live release. `Ready` is what kstatus reads, so
     // helm-controller/Flux/Argo treat it as "did this object come up?" — with
     // `Ready = observable`, a metrics-server outage made every band report
-    // NOT-CAME-UP. Measured on camelot-eks: 115/115 bands `Ready=False` while
+    // NOT-CAME-UP. Measured on one cluster-eks: 115/115 bands `Ready=False` while
     // `TargetFound`/`Supported`/`Conflict` were all green, i.e. every band was
-    // ACCEPTED and merely blind. A forced `helm upgrade` of `camelot-build/sui`
+    // ACCEPTED and merely blind. A forced `helm upgrade` of `private-estate-build/sui`
     // then blocked the full 5m timeout and Flux's `remediation.strategy:
     // uninstall` DELETED AND REINSTALLED the release (history reset to `.v1`).
     // The reinstall took 6s, because freshly-created bands have no status yet —
@@ -251,7 +262,9 @@ pub fn conditions_for(outcome: &TickOutcome, prior: &[Condition], generation: Op
     // Two facts, two conditions — never one bit.
     let observable = !matches!(
         r,
-        TickReceipt::Error { .. } | TickReceipt::MetricUnrepresentable { .. } | TickReceipt::CapabilityMissing { .. }
+        TickReceipt::Error { .. }
+            | TickReceipt::MetricUnrepresentable { .. }
+            | TickReceipt::CapabilityMissing { .. }
     );
     // SUPPORTED (the design's point-3(b) "will never converge without operator
     // action" signal, distinct from "waiting"): `false` for the two receipts that
@@ -271,11 +284,19 @@ pub fn conditions_for(outcome: &TickOutcome, prior: &[Condition], generation: Op
     // waiting, it structurally can't" is precisely this band's situation.
     let supported = !matches!(
         r,
-        TickReceipt::CapabilityMissing { .. } | TickReceipt::Observed { decision: Decision::NoLimit }
+        TickReceipt::CapabilityMissing { .. }
+            | TickReceipt::Observed {
+                decision: Decision::NoLimit
+            }
     );
     // Which of the two unsupported causes this is, for an honest reason+message
     // (the message is what `HealthVerdict::Unsupported` carries to the operator).
-    let no_limit = matches!(r, TickReceipt::Observed { decision: Decision::NoLimit });
+    let no_limit = matches!(
+        r,
+        TickReceipt::Observed {
+            decision: Decision::NoLimit
+        }
+    );
     let converged = matches!(
         r,
         TickReceipt::Observed {
@@ -289,7 +310,11 @@ pub fn conditions_for(outcome: &TickOutcome, prior: &[Condition], generation: Op
     );
     let throttled = matches!(
         r,
-        TickReceipt::Cooldown | TickReceipt::DeferredWouldRestart { .. } | TickReceipt::Stale { .. } | TickReceipt::Warmup { .. } | TickReceipt::Throttled { .. }
+        TickReceipt::Cooldown
+            | TickReceipt::DeferredWouldRestart { .. }
+            | TickReceipt::Stale { .. }
+            | TickReceipt::Warmup { .. }
+            | TickReceipt::Throttled { .. }
     );
     let stale = matches!(r, TickReceipt::Stale { .. });
     let conflict = matches!(r, TickReceipt::Conflict { .. });
@@ -298,7 +323,12 @@ pub fn conditions_for(outcome: &TickOutcome, prior: &[Condition], generation: Op
     // ("can never converge without operator action") — a dangling targetRef is
     // self-healing (re-derived fresh every tick; the moment the real object
     // appears this flips back to `true` with no accumulated state).
-    let target_found = !matches!(r, TickReceipt::Error { error: ProviderError::TargetNotFound });
+    let target_found = !matches!(
+        r,
+        TickReceipt::Error {
+            error: ProviderError::TargetNotFound
+        }
+    );
     // READY = ACCEPTANCE, never achievement — see the `observable` note above.
     // The band is enrolled, its config parses, and its targetRef resolves to a
     // live object, so the controller has taken ownership and is running its loop.
@@ -313,32 +343,124 @@ pub fn conditions_for(outcome: &TickOutcome, prior: &[Condition], generation: Op
     let ready = target_found;
 
     let mut out = Vec::with_capacity(8);
-    upsert_condition(&mut out, prior, &now, "Ready", ready,
+    upsert_condition(
+        &mut out,
+        prior,
+        &now,
+        "Ready",
+        ready,
         if ready { "Accepted" } else { "TargetMissing" },
-        if ready { "enrolled, config parses, targetRef resolved — the controller owns this band" } else { "targetRef does not resolve — nothing to take ownership of" }, generation);
-    upsert_condition(&mut out, prior, &now, "Observable", observable,
-        if observable { "MetricObservable" } else { "NotObservable" },
-        if observable { "a metric/limit is available to reason on" } else { "no metric/limit to reason on — the band is accepted and idle, NOT failed" }, generation);
-    upsert_condition(&mut out, prior, &now, "Converged", converged,
+        if ready {
+            "enrolled, config parses, targetRef resolved — the controller owns this band"
+        } else {
+            "targetRef does not resolve — nothing to take ownership of"
+        },
+        generation,
+    );
+    upsert_condition(
+        &mut out,
+        prior,
+        &now,
+        "Observable",
+        observable,
+        if observable {
+            "MetricObservable"
+        } else {
+            "NotObservable"
+        },
+        if observable {
+            "a metric/limit is available to reason on"
+        } else {
+            "no metric/limit to reason on — the band is accepted and idle, NOT failed"
+        },
+        generation,
+    );
+    upsert_condition(
+        &mut out,
+        prior,
+        &now,
+        "Converged",
+        converged,
         if converged { "WithinBand" } else { "Adjusting" },
-        if converged { "utilization is within the deadband" } else { "carving/waiting toward the setpoint" }, generation);
-    upsert_condition(&mut out, prior, &now, "Throttled", throttled,
-        if throttled { "Throttled" } else { "Free" }, "in cooldown / deferred crossing / stale metric", generation);
-    upsert_condition(&mut out, prior, &now, "Stale", stale,
-        if stale { "StaleMetric" } else { "Fresh" }, "driving metric sample age vs maxStaleness", generation);
-    upsert_condition(&mut out, prior, &now, "Conflict", conflict,
-        if conflict { "FieldOwnedElsewhere" } else { "SoleWriter" }, "single-writer guard", generation);
-    upsert_condition(&mut out, prior, &now, "Supported", supported,
-        if supported { "CapabilityOk" } else if no_limit { "NoBoundDeclared" } else { "StorageClassUnsupported" },
+        if converged {
+            "utilization is within the deadband"
+        } else {
+            "carving/waiting toward the setpoint"
+        },
+        generation,
+    );
+    upsert_condition(
+        &mut out,
+        prior,
+        &now,
+        "Throttled",
+        throttled,
+        if throttled { "Throttled" } else { "Free" },
+        "in cooldown / deferred crossing / stale metric",
+        generation,
+    );
+    upsert_condition(
+        &mut out,
+        prior,
+        &now,
+        "Stale",
+        stale,
+        if stale { "StaleMetric" } else { "Fresh" },
+        "driving metric sample age vs maxStaleness",
+        generation,
+    );
+    upsert_condition(
+        &mut out,
+        prior,
+        &now,
+        "Conflict",
+        conflict,
+        if conflict {
+            "FieldOwnedElsewhere"
+        } else {
+            "SoleWriter"
+        },
+        "single-writer guard",
+        generation,
+    );
+    upsert_condition(
+        &mut out,
+        prior,
+        &now,
+        "Supported",
+        supported,
+        if supported {
+            "CapabilityOk"
+        } else if no_limit {
+            "NoBoundDeclared"
+        } else {
+            "StorageClassUnsupported"
+        },
         if no_limit {
             "the target declares NO bound for this dimension and spec.boundIntroduction is `forbidden` — this band can NEVER converge until a limit is declared upstream or boundIntroduction is set to `allowed`"
         } else {
             "StorageClass allowVolumeExpansion + per-volume metrics — False means this band can NEVER converge without operator action"
-        }, generation);
-    upsert_condition(&mut out, prior, &now, "TargetFound", target_found,
-        if target_found { "Resolved" } else { "TargetMissing" },
-        if target_found { "targetRef resolves to a live object" } else { "targetRef does not exist — self-heals automatically once the object is created" },
-        generation);
+        },
+        generation,
+    );
+    upsert_condition(
+        &mut out,
+        prior,
+        &now,
+        "TargetFound",
+        target_found,
+        if target_found {
+            "Resolved"
+        } else {
+            "TargetMissing"
+        },
+        if target_found {
+            "targetRef resolves to a live object"
+        } else {
+            "targetRef does not exist — self-heals automatically once the object is created"
+        },
+        generation,
+    );
     out
 }
 
@@ -379,7 +501,7 @@ pub enum HealthVerdict {
     /// Checked BEFORE the `Converged` timer on purpose. A blind band can never be
     /// converged either, so without this arm the metrics outage would simply
     /// reappear as `Stuck { condition: "Converged" }` — the same false alarm one
-    /// condition to the left. Receipt: 115/115 camelot-eks bands sat in exactly
+    /// condition to the left. Receipt: 115/115 private-estate-eks bands sat in exactly
     /// this state on 2026-08-07 while metrics-server was floored at 0.
     Unobservable { since_secs: i64 },
     /// A permanently-shadowed band (`dryRun:true`) whose target sits outside the
@@ -390,7 +512,11 @@ pub enum HealthVerdict {
     ShadowPending { since_secs: i64 },
     /// A condition that should be transient has held past [`STUCK_AFTER_SECS`] —
     /// no longer "waiting on a warmup/cooldown/race", now needs attention.
-    Stuck { condition: String, since_secs: i64, reason: String },
+    Stuck {
+        condition: String,
+        since_secs: i64,
+        reason: String,
+    },
 }
 
 impl HealthVerdict {
@@ -433,10 +559,17 @@ pub fn seconds_since(now: &str, since: &str) -> Option<i64> {
 /// The `Ready`-based check is UNCHANGED by `effective_dry_run` — an
 /// observability/metrics failure is meaningful even in shadow mode.
 #[must_use]
-pub fn health_verdict(conditions: &[Condition], now: &str, stuck_after_secs: i64, effective_dry_run: bool) -> HealthVerdict {
+pub fn health_verdict(
+    conditions: &[Condition],
+    now: &str,
+    stuck_after_secs: i64,
+    effective_dry_run: bool,
+) -> HealthVerdict {
     if let Some(c) = find_condition(conditions, "Supported") {
         if c.status != "True" {
-            return HealthVerdict::Unsupported { reason: c.message.clone() };
+            return HealthVerdict::Unsupported {
+                reason: c.message.clone(),
+            };
         }
     }
     // TARGET NOT FOUND (task #217): checked early, exactly like `Supported` above
@@ -472,7 +605,11 @@ pub fn health_verdict(conditions: &[Condition], now: &str, stuck_after_secs: i64
         if c.status == "False" {
             if let Some(secs) = seconds_since(now, &c.last_transition_time) {
                 if secs >= stuck_after_secs {
-                    return HealthVerdict::Stuck { condition: "Ready".into(), since_secs: secs, reason: c.message.clone() };
+                    return HealthVerdict::Stuck {
+                        condition: "Ready".into(),
+                        since_secs: secs,
+                        reason: c.message.clone(),
+                    };
                 }
             }
         }
@@ -488,7 +625,11 @@ pub fn health_verdict(conditions: &[Condition], now: &str, stuck_after_secs: i64
                     if effective_dry_run {
                         return HealthVerdict::ShadowPending { since_secs: secs };
                     }
-                    return HealthVerdict::Stuck { condition: "Converged".into(), since_secs: secs, reason: c.message.clone() };
+                    return HealthVerdict::Stuck {
+                        condition: "Converged".into(),
+                        since_secs: secs,
+                        reason: c.message.clone(),
+                    };
                 }
             }
         }
@@ -497,7 +638,11 @@ pub fn health_verdict(conditions: &[Condition], now: &str, stuck_after_secs: i64
         if c.status == "True" {
             if let Some(secs) = seconds_since(now, &c.last_transition_time) {
                 if secs >= stuck_after_secs {
-                    return HealthVerdict::Stuck { condition: "Conflict".into(), since_secs: secs, reason: c.message.clone() };
+                    return HealthVerdict::Stuck {
+                        condition: "Conflict".into(),
+                        since_secs: secs,
+                        reason: c.message.clone(),
+                    };
                 }
             }
         }
@@ -513,13 +658,17 @@ pub fn health_verdict(conditions: &[Condition], now: &str, stuck_after_secs: i64
 pub fn health_event_for(verdict: &HealthVerdict) -> Option<(EventKind, &'static str, String)> {
     match verdict {
         HealthVerdict::Healthy => None,
-        HealthVerdict::Unsupported { reason } => {
-            Some((EventKind::Warning, "BandUnsupported", format!("band can never converge without operator action: {reason}")))
-        }
+        HealthVerdict::Unsupported { reason } => Some((
+            EventKind::Warning,
+            "BandUnsupported",
+            format!("band can never converge without operator action: {reason}"),
+        )),
         HealthVerdict::TargetNotFound { since_secs } => Some((
             EventKind::Warning,
             "TargetNotFound",
-            format!("targetRef has not resolved for {since_secs}s — will self-heal automatically once the object is created; verify the targetRef name/kind/namespace if this persists"),
+            format!(
+                "targetRef has not resolved for {since_secs}s — will self-heal automatically once the object is created; verify the targetRef name/kind/namespace if this persists"
+            ),
         )),
         // Warning, but explicitly NOT a band fault: the band is accepted and owned,
         // its input is gone. The note points at the metrics pipeline because that is
@@ -537,12 +686,20 @@ pub fn health_event_for(verdict: &HealthVerdict) -> Option<(EventKind, &'static 
         HealthVerdict::ShadowPending { since_secs } => Some((
             EventKind::Normal,
             "ShadowPending",
-            format!("shadow mode (dryRun) — {since_secs}s outside the deadband; would-carve only, never applied (flip dryRun to converge)"),
+            format!(
+                "shadow mode (dryRun) — {since_secs}s outside the deadband; would-carve only, never applied (flip dryRun to converge)"
+            ),
         )),
-        HealthVerdict::Stuck { condition, since_secs, reason } => Some((
+        HealthVerdict::Stuck {
+            condition,
+            since_secs,
+            reason,
+        } => Some((
             EventKind::Warning,
             "BandStuck",
-            format!("{condition} has held for {since_secs}s (past the {STUCK_AFTER_SECS}s stuck threshold): {reason}"),
+            format!(
+                "{condition} has held for {since_secs}s (past the {STUCK_AFTER_SECS}s stuck threshold): {reason}"
+            ),
         )),
     }
 }
@@ -648,7 +805,11 @@ pub fn status_for(
                 "used {used} > capacity {capacity} — metric not per-entity (e.g. local-path PVC = whole-node fs); held"
             ));
         }
-        TickReceipt::CapabilityMissing { volume_expansion, per_volume_metrics, provisioner } => {
+        TickReceipt::CapabilityMissing {
+            volume_expansion,
+            per_volume_metrics,
+            provisioner,
+        } => {
             // the fail-fast terminal: checked BEFORE the single-writer guard, so this
             // is reached on the very first tick regardless of who else owns the
             // field — never `Conflict`/`MetricUnrepresentable` for the same root cause.
@@ -657,7 +818,10 @@ pub fn status_for(
                 "StorageClass ({provisioner}) can never converge — allowVolumeExpansion={volume_expansion}, perVolumeMetrics={per_volume_metrics}; provision an elastic StorageClass (e.g. ebs-gp3) or accept the fixed size"
             ));
         }
-        TickReceipt::Warmup { observed_for, warmup } => {
+        TickReceipt::Warmup {
+            observed_for,
+            warmup,
+        } => {
             // the workload is still warming up (restarted < warmup ago) — a shrink is
             // HELD so an un-observed boot spike can be seen before any carve. The limit
             // is left exactly as-is (the comfortable berth: undisturbed, golden).
@@ -673,9 +837,11 @@ pub fn status_for(
             // comfortable berth: undisturbed, never starved. Closes the CPU ratchet.
             s.phase = Some("Throttled".into());
             s.last_decision = Some(if *restarting {
-                "recently restarted / crash-looping — shrink held (low usage is not safe slack)".into()
+                "recently restarted / crash-looping — shrink held (low usage is not safe slack)"
+                    .into()
             } else {
-                "actively throttled — shrink held, growing out of the cap (usage is CFS-capped)".into()
+                "actively throttled — shrink held, growing out of the cap (usage is CFS-capped)"
+                    .into()
             });
         }
         TickReceipt::Stale { staleness_secs } => {
@@ -696,14 +862,19 @@ pub fn status_for(
         TickReceipt::ShadowWouldApply { from, to, reason } => {
             s.phase = Some("ShadowWouldApply".into());
             s.current_limit = Some(from.to_string()); // shadow mutates nothing — the UNCHANGED limit
-            s.last_decision = Some(format!("shadow: {from} -> {to} — held: {}", shadow_reason_note(*reason)));
+            s.last_decision = Some(format!(
+                "shadow: {from} -> {to} — held: {}",
+                shadow_reason_note(*reason)
+            ));
         }
         TickReceipt::DeferredWouldRestart { from, to, class } => {
             // the comfortable berth: breathe REFUSED a ceiling crossing — the
             // workload stays golden (undisturbed), un-converged, limit unchanged.
             s.phase = Some("DeferredWouldRestart".into());
             s.current_limit = Some(from.to_string()); // the crossing was refused — limit unchanged
-            s.last_decision = Some(format!("{from} -> {to} deferred: {class:?} crossing blocked by DisruptionPolicy (set AllowConditional/AllowRestart to permit)"));
+            s.last_decision = Some(format!(
+                "{from} -> {to} deferred: {class:?} crossing blocked by DisruptionPolicy (set AllowConditional/AllowRestart to permit)"
+            ));
             s.last_action_class = Some(format!("{class:?}"));
         }
         TickReceipt::Observed { decision } => {
@@ -717,7 +888,7 @@ pub fn status_for(
                 ),
                 // The honest phase for a band whose slack is real but withheld —
                 // the `AtFloor` this used to report was a lie (it is nowhere near
-                // a floor), and it made 36 idle camelot-eks MemoryBands look
+                // a floor), and it made 36 idle private-estate-eks MemoryBands look
                 // converged.
                 Decision::ReclaimWithheld { current, reclaimable } => (
                     "ReclaimWithheld",
@@ -745,9 +916,12 @@ pub fn status_for(
             // ephemeral target is scaled to zero). Nothing to observe or carve; the
             // band waits. NOT an error — counted at-rest (converged) in the overview.
             s.phase = Some("Dormant".into());
-            s.last_decision = Some("no pods in the label group — waiting (target scaled to zero)".into());
+            s.last_decision =
+                Some("no pods in the label group — waiting (target scaled to zero)".into());
         }
-        TickReceipt::Error { error: ProviderError::TargetNotFound } => {
+        TickReceipt::Error {
+            error: ProviderError::TargetNotFound,
+        } => {
             // the honest, distinct arm (task #217) — never the generic "Error",
             // which reads as a breathe-side fault. Self-heals automatically once the
             // targetRef resolves; mirrors CapabilityMissing's own dedicated phase.
@@ -762,7 +936,7 @@ pub fn status_for(
             // reason: the generic "Error" reads as a breathe-side fault, and this
             // is not one — the band is accepted and owned, its metric source is
             // simply not answering. Self-heals the instant the metric returns.
-            // Receipt (2026-08-07): every band on camelot-eks sat in phase `Error`
+            // Receipt (2026-08-07): every band on one cluster-eks sat in phase `Error`
             // with a null message because metrics-server was floored at 0, which
             // made `Error` the RESTING state and therefore worth nothing as a
             // signal — a real fault would have been indistinguishable from it.
@@ -792,19 +966,30 @@ pub fn status_for(
     s.conflicts_total = Some(counters.conflicts);
 
     // ── COOLDOWN REMAINING — from the last carve epoch (this tick's, or prior's). ─
-    let last_carve = s.last_change_epoch.or_else(|| prior.and_then(|p| p.last_change_epoch)).unwrap_or(0);
+    let last_carve = s
+        .last_change_epoch
+        .or_else(|| prior.and_then(|p| p.last_change_epoch))
+        .unwrap_or(0);
     let remaining = (last_carve + cooldown_seconds as i64 - now_secs()).max(0);
     s.cooldown_remaining_seconds = Some(remaining);
 
     // ── M4: observedGeneration + standard conditions (kubectl wait / health). ──
     s.observed_generation = generation;
-    s.conditions = conditions_for(outcome, prior.map_or(&[][..], |p| p.conditions.as_slice()), generation);
+    s.conditions = conditions_for(
+        outcome,
+        prior.map_or(&[][..], |p| p.conditions.as_slice()),
+        generation,
+    );
 
     // ── HEALTH ROLLUP — derived purely from the conditions just computed above
     //    (no new tracked state; last_transition_time is already stable-while-held
     //    per condition). Same across all 5 band kinds for free.
     let now = now_rfc3339();
-    s.health = Some(health_verdict(&s.conditions, &now, STUCK_AFTER_SECS, outcome.dry_run()).label().to_string());
+    s.health = Some(
+        health_verdict(&s.conditions, &now, STUCK_AFTER_SECS, outcome.dry_run())
+            .label()
+            .to_string(),
+    );
 
     // ── B: per-band TREND (the over-time view as a k8s object, no Grafana) —
     //    append on a carve or a phase change, cap to the last N. A resting band's
@@ -846,16 +1031,24 @@ pub fn status_for(
 /// `warmup_seconds == 0` short-circuits to `(u64::MAX, now)` (gate disabled — always
 /// past warmup), so a band that opts out is byte-identical to the pre-warmup path.
 #[must_use]
-pub fn warmup_state(prior: Option<&BandStatus>, observed_capacity: Option<u64>, warmup_seconds: u64, now: i64) -> (u64, i64) {
+pub fn warmup_state(
+    prior: Option<&BandStatus>,
+    observed_capacity: Option<u64>,
+    warmup_seconds: u64,
+    now: i64,
+) -> (u64, i64) {
     if warmup_seconds == 0 {
         return (u64::MAX, now);
     }
     let prior_epoch = prior.and_then(|p| p.warmup_start_epoch);
-    let prior_cap = prior.and_then(|p| p.observed_capacity).and_then(|c| u64::try_from(c).ok());
+    let prior_cap = prior
+        .and_then(|p| p.observed_capacity)
+        .and_then(|c| u64::try_from(c).ok());
     // RESTART DETECTION: a strictly-lower live limit than last tick ⇒ a re-created pod
     // fell back to its template default ⇒ a fresh boot ⇒ restart the warmup clock so
     // the (un-observed) boot spike is seen before any carve resumes.
-    let restarted = matches!((observed_capacity, prior_cap), (Some(now_cap), Some(was)) if now_cap < was);
+    let restarted =
+        matches!((observed_capacity, prior_cap), (Some(now_cap), Some(was)) if now_cap < was);
     let start = match prior_epoch {
         Some(e) if !restarted => e,
         _ => now, // first observation, or a detected restart ⇒ (re)start the clock
@@ -901,9 +1094,13 @@ pub fn shadow_reason_note(reason: breathe_provider::ShadowReason) -> String {
 /// through the real resolver.
 #[cfg(test)]
 fn test_live_gate() -> breathe_provider::EffectiveGate {
-    use breathe_provider::gate::{resolve_gate, ConfirmVerdict, GateInputs, LegacyDecision, ShadowReason, WriteIntent};
+    use breathe_provider::gate::{
+        ConfirmVerdict, GateInputs, LegacyDecision, ShadowReason, WriteIntent, resolve_gate,
+    };
     resolve_gate(&GateInputs {
-        intent: Some(Ok(WriteIntent::Write { authorized_by: "breathe-runtime tests".into() })),
+        intent: Some(Ok(WriteIntent::Write {
+            authorized_by: "breathe-runtime tests".into(),
+        })),
         frozen: false,
         confirm: ConfirmVerdict::NotEvaluated,
         legacy: LegacyDecision::Shadow(ShadowReason::NotReady),
@@ -999,9 +1196,9 @@ pub fn next_requeue(receipt: &TickReceipt, cooldowns: &ClassCooldowns) -> Durati
         // a shadow likewise looks fast (it is observing the live band). A dormant
         // (empty) target re-checks at the golden cadence too, so a pod that appears
         // (a runner starting a build) is picked up within one fast tick.
-        TickReceipt::Applied { .. } | TickReceipt::ShadowWouldApply { .. } | TickReceipt::Dormant => {
-            cooldowns.restart_free
-        }
+        TickReceipt::Applied { .. }
+        | TickReceipt::ShadowWouldApply { .. }
+        | TickReceipt::Dormant => cooldowns.restart_free,
         // a refused crossing: back off by exactly the blocked class.
         TickReceipt::DeferredWouldRestart { class, .. } => cooldowns.for_class(*class),
         // warming up OR throttled/restarting: re-look at the FAST cadence. A warming-up
@@ -1013,7 +1210,9 @@ pub fn next_requeue(receipt: &TickReceipt, cooldowns: &ClassCooldowns) -> Durati
         // TERMINAL, structural, never-clears-on-its-own: back off FAR past every
         // other class (see the const doc) — this is the never-silently-stuck
         // escalation for a StorageClass gap, not a transient condition.
-        TickReceipt::CapabilityMissing { .. } => return Duration::from_secs(CAPABILITY_MISSING_REQUEUE_SECS),
+        TickReceipt::CapabilityMissing { .. } => {
+            return Duration::from_secs(CAPABILITY_MISSING_REQUEUE_SECS);
+        }
         // non-mutating / transient: the mid window.
         TickReceipt::Observed { .. }
         | TickReceipt::Cooldown
@@ -1038,7 +1237,12 @@ pub struct BandLabels {
 /// into the global recorder. Driven by the SAME `TickOutcome` as `status_for` /
 /// `event_for`, so status, events, and metrics never disagree about a tick.
 #[allow(clippy::cast_precision_loss, clippy::cast_sign_loss)]
-pub fn metrics_for(l: &BandLabels, outcome: &TickOutcome, cfg: &BandConfig, cooldown_remaining_s: i64) {
+pub fn metrics_for(
+    l: &BandLabels,
+    outcome: &TickOutcome,
+    cfg: &BandConfig,
+    cooldown_remaining_s: i64,
+) {
     let base = || {
         vec![
             Label::new("dim", l.dim.clone()),
@@ -1068,7 +1272,8 @@ pub fn metrics_for(l: &BandLabels, outcome: &TickOutcome, cfg: &BandConfig, cool
     // the carved limit, tracked over time.
     let limit = match &outcome.receipt {
         TickReceipt::Applied { to, .. } => Some(*to),
-        TickReceipt::ShadowWouldApply { from, .. } | TickReceipt::DeferredWouldRestart { from, .. } => Some(*from),
+        TickReceipt::ShadowWouldApply { from, .. }
+        | TickReceipt::DeferredWouldRestart { from, .. } => Some(*from),
         _ => outcome.observed.as_ref().map(Observation::capacity),
     };
     if let Some(v) = limit {
@@ -1136,7 +1341,11 @@ pub fn suspended_status(prior: Option<&BandStatus>) -> BandStatus {
     // that STAYS suspended yields a byte-identical status tick after tick (no
     // churn); only stamp `now` on the first transition into suspension.
     let last_transition_time = prior
-        .and_then(|p| p.conditions.iter().find(|c| c.type_ == "Ready" && c.status == "False"))
+        .and_then(|p| {
+            p.conditions
+                .iter()
+                .find(|c| c.type_ == "Ready" && c.status == "False")
+        })
         .map_or_else(now_rfc3339, |c| c.last_transition_time.clone());
     let mut s = BandStatus::default();
     // The ever-governed latch survives suspension: suspending a band does not
@@ -1205,7 +1414,8 @@ pub async fn patch_status<B: Band>(
 ) -> Result<(), kube::Error> {
     let api: Api<B> = Api::namespaced(client.clone(), ns);
     let patch = json!({ "status": status });
-    api.patch_status(name, &PatchParams::default(), &Patch::Merge(&patch)).await?;
+    api.patch_status(name, &PatchParams::default(), &Patch::Merge(&patch))
+        .await?;
     Ok(())
 }
 
@@ -1283,7 +1493,13 @@ impl ReplicaReceipt {
     /// resting ▸ shadow ▸ cooldown. (`Stale` is built by the caller BEFORE planning,
     /// so it never reaches here.)
     #[must_use]
-    pub fn resolve(plan: &ReplicaTickPlan, applied: bool, conflict: bool, dry_run: bool, in_cooldown: bool) -> Self {
+    pub fn resolve(
+        plan: &ReplicaTickPlan,
+        applied: bool,
+        conflict: bool,
+        dry_run: bool,
+        in_cooldown: bool,
+    ) -> Self {
         let d = plan.decision;
         let (from, to) = (d.current(), d.target());
         if conflict {
@@ -1366,16 +1582,27 @@ pub fn replica_status_for(
             s.phase = Some(if growing { "Growing" } else { "Shrinking" }.into());
             s.current_limit = Some(to.to_string());
             s.observed_used = Some(i64::from(*to));
-            s.last_decision =
-                Some(format!("{from} -> {to} replicas ({})", if growing { "scale-out" } else { "scale-in" }));
-            s.last_action_class = Some(if growing { "RestartFree" } else { "RestartRequiring" }.into());
+            s.last_decision = Some(format!(
+                "{from} -> {to} replicas ({})",
+                if growing { "scale-out" } else { "scale-in" }
+            ));
+            s.last_action_class = Some(
+                if growing {
+                    "RestartFree"
+                } else {
+                    "RestartRequiring"
+                }
+                .into(),
+            );
             s.last_change_epoch = Some(now_secs());
         }
         ReplicaReceipt::ShadowWouldApply { from, to } => {
             s.phase = Some("ShadowWouldApply".into());
             s.current_limit = Some(from.to_string()); // shadow mutates nothing
             s.observed_used = Some(i64::from(*from));
-            s.last_decision = Some(format!("shadow: would scale {from} -> {to} replicas (dryRun — nothing written)"));
+            s.last_decision = Some(format!(
+                "shadow: would scale {from} -> {to} replicas (dryRun — nothing written)"
+            ));
         }
         ReplicaReceipt::DeferredScaleIn { from, to } => {
             s.phase = Some("DeferredWouldRestart".into());
@@ -1391,20 +1618,35 @@ pub fn replica_status_for(
             s.phase = Some("Cooldown".into());
             s.current_limit = Some(from.to_string());
             s.observed_used = Some(i64::from(*from));
-            s.last_decision = Some(format!("cooling down after a carve (would scale {from} -> {to})"));
+            s.last_decision = Some(format!(
+                "cooling down after a carve (would scale {from} -> {to})"
+            ));
             throttled = true;
         }
         ReplicaReceipt::Observed { decision } => {
             let current = decision.current();
             let (phase, note) = match decision {
-                ReplicaDecision::Hold { .. } => ("Holding", format!("within band — held at {current} replicas")),
-                ReplicaDecision::AtFloor { .. } => ("AtFloor", format!("at HA floor {current} — no safe scale-in")),
-                ReplicaDecision::AtCeiling { .. } => ("AtCeiling", format!("at ceiling {current} — would scale out")),
+                ReplicaDecision::Hold { .. } => (
+                    "Holding",
+                    format!("within band — held at {current} replicas"),
+                ),
+                ReplicaDecision::AtFloor { .. } => (
+                    "AtFloor",
+                    format!("at HA floor {current} — no safe scale-in"),
+                ),
+                ReplicaDecision::AtCeiling { .. } => (
+                    "AtCeiling",
+                    format!("at ceiling {current} — would scale out"),
+                ),
                 // Persistent (stateful): a scale-in is HELD pending drain/rebalance of
                 // the ordinal's data — the reactive shrink is not written directly.
-                ReplicaDecision::HeldForRebalance { would_shrink_to, .. } => (
+                ReplicaDecision::HeldForRebalance {
+                    would_shrink_to, ..
+                } => (
                     "PendingRebalance",
-                    format!("scale-in to {would_shrink_to} held — drain/rebalance the ordinal's data first (stateful)"),
+                    format!(
+                        "scale-in to {would_shrink_to} held — drain/rebalance the ordinal's data first (stateful)"
+                    ),
                 ),
                 // a carve routed through Observed only defensively (resolve covers the
                 // real cases above); keep exhaustive, never panic.
@@ -1417,14 +1659,21 @@ pub fn replica_status_for(
             // a resting horizontal decision is at rest → Converged.
             converged = matches!(
                 decision,
-                ReplicaDecision::Hold { .. } | ReplicaDecision::AtFloor { .. } | ReplicaDecision::AtCeiling { .. }
+                ReplicaDecision::Hold { .. }
+                    | ReplicaDecision::AtFloor { .. }
+                    | ReplicaDecision::AtCeiling { .. }
             );
         }
-        ReplicaReceipt::Stale { staleness_secs, current } => {
+        ReplicaReceipt::Stale {
+            staleness_secs,
+            current,
+        } => {
             s.phase = Some("Stale".into());
             s.current_limit = Some(current.to_string());
             s.observed_used = Some(i64::from(*current));
-            s.last_decision = Some(format!("metric {staleness_secs}s stale — held (never scale on a stale sample)"));
+            s.last_decision = Some(format!(
+                "metric {staleness_secs}s stale — held (never scale on a stale sample)"
+            ));
             stale_c = true;
             throttled = true;
         }
@@ -1432,8 +1681,9 @@ pub fn replica_status_for(
             s.phase = Some("Conflict".into());
             s.current_limit = Some(current.to_string());
             s.observed_used = Some(i64::from(*current));
-            s.last_decision =
-                Some("yielded .spec.replicas to a competing writer (KEDA/HPA) — will re-observe".into());
+            s.last_decision = Some(
+                "yielded .spec.replicas to a competing writer (KEDA/HPA) — will re-observe".into(),
+            );
             conflict_c = true;
         }
     }
@@ -1448,17 +1698,74 @@ pub fn replica_status_for(
     // clean observe. Emitting `Observable` unconditionally matters anyway: a band
     // whose condition array LACKS it would be read as "not unobservable" by
     // `health_verdict`, so an absent condition must never be the quiet default.
-    upsert_condition(&mut conds, prior_conds, &now, "Ready", true, "Accepted", "enrolled, config parses, targetRef resolved — the controller owns this band", generation);
-    upsert_condition(&mut conds, prior_conds, &now, "Observable", true, "MetricObservable", "a metric/limit is available to reason on", generation);
-    upsert_condition(&mut conds, prior_conds, &now, "Converged", converged,
+    upsert_condition(
+        &mut conds,
+        prior_conds,
+        &now,
+        "Ready",
+        true,
+        "Accepted",
+        "enrolled, config parses, targetRef resolved — the controller owns this band",
+        generation,
+    );
+    upsert_condition(
+        &mut conds,
+        prior_conds,
+        &now,
+        "Observable",
+        true,
+        "MetricObservable",
+        "a metric/limit is available to reason on",
+        generation,
+    );
+    upsert_condition(
+        &mut conds,
+        prior_conds,
+        &now,
+        "Converged",
+        converged,
         if converged { "WithinBand" } else { "Adjusting" },
-        if converged { "replica count is within the deadband" } else { "scaling/waiting toward the setpoint" }, generation);
-    upsert_condition(&mut conds, prior_conds, &now, "Throttled", throttled,
-        if throttled { "Throttled" } else { "Free" }, "in cooldown / deferred scale-in / stale metric", generation);
-    upsert_condition(&mut conds, prior_conds, &now, "Stale", stale_c,
-        if stale_c { "StaleMetric" } else { "Fresh" }, "driving metric sample age vs maxStaleness", generation);
-    upsert_condition(&mut conds, prior_conds, &now, "Conflict", conflict_c,
-        if conflict_c { "FieldOwnedElsewhere" } else { "SoleWriter" }, "single-writer guard", generation);
+        if converged {
+            "replica count is within the deadband"
+        } else {
+            "scaling/waiting toward the setpoint"
+        },
+        generation,
+    );
+    upsert_condition(
+        &mut conds,
+        prior_conds,
+        &now,
+        "Throttled",
+        throttled,
+        if throttled { "Throttled" } else { "Free" },
+        "in cooldown / deferred scale-in / stale metric",
+        generation,
+    );
+    upsert_condition(
+        &mut conds,
+        prior_conds,
+        &now,
+        "Stale",
+        stale_c,
+        if stale_c { "StaleMetric" } else { "Fresh" },
+        "driving metric sample age vs maxStaleness",
+        generation,
+    );
+    upsert_condition(
+        &mut conds,
+        prior_conds,
+        &now,
+        "Conflict",
+        conflict_c,
+        if conflict_c {
+            "FieldOwnedElsewhere"
+        } else {
+            "SoleWriter"
+        },
+        "single-writer guard",
+        generation,
+    );
     s.conditions = conds;
 
     // ── counters (projection), cooldown remaining, observedGeneration, history —
@@ -1466,7 +1773,10 @@ pub fn replica_status_for(
     s.carves_total = Some(counters.carves);
     s.deferrals_total = Some(counters.deferrals);
     s.conflicts_total = Some(counters.conflicts);
-    let last_carve = s.last_change_epoch.or_else(|| prior.and_then(|p| p.last_change_epoch)).unwrap_or(0);
+    let last_carve = s
+        .last_change_epoch
+        .or_else(|| prior.and_then(|p| p.last_change_epoch))
+        .unwrap_or(0);
     s.cooldown_remaining_seconds = Some((last_carve + cooldown_seconds as i64 - now_secs()).max(0));
     s.observed_generation = generation;
 
@@ -1509,7 +1819,13 @@ pub fn replica_entry_for(receipt: &ReplicaReceipt, dry_run: bool) -> DecisionEnt
         ReplicaReceipt::Conflict { .. } => CounterClass::Conflict,
         _ => CounterClass::NoCount,
     };
-    DecisionEntry { receipt_kind: receipt.kind_str().to_string(), class, from_limit, to_limit, dry_run }
+    DecisionEntry {
+        receipt_kind: receipt.kind_str().to_string(),
+        class,
+        from_limit,
+        to_limit,
+        dry_run,
+    }
 }
 
 /// The next-tick requeue for the horizontal path, keyed on the receipt — the peer of
@@ -1519,7 +1835,9 @@ pub fn replica_entry_for(receipt: &ReplicaReceipt, dry_run: bool) -> DecisionEnt
 #[must_use]
 pub fn replica_next_requeue(receipt: &ReplicaReceipt, cooldowns: &ClassCooldowns) -> Duration {
     let secs = match receipt {
-        ReplicaReceipt::Applied { .. } | ReplicaReceipt::ShadowWouldApply { .. } => cooldowns.restart_free,
+        ReplicaReceipt::Applied { .. } | ReplicaReceipt::ShadowWouldApply { .. } => {
+            cooldowns.restart_free
+        }
         ReplicaReceipt::DeferredScaleIn { .. } => cooldowns.restart_requiring,
         ReplicaReceipt::Observed { .. }
         | ReplicaReceipt::Cooldown { .. }
@@ -1543,21 +1861,48 @@ mod tests {
         assert!(EnvContext::default().is_empty());
 
         // env id only
-        apply_env_context(&mut st, &EnvContext { env_id: Some("deadbeef".into()), cost_remaining_cents: None });
+        apply_env_context(
+            &mut st,
+            &EnvContext {
+                env_id: Some("deadbeef".into()),
+                cost_remaining_cents: None,
+            },
+        );
         assert_eq!(st.observed_env_id.as_deref(), Some("deadbeef"));
         assert_eq!(st.observed_cost_remaining_cents, None);
 
         // cost remaining (incl. negative = over budget)
-        apply_env_context(&mut st, &EnvContext { env_id: None, cost_remaining_cents: Some(-250) });
-        assert_eq!(st.observed_env_id.as_deref(), Some("deadbeef"), "env id preserved");
+        apply_env_context(
+            &mut st,
+            &EnvContext {
+                env_id: None,
+                cost_remaining_cents: Some(-250),
+            },
+        );
+        assert_eq!(
+            st.observed_env_id.as_deref(),
+            Some("deadbeef"),
+            "env id preserved"
+        );
         assert_eq!(st.observed_cost_remaining_cents, Some(-250));
-        assert!(!EnvContext { env_id: None, cost_remaining_cents: Some(-250) }.is_empty());
+        assert!(
+            !EnvContext {
+                env_id: None,
+                cost_remaining_cents: Some(-250)
+            }
+            .is_empty()
+        );
     }
 
     /// Wrap a bare receipt in a minimal TickOutcome (no observation; the status
     /// per-arm fields under test don't need one).
     fn out(receipt: TickReceipt) -> TickOutcome {
-        TickOutcome { receipt, observed: None, policy: DisruptionPolicy::RestartFreeOnly, gate: test_live_gate() }
+        TickOutcome {
+            receipt,
+            observed: None,
+            policy: DisruptionPolicy::RestartFreeOnly,
+            gate: test_live_gate(),
+        }
     }
 
     /// Build a status from an outcome with the counters the DecisionLog would
@@ -1566,7 +1911,13 @@ mod tests {
     /// (Applied ⇒ carves 1, Conflict ⇒ conflicts 1, …) now that `status_for`
     /// consumes the count instead of computing it.
     fn status_of(o: &TickOutcome) -> BandStatus {
-        status_for(o, None, 0, None, CumulativeCounters::ZERO.fold(&entry_for(o)))
+        status_for(
+            o,
+            None,
+            0,
+            None,
+            CumulativeCounters::ZERO.fold(&entry_for(o)),
+        )
     }
 
     /// **The shadow REASON reaches the operator, and "dryRun" never does.**
@@ -1574,7 +1925,7 @@ mod tests {
     /// Every surface used to render a shadowed tick as "dryRun — nothing written".
     /// That string was false for every k8s band kind after `76924b0` retired the
     /// field, and it could not distinguish an operator's authored hold from a band
-    /// that FELL into shadow — the exact confusion that left six camelot-eks bands
+    /// that FELL into shadow — the exact confusion that left six private-estate-eks bands
     /// looking deliberately parked when they were actually broken.
     #[test]
     fn a_shadowed_status_names_why_and_never_says_dry_run() {
@@ -1584,20 +1935,48 @@ mod tests {
             (R::NotReady, "NOT AUTHORED"),
             (R::Stale, "NOT AUTHORED"),
             (R::Conflict, "NOT AUTHORED"),
-            (R::ConfirmPending { held_secs: 400, need_secs: 1800 }, "400s of 1800s"),
+            (
+                R::ConfirmPending {
+                    held_secs: 400,
+                    need_secs: 1800,
+                },
+                "400s of 1800s",
+            ),
             (R::Frozen, "freeze"),
             (R::IntentMalformed, "naming no author"),
         ] {
-            let s = status_of(&out(TickReceipt::ShadowWouldApply { from: 100, to: 250, reason }));
+            let s = status_of(&out(TickReceipt::ShadowWouldApply {
+                from: 100,
+                to: 250,
+                reason,
+            }));
             assert_eq!(s.phase.as_deref(), Some("ShadowWouldApply"));
-            assert_eq!(s.current_limit.as_deref(), Some("100"), "shadow mutates nothing");
+            assert_eq!(
+                s.current_limit.as_deref(),
+                Some("100"),
+                "shadow mutates nothing"
+            );
             let note = s.last_decision.unwrap_or_default();
-            assert!(note.contains(must_contain), "{reason:?} must explain itself, got {note:?}");
-            assert!(!note.contains("dryRun") && !note.contains("dry-run"), "the retired field is never the reason");
+            assert!(
+                note.contains(must_contain),
+                "{reason:?} must explain itself, got {note:?}"
+            );
+            assert!(
+                !note.contains("dryRun") && !note.contains("dry-run"),
+                "the retired field is never the reason"
+            );
 
-            let (_, ev_reason, msg) = event_for(&TickReceipt::ShadowWouldApply { from: 100, to: 250, reason }).unwrap();
+            let (_, ev_reason, msg) = event_for(&TickReceipt::ShadowWouldApply {
+                from: 100,
+                to: 250,
+                reason,
+            })
+            .unwrap();
             assert_eq!(ev_reason, "ShadowWouldApply");
-            assert!(msg.contains(must_contain), "the k8s Event carries the same reason");
+            assert!(
+                msg.contains(must_contain),
+                "the k8s Event carries the same reason"
+            );
         }
     }
 
@@ -1606,21 +1985,35 @@ mod tests {
     /// still counted as CONVERGED (it decided; the decision was "leave it").
     #[test]
     fn withheld_reclaim_is_reported_honestly_and_counts_as_converged() {
-        let o = out(TickReceipt::Observed { decision: Decision::ReclaimWithheld { current: 2048, reclaimable: 512 } });
+        let o = out(TickReceipt::Observed {
+            decision: Decision::ReclaimWithheld {
+                current: 2048,
+                reclaimable: 512,
+            },
+        });
         let s = status_of(&o);
         assert_eq!(s.phase.as_deref(), Some("ReclaimWithheld"));
         let note = s.last_decision.unwrap_or_default();
-        assert!(note.contains("512"), "the amount NOT taken is named, got {note:?}");
-        assert!(!note.contains("floor"), "and it is not dressed up as a floor");
+        assert!(
+            note.contains("512"),
+            "the amount NOT taken is named, got {note:?}"
+        );
+        assert!(
+            !note.contains("floor"),
+            "and it is not dressed up as a floor"
+        );
         let converged = conditions_for(&o, &[], None)
             .into_iter()
             .find(|c| c.type_ == "Converged")
             .expect("Converged condition");
-        assert_eq!(converged.status, "True", "a withheld reclaim is a RESTING state");
+        assert_eq!(
+            converged.status, "True",
+            "a withheld reclaim is a RESTING state"
+        );
     }
 
     /// **The 2026-07-26 deploy hazard, pinned.** `coredns-cpu` and
-    /// `ebs-csi-controller-cpu` on camelot-eks target workloads that declare NO
+    /// `ebs-csi-controller-cpu` on one cluster-eks target workloads that declare NO
     /// cpu limit — precisely the case the bound-introduction guard exists to
     /// respect. `Decision::NoLimit` used to drive `Ready=False`, whose
     /// [`STUCK_AFTER_SECS`] timer then classified both bands
@@ -1638,19 +2031,39 @@ mod tests {
     /// `writeIntent` away.
     #[test]
     fn no_limit_is_unsupported_not_stuck_in_either_gate() {
-        let o = out(TickReceipt::Observed { decision: Decision::NoLimit });
+        let o = out(TickReceipt::Observed {
+            decision: Decision::NoLimit,
+        });
         let conds = conditions_for(&o, &[], None);
-        let find = |t: &str| conds.iter().find(|c| c.type_ == t).expect("condition").clone();
+        let find = |t: &str| {
+            conds
+                .iter()
+                .find(|c| c.type_ == t)
+                .expect("condition")
+                .clone()
+        };
 
         // READY stays TRUE: the guard fires only after a clean observe.
-        assert_eq!(find("Ready").status, "True", "a NoLimit tick observed the target fine");
+        assert_eq!(
+            find("Ready").status,
+            "True",
+            "a NoLimit tick observed the target fine"
+        );
         // SUPPORTED carries the verdict, with a reason naming the actual lever.
         let supported = find("Supported");
         assert_eq!(supported.status, "False");
         assert_eq!(supported.reason, "NoBoundDeclared");
-        assert!(supported.message.contains("boundIntroduction"), "the message names the lever: {:?}", supported.message);
+        assert!(
+            supported.message.contains("boundIntroduction"),
+            "the message names the lever: {:?}",
+            supported.message
+        );
         // …and does NOT claim a StorageClass problem, which this is not.
-        assert!(!supported.message.contains("StorageClass"), "wrong cause: {:?}", supported.message);
+        assert!(
+            !supported.message.contains("StorageClass"),
+            "wrong cause: {:?}",
+            supported.message
+        );
 
         // The verdict, far past the stuck threshold, in BOTH gate modes.
         let far_future = "2999-01-01T00:00:00Z";
@@ -1674,7 +2087,10 @@ mod tests {
             provisioner: "rancher.io/local-path".into(),
         });
         let conds = conditions_for(&o, &[], None);
-        let supported = conds.iter().find(|c| c.type_ == "Supported").expect("Supported");
+        let supported = conds
+            .iter()
+            .find(|c| c.type_ == "Supported")
+            .expect("Supported");
         assert_eq!(supported.status, "False");
         assert_eq!(supported.reason, "StorageClassUnsupported");
         assert!(supported.message.contains("StorageClass"));
@@ -1682,47 +2098,106 @@ mod tests {
         // `Observable=False`. It asserted that on `Ready` until 2026-08-07, because
         // `Ready` WAS observability; the comment was already describing the right
         // fact, the condition was just the wrong one to carry it.
-        assert_eq!(conds.iter().find(|c| c.type_ == "Observable").expect("Observable").status, "False");
+        assert_eq!(
+            conds
+                .iter()
+                .find(|c| c.type_ == "Observable")
+                .expect("Observable")
+                .status,
+            "False"
+        );
         // Ready stays TRUE: the band is accepted and owned, and "can never converge
         // without operator action" is `Supported`'s job — exactly as the 2026-07-26
         // `NoLimit` fix established. Those two arms disagreed on Ready until now.
-        assert_eq!(conds.iter().find(|c| c.type_ == "Ready").expect("Ready").status, "True");
+        assert_eq!(
+            conds
+                .iter()
+                .find(|c| c.type_ == "Ready")
+                .expect("Ready")
+                .status,
+            "True"
+        );
     }
 
     #[test]
     fn events_are_typed_and_transition_gated() {
         use breathe_provider::DisruptionClass::{RestartFree, RestartRequiring};
         // a carve is a Normal Grew/Shrank event…
-        let (k, reason, _) = event_for(&TickReceipt::Applied { from: 1, to: 2, class: RestartFree }).unwrap();
+        let (k, reason, _) = event_for(&TickReceipt::Applied {
+            from: 1,
+            to: 2,
+            class: RestartFree,
+        })
+        .unwrap();
         assert_eq!((k, reason), (EventKind::Normal, "Grew"));
         // …and ALWAYS emits, even when the phase didn't change (each carve is an event).
-        assert!(should_emit_event(&TickReceipt::Applied { from: 1, to: 2, class: RestartFree }, Some("Growing"), Some("Growing")));
+        assert!(should_emit_event(
+            &TickReceipt::Applied {
+                from: 1,
+                to: 2,
+                class: RestartFree
+            },
+            Some("Growing"),
+            Some("Growing")
+        ));
         // a deferred crossing is a Warning.
-        let (k, reason, _) = event_for(&TickReceipt::DeferredWouldRestart { from: 1, to: 2, class: RestartRequiring }).unwrap();
+        let (k, reason, _) = event_for(&TickReceipt::DeferredWouldRestart {
+            from: 1,
+            to: 2,
+            class: RestartRequiring,
+        })
+        .unwrap();
         assert_eq!((k, reason), (EventKind::Warning, "DeferredCrossing"));
         // a resting Hold emits NOTHING; Cooldown likewise.
-        assert!(event_for(&TickReceipt::Observed { decision: Decision::Hold }).is_none());
+        assert!(
+            event_for(&TickReceipt::Observed {
+                decision: Decision::Hold
+            })
+            .is_none()
+        );
         assert!(event_for(&TickReceipt::Cooldown).is_none());
         // a non-carve at the SAME phase is suppressed; a phase CHANGE emits.
-        let atfloor = TickReceipt::Observed { decision: Decision::NoSafeShrink { current: 9 } };
-        assert!(!should_emit_event(&atfloor, Some("AtFloor"), Some("AtFloor")));
-        assert!(should_emit_event(&atfloor, Some("AtFloor"), Some("Holding")));
+        let atfloor = TickReceipt::Observed {
+            decision: Decision::NoSafeShrink { current: 9 },
+        };
+        assert!(!should_emit_event(
+            &atfloor,
+            Some("AtFloor"),
+            Some("AtFloor")
+        ));
+        assert!(should_emit_event(
+            &atfloor,
+            Some("AtFloor"),
+            Some("Holding")
+        ));
     }
 
     #[test]
     fn applied_growth_vs_shrink_is_reported_directionally() {
         use breathe_provider::DisruptionClass::RestartFree;
-        let grow = status_of(&out(TickReceipt::Applied { from: 100, to: 200, class: RestartFree }));
+        let grow = status_of(&out(TickReceipt::Applied {
+            from: 100,
+            to: 200,
+            class: RestartFree,
+        }));
         assert_eq!(grow.phase.as_deref(), Some("Growing"));
         assert_eq!(grow.current_limit.as_deref(), Some("200"));
         assert_eq!(grow.carves_total, Some(1));
-        let shrink = status_of(&out(TickReceipt::Applied { from: 200, to: 100, class: RestartFree }));
+        let shrink = status_of(&out(TickReceipt::Applied {
+            from: 200,
+            to: 100,
+            class: RestartFree,
+        }));
         assert_eq!(shrink.phase.as_deref(), Some("Shrinking"));
     }
 
     #[test]
     fn shadow_reports_what_would_have_happened_without_changing_the_limit() {
-        let s = status_of(&out(TickReceipt::ShadowWouldApply { from: 100, to: 250, reason: breathe_provider::ShadowReason::ModeShadow }));
+        let s = status_of(&out(TickReceipt::ShadowWouldApply {
+            from: 100,
+            to: 250,
+            reason: breathe_provider::ShadowReason::ModeShadow,
+        }));
         assert_eq!(s.phase.as_deref(), Some("ShadowWouldApply"));
         // the reported current limit is the UNCHANGED value — shadow mutates nothing.
         assert_eq!(s.current_limit.as_deref(), Some("100"));
@@ -1731,7 +2206,9 @@ mod tests {
 
     #[test]
     fn conflict_records_the_yielded_to_manager() {
-        let s = status_of(&out(TickReceipt::Conflict { manager: "helm".into() }));
+        let s = status_of(&out(TickReceipt::Conflict {
+            manager: "helm".into(),
+        }));
         assert_eq!(s.conflicts_total, Some(1));
         assert_eq!(s.phase.as_deref(), Some("Conflict"));
         assert_eq!(s.conflict_manager.as_deref(), Some("helm"));
@@ -1749,8 +2226,17 @@ mod tests {
             provisioner: "rancher.io/local-path".into(),
         }));
         assert_eq!(s.phase.as_deref(), Some("Unsupported"));
-        assert!(s.last_decision.as_deref().unwrap().contains("rancher.io/local-path"));
-        let supported = s.conditions.iter().find(|c| c.type_ == "Supported").expect("Supported condition present");
+        assert!(
+            s.last_decision
+                .as_deref()
+                .unwrap()
+                .contains("rancher.io/local-path")
+        );
+        let supported = s
+            .conditions
+            .iter()
+            .find(|c| c.type_ == "Supported")
+            .expect("Supported condition present");
         assert_eq!(supported.status, "False");
         assert_eq!(supported.reason, "StorageClassUnsupported");
         // not observable either — there is nothing further to reason on. (Asserted
@@ -1769,8 +2255,16 @@ mod tests {
     #[test]
     fn a_normal_receipt_keeps_the_supported_condition_true() {
         use breathe_provider::DisruptionClass::RestartFree;
-        let s = status_of(&out(TickReceipt::Applied { from: 1, to: 2, class: RestartFree }));
-        let supported = s.conditions.iter().find(|c| c.type_ == "Supported").expect("Supported condition present");
+        let s = status_of(&out(TickReceipt::Applied {
+            from: 1,
+            to: 2,
+            class: RestartFree,
+        }));
+        let supported = s
+            .conditions
+            .iter()
+            .find(|c| c.type_ == "Supported")
+            .expect("Supported condition present");
         assert_eq!(supported.status, "True");
         assert_eq!(supported.reason, "CapabilityOk");
     }
@@ -1782,15 +2276,25 @@ mod tests {
         // as a breathe-side fault) and never silently indistinguishable from a
         // genuine MetricsMissing/ApiTransient outage.
         use breathe_provider::ProviderError;
-        let s = status_of(&out(TickReceipt::Error { error: ProviderError::TargetNotFound }));
+        let s = status_of(&out(TickReceipt::Error {
+            error: ProviderError::TargetNotFound,
+        }));
         assert_eq!(s.phase.as_deref(), Some("TargetNotFound"));
         assert!(s.last_decision.as_deref().unwrap().contains("self-heal"));
-        let target_found = s.conditions.iter().find(|c| c.type_ == "TargetFound").expect("TargetFound condition present");
+        let target_found = s
+            .conditions
+            .iter()
+            .find(|c| c.type_ == "TargetFound")
+            .expect("TargetFound condition present");
         assert_eq!(target_found.status, "False");
         assert_eq!(target_found.reason, "TargetMissing");
         // Supported stays True — this is not a "can never converge" verdict, it is
         // self-healing (distinct from CapabilityMissing's structural gap).
-        let supported = s.conditions.iter().find(|c| c.type_ == "Supported").unwrap();
+        let supported = s
+            .conditions
+            .iter()
+            .find(|c| c.type_ == "Supported")
+            .unwrap();
         assert_eq!(supported.status, "True");
     }
 
@@ -1802,23 +2306,36 @@ mod tests {
         // specific TargetNotFound provider error gets the distinct treatment".
         //
         // What that missed: `Error` then became the RESTING state. Measured on
-        // camelot-eks 2026-08-07 — 115 of 115 bands in phase `Error` with a null
+        // private-estate-eks 2026-08-07 — 115 of 115 bands in phase `Error` with a null
         // message, because metrics-server was floored at 0 by the park layer. A
         // phase every band is always in carries no signal at all, so a genuinely
         // broken band would have been indistinguishable from the resting fleet.
         // That is the same "failure mode identical to the success mode" defect the
         // TargetNotFound arm was itself introduced to fix.
         use breathe_provider::ProviderError;
-        let s = status_of(&out(TickReceipt::Error { error: ProviderError::MetricsMissing }));
+        let s = status_of(&out(TickReceipt::Error {
+            error: ProviderError::MetricsMissing,
+        }));
         assert_eq!(s.phase.as_deref(), Some("Unobservable"));
-        assert!(s.last_decision.as_deref().unwrap().contains("metrics pipeline"));
+        assert!(
+            s.last_decision
+                .as_deref()
+                .unwrap()
+                .contains("metrics pipeline")
+        );
         // The contrast this test was originally written to hold STILL holds, and is
         // why the arm is distinct from TargetNotFound rather than merged with it:
         // the pods exist, the targetRef resolved, only the usage is unreadable.
-        let target_found = s.conditions.iter().find(|c| c.type_ == "TargetFound").expect("TargetFound condition present");
+        let target_found = s
+            .conditions
+            .iter()
+            .find(|c| c.type_ == "TargetFound")
+            .expect("TargetFound condition present");
         assert_eq!(target_found.status, "True");
         // And the generic arm is NOT hollowed out — a real API fault still says Error.
-        let api = status_of(&out(TickReceipt::Error { error: ProviderError::ApiPermanent("boom".into()) }));
+        let api = status_of(&out(TickReceipt::Error {
+            error: ProviderError::ApiPermanent("boom".into()),
+        }));
         assert_eq!(api.phase.as_deref(), Some("Error"));
     }
 
@@ -1829,18 +2346,30 @@ mod tests {
     /// kstatus reads, so it is what decides whether helm-controller / Flux / Argo
     /// consider the object to have come up. With `Ready = observable`, a
     /// metrics-server outage made every band report NOT-CAME-UP, a forced
-    /// `helm upgrade` of `camelot-build/sui` blocked its full 5m timeout, and
+    /// `helm upgrade` of `private-estate-build/sui` blocked its full 5m timeout, and
     /// Flux's `remediation.strategy: uninstall` deleted and reinstalled the
     /// release. An observability declaration must never be able to become an
     /// availability precondition.
     #[test]
     fn a_blind_band_is_accepted_not_failed() {
         use breathe_provider::ProviderError;
-        let o = out(TickReceipt::Error { error: ProviderError::MetricsMissing });
+        let o = out(TickReceipt::Error {
+            error: ProviderError::MetricsMissing,
+        });
         let conds = conditions_for(&o, &[], None);
-        let find = |t: &str| conds.iter().find(|c| c.type_ == t).expect("condition").clone();
+        let find = |t: &str| {
+            conds
+                .iter()
+                .find(|c| c.type_ == t)
+                .expect("condition")
+                .clone()
+        };
 
-        assert_eq!(find("Ready").status, "True", "a band with no metric is ACCEPTED, not failed");
+        assert_eq!(
+            find("Ready").status,
+            "True",
+            "a band with no metric is ACCEPTED, not failed"
+        );
         assert_eq!(find("Ready").reason, "Accepted");
         // …and the real fact is carried losslessly by the condition built for it.
         assert_eq!(find("Observable").status, "False");
@@ -1862,10 +2391,16 @@ mod tests {
     #[test]
     fn a_blind_band_never_reads_as_stuck_by_either_route() {
         use breathe_provider::ProviderError;
-        let o = out(TickReceipt::Error { error: ProviderError::MetricsMissing });
+        let o = out(TickReceipt::Error {
+            error: ProviderError::MetricsMissing,
+        });
         let conds = conditions_for(&o, &[], None);
         assert_eq!(
-            conds.iter().find(|c| c.type_ == "Converged").expect("Converged").status,
+            conds
+                .iter()
+                .find(|c| c.type_ == "Converged")
+                .expect("Converged")
+                .status,
             "False",
             "precondition: a blind band really is un-converged — which is exactly why the \
              Converged fall-through needs guarding, and why this test is not redundant"
@@ -1894,18 +2429,51 @@ mod tests {
     #[test]
     fn target_not_found_is_the_only_arm_that_clears_ready() {
         use breathe_provider::ProviderError;
-        let conds = conditions_for(&out(TickReceipt::Error { error: ProviderError::TargetNotFound }), &[], None);
-        let find = |t: &str| conds.iter().find(|c| c.type_ == t).expect("condition").clone();
+        let conds = conditions_for(
+            &out(TickReceipt::Error {
+                error: ProviderError::TargetNotFound,
+            }),
+            &[],
+            None,
+        );
+        let find = |t: &str| {
+            conds
+                .iter()
+                .find(|c| c.type_ == t)
+                .expect("condition")
+                .clone()
+        };
         assert_eq!(find("Ready").status, "False");
         assert_eq!(find("Ready").reason, "TargetMissing");
 
         // Every other non-observable receipt keeps Ready=True. If this loop ever
         // goes red, someone has re-coupled acceptance to achievement.
         for (label, r) in [
-            ("MetricsMissing", TickReceipt::Error { error: ProviderError::MetricsMissing }),
-            ("ApiTransient", TickReceipt::Error { error: ProviderError::ApiTransient("x".into()) }),
-            ("ApiPermanent", TickReceipt::Error { error: ProviderError::ApiPermanent("x".into()) }),
-            ("MetricUnrepresentable", TickReceipt::MetricUnrepresentable { used: 9, capacity: 1 }),
+            (
+                "MetricsMissing",
+                TickReceipt::Error {
+                    error: ProviderError::MetricsMissing,
+                },
+            ),
+            (
+                "ApiTransient",
+                TickReceipt::Error {
+                    error: ProviderError::ApiTransient("x".into()),
+                },
+            ),
+            (
+                "ApiPermanent",
+                TickReceipt::Error {
+                    error: ProviderError::ApiPermanent("x".into()),
+                },
+            ),
+            (
+                "MetricUnrepresentable",
+                TickReceipt::MetricUnrepresentable {
+                    used: 9,
+                    capacity: 1,
+                },
+            ),
             (
                 "CapabilityMissing",
                 TickReceipt::CapabilityMissing {
@@ -1914,18 +2482,29 @@ mod tests {
                     provisioner: "p".into(),
                 },
             ),
-            ("NoLimit", TickReceipt::Observed { decision: Decision::NoLimit }),
+            (
+                "NoLimit",
+                TickReceipt::Observed {
+                    decision: Decision::NoLimit,
+                },
+            ),
         ] {
             let c = conditions_for(&out(r), &[], None);
             let ready = c.iter().find(|c| c.type_ == "Ready").expect("Ready");
-            assert_eq!(ready.status, "True", "{label} must stay Ready — it is accepted, merely blind or unsupported");
+            assert_eq!(
+                ready.status, "True",
+                "{label} must stay Ready — it is accepted, merely blind or unsupported"
+            );
         }
     }
 
     #[test]
     fn target_not_found_event_is_a_distinct_warning_not_reconcile_error() {
         use breathe_provider::ProviderError;
-        let (kind, reason, note) = event_for(&TickReceipt::Error { error: ProviderError::TargetNotFound }).unwrap();
+        let (kind, reason, note) = event_for(&TickReceipt::Error {
+            error: ProviderError::TargetNotFound,
+        })
+        .unwrap();
         assert_eq!(kind, EventKind::Warning);
         assert_eq!(reason, "TargetNotFound");
         assert_ne!(reason, "ReconcileError");
@@ -1937,11 +2516,21 @@ mod tests {
         use breathe_provider::ClassCooldowns;
         let cd = ClassCooldowns::default();
         let backoff = next_requeue(
-            &TickReceipt::CapabilityMissing { volume_expansion: false, per_volume_metrics: false, provisioner: "x".into() },
+            &TickReceipt::CapabilityMissing {
+                volume_expansion: false,
+                per_volume_metrics: false,
+                provisioner: "x".into(),
+            },
             &cd,
         );
-        assert!(backoff > Duration::from_secs(cd.restart_requiring), "must back off PAST every existing class's cooldown");
-        assert_eq!(backoff, Duration::from_secs(CAPABILITY_MISSING_REQUEUE_SECS));
+        assert!(
+            backoff > Duration::from_secs(cd.restart_requiring),
+            "must back off PAST every existing class's cooldown"
+        );
+        assert_eq!(
+            backoff,
+            Duration::from_secs(CAPABILITY_MISSING_REQUEUE_SECS)
+        );
     }
 
     #[test]
@@ -1960,11 +2549,23 @@ mod tests {
     #[test]
     fn deferred_crossing_maps_to_a_first_class_phase() {
         use breathe_provider::DisruptionClass;
-        let s = status_of(&out(TickReceipt::DeferredWouldRestart { from: 1 << 30, to: 2 << 30, class: DisruptionClass::RestartRequiring }));
+        let s = status_of(&out(TickReceipt::DeferredWouldRestart {
+            from: 1 << 30,
+            to: 2 << 30,
+            class: DisruptionClass::RestartRequiring,
+        }));
         assert_eq!(s.phase.as_deref(), Some("DeferredWouldRestart"));
         // the limit is UNCHANGED — the crossing was refused.
-        assert_eq!(s.current_limit.as_deref(), Some((1u64 << 30).to_string().as_str()));
-        assert!(s.last_decision.as_deref().unwrap().contains("RestartRequiring"));
+        assert_eq!(
+            s.current_limit.as_deref(),
+            Some((1u64 << 30).to_string().as_str())
+        );
+        assert!(
+            s.last_decision
+                .as_deref()
+                .unwrap()
+                .contains("RestartRequiring")
+        );
     }
 
     #[test]
@@ -1973,10 +2574,27 @@ mod tests {
         let cd = ClassCooldowns::default();
         assert!(cd.well_ordered());
         // a permitted carve looks again at the fast restart-free cadence.
-        assert_eq!(next_requeue(&TickReceipt::Applied { from: 1, to: 2, class: DisruptionClass::RestartFree }, &cd), Duration::from_secs(cd.restart_free));
+        assert_eq!(
+            next_requeue(
+                &TickReceipt::Applied {
+                    from: 1,
+                    to: 2,
+                    class: DisruptionClass::RestartFree
+                },
+                &cd
+            ),
+            Duration::from_secs(cd.restart_free)
+        );
         // a refused full-roll crossing backs off the longest.
         assert_eq!(
-            next_requeue(&TickReceipt::DeferredWouldRestart { from: 1, to: 2, class: DisruptionClass::RestartRequiring }, &cd),
+            next_requeue(
+                &TickReceipt::DeferredWouldRestart {
+                    from: 1,
+                    to: 2,
+                    class: DisruptionClass::RestartRequiring
+                },
+                &cd
+            ),
             Duration::from_secs(cd.restart_requiring)
         );
     }
@@ -1991,14 +2609,27 @@ mod tests {
         assert_eq!(s.phase.as_deref(), Some("Dormant"));
         assert!(s.last_decision.as_deref().unwrap().contains("no pods"));
         let ready = s.conditions.iter().find(|c| c.type_ == "Ready").unwrap();
-        let converged = s.conditions.iter().find(|c| c.type_ == "Converged").unwrap();
-        assert_eq!(ready.status, "True", "a dormant target is healthy, not failed");
-        assert_eq!(converged.status, "True", "an empty target is trivially at rest");
+        let converged = s
+            .conditions
+            .iter()
+            .find(|c| c.type_ == "Converged")
+            .unwrap();
+        assert_eq!(
+            ready.status, "True",
+            "a dormant target is healthy, not failed"
+        );
+        assert_eq!(
+            converged.status, "True",
+            "an empty target is trivially at rest"
+        );
         // no event spam for a resting state.
         assert!(event_for(&TickReceipt::Dormant).is_none());
         // re-checks at the fast cadence (snappy dormant→active transition).
         let cd = ClassCooldowns::default();
-        assert_eq!(next_requeue(&TickReceipt::Dormant, &cd), Duration::from_secs(cd.restart_free));
+        assert_eq!(
+            next_requeue(&TickReceipt::Dormant, &cd),
+            Duration::from_secs(cd.restart_free)
+        );
         // never counts as a carve / deferral / conflict.
         assert_eq!(s.carves_total, Some(0));
         assert_eq!(s.deferrals_total, Some(0));
@@ -2011,7 +2642,11 @@ mod replica_tests {
     use breathe_control::replica::{ReplicaDecision, ReplicaTickPlan};
 
     fn plan(decision: ReplicaDecision, actuate: Option<u32>, deferred: bool) -> ReplicaTickPlan {
-        ReplicaTickPlan { decision, actuate, deferred }
+        ReplicaTickPlan {
+            decision,
+            actuate,
+            deferred,
+        }
     }
 
     #[test]
@@ -2054,24 +2689,60 @@ mod replica_tests {
     #[test]
     fn applied_status_reports_growing_and_stamps_a_carve() {
         let r = ReplicaReceipt::Applied { from: 4, to: 6 };
-        let s = replica_status_for(&r, 1.3, 0, false, DisruptionPolicy::AllowRestart, None, 60, Some(2), CumulativeCounters::default());
+        let s = replica_status_for(
+            &r,
+            1.3,
+            0,
+            false,
+            DisruptionPolicy::AllowRestart,
+            None,
+            60,
+            Some(2),
+            CumulativeCounters::default(),
+        );
         assert_eq!(s.phase.as_deref(), Some("Growing"));
         assert_eq!(s.current_limit.as_deref(), Some("6"));
         assert_eq!(s.last_action_class.as_deref(), Some("RestartFree"));
-        assert!(s.last_change_epoch.is_some(), "an applied carve stamps the change epoch");
+        assert!(
+            s.last_change_epoch.is_some(),
+            "an applied carve stamps the change epoch"
+        );
         assert_eq!(s.observed_generation, Some(2));
         // Ready=True so kubectl wait / the confirm gate see an observable band.
-        assert_eq!(s.conditions.iter().find(|c| c.type_ == "Ready").map(|c| c.status.as_str()), Some("True"));
+        assert_eq!(
+            s.conditions
+                .iter()
+                .find(|c| c.type_ == "Ready")
+                .map(|c| c.status.as_str()),
+            Some("True")
+        );
     }
 
     #[test]
     fn holding_status_is_confirm_gate_passable() {
         // A resting Holding tick must present exactly the shape the ShadowConfirmEffect
         // confirm gate keys on: Ready=True ∧ Stale=False ∧ Conflict=False.
-        let r = ReplicaReceipt::Observed { decision: ReplicaDecision::Hold { current: 3 } };
-        let s = replica_status_for(&r, 1.0, 0, true, DisruptionPolicy::RestartFreeOnly, None, 60, None, CumulativeCounters::default());
+        let r = ReplicaReceipt::Observed {
+            decision: ReplicaDecision::Hold { current: 3 },
+        };
+        let s = replica_status_for(
+            &r,
+            1.0,
+            0,
+            true,
+            DisruptionPolicy::RestartFreeOnly,
+            None,
+            60,
+            None,
+            CumulativeCounters::default(),
+        );
         assert_eq!(s.phase.as_deref(), Some("Holding"));
-        let cond = |t: &str| s.conditions.iter().find(|c| c.type_ == t).map(|c| c.status.as_str());
+        let cond = |t: &str| {
+            s.conditions
+                .iter()
+                .find(|c| c.type_ == t)
+                .map(|c| c.status.as_str())
+        };
         assert_eq!(cond("Ready"), Some("True"));
         assert_eq!(cond("Converged"), Some("True"));
         assert_eq!(cond("Stale"), Some("False"));
@@ -2081,36 +2752,113 @@ mod replica_tests {
 
     #[test]
     fn stale_status_holds_and_marks_stale() {
-        let r = ReplicaReceipt::Stale { staleness_secs: 120, current: 4 };
-        let s = replica_status_for(&r, 1.0, 120, false, DisruptionPolicy::AllowRestart, None, 60, None, CumulativeCounters::default());
+        let r = ReplicaReceipt::Stale {
+            staleness_secs: 120,
+            current: 4,
+        };
+        let s = replica_status_for(
+            &r,
+            1.0,
+            120,
+            false,
+            DisruptionPolicy::AllowRestart,
+            None,
+            60,
+            None,
+            CumulativeCounters::default(),
+        );
         assert_eq!(s.phase.as_deref(), Some("Stale"));
-        assert_eq!(s.current_limit.as_deref(), Some("4"), "a stale tick reports the live count, unchanged");
-        assert_eq!(s.conditions.iter().find(|c| c.type_ == "Stale").map(|c| c.status.as_str()), Some("True"));
+        assert_eq!(
+            s.current_limit.as_deref(),
+            Some("4"),
+            "a stale tick reports the live count, unchanged"
+        );
+        assert_eq!(
+            s.conditions
+                .iter()
+                .find(|c| c.type_ == "Stale")
+                .map(|c| c.status.as_str()),
+            Some("True")
+        );
     }
 
     #[test]
     fn deferred_scale_in_reports_deferred_would_restart() {
         let r = ReplicaReceipt::DeferredScaleIn { from: 10, to: 9 };
-        let s = replica_status_for(&r, 0.5, 0, false, DisruptionPolicy::RestartFreeOnly, None, 60, None, CumulativeCounters::default());
+        let s = replica_status_for(
+            &r,
+            0.5,
+            0,
+            false,
+            DisruptionPolicy::RestartFreeOnly,
+            None,
+            60,
+            None,
+            CumulativeCounters::default(),
+        );
         assert_eq!(s.phase.as_deref(), Some("DeferredWouldRestart"));
-        assert_eq!(s.current_limit.as_deref(), Some("10"), "the crossing was refused — count unchanged");
-        assert_eq!(s.conditions.iter().find(|c| c.type_ == "Throttled").map(|c| c.status.as_str()), Some("True"));
+        assert_eq!(
+            s.current_limit.as_deref(),
+            Some("10"),
+            "the crossing was refused — count unchanged"
+        );
+        assert_eq!(
+            s.conditions
+                .iter()
+                .find(|c| c.type_ == "Throttled")
+                .map(|c| c.status.as_str()),
+            Some("True")
+        );
     }
 
     #[test]
     fn entry_for_maps_receipts_to_counter_classes() {
-        assert_eq!(replica_entry_for(&ReplicaReceipt::Applied { from: 2, to: 3 }, false).class, CounterClass::Carve);
-        assert_eq!(replica_entry_for(&ReplicaReceipt::DeferredScaleIn { from: 3, to: 2 }, false).class, CounterClass::Deferral);
-        assert_eq!(replica_entry_for(&ReplicaReceipt::Conflict { current: 3 }, false).class, CounterClass::Conflict);
-        assert_eq!(replica_entry_for(&ReplicaReceipt::Stale { staleness_secs: 1, current: 3 }, false).class, CounterClass::NoCount);
+        assert_eq!(
+            replica_entry_for(&ReplicaReceipt::Applied { from: 2, to: 3 }, false).class,
+            CounterClass::Carve
+        );
+        assert_eq!(
+            replica_entry_for(&ReplicaReceipt::DeferredScaleIn { from: 3, to: 2 }, false).class,
+            CounterClass::Deferral
+        );
+        assert_eq!(
+            replica_entry_for(&ReplicaReceipt::Conflict { current: 3 }, false).class,
+            CounterClass::Conflict
+        );
+        assert_eq!(
+            replica_entry_for(
+                &ReplicaReceipt::Stale {
+                    staleness_secs: 1,
+                    current: 3
+                },
+                false
+            )
+            .class,
+            CounterClass::NoCount
+        );
     }
 
     #[test]
     fn next_requeue_is_fast_for_carves_and_backs_off_a_deferral() {
         let cd = ClassCooldowns::default();
-        assert_eq!(replica_next_requeue(&ReplicaReceipt::Applied { from: 2, to: 3 }, &cd), Duration::from_secs(cd.restart_free));
-        assert_eq!(replica_next_requeue(&ReplicaReceipt::DeferredScaleIn { from: 3, to: 2 }, &cd), Duration::from_secs(cd.restart_requiring));
-        assert_eq!(replica_next_requeue(&ReplicaReceipt::Stale { staleness_secs: 9, current: 2 }, &cd), Duration::from_secs(cd.restart_conditional));
+        assert_eq!(
+            replica_next_requeue(&ReplicaReceipt::Applied { from: 2, to: 3 }, &cd),
+            Duration::from_secs(cd.restart_free)
+        );
+        assert_eq!(
+            replica_next_requeue(&ReplicaReceipt::DeferredScaleIn { from: 3, to: 2 }, &cd),
+            Duration::from_secs(cd.restart_requiring)
+        );
+        assert_eq!(
+            replica_next_requeue(
+                &ReplicaReceipt::Stale {
+                    staleness_secs: 9,
+                    current: 2
+                },
+                &cd
+            ),
+            Duration::from_secs(cd.restart_conditional)
+        );
     }
 }
 
@@ -2154,7 +2902,10 @@ mod health_tests {
             cond("Conflict", "False", T0),
             cond("Supported", "True", T0),
         ];
-        assert_eq!(health_verdict(&conditions, NOW_FAR, STUCK_AFTER_SECS, false), HealthVerdict::Healthy);
+        assert_eq!(
+            health_verdict(&conditions, NOW_FAR, STUCK_AFTER_SECS, false),
+            HealthVerdict::Healthy
+        );
     }
 
     #[test]
@@ -2165,7 +2916,9 @@ mod health_tests {
         ];
         assert_eq!(
             health_verdict(&conditions, NOW_FAR, STUCK_AFTER_SECS, false),
-            HealthVerdict::Unsupported { reason: "Supported is False".into() }
+            HealthVerdict::Unsupported {
+                reason: "Supported is False".into()
+            }
         );
     }
 
@@ -2173,7 +2926,11 @@ mod health_tests {
     fn target_not_found_is_immediate_never_waits_for_the_stuck_timer() {
         // TargetFound=False, well UNDER the stuck threshold — still reported as
         // TargetNotFound immediately (task #217), never Healthy-until-stuck.
-        let conditions = vec![cond("Ready", "False", T0), cond("Supported", "True", T0), cond("TargetFound", "False", T0)];
+        let conditions = vec![
+            cond("Ready", "False", T0),
+            cond("Supported", "True", T0),
+            cond("TargetFound", "False", T0),
+        ];
         assert_eq!(
             health_verdict(&conditions, NOW_NEAR, STUCK_AFTER_SECS, false),
             HealthVerdict::TargetNotFound { since_secs: 600 }
@@ -2184,7 +2941,11 @@ mod health_tests {
     fn target_not_found_takes_priority_over_a_stuck_ready() {
         // Ready=False would ALSO be Stuck-eligible past the threshold — TargetFound
         // takes priority, exactly like Supported does, so the honest arm wins.
-        let conditions = vec![cond("Ready", "False", T0), cond("Supported", "True", T0), cond("TargetFound", "False", T0)];
+        let conditions = vec![
+            cond("Ready", "False", T0),
+            cond("Supported", "True", T0),
+            cond("TargetFound", "False", T0),
+        ];
         assert_eq!(
             health_verdict(&conditions, NOW_FAR, STUCK_AFTER_SECS, false),
             HealthVerdict::TargetNotFound { since_secs: 3600 }
@@ -2200,13 +2961,19 @@ mod health_tests {
             cond("Supported", "True", T0),
             cond("TargetFound", "True", T0),
         ];
-        assert_eq!(health_verdict(&conditions, NOW_FAR, STUCK_AFTER_SECS, false), HealthVerdict::Healthy);
+        assert_eq!(
+            health_verdict(&conditions, NOW_FAR, STUCK_AFTER_SECS, false),
+            HealthVerdict::Healthy
+        );
     }
 
     #[test]
     fn not_yet_stuck_before_the_threshold_elapses() {
         let conditions = vec![cond("Ready", "False", T0), cond("Supported", "True", T0)];
-        assert_eq!(health_verdict(&conditions, NOW_NEAR, STUCK_AFTER_SECS, false), HealthVerdict::Healthy);
+        assert_eq!(
+            health_verdict(&conditions, NOW_NEAR, STUCK_AFTER_SECS, false),
+            HealthVerdict::Healthy
+        );
     }
 
     #[test]
@@ -2214,7 +2981,11 @@ mod health_tests {
         let conditions = vec![cond("Ready", "False", T0), cond("Supported", "True", T0)];
         assert_eq!(
             health_verdict(&conditions, NOW_FAR, STUCK_AFTER_SECS, false),
-            HealthVerdict::Stuck { condition: "Ready".into(), since_secs: 3600, reason: "Ready is False".into() }
+            HealthVerdict::Stuck {
+                condition: "Ready".into(),
+                since_secs: 3600,
+                reason: "Ready is False".into()
+            }
         );
     }
 
@@ -2225,7 +2996,11 @@ mod health_tests {
         let conditions = vec![cond("Ready", "False", T0), cond("Supported", "True", T0)];
         assert_eq!(
             health_verdict(&conditions, NOW_FAR, STUCK_AFTER_SECS, true),
-            HealthVerdict::Stuck { condition: "Ready".into(), since_secs: 3600, reason: "Ready is False".into() }
+            HealthVerdict::Stuck {
+                condition: "Ready".into(),
+                since_secs: 3600,
+                reason: "Ready is False".into()
+            }
         );
     }
 
@@ -2239,7 +3014,11 @@ mod health_tests {
         ];
         assert_eq!(
             health_verdict(&conditions, NOW_FAR, STUCK_AFTER_SECS, false),
-            HealthVerdict::Stuck { condition: "Converged".into(), since_secs: 3600, reason: "Converged is False".into() }
+            HealthVerdict::Stuck {
+                condition: "Converged".into(),
+                since_secs: 3600,
+                reason: "Converged is False".into()
+            }
         );
     }
 
@@ -2270,7 +3049,10 @@ mod health_tests {
             cond("Throttled", "True", T0),
             cond("Supported", "True", T0),
         ];
-        assert_eq!(health_verdict(&conditions, NOW_FAR, STUCK_AFTER_SECS, false), HealthVerdict::Healthy);
+        assert_eq!(
+            health_verdict(&conditions, NOW_FAR, STUCK_AFTER_SECS, false),
+            HealthVerdict::Healthy
+        );
     }
 
     #[test]
@@ -2284,34 +3066,69 @@ mod health_tests {
         ];
         assert_eq!(
             health_verdict(&conditions, NOW_FAR, STUCK_AFTER_SECS, false),
-            HealthVerdict::Stuck { condition: "Conflict".into(), since_secs: 3600, reason: "Conflict is True".into() }
+            HealthVerdict::Stuck {
+                condition: "Conflict".into(),
+                since_secs: 3600,
+                reason: "Conflict is True".into()
+            }
         );
     }
 
     #[test]
     fn missing_conditions_never_panics_and_defaults_healthy() {
-        assert_eq!(health_verdict(&[], NOW_FAR, STUCK_AFTER_SECS, false), HealthVerdict::Healthy);
+        assert_eq!(
+            health_verdict(&[], NOW_FAR, STUCK_AFTER_SECS, false),
+            HealthVerdict::Healthy
+        );
     }
 
     #[test]
     fn label_is_stable_pascal_case() {
         assert_eq!(HealthVerdict::Healthy.label(), "Healthy");
-        assert_eq!(HealthVerdict::Unsupported { reason: String::new() }.label(), "Unsupported");
-        assert_eq!(HealthVerdict::TargetNotFound { since_secs: 0 }.label(), "TargetNotFound");
-        assert_eq!(HealthVerdict::ShadowPending { since_secs: 0 }.label(), "ShadowPending");
-        assert_eq!(HealthVerdict::Stuck { condition: String::new(), since_secs: 0, reason: String::new() }.label(), "Stuck");
+        assert_eq!(
+            HealthVerdict::Unsupported {
+                reason: String::new()
+            }
+            .label(),
+            "Unsupported"
+        );
+        assert_eq!(
+            HealthVerdict::TargetNotFound { since_secs: 0 }.label(),
+            "TargetNotFound"
+        );
+        assert_eq!(
+            HealthVerdict::ShadowPending { since_secs: 0 }.label(),
+            "ShadowPending"
+        );
+        assert_eq!(
+            HealthVerdict::Stuck {
+                condition: String::new(),
+                since_secs: 0,
+                reason: String::new()
+            }
+            .label(),
+            "Stuck"
+        );
     }
 
     #[test]
     fn health_event_for_is_none_only_for_healthy() {
         assert!(health_event_for(&HealthVerdict::Healthy).is_none());
         assert!(health_event_for(&HealthVerdict::Unsupported { reason: "x".into() }).is_some());
-        assert!(health_event_for(&HealthVerdict::Stuck { condition: "Ready".into(), since_secs: 99, reason: "x".into() }).is_some());
+        assert!(
+            health_event_for(&HealthVerdict::Stuck {
+                condition: "Ready".into(),
+                since_secs: 99,
+                reason: "x".into()
+            })
+            .is_some()
+        );
     }
 
     #[test]
     fn health_event_for_target_not_found_is_a_warning() {
-        let (kind, reason, note) = health_event_for(&HealthVerdict::TargetNotFound { since_secs: 42 }).unwrap();
+        let (kind, reason, note) =
+            health_event_for(&HealthVerdict::TargetNotFound { since_secs: 42 }).unwrap();
         assert_eq!(kind, EventKind::Warning);
         assert_eq!(reason, "TargetNotFound");
         assert!(note.contains("42s"));
@@ -2321,18 +3138,35 @@ mod health_tests {
     fn health_event_for_shadow_pending_is_normal_never_a_warning() {
         // non-alarming by design — a permanently-shadowed band that never
         // converges is working exactly as configured.
-        let (kind, reason, _) = health_event_for(&HealthVerdict::ShadowPending { since_secs: 42 }).unwrap();
+        let (kind, reason, _) =
+            health_event_for(&HealthVerdict::ShadowPending { since_secs: 42 }).unwrap();
         assert_eq!(kind, EventKind::Normal);
         assert_eq!(reason, "ShadowPending");
     }
 
     #[test]
     fn should_emit_health_event_dedupes_on_unchanged_label() {
-        let stuck = HealthVerdict::Stuck { condition: "Ready".into(), since_secs: 99, reason: "x".into() };
-        assert!(should_emit_health_event(&stuck, None), "first observation always emits");
-        assert!(should_emit_health_event(&stuck, Some("Healthy")), "transition into Stuck emits");
-        assert!(!should_emit_health_event(&stuck, Some("Stuck")), "unchanged label does not re-emit every tick");
-        assert!(should_emit_health_event(&HealthVerdict::Healthy, Some("Stuck")), "recovering out of Stuck is a transition too");
+        let stuck = HealthVerdict::Stuck {
+            condition: "Ready".into(),
+            since_secs: 99,
+            reason: "x".into(),
+        };
+        assert!(
+            should_emit_health_event(&stuck, None),
+            "first observation always emits"
+        );
+        assert!(
+            should_emit_health_event(&stuck, Some("Healthy")),
+            "transition into Stuck emits"
+        );
+        assert!(
+            !should_emit_health_event(&stuck, Some("Stuck")),
+            "unchanged label does not re-emit every tick"
+        );
+        assert!(
+            should_emit_health_event(&HealthVerdict::Healthy, Some("Stuck")),
+            "recovering out of Stuck is a transition too"
+        );
     }
 
     // ── the ever-governed latch (task #50) ────────────────────────────────
@@ -2359,8 +3193,16 @@ mod health_tests {
         }
     }
 
-    fn out_observed(receipt: TickReceipt, observed: Option<breathe_control::Observation>) -> TickOutcome {
-        TickOutcome { receipt, observed, policy: DisruptionPolicy::RestartFreeOnly, gate: test_live_gate() }
+    fn out_observed(
+        receipt: TickReceipt,
+        observed: Option<breathe_control::Observation>,
+    ) -> TickOutcome {
+        TickOutcome {
+            receipt,
+            observed,
+            policy: DisruptionPolicy::RestartFreeOnly,
+            gate: test_live_gate(),
+        }
     }
 
     #[test]
@@ -2380,19 +3222,52 @@ mod health_tests {
         // proven Dormant), which no other test covers and which cannot hold
         // without the latch.
         let never = out_observed(TickReceipt::Dormant, None);
-        let s_never = status_for(&never, None, 0, None, CumulativeCounters::ZERO.fold(&entry_for(&never)));
+        let s_never = status_for(
+            &never,
+            None,
+            0,
+            None,
+            CumulativeCounters::ZERO.fold(&entry_for(&never)),
+        );
         assert_eq!(s_never.phase.as_deref(), Some("Dormant"));
-        assert_eq!(s_never.first_observed_epoch, None, "never-observed band carries no epoch");
+        assert_eq!(
+            s_never.first_observed_epoch, None,
+            "never-observed band carries no epoch"
+        );
 
         // The contrast that gives the assertion teeth: a band that DID observe,
         // then went Dormant, must be distinguishable from the one above.
-        let first = out_observed(TickReceipt::Observed { decision: Decision::Hold }, Some(obs(100)));
-        let proven = status_for(&first, None, 0, None, CumulativeCounters::ZERO.fold(&entry_for(&first)));
+        let first = out_observed(
+            TickReceipt::Observed {
+                decision: Decision::Hold,
+            },
+            Some(obs(100)),
+        );
+        let proven = status_for(
+            &first,
+            None,
+            0,
+            None,
+            CumulativeCounters::ZERO.fold(&entry_for(&first)),
+        );
         let later = out_observed(TickReceipt::Dormant, None);
-        let s_proven = status_for(&later, Some(&proven), 0, None, CumulativeCounters::ZERO.fold(&entry_for(&later)));
+        let s_proven = status_for(
+            &later,
+            Some(&proven),
+            0,
+            None,
+            CumulativeCounters::ZERO.fold(&entry_for(&later)),
+        );
 
-        assert_eq!(s_proven.phase.as_deref(), Some("Dormant"), "both are Dormant — phase alone cannot tell them apart");
-        assert!(s_proven.first_observed_epoch.is_some(), "the proven one MUST carry an epoch");
+        assert_eq!(
+            s_proven.phase.as_deref(),
+            Some("Dormant"),
+            "both are Dormant — phase alone cannot tell them apart"
+        );
+        assert!(
+            s_proven.first_observed_epoch.is_some(),
+            "the proven one MUST carry an epoch"
+        );
         assert_ne!(
             s_never.first_observed_epoch, s_proven.first_observed_epoch,
             "two Dormant bands, one proven and one never-proven, MUST be distinguishable — \
@@ -2402,9 +3277,23 @@ mod health_tests {
 
     #[test]
     fn the_first_observation_sets_the_latch() {
-        let o = out_observed(TickReceipt::Observed { decision: Decision::Hold }, Some(obs(100)));
-        let s = status_for(&o, None, 0, None, CumulativeCounters::ZERO.fold(&entry_for(&o)));
-        assert!(s.first_observed_epoch.is_some(), "observing a pod proves the band governs something");
+        let o = out_observed(
+            TickReceipt::Observed {
+                decision: Decision::Hold,
+            },
+            Some(obs(100)),
+        );
+        let s = status_for(
+            &o,
+            None,
+            0,
+            None,
+            CumulativeCounters::ZERO.fold(&entry_for(&o)),
+        );
+        assert!(
+            s.first_observed_epoch.is_some(),
+            "observing a pod proves the band governs something"
+        );
     }
 
     #[test]
@@ -2412,12 +3301,31 @@ mod health_tests {
         // THE CASE THAT MAKES `Dormant` LEGITIMATE: a real workload that scaled to
         // zero. It observed pods before, so its later empty ticks are genuinely
         // at-rest and must keep counting as converged.
-        let first = out_observed(TickReceipt::Observed { decision: Decision::Hold }, Some(obs(100)));
-        let proven = status_for(&first, None, 0, None, CumulativeCounters::ZERO.fold(&entry_for(&first)));
-        let stamped = proven.first_observed_epoch.expect("set by the first observation");
+        let first = out_observed(
+            TickReceipt::Observed {
+                decision: Decision::Hold,
+            },
+            Some(obs(100)),
+        );
+        let proven = status_for(
+            &first,
+            None,
+            0,
+            None,
+            CumulativeCounters::ZERO.fold(&entry_for(&first)),
+        );
+        let stamped = proven
+            .first_observed_epoch
+            .expect("set by the first observation");
 
         let later = out_observed(TickReceipt::Dormant, None);
-        let s = status_for(&later, Some(&proven), 0, None, CumulativeCounters::ZERO.fold(&entry_for(&later)));
+        let s = status_for(
+            &later,
+            Some(&proven),
+            0,
+            None,
+            CumulativeCounters::ZERO.fold(&entry_for(&later)),
+        );
         assert_eq!(s.phase.as_deref(), Some("Dormant"));
         assert_eq!(
             s.first_observed_epoch,
@@ -2433,16 +3341,41 @@ mod health_tests {
         // It records the FIRST proof, not the most recent one — otherwise it would
         // drift into being a last-seen timestamp, which is a different (and
         // threshold-requiring) signal.
-        let a = out_observed(TickReceipt::Observed { decision: Decision::Hold }, Some(obs(100)));
-        let s1 = status_for(&a, None, 0, None, CumulativeCounters::ZERO.fold(&entry_for(&a)));
-        let b = out_observed(TickReceipt::Observed { decision: Decision::Hold }, Some(obs(200)));
-        let s2 = status_for(&b, Some(&s1), 0, None, CumulativeCounters::ZERO.fold(&entry_for(&b)));
+        let a = out_observed(
+            TickReceipt::Observed {
+                decision: Decision::Hold,
+            },
+            Some(obs(100)),
+        );
+        let s1 = status_for(
+            &a,
+            None,
+            0,
+            None,
+            CumulativeCounters::ZERO.fold(&entry_for(&a)),
+        );
+        let b = out_observed(
+            TickReceipt::Observed {
+                decision: Decision::Hold,
+            },
+            Some(obs(200)),
+        );
+        let s2 = status_for(
+            &b,
+            Some(&s1),
+            0,
+            None,
+            CumulativeCounters::ZERO.fold(&entry_for(&b)),
+        );
         // NON-VACUITY GUARD, and it is not decoration: the red run proved this
         // test PASSES with the latch deleted, because `None == None` holds. It
         // would have sat green forever while testing nothing — the exact class
         // this whole change closes, found in its own test suite. Pin that both
         // sides are real before comparing them.
-        assert!(s1.first_observed_epoch.is_some(), "precondition: the latch must actually be set");
+        assert!(
+            s1.first_observed_epoch.is_some(),
+            "precondition: the latch must actually be set"
+        );
         assert_eq!(s1.first_observed_epoch, s2.first_observed_epoch);
     }
 
@@ -2452,14 +3385,42 @@ mod health_tests {
         // transient provider error cannot un-prove a band that has genuinely
         // governed pods. Regression guard for the "carry it in one arm only"
         // mistake this shape invites.
-        let first = out_observed(TickReceipt::Observed { decision: Decision::Hold }, Some(obs(100)));
-        let proven = status_for(&first, None, 0, None, CumulativeCounters::ZERO.fold(&entry_for(&first)));
-        let err = out_observed(TickReceipt::Error { error: ProviderError::MetricsMissing }, None);
-        let s = status_for(&err, Some(&proven), 0, None, CumulativeCounters::ZERO.fold(&entry_for(&err)));
+        let first = out_observed(
+            TickReceipt::Observed {
+                decision: Decision::Hold,
+            },
+            Some(obs(100)),
+        );
+        let proven = status_for(
+            &first,
+            None,
+            0,
+            None,
+            CumulativeCounters::ZERO.fold(&entry_for(&first)),
+        );
+        let err = out_observed(
+            TickReceipt::Error {
+                error: ProviderError::MetricsMissing,
+            },
+            None,
+        );
+        let s = status_for(
+            &err,
+            Some(&proven),
+            0,
+            None,
+            CumulativeCounters::ZERO.fold(&entry_for(&err)),
+        );
         // Same non-vacuity guard as the sibling above — without it this passes on
         // `None == None` when the latch is absent (proven by the red run).
-        assert!(proven.first_observed_epoch.is_some(), "precondition: the band was genuinely proven first");
-        assert_eq!(s.first_observed_epoch, proven.first_observed_epoch, "an error tick must not un-prove the band");
+        assert!(
+            proven.first_observed_epoch.is_some(),
+            "precondition: the band was genuinely proven first"
+        );
+        assert_eq!(
+            s.first_observed_epoch, proven.first_observed_epoch,
+            "an error tick must not un-prove the band"
+        );
     }
 
     #[test]
@@ -2473,9 +3434,22 @@ mod health_tests {
         // These assertions are on the STRUCT, deliberately, not through a
         // patch: the whole point is that the guarantee no longer depends on
         // serde behaviour or on the patch strategy staying Merge.
-        let first = out_observed(TickReceipt::Observed { decision: Decision::Hold }, Some(obs(100)));
-        let proven = status_for(&first, None, 0, None, CumulativeCounters::ZERO.fold(&entry_for(&first)));
-        let stamped = proven.first_observed_epoch.expect("precondition: the band is proven");
+        let first = out_observed(
+            TickReceipt::Observed {
+                decision: Decision::Hold,
+            },
+            Some(obs(100)),
+        );
+        let proven = status_for(
+            &first,
+            None,
+            0,
+            None,
+            CumulativeCounters::ZERO.fold(&entry_for(&first)),
+        );
+        let stamped = proven
+            .first_observed_epoch
+            .expect("precondition: the band is proven");
 
         assert_eq!(
             super::error_status(Some(&proven), "boom").first_observed_epoch,
@@ -2497,12 +3471,20 @@ mod health_tests {
     #[test]
     fn status_for_sets_health_field_end_to_end() {
         let outcome = TickOutcome {
-            receipt: TickReceipt::Conflict { manager: "someone-else".into() },
+            receipt: TickReceipt::Conflict {
+                manager: "someone-else".into(),
+            },
             observed: None,
             policy: DisruptionPolicy::RestartFreeOnly,
             gate: test_live_gate(),
         };
-        let s = status_for(&outcome, None, 0, None, CumulativeCounters::ZERO.fold(&entry_for(&outcome)));
+        let s = status_for(
+            &outcome,
+            None,
+            0,
+            None,
+            CumulativeCounters::ZERO.fold(&entry_for(&outcome)),
+        );
         // fresh band, first tick — under the stuck threshold, so Healthy despite Conflict.
         assert_eq!(s.health.as_deref(), Some("Healthy"));
     }
@@ -2518,8 +3500,8 @@ mod health_tests {
 #[cfg(test)]
 mod patch_status_diff_gate_tests {
     use super::*;
-    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::Duration;
 
     use breathe_crd::MemoryBand;
@@ -2533,7 +3515,9 @@ mod patch_status_diff_gate_tests {
     /// response deserialization succeeds) and counts how many requests
     /// actually arrived. The count is the test's "did we call the
     /// apiserver" oracle — the thing task #220 is about avoiding.
-    fn spawn_counting_responder(mut handle: mock::Handle<Request<Body>, Response<Body>>) -> Arc<AtomicUsize> {
+    fn spawn_counting_responder(
+        mut handle: mock::Handle<Request<Body>, Response<Body>>,
+    ) -> Arc<AtomicUsize> {
         let calls = Arc::new(AtomicUsize::new(0));
         let calls_task = calls.clone();
         tokio::spawn(async move {
@@ -2546,14 +3530,23 @@ mod patch_status_diff_gate_tests {
                     "spec": { "targetRef": { "kind": "Deployment", "name": "demo-app" } },
                 }))
                 .expect("fixture MemoryBand serializes");
-                send.send_response(Response::builder().status(200).body(Body::from(body)).unwrap());
+                send.send_response(
+                    Response::builder()
+                        .status(200)
+                        .body(Body::from(body))
+                        .unwrap(),
+                );
             }
         });
         calls
     }
 
     fn sample_status(util: f64) -> BandStatus {
-        BandStatus { phase: Some("Holding".into()), observed_util: Some(util), ..Default::default() }
+        BandStatus {
+            phase: Some("Holding".into()),
+            observed_util: Some(util),
+            ..Default::default()
+        }
     }
 
     #[tokio::test]
@@ -2574,8 +3567,15 @@ mod patch_status_diff_gate_tests {
         .expect("patch_status_if_changed hung — it must never wait on the apiserver when status is unchanged")
         .expect("patch_status_if_changed returned an error");
 
-        assert!(!patched, "an unchanged status must report that no patch was issued");
-        assert_eq!(calls.load(Ordering::SeqCst), 0, "an unchanged status must never call the apiserver");
+        assert!(
+            !patched,
+            "an unchanged status must report that no patch was issued"
+        );
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            0,
+            "an unchanged status must never call the apiserver"
+        );
     }
 
     #[tokio::test]
@@ -2589,14 +3589,27 @@ mod patch_status_diff_gate_tests {
 
         let patched = timeout(
             Duration::from_millis(500),
-            patch_status_if_changed::<MemoryBand>(&client, "default", "demo", Some(&live), &recomputed),
+            patch_status_if_changed::<MemoryBand>(
+                &client,
+                "default",
+                "demo",
+                Some(&live),
+                &recomputed,
+            ),
         )
         .await
         .expect("patch_status_if_changed timed out waiting on the mock apiserver")
         .expect("patch_status_if_changed returned an error");
 
-        assert!(patched, "a genuinely changed status must report that a patch was issued");
-        assert_eq!(calls.load(Ordering::SeqCst), 1, "a genuinely changed status must patch exactly once");
+        assert!(
+            patched,
+            "a genuinely changed status must report that a patch was issued"
+        );
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            1,
+            "a genuinely changed status must patch exactly once"
+        );
     }
 
     #[tokio::test]
@@ -2618,7 +3631,10 @@ mod patch_status_diff_gate_tests {
         .expect("patch_status_if_changed timed out waiting on the mock apiserver")
         .expect("patch_status_if_changed returned an error");
 
-        assert!(patched, "the first-ever status write (no prior) must always patch");
+        assert!(
+            patched,
+            "the first-ever status write (no prior) must always patch"
+        );
         assert_eq!(calls.load(Ordering::SeqCst), 1);
     }
 }

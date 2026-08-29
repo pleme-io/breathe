@@ -8,7 +8,7 @@
 //! [`DecisionLog::append`] was called UNCONDITIONALLY on every reconcile, so a
 //! band that simply HOLDS wrote one row per tick forever. Its sibling
 //! `breathe_runtime::patch_status_if_changed` has been diff-gated since task
-//! #220; the decision log never was. At the live camelot-eks shape (~100 bands on
+//! #220; the decision log never was. At the live private-estate-eks shape (~100 bands on
 //! the 15s restart-free cooldown path, ~95 of them in an `Observed`-family phase)
 //! that is ~576k rows/day; gated it is ~31k/day — the same ~18× the status
 //! diff-gate already buys on the etcd side.
@@ -125,7 +125,11 @@ impl GatedDecisionLog {
 
     /// [`GatedDecisionLog::new`] with an injected [`Clock`] — the test seam.
     #[must_use]
-    pub fn with_clock(inner: Arc<dyn DecisionLog>, heartbeat_secs: u64, clock: Arc<dyn Clock>) -> Self {
+    pub fn with_clock(
+        inner: Arc<dyn DecisionLog>,
+        heartbeat_secs: u64,
+        clock: Arc<dyn Clock>,
+    ) -> Self {
         Self {
             inner,
             // A heartbeat past i64::MAX seconds is "never" either way.
@@ -137,7 +141,12 @@ impl GatedDecisionLog {
 
     /// `Some(counters)` ⇒ withhold this append and report `counters`;
     /// `None` ⇒ append. Pure w.r.t. the gate's state (read-only).
-    fn skip_verdict(&self, band: &BandRef, entry: &DecisionEntry, now: i64) -> Option<CumulativeCounters> {
+    fn skip_verdict(
+        &self,
+        band: &BandRef,
+        entry: &DecisionEntry,
+        now: i64,
+    ) -> Option<CumulativeCounters> {
         // (1) a counted decision is ALWAYS material — never withheld.
         if entry.class != CounterClass::NoCount {
             return None;
@@ -159,11 +168,24 @@ impl GatedDecisionLog {
         Some(last.counters)
     }
 
-    fn record(&self, band: &BandRef, entry: DecisionEntry, at_epoch: i64, counters: CumulativeCounters) {
+    fn record(
+        &self,
+        band: &BandRef,
+        entry: DecisionEntry,
+        at_epoch: i64,
+        counters: CumulativeCounters,
+    ) {
         self.state
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .insert(band.clone(), LastAppend { entry, at_epoch, counters });
+            .insert(
+                band.clone(),
+                LastAppend {
+                    entry,
+                    at_epoch,
+                    counters,
+                },
+            );
     }
 }
 
@@ -193,7 +215,7 @@ impl DecisionLog for GatedDecisionLog {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{decision_content_hash, GENESIS_HASH};
+    use crate::{GENESIS_HASH, decision_content_hash};
     use std::sync::atomic::{AtomicI64, Ordering};
 
     /// A test clock the test steps by hand — no sleeping.
@@ -261,10 +283,8 @@ mod tests {
             entry: DecisionEntry,
         ) -> Result<CumulativeCounters, StoreError> {
             let mut heads = self.heads.lock().unwrap();
-            let (cur_seq, prev, current) = heads
-                .get(band)
-                .copied()
-                .unwrap_or((0, GENESIS_HASH, seed));
+            let (cur_seq, prev, current) =
+                heads.get(band).copied().unwrap_or((0, GENESIS_HASH, seed));
             let next = current.fold(&entry);
             let seq = cur_seq + 1;
             let content_hash = decision_content_hash(band, seq, &entry, &prev);
@@ -354,9 +374,19 @@ mod tests {
             "a steady band must write the anchor + one row per heartbeat, not one per tick"
         );
         // 240 ungated writes → 4: past the ~18× reduction the volume math predicts.
-        assert!(inner.count_for(&b) <= 240 / 18, "the gate must be at least the predicted ~18× reduction");
-        assert_eq!(counters, CumulativeCounters::ZERO, "a held Observed advances no counter");
-        assert!(chain_verifies(&b, &inner.rows_for(&b)), "the gated chain still verifies");
+        assert!(
+            inner.count_for(&b) <= 240 / 18,
+            "the gate must be at least the predicted ~18× reduction"
+        );
+        assert_eq!(
+            counters,
+            CumulativeCounters::ZERO,
+            "a held Observed advances no counter"
+        );
+        assert!(
+            chain_verifies(&b, &inner.rows_for(&b)),
+            "the gated chain still verifies"
+        );
     }
 
     #[tokio::test]
@@ -368,25 +398,41 @@ mod tests {
 
         // Hold, hold, hold — one anchor row.
         for _ in 0..3 {
-            gated.append(&b, CumulativeCounters::ZERO, observed()).await.unwrap();
+            gated
+                .append(&b, CumulativeCounters::ZERO, observed())
+                .await
+                .unwrap();
             clock.advance(15);
         }
         assert_eq!(inner.count_for(&b), 1);
 
         // The decision CHANGES (the band starts wanting a carve) — written
         // immediately, nowhere near the heartbeat.
-        gated.append(&b, CumulativeCounters::ZERO, shadow(100, 200)).await.unwrap();
+        gated
+            .append(&b, CumulativeCounters::ZERO, shadow(100, 200))
+            .await
+            .unwrap();
         assert_eq!(inner.count_for(&b), 2, "a changed decision writes at once");
         clock.advance(15);
 
         // The SAME shadow decision repeats — gated again.
-        gated.append(&b, CumulativeCounters::ZERO, shadow(100, 200)).await.unwrap();
+        gated
+            .append(&b, CumulativeCounters::ZERO, shadow(100, 200))
+            .await
+            .unwrap();
         assert_eq!(inner.count_for(&b), 2, "an unchanged repeat is withheld");
         clock.advance(15);
 
         // A shadow whose target MOVED is a different decision — written.
-        gated.append(&b, CumulativeCounters::ZERO, shadow(100, 250)).await.unwrap();
-        assert_eq!(inner.count_for(&b), 3, "a moved target is a material change");
+        gated
+            .append(&b, CumulativeCounters::ZERO, shadow(100, 250))
+            .await
+            .unwrap();
+        assert_eq!(
+            inner.count_for(&b),
+            3,
+            "a moved target is a material change"
+        );
 
         assert!(chain_verifies(&b, &inner.rows_for(&b)));
     }
@@ -400,11 +446,17 @@ mod tests {
 
         // Two byte-identical carves back to back, inside the heartbeat window:
         // rule 1 is state-independent, so BOTH are written and BOTH are counted.
-        let c1 = gated.append(&b, CumulativeCounters::ZERO, applied(100, 200)).await.unwrap();
+        let c1 = gated
+            .append(&b, CumulativeCounters::ZERO, applied(100, 200))
+            .await
+            .unwrap();
         clock.advance(1);
         let c2 = gated.append(&b, c1, applied(100, 200)).await.unwrap();
         assert_eq!(c1.carves, 1);
-        assert_eq!(c2.carves, 2, "a carve must never be gated away — the counters derive from the log");
+        assert_eq!(
+            c2.carves, 2,
+            "a carve must never be gated away — the counters derive from the log"
+        );
         assert_eq!(inner.count_for(&b), 2);
         assert!(chain_verifies(&b, &inner.rows_for(&b)));
     }
@@ -416,16 +468,40 @@ mod tests {
         let gated = GatedDecisionLog::with_clock(inner.clone(), 60, clock.clone());
         let b = band();
 
-        gated.append(&b, CumulativeCounters::ZERO, observed()).await.unwrap(); // anchor
+        gated
+            .append(&b, CumulativeCounters::ZERO, observed())
+            .await
+            .unwrap(); // anchor
         clock.set(59);
-        gated.append(&b, CumulativeCounters::ZERO, observed()).await.unwrap();
-        assert_eq!(inner.count_for(&b), 1, "before the interval elapses: withheld");
+        gated
+            .append(&b, CumulativeCounters::ZERO, observed())
+            .await
+            .unwrap();
+        assert_eq!(
+            inner.count_for(&b),
+            1,
+            "before the interval elapses: withheld"
+        );
         clock.set(60);
-        gated.append(&b, CumulativeCounters::ZERO, observed()).await.unwrap();
-        assert_eq!(inner.count_for(&b), 2, "at the interval: the heartbeat writes");
+        gated
+            .append(&b, CumulativeCounters::ZERO, observed())
+            .await
+            .unwrap();
+        assert_eq!(
+            inner.count_for(&b),
+            2,
+            "at the interval: the heartbeat writes"
+        );
         clock.set(119);
-        gated.append(&b, CumulativeCounters::ZERO, observed()).await.unwrap();
-        assert_eq!(inner.count_for(&b), 2, "the window restarts from the last write");
+        gated
+            .append(&b, CumulativeCounters::ZERO, observed())
+            .await
+            .unwrap();
+        assert_eq!(
+            inner.count_for(&b),
+            2,
+            "the window restarts from the last write"
+        );
     }
 
     #[tokio::test]
@@ -435,9 +511,16 @@ mod tests {
         let gated = GatedDecisionLog::with_clock(inner.clone(), 0, clock.clone());
         let b = band();
         for _ in 0..10 {
-            gated.append(&b, CumulativeCounters::ZERO, observed()).await.unwrap();
+            gated
+                .append(&b, CumulativeCounters::ZERO, observed())
+                .await
+                .unwrap();
         }
-        assert_eq!(inner.count_for(&b), 10, "heartbeat 0 = the pre-gate escape hatch");
+        assert_eq!(
+            inner.count_for(&b),
+            10,
+            "heartbeat 0 = the pre-gate escape hatch"
+        );
     }
 
     #[tokio::test]
@@ -446,10 +529,20 @@ mod tests {
         let clock = FakeClock::new(10_000);
         let gated = GatedDecisionLog::with_clock(inner.clone(), 900, clock.clone());
         let b = band();
-        gated.append(&b, CumulativeCounters::ZERO, observed()).await.unwrap();
+        gated
+            .append(&b, CumulativeCounters::ZERO, observed())
+            .await
+            .unwrap();
         clock.set(5_000); // NTP correction / VM restore
-        gated.append(&b, CumulativeCounters::ZERO, observed()).await.unwrap();
-        assert_eq!(inner.count_for(&b), 2, "a backwards clock must never silence the log");
+        gated
+            .append(&b, CumulativeCounters::ZERO, observed())
+            .await
+            .unwrap();
+        assert_eq!(
+            inner.count_for(&b),
+            2,
+            "a backwards clock must never silence the log"
+        );
     }
 
     #[tokio::test]
@@ -461,14 +554,25 @@ mod tests {
 
         // Seed a real durable count via a carve, then hold.
         let after_carve = gated
-            .append(&b, CumulativeCounters { carves: 4, deferrals: 1, conflicts: 0 }, applied(1, 2))
+            .append(
+                &b,
+                CumulativeCounters {
+                    carves: 4,
+                    deferrals: 1,
+                    conflicts: 0,
+                },
+                applied(1, 2),
+            )
             .await
             .unwrap();
         assert_eq!(after_carve.carves, 5);
         gated.append(&b, after_carve, observed()).await.unwrap(); // anchors Observed
         for _ in 0..20 {
             clock.advance(15);
-            let held = gated.append(&b, CumulativeCounters::ZERO, observed()).await.unwrap();
+            let held = gated
+                .append(&b, CumulativeCounters::ZERO, observed())
+                .await
+                .unwrap();
             assert_eq!(
                 held, after_carve,
                 "a withheld tick reports the last APPENDED counters, never the (possibly stale) seed"
@@ -484,12 +588,24 @@ mod tests {
         let a = BandRef::new("MemoryBand", "ns", "a");
         let b = BandRef::new("MemoryBand", "ns", "b");
 
-        gated.append(&a, CumulativeCounters::ZERO, observed()).await.unwrap();
-        gated.append(&b, CumulativeCounters::ZERO, observed()).await.unwrap();
+        gated
+            .append(&a, CumulativeCounters::ZERO, observed())
+            .await
+            .unwrap();
+        gated
+            .append(&b, CumulativeCounters::ZERO, observed())
+            .await
+            .unwrap();
         clock.advance(15);
         // `a` holds (withheld); `b` changes (written).
-        gated.append(&a, CumulativeCounters::ZERO, observed()).await.unwrap();
-        gated.append(&b, CumulativeCounters::ZERO, shadow(1, 2)).await.unwrap();
+        gated
+            .append(&a, CumulativeCounters::ZERO, observed())
+            .await
+            .unwrap();
+        gated
+            .append(&b, CumulativeCounters::ZERO, shadow(1, 2))
+            .await
+            .unwrap();
 
         assert_eq!(inner.count_for(&a), 1);
         assert_eq!(inner.count_for(&b), 2);
@@ -519,9 +635,16 @@ mod tests {
         }
 
         let rows = inner.rows_for(&b);
-        assert!(rows.len() < 400, "the gate withheld ticks ({} rows of 400)", rows.len());
+        assert!(
+            rows.len() < 400,
+            "the gate withheld ticks ({} rows of 400)",
+            rows.len()
+        );
         assert!(!rows.is_empty());
-        assert!(chain_verifies(&b, &rows), "a gated chain verifies from genesis, contiguously");
+        assert!(
+            chain_verifies(&b, &rows),
+            "a gated chain verifies from genesis, contiguously"
+        );
         // The counted decisions all survived: 400/97 → i = 0, 97, 194, 291, 388.
         assert_eq!(counters.carves, 5, "every carve reached the log");
     }

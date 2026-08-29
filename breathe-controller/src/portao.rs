@@ -92,7 +92,7 @@ use breathe_admission::{ComponenteExigido, ConformanceBinding, ObservacaoPod, Po
 ///
 /// Typed config rather than constants because the answer is platform-specific
 /// and getting it wrong is indistinguishable from the component being absent.
-/// Measured on camelot (EKS): the CNI is `k8s-app=aws-node` and the CSI node
+/// Measured on one cluster (EKS): the CNI is `k8s-app=aws-node` and the CSI node
 /// plugin is `app=ebs-csi-node`, both in `kube-system`. On rio (k3s) neither
 /// exists under those names — flannel and local-path answer instead. A
 /// hardcoded EKS selector would make every k3s node look permanently unbreathed.
@@ -108,12 +108,14 @@ impl SeletorComponente {
     fn new(namespace: &str, labels: &[(&str, &str)]) -> Self {
         Self {
             namespace: namespace.to_owned(),
-            labels: labels.iter().map(|(k, v)| ((*k).to_owned(), (*v).to_owned())).collect(),
+            labels: labels
+                .iter()
+                .map(|(k, v)| ((*k).to_owned(), (*v).to_owned()))
+                .collect(),
         }
     }
     fn matches(&self, p: &PodLeitura) -> bool {
-        p.namespace == self.namespace
-            && self.labels.iter().all(|(k, v)| p.labels.get(k) == Some(v))
+        p.namespace == self.namespace && self.labels.iter().all(|(k, v)| p.labels.get(k) == Some(v))
     }
 }
 
@@ -123,7 +125,7 @@ impl SeletorComponente {
 pub struct CatalogoComponentes(BTreeMap<ComponenteExigido, SeletorComponente>);
 
 impl CatalogoComponentes {
-    /// The EKS shape, read off camelot's live `DaemonSet`s on 2026-08-08.
+    /// The EKS shape, read off the private estate's live `DaemonSet`s on 2026-08-08.
     #[must_use]
     pub fn eks() -> Self {
         Self(
@@ -186,8 +188,12 @@ pub fn catalogo_cobre_o_portao(
     cat: &CatalogoComponentes,
     gate: &ConformanceBinding,
 ) -> Result<(), Vec<ComponenteExigido>> {
-    let faltando: Vec<_> =
-        gate.required.iter().map(|(c, _)| *c).filter(|c| cat.get(*c).is_none()).collect();
+    let faltando: Vec<_> = gate
+        .required
+        .iter()
+        .map(|(c, _)| *c)
+        .filter(|c| cat.get(*c).is_none())
+        .collect();
     if faltando.is_empty() {
         Ok(())
     } else {
@@ -299,33 +305,51 @@ pub fn resultado_para_no(
         return ResultadoPortao::NaoGuardado;
     }
     if action.releases_node() {
-        return if shadow { ResultadoPortao::Liberaria } else { ResultadoPortao::Liberado };
+        return if shadow {
+            ResultadoPortao::Liberaria
+        } else {
+            ResultadoPortao::Liberado
+        };
     }
     match action {
         AcaoPortao::Devolver { .. } => ResultadoPortao::Devolvido,
         // Age is measured from the NODE, not from when this loop first saw it:
         // a controller restart must not reset the clock on a node that has been
         // wedged for an hour.
-        _ => ResultadoPortao::Retido { preso: node_age >= stuck_after },
+        _ => ResultadoPortao::Retido {
+            preso: node_age >= stuck_after,
+        },
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{release_patch, TAINT_KEY};
+    use super::{TAINT_KEY, release_patch};
     use breathe_admission::{AcaoPortao, MotivoDevolucao};
     use k8s_openapi::api::core::v1::Taint;
 
     fn taint(key: &str) -> Taint {
-        Taint { key: key.to_owned(), effect: "NoSchedule".to_owned(), ..Default::default() }
+        Taint {
+            key: key.to_owned(),
+            effect: "NoSchedule".to_owned(),
+            ..Default::default()
+        }
     }
 
     fn every_non_release() -> Vec<AcaoPortao> {
         vec![
-            AcaoPortao::Reter { orcamento_restante: 3 },
-            AcaoPortao::Reter { orcamento_restante: 0 },
-            AcaoPortao::Devolver { motivo: MotivoDevolucao::Rejeitado },
-            AcaoPortao::Devolver { motivo: MotivoDevolucao::Expirado },
+            AcaoPortao::Reter {
+                orcamento_restante: 3,
+            },
+            AcaoPortao::Reter {
+                orcamento_restante: 0,
+            },
+            AcaoPortao::Devolver {
+                motivo: MotivoDevolucao::Rejeitado,
+            },
+            AcaoPortao::Devolver {
+                motivo: MotivoDevolucao::Expirado,
+            },
         ]
     }
 
@@ -353,12 +377,19 @@ mod tests {
     /// silently un-taint the node for everything else it carries.
     #[test]
     fn other_taints_pass_through_untouched() {
-        let current =
-            vec![taint("node.kubernetes.io/unreachable"), taint(TAINT_KEY), taint("team/gpu")];
+        let current = vec![
+            taint("node.kubernetes.io/unreachable"),
+            taint(TAINT_KEY),
+            taint("team/gpu"),
+        ];
         let after = release_patch(AcaoPortao::Liberar, &current).expect("a write");
         assert_eq!(after.len(), 2);
         assert!(after.iter().all(|t| t["key"] != TAINT_KEY));
-        assert!(after.iter().any(|t| t["key"] == "node.kubernetes.io/unreachable"));
+        assert!(
+            after
+                .iter()
+                .any(|t| t["key"] == "node.kubernetes.io/unreachable")
+        );
         assert!(after.iter().any(|t| t["key"] == "team/gpu"));
     }
 
@@ -387,14 +418,17 @@ mod tests {
     #[test]
     fn an_already_released_node_is_not_written_again() {
         assert_eq!(release_patch(AcaoPortao::Liberar, &[]), None);
-        assert_eq!(release_patch(AcaoPortao::Liberar, &[taint("team/gpu")]), None);
+        assert_eq!(
+            release_patch(AcaoPortao::Liberar, &[taint("team/gpu")]),
+            None
+        );
     }
 }
 
 #[cfg(test)]
 mod gather_tests {
     use super::{
-        catalogo_cobre_o_portao, vista_para_no, CatalogoComponentes, PodLeitura, SeletorComponente,
+        CatalogoComponentes, PodLeitura, SeletorComponente, catalogo_cobre_o_portao, vista_para_no,
     };
     use breathe_admission::{
         ComponenteExigido, ConformanceBinding, Conformant, EstadoComponente, ProvaExigida,
@@ -403,7 +437,9 @@ mod gather_tests {
     use std::collections::BTreeMap;
 
     fn labels(kv: &[(&str, &str)]) -> BTreeMap<String, String> {
-        kv.iter().map(|(k, v)| ((*k).to_owned(), (*v).to_owned())).collect()
+        kv.iter()
+            .map(|(k, v)| ((*k).to_owned(), (*v).to_owned()))
+            .collect()
     }
 
     fn agent_on(node: &str, ready_for_secs: u64) -> PodLeitura {
@@ -468,7 +504,10 @@ mod gather_tests {
     fn a_missing_component_is_absent_and_the_others_are_unaffected() {
         let pods = vec![agent_on("n1", 900), cni_on("n1")]; // no CSI
         let v = vista_para_no("n1", &pods, &CatalogoComponentes::eks());
-        assert_eq!(v.component_state(ComponenteExigido::StorageDriver), EstadoComponente::Absent);
+        assert_eq!(
+            v.component_state(ComponenteExigido::StorageDriver),
+            EstadoComponente::Absent
+        );
         assert!(matches!(
             v.component_state(ComponenteExigido::BreatheHostAgent),
             EstadoComponente::Present { .. }
@@ -499,16 +538,18 @@ mod gather_tests {
         );
     }
 
-    /// The measured camelot reality: agents Ready for hours pass, because
+    /// The measured the private estate reality: agents Ready for hours pass, because
     /// `ready_for` is a stability floor and not a staleness ceiling.
     #[test]
-    fn the_live_camelot_readiness_ages_gather_to_present() {
+    fn the_live_isolated_readiness_ages_gather_to_present() {
         for secs in [6_004u64, 20_959] {
             let pods = vec![agent_on("n1", secs), cni_on("n1"), csi_on("n1")];
             let v = vista_para_no("n1", &pods, &CatalogoComponentes::eks());
             assert_eq!(
                 v.component_state(ComponenteExigido::BreatheHostAgent),
-                EstadoComponente::Present { ready_for: Duration::from_secs(secs) }
+                EstadoComponente::Present {
+                    ready_for: Duration::from_secs(secs)
+                }
             );
         }
     }
@@ -518,7 +559,10 @@ mod gather_tests {
     #[test]
     fn the_eks_catalog_covers_the_fleet_default_gate() {
         assert_eq!(
-            catalogo_cobre_o_portao(&CatalogoComponentes::eks(), &ConformanceBinding::fleet_default()),
+            catalogo_cobre_o_portao(
+                &CatalogoComponentes::eks(),
+                &ConformanceBinding::fleet_default()
+            ),
             Ok(())
         );
     }
@@ -542,13 +586,19 @@ mod gather_tests {
     #[test]
     fn coverage_is_relative_to_the_gates_own_required_set() {
         let only_agent = ConformanceBinding {
-            required: vec![(ComponenteExigido::BreatheHostAgent, ProvaExigida::PresenteOuMelhor)],
+            required: vec![(
+                ComponenteExigido::BreatheHostAgent,
+                ProvaExigida::PresenteOuMelhor,
+            )],
             ..ConformanceBinding::fleet_default()
         };
         let mut cat = CatalogoComponentes::default();
         cat.0.insert(
             ComponenteExigido::BreatheHostAgent,
-            SeletorComponente::new("breathe-system", &[("app.kubernetes.io/name", "pleme-breathe")]),
+            SeletorComponente::new(
+                "breathe-system",
+                &[("app.kubernetes.io/name", "pleme-breathe")],
+            ),
         );
         assert_eq!(catalogo_cobre_o_portao(&cat, &only_agent), Ok(()));
         assert!(catalogo_cobre_o_portao(&cat, &ConformanceBinding::fleet_default()).is_err());
@@ -562,8 +612,8 @@ mod gather_tests {
 
 use k8s_openapi::api::core::v1::{Node, Pod};
 use kube::{
-    api::{Api, ListParams, Patch, PatchParams},
     ResourceExt,
+    api::{Api, ListParams, Patch, PatchParams},
 };
 use metrics::{counter, gauge, histogram};
 
@@ -645,8 +695,12 @@ pub async fn reconcile_portao(
     }
 
     let now = std::time::SystemTime::now();
-    let nodes = Api::<Node>::all(client.clone()).list(&ListParams::default()).await?;
-    let pods = Api::<Pod>::all(client.clone()).list(&ListParams::default()).await?;
+    let nodes = Api::<Node>::all(client.clone())
+        .list(&ListParams::default())
+        .await?;
+    let pods = Api::<Pod>::all(client.clone())
+        .list(&ListParams::default())
+        .await?;
     let leituras: Vec<PodLeitura> = pods.items.iter().map(|p| leitura(p, now)).collect();
 
     let mut out = Vec::with_capacity(nodes.items.len());
@@ -655,7 +709,11 @@ pub async fn reconcile_portao(
 
     for n in &nodes.items {
         let name = n.name_any();
-        let taints = n.spec.as_ref().and_then(|s| s.taints.clone()).unwrap_or_default();
+        let taints = n
+            .spec
+            .as_ref()
+            .and_then(|s| s.taints.clone())
+            .unwrap_or_default();
         let carries = taints.iter().any(|t| t.key == TAINT_KEY);
 
         let vista = vista_para_no(&name, &leituras, &cfg.catalogo);
@@ -672,7 +730,7 @@ pub async fn reconcile_portao(
         // ── The measurement breathability actually needs ───────────────────
         //
         // `reliefLatencySeconds` is the lookahead the predictive previsor must
-        // meet or exceed (BREATHABILITY-NODE-LIFECYCLE, P8) — and on camelot it
+        // meet or exceed (BREATHABILITY-NODE-LIFECYCLE, P8) — and on one cluster it
         // is 180 on both pools: a round, identical, hand-picked number. This
         // loop is the only thing in the fleet positioned to MEASURE the real
         // value, because relief latency is not boot-to-Ready, it is
@@ -707,25 +765,25 @@ pub async fn reconcile_portao(
         if r == ResultadoPortao::Liberado
             && let Some(patch) = release_patch(action, &taints)
         {
-                // PatchParams::default() + Patch::Merge — the shape every other
-                // taint write in this crate uses (node_forma.rs:764,
-                // origin_guard.rs:112). Do not reintroduce `.force()`: it is
-                // server-side-apply only.
-                if let Err(e) = Api::<Node>::all(client.clone())
-                    .patch(
-                        &name,
-                        &PatchParams::default(),
-                        &Patch::Merge(serde_json::json!({ "spec": { "taints": patch } })),
-                    )
-                    .await
-                {
-                    tracing::error!(
-                        node = %name, error = %e,
-                        "portao: gate PASSED but the taint write failed — the node stays \
-                         unschedulable and nothing else will report it"
-                    );
-                    r = ResultadoPortao::FalhouAoLiberar;
-                }
+            // PatchParams::default() + Patch::Merge — the shape every other
+            // taint write in this crate uses (node_forma.rs:764,
+            // origin_guard.rs:112). Do not reintroduce `.force()`: it is
+            // server-side-apply only.
+            if let Err(e) = Api::<Node>::all(client.clone())
+                .patch(
+                    &name,
+                    &PatchParams::default(),
+                    &Patch::Merge(serde_json::json!({ "spec": { "taints": patch } })),
+                )
+                .await
+            {
+                tracing::error!(
+                    node = %name, error = %e,
+                    "portao: gate PASSED but the taint write failed — the node stays \
+                     unschedulable and nothing else will report it"
+                );
+                r = ResultadoPortao::FalhouAoLiberar;
+            }
         }
         if let ResultadoPortao::Retido { preso: true } = r {
             tracing::warn!(
@@ -755,7 +813,12 @@ pub async fn reconcile_portao(
     // components is closed, so every component that is NOT blocking simply has
     // no sample this pass.
     for comp in ComponenteExigido::ALL {
-        for est in ["absent", "indeterminate", "present_unstable", "reporting_stale"] {
+        for est in [
+            "absent",
+            "indeterminate",
+            "present_unstable",
+            "reporting_stale",
+        ] {
             #[allow(clippy::cast_precision_loss)]
             gauge!("breathe_portao_blocked_by", "component" => comp.as_str(), "state" => est)
                 .set(*blocked.get(&(comp.as_str(), est)).unwrap_or(&0) as f64);
@@ -777,12 +840,7 @@ pub async fn reconcile_portao(
 /// So samples above a sanity ceiling are DROPPED and counted, never silently
 /// discarded: no node legitimately takes an hour to land three `DaemonSet`s, so
 /// a sample past it is evidence of a hand-taint or a wedge, not of latency.
-fn registrar_latencia(
-    name: &str,
-    age: core::time::Duration,
-    shadow: bool,
-    r: ResultadoPortao,
-) {
+fn registrar_latencia(name: &str, age: core::time::Duration, shadow: bool, r: ResultadoPortao) {
     const SANE_CEILING: core::time::Duration = core::time::Duration::from_secs(3600);
     // ONLY on a real release. `Liberaria` (shadow) looked like the same event
     // and is not: in shadow nothing is written, so the node stays tainted and
@@ -839,7 +897,7 @@ fn candidato(name: &str) -> breathe_admission::Recurso<breathe_admission::Valida
 
 #[cfg(test)]
 mod outcome_tests {
-    use super::{resultado_para_no, ResultadoPortao};
+    use super::{ResultadoPortao, resultado_para_no};
     use breathe_admission::{AcaoPortao, MotivoDevolucao};
     use core::time::Duration;
 
@@ -854,9 +912,15 @@ mod outcome_tests {
     fn shadow_never_releases() {
         for action in [
             AcaoPortao::Liberar,
-            AcaoPortao::Reter { orcamento_restante: 2 },
-            AcaoPortao::Devolver { motivo: MotivoDevolucao::Rejeitado },
-            AcaoPortao::Devolver { motivo: MotivoDevolucao::Expirado },
+            AcaoPortao::Reter {
+                orcamento_restante: 2,
+            },
+            AcaoPortao::Devolver {
+                motivo: MotivoDevolucao::Rejeitado,
+            },
+            AcaoPortao::Devolver {
+                motivo: MotivoDevolucao::Expirado,
+            },
         ] {
             for age in [YOUNG, OLD] {
                 for carries in [true, false] {
@@ -872,7 +936,12 @@ mod outcome_tests {
 
     #[test]
     fn an_ungated_node_is_never_touched() {
-        for action in [AcaoPortao::Liberar, AcaoPortao::Devolver { motivo: MotivoDevolucao::Rejeitado }] {
+        for action in [
+            AcaoPortao::Liberar,
+            AcaoPortao::Devolver {
+                motivo: MotivoDevolucao::Rejeitado,
+            },
+        ] {
             assert_eq!(
                 resultado_para_no(false, action, false, OLD, BOUND),
                 ResultadoPortao::NaoGuardado,
@@ -883,16 +952,30 @@ mod outcome_tests {
 
     #[test]
     fn a_passing_gate_releases_when_live_and_reports_when_shadow() {
-        assert_eq!(resultado_para_no(true, AcaoPortao::Liberar, false, YOUNG, BOUND), ResultadoPortao::Liberado);
-        assert_eq!(resultado_para_no(true, AcaoPortao::Liberar, true, YOUNG, BOUND), ResultadoPortao::Liberaria);
+        assert_eq!(
+            resultado_para_no(true, AcaoPortao::Liberar, false, YOUNG, BOUND),
+            ResultadoPortao::Liberado
+        );
+        assert_eq!(
+            resultado_para_no(true, AcaoPortao::Liberar, true, YOUNG, BOUND),
+            ResultadoPortao::Liberaria
+        );
     }
 
     /// The stuck bound is what makes a wedged node visible at all.
     #[test]
     fn a_node_held_past_the_bound_is_reported_stuck() {
-        let held = AcaoPortao::Reter { orcamento_restante: 1 };
-        assert_eq!(resultado_para_no(true, held, false, YOUNG, BOUND), ResultadoPortao::Retido { preso: false });
-        assert_eq!(resultado_para_no(true, held, false, OLD, BOUND), ResultadoPortao::Retido { preso: true });
+        let held = AcaoPortao::Reter {
+            orcamento_restante: 1,
+        };
+        assert_eq!(
+            resultado_para_no(true, held, false, YOUNG, BOUND),
+            ResultadoPortao::Retido { preso: false }
+        );
+        assert_eq!(
+            resultado_para_no(true, held, false, OLD, BOUND),
+            ResultadoPortao::Retido { preso: true }
+        );
     }
 
     /// Handing a node back leaves the taint ON — nothing may schedule onto a
@@ -917,14 +1000,22 @@ mod outcome_tests {
         for r in R::ALL {
             // Compile-time exhaustiveness: a new variant fails to match here.
             let _: &str = match r {
-                R::NaoGuardado | R::Liberaria | R::Liberado | R::Retido { .. }
-                | R::Devolvido | R::FalhouAoLiberar => r.as_str(),
+                R::NaoGuardado
+                | R::Liberaria
+                | R::Liberado
+                | R::Retido { .. }
+                | R::Devolvido
+                | R::FalhouAoLiberar => r.as_str(),
             };
         }
         let mut labels: Vec<&str> = R::ALL.iter().map(|r| r.as_str()).collect();
         labels.sort_unstable();
         labels.dedup();
-        assert_eq!(labels.len(), 7, "every ALL entry needs its own label — held and stuck differ");
+        assert_eq!(
+            labels.len(),
+            7,
+            "every ALL entry needs its own label — held and stuck differ"
+        );
     }
 
     #[test]

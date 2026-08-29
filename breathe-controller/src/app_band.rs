@@ -11,19 +11,19 @@ use std::sync::Arc;
 
 use breathe_actuator::{ActuatorBackend, ActuatorCluster};
 use breathe_control::{BoundIntroduction, Reclaim};
-use breathe_core::{reconcile_one, ReconcileInput};
+use breathe_core::{ReconcileInput, reconcile_one};
 use breathe_crd::{AppActuatorKind, AppBand, Band};
 use breathe_kube::KubeCluster;
 use breathe_provider::{
-    ApplySemantics, BandProvider, DimensionDescriptor, DimensionId, Directionality, LimitLayout, MetricSource,
-    ResourceProvider, Target,
+    ApplySemantics, BandProvider, DimensionDescriptor, DimensionId, Directionality, LimitLayout,
+    MetricSource, ResourceProvider, Target,
 };
 use breathe_runtime::{
-    error_status, metrics_for, next_requeue, now_secs, patch_status, rfc3339_in_future, status_for,
-    suspended_status, BandLabels,
+    BandLabels, error_status, metrics_for, next_requeue, now_secs, patch_status, rfc3339_in_future,
+    status_for, suspended_status,
 };
-use kube::runtime::controller::Action;
 use kube::ResourceExt;
+use kube::runtime::controller::Action;
 use tracing::{error, info};
 
 use crate::{Ctx, Error};
@@ -91,7 +91,13 @@ pub async fn reconcile_app_band(obj: Arc<AppBand>, ctx: Arc<Ctx>) -> Result<Acti
     let cfg = match obj.band_config() {
         Ok(c) => c,
         Err(e) => {
-            patch_status::<AppBand>(&ctx.client, &ns, &name, &error_status(obj.status(), e.to_string())).await?;
+            patch_status::<AppBand>(
+                &ctx.client,
+                &ns,
+                &name,
+                &error_status(obj.status(), e.to_string()),
+            )
+            .await?;
             return Ok(Action::requeue(ctx.requeue));
         }
     };
@@ -121,7 +127,9 @@ pub async fn reconcile_app_band(obj: Arc<AppBand>, ctx: Arc<Ctx>) -> Result<Acti
     let metric_cluster = KubeCluster::new(ctx.client.clone(), ctx.prometheus_url.clone());
     let provider = BandProvider::new(ActuatorCluster::new(backend, metric_cluster), descriptor);
 
-    let force = obj.force_limit_value().filter(|_| obj.force_limit_expiry().map_or(true, rfc3339_in_future));
+    let force = obj
+        .force_limit_value()
+        .filter(|_| obj.force_limit_expiry().map_or(true, rfc3339_in_future));
     // NEVER-OOM-FROM-CARVE: carry the decayed trailing-window peak forward (see
     // the main controller); `reconcile_one` folds in the current `used`.
     let peak_used = obj
@@ -156,16 +164,29 @@ pub async fn reconcile_app_band(obj: Arc<AppBand>, ctx: Arc<Ctx>) -> Result<Acti
     let outcome = reconcile_one(&input, &provider).await;
     let band_ref = breathe_store::BandRef::new(&<AppBand as kube::Resource>::kind(&()), &ns, &name);
     let counters = crate::fold_counters(&ctx, &band_ref, obj.status(), &outcome).await;
-    let status = status_for(&outcome, obj.status(), obj.cooldown_seconds(), obj.generation(), counters);
+    let status = status_for(
+        &outcome,
+        obj.status(),
+        obj.cooldown_seconds(),
+        obj.generation(),
+        counters,
+    );
     info!(dim = %provider.id(), band = %name, target = %target.name, phase = ?status.phase, "app-band reconciled");
     metrics_for(
-        &BandLabels { dim: provider.id().to_string(), namespace: ns.clone(), name: name.clone() },
+        &BandLabels {
+            dim: provider.id().to_string(),
+            namespace: ns.clone(),
+            name: name.clone(),
+        },
         &outcome,
         &cfg,
         status.cooldown_remaining_seconds.unwrap_or(0),
     );
     patch_status::<AppBand>(&ctx.client, &ns, &name, &status).await?;
-    Ok(Action::requeue(next_requeue(&outcome.receipt, &ctx.cooldowns)))
+    Ok(Action::requeue(next_requeue(
+        &outcome.receipt,
+        &ctx.cooldowns,
+    )))
 }
 
 pub fn error_policy_app_band(_obj: Arc<AppBand>, err: &Error, ctx: Arc<Ctx>) -> Action {

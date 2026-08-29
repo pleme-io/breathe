@@ -9,15 +9,15 @@
 use std::sync::Arc;
 
 use axum::{
+    Json, Router,
     extract::{Path, Query, State},
     http::StatusCode,
     response::{IntoResponse, Response},
     routing::{get, patch},
-    Json, Router,
 };
 use breathe_facade::{BreatheStore, DimensionId, StoreError};
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 pub type SharedStore = Arc<dyn BreatheStore>;
 
@@ -30,13 +30,28 @@ pub fn router(store: SharedStore) -> Router {
         .route("/healthz", get(|| async { "ok" }))
         .route("/api/v1/catalog", get(catalog))
         .route("/api/v1/bands/:kind", get(list_bands))
-        .route("/api/v1/bands/:kind/:namespace/:name", get(get_band).patch(patch_band))
-        .route("/api/v1/bands/:kind/:namespace/:name/dry-run", patch(set_dry_run))
-        .route("/api/v1/bands/:kind/:namespace/:name/write-intent", patch(set_write_intent))
-        .route("/api/v1/bands/:kind/:namespace/:name/confirm", patch(confirm_band))
+        .route(
+            "/api/v1/bands/:kind/:namespace/:name",
+            get(get_band).patch(patch_band),
+        )
+        .route(
+            "/api/v1/bands/:kind/:namespace/:name/dry-run",
+            patch(set_dry_run),
+        )
+        .route(
+            "/api/v1/bands/:kind/:namespace/:name/write-intent",
+            patch(set_write_intent),
+        )
+        .route(
+            "/api/v1/bands/:kind/:namespace/:name/confirm",
+            patch(confirm_band),
+        )
         .route("/api/v1/nodepools", get(list_pools))
         .route("/api/v1/nodepools/:name", get(get_pool))
-        .route("/api/v1/nodepools/:name/write-enabled", patch(set_write_enabled))
+        .route(
+            "/api/v1/nodepools/:name/write-enabled",
+            patch(set_write_enabled),
+        )
         .route_service("/graphql", async_graphql_axum::GraphQL::new(schema))
         .with_state(store)
 }
@@ -45,15 +60,24 @@ pub fn router(store: SharedStore) -> Router {
 fn respond(r: Result<Value, StoreError>) -> Response {
     match r {
         Ok(v) => (StatusCode::OK, Json(v)).into_response(),
-        Err(StoreError::BadRequest(m)) => (StatusCode::BAD_REQUEST, Json(json!({ "error": m }))).into_response(),
-        Err(e) => (StatusCode::BAD_GATEWAY, Json(json!({ "error": e.to_string() }))).into_response(),
+        Err(StoreError::BadRequest(m)) => {
+            (StatusCode::BAD_REQUEST, Json(json!({ "error": m }))).into_response()
+        }
+        Err(e) => (
+            StatusCode::BAD_GATEWAY,
+            Json(json!({ "error": e.to_string() })),
+        )
+            .into_response(),
     }
 }
 
 fn kind_or_400(s: &str) -> Result<DimensionId, Response> {
     DimensionId::parse(s).ok_or_else(|| {
         let known: Vec<&str> = DimensionId::ALL.iter().map(|d| d.as_str()).collect();
-        (StatusCode::BAD_REQUEST, Json(json!({ "error": format!("unknown band kind '{s}'"), "known": known })))
+        (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": format!("unknown band kind '{s}'"), "known": known })),
+        )
             .into_response()
     })
 }
@@ -67,14 +91,21 @@ async fn catalog(State(store): State<SharedStore>) -> Response {
     (StatusCode::OK, Json(store.catalog())).into_response()
 }
 
-async fn list_bands(State(store): State<SharedStore>, Path(kind): Path<String>, Query(q): Query<NsQuery>) -> Response {
+async fn list_bands(
+    State(store): State<SharedStore>,
+    Path(kind): Path<String>,
+    Query(q): Query<NsQuery>,
+) -> Response {
     match kind_or_400(&kind) {
         Ok(k) => respond(store.list_bands(k, q.namespace).await),
         Err(r) => r,
     }
 }
 
-async fn get_band(State(store): State<SharedStore>, Path((kind, ns, name)): Path<(String, String, String)>) -> Response {
+async fn get_band(
+    State(store): State<SharedStore>,
+    Path((kind, ns, name)): Path<(String, String, String)>,
+) -> Response {
     match kind_or_400(&kind) {
         Ok(k) => respond(store.get_band(k, ns, name).await),
         Err(r) => r,
@@ -124,7 +155,11 @@ async fn set_dry_run(
             })),
         )
             .into_response(),
-        Ok(k) => respond(store.patch_band_spec(k, ns, name, json!({ "dryRun": b.dry_run })).await),
+        Ok(k) => respond(
+            store
+                .patch_band_spec(k, ns, name, json!({ "dryRun": b.dry_run }))
+                .await,
+        ),
         Err(r) => r,
     }
 }
@@ -151,7 +186,13 @@ async fn set_write_intent(
     // Refuse an unattributed go-live here rather than writing a CR the controller
     // would only ever resolve to a fail-safe shadow. Same verdict, one round-trip
     // earlier, and the operator learns why while still holding the decision.
-    if b.intent == "write" && b.authorized_by.as_deref().map(str::trim).unwrap_or_default().is_empty() {
+    if b.intent == "write"
+        && b.authorized_by
+            .as_deref()
+            .map(str::trim)
+            .unwrap_or_default()
+            .is_empty()
+    {
         return (
             StatusCode::BAD_REQUEST,
             Json(json!({
@@ -170,7 +211,11 @@ async fn set_write_intent(
     if let Some(by) = b.authorized_by {
         intent["authorizedBy"] = json!(by);
     }
-    respond(store.patch_band_spec(k, ns, name, json!({ "writeIntent": intent })).await)
+    respond(
+        store
+            .patch_band_spec(k, ns, name, json!({ "writeIntent": intent }))
+            .await,
+    )
 }
 
 #[derive(Deserialize)]
@@ -188,8 +233,21 @@ async fn confirm_band(
     match kind_or_400(&kind) {
         // JSON null in a merge-patch REMOVES the key — the honest "un-confirm".
         Ok(k) => {
-            let v = if b.confirmed { json!("true") } else { Value::Null };
-            respond(store.annotate_band(k, ns, name, json!({ breathe_provider::CONFIRMED_ANNOTATION: v })).await)
+            let v = if b.confirmed {
+                json!("true")
+            } else {
+                Value::Null
+            };
+            respond(
+                store
+                    .annotate_band(
+                        k,
+                        ns,
+                        name,
+                        json!({ breathe_provider::CONFIRMED_ANNOTATION: v }),
+                    )
+                    .await,
+            )
         }
         Err(r) => r,
     }
@@ -214,7 +272,11 @@ async fn set_write_enabled(
     Path(name): Path<String>,
     Json(b): Json<WriteEnabledBody>,
 ) -> Response {
-    respond(store.patch_pool_spec(name, json!({ "writeEnabled": b.write_enabled })).await)
+    respond(
+        store
+            .patch_pool_spec(name, json!({ "writeEnabled": b.write_enabled }))
+            .await,
+    )
 }
 
 // ───────────────────────────── GraphQL ─────────────────────────────
@@ -232,7 +294,10 @@ pub mod graphql {
     fn parse_kind(s: &str) -> async_graphql::Result<DimensionId> {
         DimensionId::parse(s).ok_or_else(|| {
             let known: Vec<&str> = DimensionId::ALL.iter().map(|d| d.as_str()).collect();
-            async_graphql::Error::new(format!("unknown band kind '{s}' (known: {})", known.join(", ")))
+            async_graphql::Error::new(format!(
+                "unknown band kind '{s}' (known: {})",
+                known.join(", ")
+            ))
         })
     }
     fn store<'a>(ctx: &Context<'a>) -> async_graphql::Result<&'a SharedStore> {
@@ -247,18 +312,43 @@ pub mod graphql {
             Ok(Json(store(ctx)?.catalog()))
         }
         /// List bands of a dimension, optionally namespace-scoped.
-        async fn bands(&self, ctx: &Context<'_>, kind: String, namespace: Option<String>) -> async_graphql::Result<Json<Value>> {
-            Ok(Json(store(ctx)?.list_bands(parse_kind(&kind)?, namespace).await.map_err(gql)?))
+        async fn bands(
+            &self,
+            ctx: &Context<'_>,
+            kind: String,
+            namespace: Option<String>,
+        ) -> async_graphql::Result<Json<Value>> {
+            Ok(Json(
+                store(ctx)?
+                    .list_bands(parse_kind(&kind)?, namespace)
+                    .await
+                    .map_err(gql)?,
+            ))
         }
         /// One band CR.
-        async fn band(&self, ctx: &Context<'_>, kind: String, namespace: String, name: String) -> async_graphql::Result<Json<Value>> {
-            Ok(Json(store(ctx)?.get_band(parse_kind(&kind)?, namespace, name).await.map_err(gql)?))
+        async fn band(
+            &self,
+            ctx: &Context<'_>,
+            kind: String,
+            namespace: String,
+            name: String,
+        ) -> async_graphql::Result<Json<Value>> {
+            Ok(Json(
+                store(ctx)?
+                    .get_band(parse_kind(&kind)?, namespace, name)
+                    .await
+                    .map_err(gql)?,
+            ))
         }
         /// All node pools.
         async fn nodepools(&self, ctx: &Context<'_>) -> async_graphql::Result<Json<Value>> {
             Ok(Json(store(ctx)?.list_pools().await.map_err(gql)?))
         }
-        async fn nodepool(&self, ctx: &Context<'_>, name: String) -> async_graphql::Result<Json<Value>> {
+        async fn nodepool(
+            &self,
+            ctx: &Context<'_>,
+            name: String,
+        ) -> async_graphql::Result<Json<Value>> {
             Ok(Json(store(ctx)?.get_pool(name).await.map_err(gql)?))
         }
     }
@@ -267,8 +357,20 @@ pub mod graphql {
     #[Object]
     impl Mutation {
         /// Merge-patch a band's spec.
-        async fn patch_band(&self, ctx: &Context<'_>, kind: String, namespace: String, name: String, spec: Json<Value>) -> async_graphql::Result<Json<Value>> {
-            Ok(Json(store(ctx)?.patch_band_spec(parse_kind(&kind)?, namespace, name, spec.0).await.map_err(gql)?))
+        async fn patch_band(
+            &self,
+            ctx: &Context<'_>,
+            kind: String,
+            namespace: String,
+            name: String,
+            spec: Json<Value>,
+        ) -> async_graphql::Result<Json<Value>> {
+            Ok(Json(
+                store(ctx)?
+                    .patch_band_spec(parse_kind(&kind)?, namespace, name, spec.0)
+                    .await
+                    .map_err(gql)?,
+            ))
         }
         /// Author a band's `writeIntent` — THE authorization gate on every kind.
         /// `intent` is observe | calibrateThenWrite | write | frozen;
@@ -283,7 +385,13 @@ pub mod graphql {
             confirm_after_seconds: Option<u64>,
             authorized_by: Option<String>,
         ) -> async_graphql::Result<Json<Value>> {
-            if intent == "write" && authorized_by.as_deref().map(str::trim).unwrap_or_default().is_empty() {
+            if intent == "write"
+                && authorized_by
+                    .as_deref()
+                    .map(str::trim)
+                    .unwrap_or_default()
+                    .is_empty()
+            {
                 return Err(async_graphql::Error::new(
                     "intent=write requires authorizedBy — a live carve must name who authorized it; nothing was written",
                 ));
@@ -296,20 +404,48 @@ pub mod graphql {
                 body["authorizedBy"] = serde_json::json!(by);
             }
             let spec = serde_json::json!({ "writeIntent": body });
-            Ok(Json(store(ctx)?.patch_band_spec(parse_kind(&kind)?, namespace, name, spec).await.map_err(gql)?))
+            Ok(Json(
+                store(ctx)?
+                    .patch_band_spec(parse_kind(&kind)?, namespace, name, spec)
+                    .await
+                    .map_err(gql)?,
+            ))
         }
         /// Set or clear `breathe.pleme.io/confirmed` — promote a calibrating band
         /// to writing now instead of waiting out its confirm window.
-        async fn confirm_band(&self, ctx: &Context<'_>, kind: String, namespace: String, name: String, confirmed: bool) -> async_graphql::Result<Json<Value>> {
-            let v = if confirmed { serde_json::json!("true") } else { Value::Null };
+        async fn confirm_band(
+            &self,
+            ctx: &Context<'_>,
+            kind: String,
+            namespace: String,
+            name: String,
+            confirmed: bool,
+        ) -> async_graphql::Result<Json<Value>> {
+            let v = if confirmed {
+                serde_json::json!("true")
+            } else {
+                Value::Null
+            };
             let ann = serde_json::json!({ breathe_provider::CONFIRMED_ANNOTATION: v });
-            Ok(Json(store(ctx)?.annotate_band(parse_kind(&kind)?, namespace, name, ann).await.map_err(gql)?))
+            Ok(Json(
+                store(ctx)?
+                    .annotate_band(parse_kind(&kind)?, namespace, name, ann)
+                    .await
+                    .map_err(gql)?,
+            ))
         }
         /// Write a band's `dryRun`. RETIRED for eight of the ten kinds — only
         /// `host-param` and `kube-param` read it; elsewhere this errors rather
         /// than reporting success for a patch that changes nothing. Use
         /// `setWriteIntent`.
-        async fn set_dry_run(&self, ctx: &Context<'_>, kind: String, namespace: String, name: String, dry_run: bool) -> async_graphql::Result<Json<Value>> {
+        async fn set_dry_run(
+            &self,
+            ctx: &Context<'_>,
+            kind: String,
+            namespace: String,
+            name: String,
+            dry_run: bool,
+        ) -> async_graphql::Result<Json<Value>> {
             let k = parse_kind(&kind)?;
             if !k.dry_run_is_honored() {
                 return Err(async_graphql::Error::new(format!(
@@ -317,12 +453,27 @@ pub mod graphql {
                      use setWriteIntent. Only host-param and kube-param read it. Nothing was written."
                 )));
             }
-            Ok(Json(store(ctx)?.patch_band_spec(k, namespace, name, serde_json::json!({ "dryRun": dry_run })).await.map_err(gql)?))
+            Ok(Json(
+                store(ctx)?
+                    .patch_band_spec(k, namespace, name, serde_json::json!({ "dryRun": dry_run }))
+                    .await
+                    .map_err(gql)?,
+            ))
         }
         /// Flip a BreatheNodePool's writeEnabled master switch. Bounds HOST-plane
         /// writes for bands enrolled on that pool; not a cluster-wide kill switch.
-        async fn set_write_enabled(&self, ctx: &Context<'_>, name: String, write_enabled: bool) -> async_graphql::Result<Json<Value>> {
-            Ok(Json(store(ctx)?.patch_pool_spec(name, serde_json::json!({ "writeEnabled": write_enabled })).await.map_err(gql)?))
+        async fn set_write_enabled(
+            &self,
+            ctx: &Context<'_>,
+            name: String,
+            write_enabled: bool,
+        ) -> async_graphql::Result<Json<Value>> {
+            Ok(Json(
+                store(ctx)?
+                    .patch_pool_spec(name, serde_json::json!({ "writeEnabled": write_enabled }))
+                    .await
+                    .map_err(gql)?,
+            ))
         }
     }
 
@@ -330,7 +481,9 @@ pub mod graphql {
 
     #[must_use]
     pub fn schema(store: SharedStore) -> BreatheSchema {
-        Schema::build(Query, Mutation, EmptySubscription).data(store).finish()
+        Schema::build(Query, Mutation, EmptySubscription)
+            .data(store)
+            .finish()
     }
 }
 
@@ -367,8 +520,11 @@ pub mod grpc {
     /// `spec/breathe.openapi.yaml` — surfaced as a typed error, never a silent
     /// wrong answer (the spec-first standard keeps the two in sync).
     fn typed<T: serde::de::DeserializeOwned>(v: Value) -> Result<T, Status> {
-        serde_json::from_value(v)
-            .map_err(|e| Status::internal(format!("response did not match the typed schema (spec drift?): {e}")))
+        serde_json::from_value(v).map_err(|e| {
+            Status::internal(format!(
+                "response did not match the typed schema (spec drift?): {e}"
+            ))
+        })
     }
 
     fn opt_ns(s: String) -> Option<String> {
@@ -407,43 +563,72 @@ pub mod grpc {
 
     #[tonic::async_trait]
     impl pb::breathe_server::Breathe for GrpcService {
-        async fn band_list(&self, req: Request<pb::BandListRequest>) -> Result<Response<pb::BandListResponse>, Status> {
+        async fn band_list(
+            &self,
+            req: Request<pb::BandListRequest>,
+        ) -> Result<Response<pb::BandListResponse>, Status> {
             let r = req.into_inner();
-            let v = self.store.list_bands(kind_of(r.kind)?, opt_ns(r.namespace)).await.map_err(st)?;
+            let v = self
+                .store
+                .list_bands(kind_of(r.kind)?, opt_ns(r.namespace))
+                .await
+                .map_err(st)?;
             Ok(Response::new(pb::BandListResponse { items: typed(v)? }))
         }
-        async fn band_get(&self, req: Request<pb::BandGetRequest>) -> Result<Response<pb::Band>, Status> {
+        async fn band_get(
+            &self,
+            req: Request<pb::BandGetRequest>,
+        ) -> Result<Response<pb::Band>, Status> {
             let r = req.into_inner();
-            let v = self.store.get_band(kind_of(r.kind)?, r.namespace, r.name).await.map_err(st)?;
+            let v = self
+                .store
+                .get_band(kind_of(r.kind)?, r.namespace, r.name)
+                .await
+                .map_err(st)?;
             Ok(Response::new(typed(v)?))
         }
-        async fn band_patch(&self, req: Request<pb::BandPatchRequest>) -> Result<Response<pb::Band>, Status> {
+        async fn band_patch(
+            &self,
+            req: Request<pb::BandPatchRequest>,
+        ) -> Result<Response<pb::Band>, Status> {
             let r = req.into_inner();
             // BandSpec scalars are proto3 `optional` (field presence): pbjson emits
             // the fields the client SET (Some — incl. a zero like dryRun=false) and
             // omits the rest (None) → correct RFC-7386 merge: present writes, absent
             // leaves unchanged. (Without presence, proto3 would drop zero values.)
-            let spec = serde_json::to_value(r.body.unwrap_or_default()).map_err(|e| Status::internal(e.to_string()))?;
+            let spec = serde_json::to_value(r.body.unwrap_or_default())
+                .map_err(|e| Status::internal(e.to_string()))?;
             // Same border check as the REST and MCP surfaces: a go-live must name
             // its author. Refusing here keeps all four surfaces answering
             // identically, instead of gRPC being the one that writes a CR the
             // controller will only ever resolve to a fail-safe shadow.
             if spec["writeIntent"]["intent"] == "write"
-                && spec["writeIntent"]["authorizedBy"].as_str().map(str::trim).unwrap_or_default().is_empty()
+                && spec["writeIntent"]["authorizedBy"]
+                    .as_str()
+                    .map(str::trim)
+                    .unwrap_or_default()
+                    .is_empty()
             {
                 return Err(Status::invalid_argument(
                     "writeIntent.intent=write requires authorizedBy — a live carve must name who \
                      authorized it. Nothing was written.",
                 ));
             }
-            let v = self.store.patch_band_spec(kind_of(r.kind)?, r.namespace, r.name, spec).await.map_err(st)?;
+            let v = self
+                .store
+                .patch_band_spec(kind_of(r.kind)?, r.namespace, r.name, spec)
+                .await
+                .map_err(st)?;
             Ok(Response::new(typed(v)?))
         }
         /// RETIRED for eight of the ten kinds — see [`super::set_dry_run`]. Only
         /// `host-param` and `kube-param` read `spec.dryRun`; elsewhere this
         /// returns `FAILED_PRECONDITION` rather than an OK for a write that
         /// changes nothing.
-        async fn band_set_dry_run(&self, req: Request<pb::BandSetDryRunRequest>) -> Result<Response<pb::Band>, Status> {
+        async fn band_set_dry_run(
+            &self,
+            req: Request<pb::BandSetDryRunRequest>,
+        ) -> Result<Response<pb::Band>, Status> {
             let r = req.into_inner();
             let k = kind_of(r.kind)?;
             if !k.dry_run_is_honored() {
@@ -453,26 +638,61 @@ pub mod grpc {
                      read dryRun. Nothing was written.",
                 ));
             }
-            let v = self.store.patch_band_spec(k, r.namespace, r.name, serde_json::json!({ "dryRun": r.dry_run })).await.map_err(st)?;
+            let v = self
+                .store
+                .patch_band_spec(
+                    k,
+                    r.namespace,
+                    r.name,
+                    serde_json::json!({ "dryRun": r.dry_run }),
+                )
+                .await
+                .map_err(st)?;
             Ok(Response::new(typed(v)?))
         }
-        async fn catalog_list(&self, _req: Request<pb::CatalogListRequest>) -> Result<Response<pb::Catalog>, Status> {
+        async fn catalog_list(
+            &self,
+            _req: Request<pb::CatalogListRequest>,
+        ) -> Result<Response<pb::Catalog>, Status> {
             Ok(Response::new(typed(self.store.catalog())?))
         }
-        async fn nodepool_list(&self, _req: Request<pb::NodepoolListRequest>) -> Result<Response<pb::NodepoolListResponse>, Status> {
+        async fn nodepool_list(
+            &self,
+            _req: Request<pb::NodepoolListRequest>,
+        ) -> Result<Response<pb::NodepoolListResponse>, Status> {
             let v = self.store.list_pools().await.map_err(st)?;
             Ok(Response::new(pb::NodepoolListResponse { items: typed(v)? }))
         }
-        async fn nodepool_get(&self, req: Request<pb::NodepoolGetRequest>) -> Result<Response<pb::NodePool>, Status> {
-            let v = self.store.get_pool(req.into_inner().name).await.map_err(st)?;
+        async fn nodepool_get(
+            &self,
+            req: Request<pb::NodepoolGetRequest>,
+        ) -> Result<Response<pb::NodePool>, Status> {
+            let v = self
+                .store
+                .get_pool(req.into_inner().name)
+                .await
+                .map_err(st)?;
             Ok(Response::new(typed(v)?))
         }
-        async fn nodepool_set_write_enabled(&self, req: Request<pb::NodepoolSetWriteEnabledRequest>) -> Result<Response<pb::NodePool>, Status> {
+        async fn nodepool_set_write_enabled(
+            &self,
+            req: Request<pb::NodepoolSetWriteEnabledRequest>,
+        ) -> Result<Response<pb::NodePool>, Status> {
             let r = req.into_inner();
-            let v = self.store.patch_pool_spec(r.name, serde_json::json!({ "writeEnabled": r.write_enabled })).await.map_err(st)?;
+            let v = self
+                .store
+                .patch_pool_spec(
+                    r.name,
+                    serde_json::json!({ "writeEnabled": r.write_enabled }),
+                )
+                .await
+                .map_err(st)?;
             Ok(Response::new(typed(v)?))
         }
-        async fn healthz(&self, _req: Request<pb::HealthzRequest>) -> Result<Response<::pbjson_types::Empty>, Status> {
+        async fn healthz(
+            &self,
+            _req: Request<pb::HealthzRequest>,
+        ) -> Result<Response<::pbjson_types::Empty>, Status> {
             Ok(Response::new(::pbjson_types::Empty {}))
         }
     }
@@ -499,10 +719,19 @@ mod tests {
     }
     #[async_trait]
     impl BreatheStore for MockStore {
-        async fn list_bands(&self, kind: DimensionId, _ns: Option<String>) -> Result<Value, StoreError> {
+        async fn list_bands(
+            &self,
+            kind: DimensionId,
+            _ns: Option<String>,
+        ) -> Result<Value, StoreError> {
             Ok(json!([{ "kind": kind.as_str() }]))
         }
-        async fn get_band(&self, _kind: DimensionId, ns: String, name: String) -> Result<Value, StoreError> {
+        async fn get_band(
+            &self,
+            _kind: DimensionId,
+            ns: String,
+            name: String,
+        ) -> Result<Value, StoreError> {
             // schema-faithful Band JSON (what the real KubeStore serializes): the
             // typed gRPC surface deserializes this strictly into pb::Band.
             Ok(json!({
@@ -513,16 +742,30 @@ mod tests {
                 "status": { "phase": "Holding" }
             }))
         }
-        async fn patch_band_spec(&self, _k: DimensionId, _ns: String, name: String, spec: Value) -> Result<Value, StoreError> {
+        async fn patch_band_spec(
+            &self,
+            _k: DimensionId,
+            _ns: String,
+            name: String,
+            spec: Value,
+        ) -> Result<Value, StoreError> {
             self.patches.lock().unwrap().push((name, spec.clone()));
             Ok(json!({ "spec": spec }))
         }
-        async fn annotate_band(&self, _k: DimensionId, _ns: String, name: String, ann: Value) -> Result<Value, StoreError> {
+        async fn annotate_band(
+            &self,
+            _k: DimensionId,
+            _ns: String,
+            name: String,
+            ann: Value,
+        ) -> Result<Value, StoreError> {
             self.patches.lock().unwrap().push((name, ann.clone()));
             Ok(json!({ "metadata": { "annotations": ann } }))
         }
         async fn list_pools(&self) -> Result<Value, StoreError> {
-            Ok(json!([{ "metadata": { "name": "rio" }, "spec": { "nodeName": "rio", "arcMaxGiB": 6 } }]))
+            Ok(
+                json!([{ "metadata": { "name": "rio" }, "spec": { "nodeName": "rio", "arcMaxGiB": 6 } }]),
+            )
         }
         async fn get_pool(&self, name: String) -> Result<Value, StoreError> {
             Ok(json!({
@@ -582,7 +825,10 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
-        assert!(mock.patches.lock().unwrap().is_empty(), "a refused call must not reach the store");
+        assert!(
+            mock.patches.lock().unwrap().is_empty(),
+            "a refused call must not reach the store"
+        );
     }
 
     /// …and still applies on the two kinds that genuinely read it.
@@ -594,7 +840,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("PATCH")
-                    .uri("/api/v1/bands/host-param/camelot/vm-dirty/dry-run")
+                    .uri("/api/v1/bands/host-param/isolated/vm-dirty/dry-run")
                     .header("content-type", "application/json")
                     .body(Body::from(r#"{"dryRun":true}"#))
                     .unwrap(),
@@ -612,7 +858,10 @@ mod tests {
         for kind in DimensionId::ALL {
             let app = router(Arc::new(MockStore::default()));
             let uri = ["/api/v1/bands/", kind.as_str()].concat();
-            let resp = app.oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap()).await.unwrap();
+            let resp = app
+                .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
+                .await
+                .unwrap();
             assert_eq!(resp.status(), StatusCode::OK, "{kind} must be routable");
         }
     }
@@ -625,7 +874,7 @@ mod tests {
             app.oneshot(
                 Request::builder()
                     .method("PATCH")
-                    .uri("/api/v1/bands/cpu/camelot/coredns/write-intent")
+                    .uri("/api/v1/bands/cpu/isolated/coredns/write-intent")
                     .header("content-type", "application/json")
                     .body(Body::from(body))
                     .unwrap(),
@@ -634,10 +883,18 @@ mod tests {
             .unwrap()
         };
         let resp = patch_intent(app.clone(), r#"{"intent":"write"}"#).await;
-        assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "an unattributed go-live is refused");
+        assert_eq!(
+            resp.status(),
+            StatusCode::BAD_REQUEST,
+            "an unattributed go-live is refused"
+        );
         assert!(mock.patches.lock().unwrap().is_empty());
 
-        let resp = patch_intent(app, r#"{"intent":"write","authorizedBy":"drzzln 2026-07-26"}"#).await;
+        let resp = patch_intent(
+            app,
+            r#"{"intent":"write","authorizedBy":"drzzln 2026-07-26"}"#,
+        )
+        .await;
         assert_eq!(resp.status(), StatusCode::OK);
         assert_eq!(
             mock.patches.lock().unwrap()[0].1,
@@ -653,7 +910,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("PATCH")
-                    .uri("/api/v1/bands/memory/camelot/b/confirm")
+                    .uri("/api/v1/bands/memory/isolated/b/confirm")
                     .header("content-type", "application/json")
                     .body(Body::from(r#"{"confirmed":true}"#))
                     .unwrap(),
@@ -661,14 +918,22 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
-        assert_eq!(mock.patches.lock().unwrap()[0].1, json!({ breathe_provider::CONFIRMED_ANNOTATION: "true" }));
+        assert_eq!(
+            mock.patches.lock().unwrap()[0].1,
+            json!({ breathe_provider::CONFIRMED_ANNOTATION: "true" })
+        );
     }
 
     #[tokio::test]
     async fn unknown_band_kind_is_400() {
         let app = router(Arc::new(MockStore::default()));
         let resp = app
-            .oneshot(Request::builder().uri("/api/v1/bands/bogus").body(Body::empty()).unwrap())
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/bands/bogus")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
@@ -678,14 +943,22 @@ mod tests {
     async fn catalog_route_returns_all_dimensions() {
         let app = router(Arc::new(MockStore::default()));
         let resp = app
-            .oneshot(Request::builder().uri("/api/v1/catalog").body(Body::empty()).unwrap())
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/catalog")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
         let v = body_json(resp).await;
         // every catalogued dimension is exposed on the REST surface (not a literal —
         // tracks breathe_catalog::ALL_DIMENSIONS so it never goes stale).
-        assert_eq!(v["dimensions"].as_array().unwrap().len(), breathe_catalog::ALL_DIMENSIONS.len());
+        assert_eq!(
+            v["dimensions"].as_array().unwrap().len(),
+            breathe_catalog::ALL_DIMENSIONS.len()
+        );
     }
 
     #[tokio::test]
@@ -704,7 +977,10 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
-        assert_eq!(mock.patches.lock().unwrap()[0].1, json!({ "writeEnabled": true }));
+        assert_eq!(
+            mock.patches.lock().unwrap()[0].1,
+            json!({ "writeEnabled": true })
+        );
     }
 
     #[tokio::test]
@@ -714,7 +990,10 @@ mod tests {
         let resp = schema
             .execute(r#"mutation { setDryRun(kind:"arc", namespace:"pangea-system", name:"rio-arc", dryRun:false) }"#)
             .await;
-        assert!(!resp.errors.is_empty(), "an inert dryRun write must not report success");
+        assert!(
+            !resp.errors.is_empty(),
+            "an inert dryRun write must not report success"
+        );
         assert!(mock.patches.lock().unwrap().is_empty());
     }
 
@@ -723,17 +1002,26 @@ mod tests {
         let mock = Arc::new(MockStore::default());
         let schema = graphql::schema(mock.clone());
         let resp = schema
-            .execute(r#"mutation { setWriteIntent(kind:"cpu", namespace:"camelot", name:"coredns", intent:"observe") }"#)
+            .execute(r#"mutation { setWriteIntent(kind:"cpu", namespace:"isolated", name:"coredns", intent:"observe") }"#)
             .await;
         assert!(resp.errors.is_empty(), "{:?}", resp.errors);
-        assert_eq!(mock.patches.lock().unwrap()[0].1, json!({ "writeIntent": { "intent": "observe" } }));
+        assert_eq!(
+            mock.patches.lock().unwrap()[0].1,
+            json!({ "writeIntent": { "intent": "observe" } })
+        );
     }
 
     /// GraphQL reaches the five dimensions it could not name before.
     #[tokio::test]
     async fn graphql_reaches_the_previously_invisible_kinds() {
         let schema = graphql::schema(Arc::new(MockStore::default()));
-        for kind in ["cgroup-cpu", "host-param", "kube-param", "app-param", "replica"] {
+        for kind in [
+            "cgroup-cpu",
+            "host-param",
+            "kube-param",
+            "app-param",
+            "replica",
+        ] {
             let q = ["{ bands(kind:\"", kind, "\") }"].concat();
             let resp = schema.execute(q).await;
             assert!(resp.errors.is_empty(), "{kind}: {:?}", resp.errors);
@@ -752,20 +1040,32 @@ mod tests {
     async fn grpc_set_write_enabled_returns_typed_nodepool() {
         use grpc::pb::breathe_server::Breathe;
         let mock = Arc::new(MockStore::default());
-        let svc = grpc::GrpcService { store: mock.clone() };
+        let svc = grpc::GrpcService {
+            store: mock.clone(),
+        };
         let resp = svc
-            .nodepool_set_write_enabled(tonic::Request::new(grpc::pb::NodepoolSetWriteEnabledRequest { name: "rio".into(), write_enabled: true }))
+            .nodepool_set_write_enabled(tonic::Request::new(
+                grpc::pb::NodepoolSetWriteEnabledRequest {
+                    name: "rio".into(),
+                    write_enabled: true,
+                },
+            ))
             .await
             .unwrap();
         // the response is a TYPED NodePool, not a JSON string envelope.
         assert!(resp.into_inner().spec.unwrap().write_enabled);
-        assert_eq!(mock.patches.lock().unwrap()[0].1, json!({ "writeEnabled": true }));
+        assert_eq!(
+            mock.patches.lock().unwrap()[0].1,
+            json!({ "writeEnabled": true })
+        );
     }
 
     #[tokio::test]
     async fn grpc_band_get_returns_typed_band() {
         use grpc::pb::breathe_server::Breathe;
-        let svc = grpc::GrpcService { store: Arc::new(MockStore::default()) };
+        let svc = grpc::GrpcService {
+            store: Arc::new(MockStore::default()),
+        };
         let resp = svc
             .band_get(tonic::Request::new(grpc::pb::BandGetRequest {
                 kind: grpc::pb::BandKind::Arc as i32,
@@ -788,8 +1088,13 @@ mod tests {
         // makes Some(false) serialize as `{"dryRun": false}`, not get dropped.
         use grpc::pb::breathe_server::Breathe;
         let mock = Arc::new(MockStore::default());
-        let svc = grpc::GrpcService { store: mock.clone() };
-        let body = grpc::pb::BandSpec { dry_run: Some(false), ..Default::default() };
+        let svc = grpc::GrpcService {
+            store: mock.clone(),
+        };
+        let body = grpc::pb::BandSpec {
+            dry_run: Some(false),
+            ..Default::default()
+        };
         svc.band_patch(tonic::Request::new(grpc::pb::BandPatchRequest {
             kind: grpc::pb::BandKind::Arc as i32,
             namespace: "pangea-system".into(),
@@ -799,13 +1104,18 @@ mod tests {
         .await
         .unwrap();
         // exactly the one set field reached the facade — no other scalars leaked in.
-        assert_eq!(mock.patches.lock().unwrap()[0].1, json!({ "dryRun": false }));
+        assert_eq!(
+            mock.patches.lock().unwrap()[0].1,
+            json!({ "dryRun": false })
+        );
     }
 
     #[tokio::test]
     async fn grpc_band_list_returns_typed_items() {
         use grpc::pb::breathe_server::Breathe;
-        let svc = grpc::GrpcService { store: Arc::new(MockStore::default()) };
+        let svc = grpc::GrpcService {
+            store: Arc::new(MockStore::default()),
+        };
         let resp = svc
             .band_list(tonic::Request::new(grpc::pb::BandListRequest {
                 kind: grpc::pb::BandKind::Arc as i32,
@@ -820,22 +1130,37 @@ mod tests {
     async fn grpc_catalog_list_returns_typed_catalog() {
         // exercises the full bridge incl. nullable `upstreamMirror` (proto3 string).
         use grpc::pb::breathe_server::Breathe;
-        let svc = grpc::GrpcService { store: Arc::new(MockStore::default()) };
-        let resp = svc.catalog_list(tonic::Request::new(grpc::pb::CatalogListRequest {})).await.unwrap();
+        let svc = grpc::GrpcService {
+            store: Arc::new(MockStore::default()),
+        };
+        let resp = svc
+            .catalog_list(tonic::Request::new(grpc::pb::CatalogListRequest {}))
+            .await
+            .unwrap();
         let cat = resp.into_inner();
         // the gRPC bridge preserves every catalogued dimension (tracks the canonical
         // count, never a literal — see breathe_catalog::ALL_DIMENSIONS).
         assert_eq!(cat.dimensions.len(), breathe_catalog::ALL_DIMENSIONS.len());
         assert!(cat.dimensions.iter().any(|d| d.id == "arc" && d.is_host));
-        assert!(cat.dimensions.iter().any(|d| d.id == "cgroup-cpu" && d.is_host));
-        assert!(cat.dimensions.iter().any(|d| d.id == "memory" && !d.is_host));
+        assert!(
+            cat.dimensions
+                .iter()
+                .any(|d| d.id == "cgroup-cpu" && d.is_host)
+        );
+        assert!(
+            cat.dimensions
+                .iter()
+                .any(|d| d.id == "memory" && !d.is_host)
+        );
     }
 
     #[tokio::test]
     async fn grpc_set_dry_run_refuses_where_inert_and_applies_where_honored() {
         use grpc::pb::breathe_server::Breathe;
         let mock = Arc::new(MockStore::default());
-        let svc = grpc::GrpcService { store: mock.clone() };
+        let svc = grpc::GrpcService {
+            store: mock.clone(),
+        };
         let call = |kind: grpc::pb::BandKind| {
             tonic::Request::new(grpc::pb::BandSetDryRunRequest {
                 kind: kind as i32,
@@ -844,13 +1169,22 @@ mod tests {
                 dry_run: false,
             })
         };
-        let err = svc.band_set_dry_run(call(grpc::pb::BandKind::Arc)).await.unwrap_err();
+        let err = svc
+            .band_set_dry_run(call(grpc::pb::BandKind::Arc))
+            .await
+            .unwrap_err();
         assert_eq!(err.code(), tonic::Code::FailedPrecondition);
         assert!(mock.patches.lock().unwrap().is_empty());
 
-        let resp = svc.band_set_dry_run(call(grpc::pb::BandKind::HostParam)).await.unwrap();
+        let resp = svc
+            .band_set_dry_run(call(grpc::pb::BandKind::HostParam))
+            .await
+            .unwrap();
         assert_eq!(resp.into_inner().spec.unwrap().dry_run, Some(false));
-        assert_eq!(mock.patches.lock().unwrap()[0].1, json!({ "dryRun": false }));
+        assert_eq!(
+            mock.patches.lock().unwrap()[0].1,
+            json!({ "dryRun": false })
+        );
     }
 
     /// gRPC can finally author `writeIntent` at all — its `BandSpec` carried only
@@ -861,25 +1195,42 @@ mod tests {
     async fn grpc_band_patch_carries_write_intent_and_refuses_an_unattributed_go_live() {
         use grpc::pb::breathe_server::Breathe;
         let mock = Arc::new(MockStore::default());
-        let svc = grpc::GrpcService { store: mock.clone() };
+        let svc = grpc::GrpcService {
+            store: mock.clone(),
+        };
         let call = |wi: grpc::pb::WriteIntent| {
             tonic::Request::new(grpc::pb::BandPatchRequest {
                 kind: grpc::pb::BandKind::Cpu as i32,
-                namespace: "camelot".into(),
+                namespace: "isolated".into(),
                 name: "coredns".into(),
-                body: Some(grpc::pb::BandSpec { write_intent: Some(wi), ..Default::default() }),
+                body: Some(grpc::pb::BandSpec {
+                    write_intent: Some(wi),
+                    ..Default::default()
+                }),
             })
         };
-        let unattributed =
-            grpc::pb::WriteIntent { intent: "write".into(), confirm_after_seconds: None, authorized_by: None };
+        let unattributed = grpc::pb::WriteIntent {
+            intent: "write".into(),
+            confirm_after_seconds: None,
+            authorized_by: None,
+        };
         let err = svc.band_patch(call(unattributed)).await.unwrap_err();
         assert_eq!(err.code(), tonic::Code::InvalidArgument);
-        assert!(mock.patches.lock().unwrap().is_empty(), "a refused go-live must not reach the store");
+        assert!(
+            mock.patches.lock().unwrap().is_empty(),
+            "a refused go-live must not reach the store"
+        );
 
-        let observe =
-            grpc::pb::WriteIntent { intent: "observe".into(), confirm_after_seconds: None, authorized_by: None };
+        let observe = grpc::pb::WriteIntent {
+            intent: "observe".into(),
+            confirm_after_seconds: None,
+            authorized_by: None,
+        };
         svc.band_patch(call(observe)).await.unwrap();
-        assert_eq!(mock.patches.lock().unwrap()[0].1["writeIntent"]["intent"], "observe");
+        assert_eq!(
+            mock.patches.lock().unwrap()[0].1["writeIntent"]["intent"],
+            "observe"
+        );
     }
 
     /// **The spec-drift gate.** `spec/breathe.openapi.yaml` calls itself the
@@ -894,8 +1245,10 @@ mod tests {
     #[test]
     fn openapi_spec_band_kinds_match_the_code() {
         let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../spec/breathe.openapi.yaml");
-        let raw = std::fs::read_to_string(path).expect("the spec is where the crate doc says it is");
-        let spec: serde_yaml::Value = serde_yaml::from_str(&raw).expect("spec/breathe.openapi.yaml must be valid YAML");
+        let raw =
+            std::fs::read_to_string(path).expect("the spec is where the crate doc says it is");
+        let spec: serde_yaml::Value =
+            serde_yaml::from_str(&raw).expect("spec/breathe.openapi.yaml must be valid YAML");
 
         let declared: Vec<String> = spec["components"]["schemas"]["BandKind"]["enum"]
             .as_sequence()
@@ -903,8 +1256,14 @@ mod tests {
             .iter()
             .map(|v| v.as_str().expect("each enum value is a string").to_owned())
             .collect();
-        let canonical: Vec<String> = DimensionId::ALL.iter().map(|d| d.as_str().to_owned()).collect();
-        assert_eq!(declared, canonical, "the OpenAPI BandKind enum has drifted from DimensionId::ALL");
+        let canonical: Vec<String> = DimensionId::ALL
+            .iter()
+            .map(|d| d.as_str().to_owned())
+            .collect();
+        assert_eq!(
+            declared, canonical,
+            "the OpenAPI BandKind enum has drifted from DimensionId::ALL"
+        );
 
         // The authorization routes the surface actually serves must exist in the
         // spec, or a generated SDK cannot reach the gate that replaced dryRun.
@@ -959,7 +1318,10 @@ mod tests {
     fn every_dimension_has_a_wire_number() {
         for d in DimensionId::ALL {
             let found = (1..=64).any(|n| grpc::kind_of(n).ok() == Some(d));
-            assert!(found, "dimension {d} has no BandKind wire number — add one, never renumber");
+            assert!(
+                found,
+                "dimension {d} has no BandKind wire number — add one, never renumber"
+            );
         }
     }
 }

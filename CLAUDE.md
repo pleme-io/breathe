@@ -9,7 +9,7 @@
 > Visibility is observable, and it was observed the expensive way.
 > `.github/workflows/image.yml` records **4 runs queued forever from
 > 2026-07-27** after a job was pinned to the self-hosted
-> `camelot-builder-pleme-eks` label — GitHub never assigns a PUBLIC
+> the self-hosted builder pool label — GitHub never assigns a PUBLIC
 > repository's jobs to a self-hosted runner. A private repo would have run
 > them. `README.md` carried the same stale claim and is corrected in the same
 > commit.
@@ -148,7 +148,7 @@ A band resolves the pods it carves two ways, on one seam (`KubeCluster::owner_po
   The `StorageBand` is born at a small **2Gi provision floor** (`d_storage_floor_bytes`,
   not memory's 256Mi) with a 200Gi grow ceiling, and `breathe-control`'s
   `classify_provision`/`ProvisionVerdict` make an over-provisioned volume (a fixed
-  `50Gi` holding a few hundred MiB — the 155GiB-provisioned/5GiB-used camelot receipt)
+  `50Gi` holding a few hundred MiB — the 155GiB-provisioned/5GiB-used the private estate receipt)
   a *typed, observable* `OverProvisioned{waste}` — while the carve's own output
   provably excludes that arm (`breathe_carve_never_over_provisions`), so
   over-provisioning is **unrepresentable in breathe's actuation** and only ever an

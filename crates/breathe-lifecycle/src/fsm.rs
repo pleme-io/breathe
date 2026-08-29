@@ -103,7 +103,7 @@ macro_rules! id_newtype {
 
 id_newtype!(
     /// The FSM record's own stable identity — stamped at [`Node::request`] time
-    /// and carried as the `camelot.pleme.io/lifecycle-id` tag on the AWS
+    /// and carried as the `the private estate.pleme.io/lifecycle-id` tag on the AWS
     /// instance once one exists, so the drift reconciler ([`crate::drift`]) and
     /// the FSM record share one identifier from birth (never re-derived, never
     /// guessed at reconcile time).

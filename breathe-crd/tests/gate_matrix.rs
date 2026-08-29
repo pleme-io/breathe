@@ -9,7 +9,7 @@
 //! ```
 //!
 //! to `self.mode_spec().unwrap_or(ShadowConfirmEffect)`. That silently inverted
-//! the meaning of `spec.dryRun` on every live CR: 74 of camelot-eks's 76 bands
+//! the meaning of `spec.dryRun` on every live CR: 74 of private-estate-eks's 76 bands
 //! declared `dryRun: true` as an explicit safety statement, and ~4,045 real
 //! carves ran under it anyway.
 //!
@@ -82,14 +82,17 @@
 //! | mislabel a fixture's `dim` | fixture-identity | `cgroup` probed 2× |
 
 use breathe_crd::{
-    AppBand, ArcBand, Band, BreatheCloudPool, BreatheConfig, BreatheNodePool, BreatheOverview, BreathePosture, RequestBand,
-    CgroupBand, CgroupCpuBand, CpuBand, Densa, HostParamBand, IsolationBand, KubeParamBand, MemoryBand, PodMemoryHigh,
-    PromotionMode, QuinhaoPool, ReplicaBand, StorageBand,
+    AppBand, ArcBand, Band, BreatheCloudPool, BreatheConfig, BreatheNodePool, BreatheOverview,
+    BreathePosture, CgroupBand, CgroupCpuBand, CpuBand, Densa, HostParamBand, IsolationBand,
+    KubeParamBand, MemoryBand, PodMemoryHigh, PromotionMode, QuinhaoPool, ReplicaBand, RequestBand,
+    StorageBand,
 };
-use breathe_provider::gate::{EffectiveGate, LegacyPath, LegacyPathKind, ShadowReasonKind, WitnessKind};
 use breathe_provider::DimensionId;
+use breathe_provider::gate::{
+    EffectiveGate, LegacyPath, LegacyPathKind, ShadowReasonKind, WitnessKind,
+};
 use kube::CustomResourceExt;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 // ─────────────────────────────── the ten kinds ────────────────────────────────
 
@@ -119,30 +122,42 @@ enum Class {
 /// kind is exercised through the *same* code path — a per-kind copy is how
 /// divergence hides.
 fn build<B: Band>(kind: &str, required: Value, spec_extra: &Value, obs: Obs) -> B {
-    let mut spec = json!({ "targetRef": { "kind": "Deployment", "name": "d", "apiVersion": "apps/v1" } });
+    let mut spec =
+        json!({ "targetRef": { "kind": "Deployment", "name": "d", "apiVersion": "apps/v1" } });
     let s = spec.as_object_mut().expect("object");
     s.extend(required.as_object().expect("required is an object").clone());
     s.extend(spec_extra.as_object().expect("extra is an object").clone());
 
     let mut meta = json!({ "name": "x", "namespace": "n" });
     if obs.operator_confirmed {
-        meta.as_object_mut()
-            .expect("object")
-            .insert("annotations".into(), json!({ breathe_crd::CONFIRMED_ANNOTATION: "true" }));
+        meta.as_object_mut().expect("object").insert(
+            "annotations".into(),
+            json!({ breathe_crd::CONFIRMED_ANNOTATION: "true" }),
+        );
     }
 
     let mut obj = json!({
         "apiVersion": "breathe.pleme.io/v1", "kind": kind, "metadata": meta, "spec": spec,
     });
     if let Some(st) = obs.status() {
-        obj.as_object_mut().expect("object").insert("status".into(), st);
+        obj.as_object_mut()
+            .expect("object")
+            .insert("status".into(), st);
     }
-    serde_json::from_value(obj)
-        .unwrap_or_else(|e| panic!("{kind} fixture must parse (a fixture bug hides a real failure): {e}"))
+    serde_json::from_value(obj).unwrap_or_else(|e| {
+        panic!("{kind} fixture must parse (a fixture bug hides a real failure): {e}")
+    })
 }
 
 /// Resolve one kind's gate for a given authored shape + observation.
-fn probe<B: Band>(kind: &str, required: Value, spec_extra: &Value, obs: Obs, now: i64, frozen: bool) -> EffectiveGate {
+fn probe<B: Band>(
+    kind: &str,
+    required: Value,
+    spec_extra: &Value,
+    obs: Obs,
+    now: i64,
+    frozen: bool,
+) -> EffectiveGate {
     build::<B>(kind, required, spec_extra, obs).resolve_gate(now, frozen)
 }
 
@@ -333,7 +348,15 @@ struct Obs {
 
 impl Obs {
     const fn base(label: &'static str) -> Self {
-        Self { label, ready: true, stale: false, conflict: false, no_status: false, operator_confirmed: false, now: NOW_LONG }
+        Self {
+            label,
+            ready: true,
+            stale: false,
+            conflict: false,
+            no_status: false,
+            operator_confirmed: false,
+            now: NOW_LONG,
+        }
     }
     fn status(self) -> Option<Value> {
         if self.no_status {
@@ -371,14 +394,41 @@ impl Obs {
 /// Ready and healthy, window long past.
 const READY_LONG: Obs = Obs::base("ready-long");
 /// Ready and healthy, but only 10s in.
-const READY_SHORT: Obs = Obs { now: NOW_SHORT, ..Obs::base("ready-short") };
-const NOT_READY: Obs = Obs { ready: false, ..Obs::base("not-ready") };
-const STALE: Obs = Obs { stale: true, ..Obs::base("stale") };
-const CONFLICT: Obs = Obs { conflict: true, ..Obs::base("conflict") };
-const NO_STATUS: Obs = Obs { no_status: true, ..Obs::base("no-status") };
-const CONFIRMED: Obs = Obs { operator_confirmed: true, now: NOW_SHORT, ..Obs::base("operator-confirmed") };
+const READY_SHORT: Obs = Obs {
+    now: NOW_SHORT,
+    ..Obs::base("ready-short")
+};
+const NOT_READY: Obs = Obs {
+    ready: false,
+    ..Obs::base("not-ready")
+};
+const STALE: Obs = Obs {
+    stale: true,
+    ..Obs::base("stale")
+};
+const CONFLICT: Obs = Obs {
+    conflict: true,
+    ..Obs::base("conflict")
+};
+const NO_STATUS: Obs = Obs {
+    no_status: true,
+    ..Obs::base("no-status")
+};
+const CONFIRMED: Obs = Obs {
+    operator_confirmed: true,
+    now: NOW_SHORT,
+    ..Obs::base("operator-confirmed")
+};
 
-const ALL_OBS: [Obs; 7] = [READY_LONG, READY_SHORT, NOT_READY, STALE, CONFLICT, NO_STATUS, CONFIRMED];
+const ALL_OBS: [Obs; 7] = [
+    READY_LONG,
+    READY_SHORT,
+    NOT_READY,
+    STALE,
+    CONFLICT,
+    NO_STATUS,
+    CONFIRMED,
+];
 
 // ────────────────────────────── the matrix rows ───────────────────────────────
 
@@ -442,42 +492,132 @@ use WitnessKind as WK;
 fn gate_matrix() -> Vec<Row> {
     let mut rows: Vec<Row> = Vec::new();
     let mut push = |intent, mode, dry_run, frozen, obs, chain, two_state, default, why| {
-        rows.push(Row { intent, mode, dry_run, frozen, obs, chain, two_state, default, why });
+        rows.push(Row {
+            intent,
+            mode,
+            dry_run,
+            frozen,
+            obs,
+            chain,
+            two_state,
+            default,
+            why,
+        });
     };
 
     // ── G1 · every intent arm ────────────────────────────────────────────────
-    push(None, None, false, false, READY_LONG,
-        L(WK::LegacyDefault), L(WK::LegacyDefault), L(WK::LegacyDefault),
-        "unauthored ⇒ the legacy chain promotes; the witness names it as migration debt");
-    push(Some(r#"{"intent":"observe"}"#), None, false, false, READY_LONG,
-        S(SR::ModeShadow), S(SR::ModeShadow), S(SR::ModeShadow),
-        "the honest shadow — an authored hold, distinguishable from an accidental one");
-    push(Some(r#"{"intent":"calibrateThenWrite"}"#), None, false, false, READY_LONG,
-        L(WK::ConfirmGatePassed), L(WK::ConfirmGatePassed), L(WK::ConfirmGatePassed),
-        "the bounded calibration 76924b0 wanted — stated out loud rather than inferred");
-    push(Some(r#"{"intent":"write","authorizedBy":"drzzln 2026-07-26 S4"}"#), None, false, false, READY_LONG,
-        L(WK::ExplicitIntent), L(WK::ExplicitIntent), L(WK::ExplicitIntent),
-        "a named human authority — the only witness a CR can carry on its own");
-    push(Some(r#"{"intent":"write"}"#), None, false, false, READY_LONG,
-        S(SR::IntentMalformed), S(SR::IntentMalformed), S(SR::IntentMalformed),
-        "unattributed go-live FAILS SAFE. Runtime mitigation, NOT apiserver rejection");
-    push(Some(r#"{"intent":"frozen"}"#), None, false, false, READY_LONG,
-        S(SR::Suspended), S(SR::Suspended), S(SR::Suspended),
-        "never write, keep observing — folds the old `mode: suspended` into one word");
+    push(
+        None,
+        None,
+        false,
+        false,
+        READY_LONG,
+        L(WK::LegacyDefault),
+        L(WK::LegacyDefault),
+        L(WK::LegacyDefault),
+        "unauthored ⇒ the legacy chain promotes; the witness names it as migration debt",
+    );
+    push(
+        Some(r#"{"intent":"observe"}"#),
+        None,
+        false,
+        false,
+        READY_LONG,
+        S(SR::ModeShadow),
+        S(SR::ModeShadow),
+        S(SR::ModeShadow),
+        "the honest shadow — an authored hold, distinguishable from an accidental one",
+    );
+    push(
+        Some(r#"{"intent":"calibrateThenWrite"}"#),
+        None,
+        false,
+        false,
+        READY_LONG,
+        L(WK::ConfirmGatePassed),
+        L(WK::ConfirmGatePassed),
+        L(WK::ConfirmGatePassed),
+        "the bounded calibration 76924b0 wanted — stated out loud rather than inferred",
+    );
+    push(
+        Some(r#"{"intent":"write","authorizedBy":"drzzln 2026-07-26 S4"}"#),
+        None,
+        false,
+        false,
+        READY_LONG,
+        L(WK::ExplicitIntent),
+        L(WK::ExplicitIntent),
+        L(WK::ExplicitIntent),
+        "a named human authority — the only witness a CR can carry on its own",
+    );
+    push(
+        Some(r#"{"intent":"write"}"#),
+        None,
+        false,
+        false,
+        READY_LONG,
+        S(SR::IntentMalformed),
+        S(SR::IntentMalformed),
+        S(SR::IntentMalformed),
+        "unattributed go-live FAILS SAFE. Runtime mitigation, NOT apiserver rejection",
+    );
+    push(
+        Some(r#"{"intent":"frozen"}"#),
+        None,
+        false,
+        false,
+        READY_LONG,
+        S(SR::Suspended),
+        S(SR::Suspended),
+        S(SR::Suspended),
+        "never write, keep observing — folds the old `mode: suspended` into one word",
+    );
 
     // ── G2 · every mode arm (unauthored intent) ──────────────────────────────
-    push(None, Some("shadow"), false, false, READY_LONG,
-        S(SR::ModeShadow), L(WK::LegacyDefault), L(WK::LegacyDefault),
-        "`mode` is NOT A FIELD on the two-state/default kinds — authoring it there does nothing");
-    push(None, Some("shadowConfirmEffect"), false, false, READY_LONG,
-        L(WK::LegacyDefault), L(WK::LegacyDefault), L(WK::LegacyDefault),
-        "the compiled default, stated explicitly — same verdict either way");
-    push(None, Some("effect"), false, false, READY_LONG,
-        L(WK::LegacyDefault), L(WK::LegacyDefault), L(WK::LegacyDefault),
-        "eyes-open go-live through the retired field; still LegacyDefault (no writeIntent authored)");
-    push(None, Some("suspended"), false, false, READY_LONG,
-        S(SR::Suspended), L(WK::LegacyDefault), L(WK::LegacyDefault),
-        "same `mode`-is-not-a-field divergence as the `shadow` row");
+    push(
+        None,
+        Some("shadow"),
+        false,
+        false,
+        READY_LONG,
+        S(SR::ModeShadow),
+        L(WK::LegacyDefault),
+        L(WK::LegacyDefault),
+        "`mode` is NOT A FIELD on the two-state/default kinds — authoring it there does nothing",
+    );
+    push(
+        None,
+        Some("shadowConfirmEffect"),
+        false,
+        false,
+        READY_LONG,
+        L(WK::LegacyDefault),
+        L(WK::LegacyDefault),
+        L(WK::LegacyDefault),
+        "the compiled default, stated explicitly — same verdict either way",
+    );
+    push(
+        None,
+        Some("effect"),
+        false,
+        false,
+        READY_LONG,
+        L(WK::LegacyDefault),
+        L(WK::LegacyDefault),
+        L(WK::LegacyDefault),
+        "eyes-open go-live through the retired field; still LegacyDefault (no writeIntent authored)",
+    );
+    push(
+        None,
+        Some("suspended"),
+        false,
+        false,
+        READY_LONG,
+        S(SR::Suspended),
+        L(WK::LegacyDefault),
+        L(WK::LegacyDefault),
+        "same `mode`-is-not-a-field divergence as the `shadow` row",
+    );
 
     // ── G3 · THE ROOT DEFECT: dryRun × mode ──────────────────────────────────
     //
@@ -486,63 +626,203 @@ fn gate_matrix() -> Vec<Row> {
     // than wished away. The `two_state` column is the control: `dryRun` still
     // decides there, which is exactly why a blanket "dryRun is retired" would
     // have been the opposite lie.
-    push(None, None, true, false, READY_LONG,
-        L(WK::LegacyDefault), S(SR::ModeShadow), L(WK::LegacyDefault),
+    push(
+        None,
+        None,
+        true,
+        false,
+        READY_LONG,
+        L(WK::LegacyDefault),
+        S(SR::ModeShadow),
+        L(WK::LegacyDefault),
         "★ THE ROW WHOSE ABSENCE LET 76924b0 SHIP GREEN. `dryRun: true`, no `mode`, no \
-         `writeIntent`, window elapsed — the exact shape of ~70 live camelot-eks bands. \
+         `writeIntent`, window elapsed — the exact shape of ~70 live isolated-eks bands. \
          Chain/Default kinds CARVE FOR REAL; only the two-state kinds honour it. Before \
          76924b0 the chain column read Shadow(ModeShadow); the commit flipped it and no \
-         test named the value, so nothing went red. Changing this cell is now a visible act");
-    push(None, Some("shadow"), true, false, READY_LONG,
-        S(SR::ModeShadow), S(SR::ModeShadow), L(WK::LegacyDefault),
-        "chain shadows on `mode`, two-state on `dryRun` — same verdict, different cause");
-    push(None, Some("effect"), true, false, READY_LONG,
-        L(WK::LegacyDefault), S(SR::ModeShadow), L(WK::LegacyDefault),
-        "the two-state kinds' `dryRun` BEATS an authored `mode: effect` they cannot read");
-    push(None, Some("suspended"), true, false, READY_LONG,
-        S(SR::Suspended), S(SR::ModeShadow), L(WK::LegacyDefault),
-        "AppBand is live with BOTH `dryRun: true` and `mode: suspended` authored — it reads neither");
-    push(None, Some("shadowConfirmEffect"), true, false, READY_LONG,
-        L(WK::LegacyDefault), S(SR::ModeShadow), L(WK::LegacyDefault),
-        "an explicit default plus `dryRun: true` still carves on the chain kinds");
-    push(Some(r#"{"intent":"observe"}"#), None, true, false, READY_LONG,
-        S(SR::ModeShadow), S(SR::ModeShadow), S(SR::ModeShadow),
-        "the remedy: an authored intent makes the retired field irrelevant on every kind");
+         test named the value, so nothing went red. Changing this cell is now a visible act",
+    );
+    push(
+        None,
+        Some("shadow"),
+        true,
+        false,
+        READY_LONG,
+        S(SR::ModeShadow),
+        S(SR::ModeShadow),
+        L(WK::LegacyDefault),
+        "chain shadows on `mode`, two-state on `dryRun` — same verdict, different cause",
+    );
+    push(
+        None,
+        Some("effect"),
+        true,
+        false,
+        READY_LONG,
+        L(WK::LegacyDefault),
+        S(SR::ModeShadow),
+        L(WK::LegacyDefault),
+        "the two-state kinds' `dryRun` BEATS an authored `mode: effect` they cannot read",
+    );
+    push(
+        None,
+        Some("suspended"),
+        true,
+        false,
+        READY_LONG,
+        S(SR::Suspended),
+        S(SR::ModeShadow),
+        L(WK::LegacyDefault),
+        "AppBand is live with BOTH `dryRun: true` and `mode: suspended` authored — it reads neither",
+    );
+    push(
+        None,
+        Some("shadowConfirmEffect"),
+        true,
+        false,
+        READY_LONG,
+        L(WK::LegacyDefault),
+        S(SR::ModeShadow),
+        L(WK::LegacyDefault),
+        "an explicit default plus `dryRun: true` still carves on the chain kinds",
+    );
+    push(
+        Some(r#"{"intent":"observe"}"#),
+        None,
+        true,
+        false,
+        READY_LONG,
+        S(SR::ModeShadow),
+        S(SR::ModeShadow),
+        S(SR::ModeShadow),
+        "the remedy: an authored intent makes the retired field irrelevant on every kind",
+    );
 
     // ── G4 · observation states (calibrating) ────────────────────────────────
-    push(Some(r#"{"intent":"calibrateThenWrite"}"#), None, false, false, READY_SHORT,
-        S(SR::ConfirmPending), S(SR::ConfirmPending), S(SR::ConfirmPending),
-        "inside the window — held, and the status reports held/needed seconds");
-    push(Some(r#"{"intent":"calibrateThenWrite"}"#), None, false, false, NOT_READY,
-        S(SR::NotReady), S(SR::NotReady), S(SR::NotReady),
-        "ACCIDENTAL shadow — the distinction six camelot bands needed and no surface could make");
-    push(Some(r#"{"intent":"calibrateThenWrite"}"#), None, false, false, STALE,
-        S(SR::Stale), S(SR::Stale), S(SR::Stale), "accidental — metric too old to trust");
-    push(Some(r#"{"intent":"calibrateThenWrite"}"#), None, false, false, CONFLICT,
-        S(SR::Conflict), S(SR::Conflict), S(SR::Conflict), "accidental — another field manager owns the target");
-    push(Some(r#"{"intent":"calibrateThenWrite"}"#), None, false, false, NO_STATUS,
-        S(SR::NotReady), S(SR::NotReady), S(SR::NotReady), "never observed ⇒ not ready, never a write");
-    push(Some(r#"{"intent":"calibrateThenWrite"}"#), None, false, false, CONFIRMED,
-        L(WK::OperatorAnnotation), L(WK::OperatorAnnotation), L(WK::OperatorAnnotation),
-        "the breathe.pleme.io/confirmed fast-path short-circuits the window, and SAYS it did");
+    push(
+        Some(r#"{"intent":"calibrateThenWrite"}"#),
+        None,
+        false,
+        false,
+        READY_SHORT,
+        S(SR::ConfirmPending),
+        S(SR::ConfirmPending),
+        S(SR::ConfirmPending),
+        "inside the window — held, and the status reports held/needed seconds",
+    );
+    push(
+        Some(r#"{"intent":"calibrateThenWrite"}"#),
+        None,
+        false,
+        false,
+        NOT_READY,
+        S(SR::NotReady),
+        S(SR::NotReady),
+        S(SR::NotReady),
+        "ACCIDENTAL shadow — the distinction six isolated bands needed and no surface could make",
+    );
+    push(
+        Some(r#"{"intent":"calibrateThenWrite"}"#),
+        None,
+        false,
+        false,
+        STALE,
+        S(SR::Stale),
+        S(SR::Stale),
+        S(SR::Stale),
+        "accidental — metric too old to trust",
+    );
+    push(
+        Some(r#"{"intent":"calibrateThenWrite"}"#),
+        None,
+        false,
+        false,
+        CONFLICT,
+        S(SR::Conflict),
+        S(SR::Conflict),
+        S(SR::Conflict),
+        "accidental — another field manager owns the target",
+    );
+    push(
+        Some(r#"{"intent":"calibrateThenWrite"}"#),
+        None,
+        false,
+        false,
+        NO_STATUS,
+        S(SR::NotReady),
+        S(SR::NotReady),
+        S(SR::NotReady),
+        "never observed ⇒ not ready, never a write",
+    );
+    push(
+        Some(r#"{"intent":"calibrateThenWrite"}"#),
+        None,
+        false,
+        false,
+        CONFIRMED,
+        L(WK::OperatorAnnotation),
+        L(WK::OperatorAnnotation),
+        L(WK::OperatorAnnotation),
+        "the breathe.pleme.io/confirmed fast-path short-circuits the window, and SAYS it did",
+    );
 
     // ── G5 · the external freeze key beats everything ────────────────────────
-    push(Some(r#"{"intent":"write","authorizedBy":"drzzln"}"#), None, false, true, READY_LONG,
-        S(SR::Frozen), S(SR::Frozen), S(SR::Frozen),
-        "TWO-KEY RULE: a pool/fleet freeze outranks even a named human go-live");
-    push(None, Some("effect"), false, true, READY_LONG,
-        S(SR::Frozen), S(SR::Frozen), S(SR::Frozen), "…and outranks the retired `mode: effect` too");
+    push(
+        Some(r#"{"intent":"write","authorizedBy":"drzzln"}"#),
+        None,
+        false,
+        true,
+        READY_LONG,
+        S(SR::Frozen),
+        S(SR::Frozen),
+        S(SR::Frozen),
+        "TWO-KEY RULE: a pool/fleet freeze outranks even a named human go-live",
+    );
+    push(
+        None,
+        Some("effect"),
+        false,
+        true,
+        READY_LONG,
+        S(SR::Frozen),
+        S(SR::Frozen),
+        S(SR::Frozen),
+        "…and outranks the retired `mode: effect` too",
+    );
 
     // ── G6 · precedence (the rows the doc-truth test cites) ──────────────────
-    push(Some(r#"{"intent":"observe"}"#), Some("effect"), false, false, READY_LONG,
-        S(SR::ModeShadow), S(SR::ModeShadow), S(SR::ModeShadow),
-        "★ PROOF of `writeIntent` > `mode`: intent holds a band its `mode` says to carve");
-    push(Some(r#"{"intent":"write","authorizedBy":"drzzln"}"#), Some("shadow"), false, false, READY_LONG,
-        L(WK::ExplicitIntent), L(WK::ExplicitIntent), L(WK::ExplicitIntent),
-        "★ PROOF the other way: intent carves a band its `mode` says to hold");
-    push(Some(r#"{"intent":"write","authorizedBy":"drzzln"}"#), None, false, false, NOT_READY,
-        L(WK::ExplicitIntent), L(WK::ExplicitIntent), L(WK::ExplicitIntent),
-        "an explicit write does NOT wait on readiness — deliberate, and worth seeing stated");
+    push(
+        Some(r#"{"intent":"observe"}"#),
+        Some("effect"),
+        false,
+        false,
+        READY_LONG,
+        S(SR::ModeShadow),
+        S(SR::ModeShadow),
+        S(SR::ModeShadow),
+        "★ PROOF of `writeIntent` > `mode`: intent holds a band its `mode` says to carve",
+    );
+    push(
+        Some(r#"{"intent":"write","authorizedBy":"drzzln"}"#),
+        Some("shadow"),
+        false,
+        false,
+        READY_LONG,
+        L(WK::ExplicitIntent),
+        L(WK::ExplicitIntent),
+        L(WK::ExplicitIntent),
+        "★ PROOF the other way: intent carves a band its `mode` says to hold",
+    );
+    push(
+        Some(r#"{"intent":"write","authorizedBy":"drzzln"}"#),
+        None,
+        false,
+        false,
+        NOT_READY,
+        L(WK::ExplicitIntent),
+        L(WK::ExplicitIntent),
+        L(WK::ExplicitIntent),
+        "an explicit write does NOT wait on readiness — deliberate, and worth seeing stated",
+    );
 
     rows
 }
@@ -551,7 +831,10 @@ fn gate_matrix() -> Vec<Row> {
 fn row_spec(r: &Row) -> Value {
     let mut v = serde_json::Map::new();
     if let Some(i) = r.intent {
-        v.insert("writeIntent".into(), serde_json::from_str(i).expect("row intent JSON"));
+        v.insert(
+            "writeIntent".into(),
+            serde_json::from_str(i).expect("row intent JSON"),
+        );
     }
     if let Some(m) = r.mode {
         v.insert("mode".into(), json!(m));
@@ -590,7 +873,14 @@ fn gate_composition_matrix() {
                 failures.push(format!(
                     "row {ri} [{}] intent={:?} mode={:?} dryRun={} frozen={} obs={}\n     \
                      want {want:?}, got {}\n     why: {}",
-                    k.name, r.intent, r.mode, r.dry_run, r.frozen, r.obs.label, describe(&got), r.why
+                    k.name,
+                    r.intent,
+                    r.mode,
+                    r.dry_run,
+                    r.frozen,
+                    r.obs.label,
+                    describe(&got),
+                    r.why
                 ));
             }
         }
@@ -618,7 +908,10 @@ fn kind_fixtures_cover_every_dimension_exactly_once() {
     let ks = kinds();
     for d in DimensionId::ALL {
         let n = ks.iter().filter(|k| k.dim == d).count();
-        assert_eq!(n, 1, "dimension `{d}` is probed {n}× — it must be exactly once, by exactly one fixture");
+        assert_eq!(
+            n, 1,
+            "dimension `{d}` is probed {n}× — it must be exactly once, by exactly one fixture"
+        );
     }
     // And each fixture's DECLARED dimension is the one its CR actually reports,
     // so a copy-paste that left the wrong `dim` on a row cannot pass.
@@ -670,10 +963,22 @@ fn gate_matrix_covers_every_discriminant() {
     }
 
     let rows = gate_matrix();
-    let expects: Vec<Expect> = rows.iter().flat_map(|r| [r.chain, r.two_state, r.default]).collect();
+    let expects: Vec<Expect> = rows
+        .iter()
+        .flat_map(|r| [r.chain, r.two_state, r.default])
+        .collect();
 
     // Every shadow reason is reachable from some row.
-    for r in [SR::Frozen, SR::ModeShadow, SR::Suspended, SR::NotReady, SR::Stale, SR::Conflict, SR::IntentMalformed, SR::ConfirmPending] {
+    for r in [
+        SR::Frozen,
+        SR::ModeShadow,
+        SR::Suspended,
+        SR::NotReady,
+        SR::Stale,
+        SR::Conflict,
+        SR::IntentMalformed,
+        SR::ConfirmPending,
+    ] {
         assert!(
             expects.contains(&Expect::Shadow(r)),
             "no matrix row expects Shadow({}) — the reason is unpinned, so a change that \
@@ -682,7 +987,12 @@ fn gate_matrix_covers_every_discriminant() {
         );
     }
     // Every witness is reachable from some row.
-    for w in [WK::ExplicitIntent, WK::ConfirmGatePassed, WK::OperatorAnnotation, WK::LegacyDefault] {
+    for w in [
+        WK::ExplicitIntent,
+        WK::ConfirmGatePassed,
+        WK::OperatorAnnotation,
+        WK::LegacyDefault,
+    ] {
         assert!(
             expects.contains(&Expect::Live(w)),
             "no matrix row expects Live({}) — an authorization path nothing pins",
@@ -691,27 +1001,58 @@ fn gate_matrix_covers_every_discriminant() {
     }
     // Every `mode` arm is authored by some row, plus the unauthored case.
     let modes: Vec<Option<&str>> = rows.iter().map(|r| r.mode).collect();
-    assert!(modes.contains(&None), "no row leaves `mode` unauthored — the default path is unpinned");
-    for m in [PromotionMode::Shadow, PromotionMode::Effect, PromotionMode::ShadowConfirmEffect, PromotionMode::Suspended] {
-        assert!(modes.contains(&Some(mode_label(m))), "no matrix row authors `mode: {}`", mode_label(m));
+    assert!(
+        modes.contains(&None),
+        "no row leaves `mode` unauthored — the default path is unpinned"
+    );
+    for m in [
+        PromotionMode::Shadow,
+        PromotionMode::Effect,
+        PromotionMode::ShadowConfirmEffect,
+        PromotionMode::Suspended,
+    ] {
+        assert!(
+            modes.contains(&Some(mode_label(m))),
+            "no matrix row authors `mode: {}`",
+            mode_label(m)
+        );
     }
     // Every intent arm, plus unauthored, plus the malformed case.
     let intents: Vec<Option<&str>> = rows.iter().map(|r| r.intent).collect();
-    assert!(intents.contains(&None), "no row leaves `writeIntent` unauthored");
+    assert!(
+        intents.contains(&None),
+        "no row leaves `writeIntent` unauthored"
+    );
     for k in breathe_provider::gate::IntentKind::ALL {
         assert!(
-            intents.iter().flatten().any(|i| i.contains(&format!("\"intent\":\"{}\"", k.as_str()))),
+            intents
+                .iter()
+                .flatten()
+                .any(|i| i.contains(&format!("\"intent\":\"{}\"", k.as_str()))),
             "no matrix row authors `writeIntent.intent: {}`",
             k.as_str()
         );
     }
-    assert!(intents.contains(&Some(r#"{"intent":"write"}"#)), "the malformed (unattributed) write is unpinned");
+    assert!(
+        intents.contains(&Some(r#"{"intent":"write"}"#)),
+        "the malformed (unattributed) write is unpinned"
+    );
     // Both `dryRun` states and both freeze states.
-    assert!(rows.iter().any(|r| r.dry_run) && rows.iter().any(|r| !r.dry_run), "`dryRun` is not varied");
-    assert!(rows.iter().any(|r| r.frozen) && rows.iter().any(|r| !r.frozen), "the freeze key is not varied");
+    assert!(
+        rows.iter().any(|r| r.dry_run) && rows.iter().any(|r| !r.dry_run),
+        "`dryRun` is not varied"
+    );
+    assert!(
+        rows.iter().any(|r| r.frozen) && rows.iter().any(|r| !r.frozen),
+        "the freeze key is not varied"
+    );
     // Every observation state.
     for o in ALL_OBS {
-        assert!(rows.iter().any(|r| r.obs.label == o.label), "no matrix row uses observation state `{}`", o.label);
+        assert!(
+            rows.iter().any(|r| r.obs.label == o.label),
+            "no matrix row uses observation state `{}`",
+            o.label
+        );
     }
 }
 
@@ -735,13 +1076,26 @@ fn an_authored_intent_makes_every_kind_agree() {
     ];
     let mut failures = Vec::new();
     for intent in intents {
-        for mode in [None, Some("shadow"), Some("effect"), Some("shadowConfirmEffect"), Some("suspended")] {
+        for mode in [
+            None,
+            Some("shadow"),
+            Some("effect"),
+            Some("shadowConfirmEffect"),
+            Some("suspended"),
+        ] {
             for dry_run in [false, true] {
                 for frozen in [false, true] {
                     for obs in ALL_OBS {
                         let r = Row {
-                            intent: Some(intent), mode, dry_run, frozen, obs,
-                            chain: S(SR::Frozen), two_state: S(SR::Frozen), default: S(SR::Frozen), why: "",
+                            intent: Some(intent),
+                            mode,
+                            dry_run,
+                            frozen,
+                            obs,
+                            chain: S(SR::Frozen),
+                            two_state: S(SR::Frozen),
+                            default: S(SR::Frozen),
+                            why: "",
                         };
                         let spec = row_spec(&r);
                         let mut seen: Vec<(&str, String)> = Vec::new();
@@ -843,7 +1197,11 @@ fn gate_fields() -> Vec<GateField> {
         GateField {
             name: "suspend",
             on: || json!(true),
-            status: |_| Status::OtherAxis("reconcile-at-all (breathe-controller/src/main.rs), not write-or-not"),
+            status: |_| {
+                Status::OtherAxis(
+                    "reconcile-at-all (breathe-controller/src/main.rs), not write-or-not",
+                )
+            },
             note: "spec.suspend never reaches resolve_gate — outorga's Observation has no suspended(). \
                    `writeIntent: frozen` is the write-axis word; this is the D4 de-collision, mechanised",
         },
@@ -887,7 +1245,12 @@ fn every_gate_field_is_observable_or_declared_retired() {
                     let a = (k.probe)(&off, obs, obs.now, frozen);
                     let b = (k.probe)(&on, obs, obs.now, frozen);
                     if describe(&a) != describe(&b) {
-                        differs.push(format!("obs={} frozen={frozen}: {} → {}", obs.label, describe(&a), describe(&b)));
+                        differs.push(format!(
+                            "obs={} frozen={frozen}: {} → {}",
+                            obs.label,
+                            describe(&a),
+                            describe(&b)
+                        ));
                     }
                 }
             }
@@ -922,7 +1285,12 @@ fn every_gate_field_is_observable_or_declared_retired() {
         }
     }
 
-    assert!(failures.is_empty(), "{} gate-field declarations disagree with reality:\n\n{}", failures.len(), failures.join("\n\n"));
+    assert!(
+        failures.is_empty(),
+        "{} gate-field declarations disagree with reality:\n\n{}",
+        failures.len(),
+        failures.join("\n\n")
+    );
 }
 
 // ───────────────────────────── the doc-truth check ────────────────────────────
@@ -936,7 +1304,12 @@ fn flat(s: &str) -> String {
 fn spec_desc(crd: &Value, prop: &str) -> Option<String> {
     let versions = crd.get("spec")?.get("versions")?.as_array()?;
     let schema = versions.first()?.get("schema")?.get("openAPIV3Schema")?;
-    let d = schema.get("properties")?.get("spec")?.get("properties")?.get(prop)?.get("description")?;
+    let d = schema
+        .get("properties")?
+        .get("spec")?
+        .get("properties")?
+        .get(prop)?
+        .get("description")?;
     Some(flat(d.as_str()?))
 }
 
@@ -974,17 +1347,72 @@ fn crd_descriptions_carry_the_canonical_claims() {
     };
 
     let crds: Vec<(&str, Class, DimensionId, Value)> = vec![
-        ("MemoryBand", Class::Chain, DimensionId::Memory, serde_json::to_value(MemoryBand::crd()).unwrap()),
-        ("CpuBand", Class::Chain, DimensionId::Cpu, serde_json::to_value(CpuBand::crd()).unwrap()),
-        ("StorageBand", Class::Chain, DimensionId::Storage, serde_json::to_value(StorageBand::crd()).unwrap()),
-        ("ArcBand", Class::Chain, DimensionId::Arc, serde_json::to_value(ArcBand::crd()).unwrap()),
-        ("CgroupBand", Class::Chain, DimensionId::Cgroup, serde_json::to_value(CgroupBand::crd()).unwrap()),
-        ("CgroupCpuBand", Class::Chain, DimensionId::CgroupCpu, serde_json::to_value(CgroupCpuBand::crd()).unwrap()),
-        ("ReplicaBand", Class::Chain, DimensionId::Replica, serde_json::to_value(ReplicaBand::crd()).unwrap()),
-        ("HostParamBand", Class::TwoState, DimensionId::HostParam, serde_json::to_value(HostParamBand::crd()).unwrap()),
-        ("KubeParamBand", Class::TwoState, DimensionId::KubeParam, serde_json::to_value(KubeParamBand::crd()).unwrap()),
-        ("AppBand", Class::Default, DimensionId::AppParam, serde_json::to_value(AppBand::crd()).unwrap()),
-        ("RequestBand", Class::Chain, DimensionId::Request, serde_json::to_value(RequestBand::crd()).unwrap()),
+        (
+            "MemoryBand",
+            Class::Chain,
+            DimensionId::Memory,
+            serde_json::to_value(MemoryBand::crd()).unwrap(),
+        ),
+        (
+            "CpuBand",
+            Class::Chain,
+            DimensionId::Cpu,
+            serde_json::to_value(CpuBand::crd()).unwrap(),
+        ),
+        (
+            "StorageBand",
+            Class::Chain,
+            DimensionId::Storage,
+            serde_json::to_value(StorageBand::crd()).unwrap(),
+        ),
+        (
+            "ArcBand",
+            Class::Chain,
+            DimensionId::Arc,
+            serde_json::to_value(ArcBand::crd()).unwrap(),
+        ),
+        (
+            "CgroupBand",
+            Class::Chain,
+            DimensionId::Cgroup,
+            serde_json::to_value(CgroupBand::crd()).unwrap(),
+        ),
+        (
+            "CgroupCpuBand",
+            Class::Chain,
+            DimensionId::CgroupCpu,
+            serde_json::to_value(CgroupCpuBand::crd()).unwrap(),
+        ),
+        (
+            "ReplicaBand",
+            Class::Chain,
+            DimensionId::Replica,
+            serde_json::to_value(ReplicaBand::crd()).unwrap(),
+        ),
+        (
+            "HostParamBand",
+            Class::TwoState,
+            DimensionId::HostParam,
+            serde_json::to_value(HostParamBand::crd()).unwrap(),
+        ),
+        (
+            "KubeParamBand",
+            Class::TwoState,
+            DimensionId::KubeParam,
+            serde_json::to_value(KubeParamBand::crd()).unwrap(),
+        ),
+        (
+            "AppBand",
+            Class::Default,
+            DimensionId::AppParam,
+            serde_json::to_value(AppBand::crd()).unwrap(),
+        ),
+        (
+            "RequestBand",
+            Class::Chain,
+            DimensionId::Request,
+            serde_json::to_value(RequestBand::crd()).unwrap(),
+        ),
     ];
     assert_eq!(crds.len(), N_KINDS, "every band kind must be doc-checked");
 
@@ -1034,7 +1462,9 @@ fn crd_descriptions_carry_the_canonical_claims() {
 
         // Every kind must tell an operator what an unattributed go-live does.
         if !flat(&format!("{dry} {wi}")).contains(&claim_unattributed) {
-            failures.push(format!("{name}: no description states what an unattributed `{{intent: write}}` does"));
+            failures.push(format!(
+                "{name}: no description states what an unattributed `{{intent: write}}` does"
+            ));
         }
 
         // Kinds that HAVE a `mode` field must state the order; kinds that do not
@@ -1049,7 +1479,9 @@ fn crd_descriptions_carry_the_canonical_claims() {
                     failures.push(format!("{name}: a chain kind must carry `spec.mode`"));
                 }
                 if !flat(&format!("{dry} {wi}")).contains(&claim_order) {
-                    failures.push(format!("{name}: carries `spec.mode` but never states {CLAIM_RESOLUTION_ORDER:?}"));
+                    failures.push(format!(
+                        "{name}: carries `spec.mode` but never states {CLAIM_RESOLUTION_ORDER:?}"
+                    ));
                 }
             }
             Class::TwoState | Class::Default => {
@@ -1063,7 +1495,12 @@ fn crd_descriptions_carry_the_canonical_claims() {
         }
     }
 
-    assert!(failures.is_empty(), "{} CRD description(s) disagree with behaviour:\n  - {}", failures.len(), failures.join("\n  - "));
+    assert!(
+        failures.is_empty(),
+        "{} CRD description(s) disagree with behaviour:\n  - {}",
+        failures.len(),
+        failures.join("\n  - ")
+    );
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1184,15 +1621,25 @@ fn all_crds() -> Vec<(String, Value)> {
     raw.into_iter()
         .map(|c| {
             let v = serde_json::to_value(&c).expect("serialize CRD");
-            let kind = v["spec"]["names"]["kind"].as_str().expect("kind").to_owned();
+            let kind = v["spec"]["names"]["kind"]
+                .as_str()
+                .expect("kind")
+                .to_owned();
             (kind, v)
         })
         .collect()
 }
 
 fn schema_of<'a>(crd: &'a Value, section: &str) -> Option<&'a Value> {
-    crd.get("spec")?.get("versions")?.as_array()?.first()?.get("schema")?.get("openAPIV3Schema")?
-        .get("properties")?.get(section)?.get("properties")
+    crd.get("spec")?
+        .get("versions")?
+        .as_array()?
+        .first()?
+        .get("schema")?
+        .get("openAPIV3Schema")?
+        .get("properties")?
+        .get(section)?
+        .get("properties")
 }
 
 fn has_prop(crd: &Value, section: &str, prop: &str) -> bool {
@@ -1213,7 +1660,10 @@ fn every_write_gated_crd_is_named_in_the_census() {
     }
     gated.sort();
 
-    let mut named: Vec<String> = WRITE_SURFACE_CENSUS.iter().map(|(k, _)| (*k).to_owned()).collect();
+    let mut named: Vec<String> = WRITE_SURFACE_CENSUS
+        .iter()
+        .map(|(k, _)| (*k).to_owned())
+        .collect();
     named.sort();
 
     assert_eq!(
@@ -1237,7 +1687,9 @@ fn every_write_surface_status_carries_the_typed_gate() {
     let crds: std::collections::BTreeMap<String, Value> = all_crds().into_iter().collect();
     let mut missing = Vec::new();
     for (kind, role) in WRITE_SURFACE_CENSUS {
-        let crd = crds.get(*kind).unwrap_or_else(|| panic!("{kind} is in the census but crdgen does not emit it"));
+        let crd = crds
+            .get(*kind)
+            .unwrap_or_else(|| panic!("{kind} is in the census but crdgen does not emit it"));
         match role {
             SurfaceRole::WriteSurface => {
                 if !has_prop(crd, "status", "effectiveGate") {
@@ -1297,8 +1749,14 @@ fn legacy_two_state_gate_reproduces_the_bool_truth_table() {
                 // they make rests on a pre-2026-07 path.
                 (EffectiveGate::Live { witness }, false, false) => {
                     assert_eq!(witness.kind(), WitnessKind::LegacyDefault);
-                    assert!(witness.is_legacy_default(), "a Tier-B write is burn-down debt and must report as such");
-                    assert_eq!(witness.legacy_path().map(LegacyPath::kind), Some(LegacyPathKind::TwoStateDryRun));
+                    assert!(
+                        witness.is_legacy_default(),
+                        "a Tier-B write is burn-down debt and must report as such"
+                    );
+                    assert_eq!(
+                        witness.legacy_path().map(LegacyPath::kind),
+                        Some(LegacyPathKind::TwoStateDryRun)
+                    );
                 }
                 (g, d, f) => panic!("unexpected verdict for (dry_run={d}, frozen={f}): {g:?}"),
             }
@@ -1316,15 +1774,24 @@ fn authored_write_gate_names_its_authority_or_refuses() {
         EffectiveGate::Live { witness } => {
             assert_eq!(witness.kind(), WitnessKind::ExplicitIntent);
             assert_eq!(witness.authorized_by(), Some("drzzln@2026-07-26"));
-            assert!(!witness.is_legacy_default(), "an authored write is not migration debt");
+            assert!(
+                !witness.is_legacy_default(),
+                "an authored write is not migration debt"
+            );
         }
-        g @ EffectiveGate::Shadow { .. } => panic!("an authored write must resolve live, got {g:?}"),
+        g @ EffectiveGate::Shadow { .. } => {
+            panic!("an authored write must resolve live, got {g:?}")
+        }
     }
     // Blank / whitespace-only authority is an unattributed write: held, never granted.
     for blank in ["", "   ", "\t"] {
         match breathe_provider::authored_write_gate(blank) {
-            EffectiveGate::Shadow { reason } => assert_eq!(reason.kind(), ShadowReasonKind::IntentMalformed),
-            g @ EffectiveGate::Live { .. } => panic!("a blank authority must NOT authorize a write, got {g:?}"),
+            EffectiveGate::Shadow { reason } => {
+                assert_eq!(reason.kind(), ShadowReasonKind::IntentMalformed)
+            }
+            g @ EffectiveGate::Live { .. } => {
+                panic!("a blank authority must NOT authorize a write, got {g:?}")
+            }
         }
     }
 }

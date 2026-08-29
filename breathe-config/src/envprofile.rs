@@ -167,21 +167,47 @@ mod tests {
 
     #[test]
     fn foreign_cluster_gets_least_disruptive_shadow_posture() {
-        let p = EnvironmentProfile { tenancy: Tenancy::Foreign, ..own() };
+        let p = EnvironmentProfile {
+            tenancy: Tenancy::Foreign,
+            ..own()
+        };
         let d = resolve(&p);
         assert_eq!(d.setpoint, Some(0.70), "more headroom");
-        assert_eq!(d.mode, Some(BandMode::Shadow), "shadow-only in a guest cluster");
+        assert_eq!(
+            d.mode,
+            Some(BandMode::Shadow),
+            "shadow-only in a guest cluster"
+        );
         assert_eq!(d.dry_run, Some(true), "plan-only");
-        assert_eq!(d.allow_node_provisioning, Some(false), "never touch a foreign cluster's nodes");
-        assert!(d.grow_factor.unwrap() < 1.25, "gentler than the rio static grow");
-        assert!(d.cooldown_seconds.unwrap() > 600, "longer cooldown than the rio static");
+        assert_eq!(
+            d.allow_node_provisioning,
+            Some(false),
+            "never touch a foreign cluster's nodes"
+        );
+        assert!(
+            d.grow_factor.unwrap() < 1.25,
+            "gentler than the rio static grow"
+        );
+        assert!(
+            d.cooldown_seconds.unwrap() > 600,
+            "longer cooldown than the rio static"
+        );
     }
 
     #[test]
     fn unknown_tenancy_is_treated_as_foreign_fail_safe() {
-        let p = EnvironmentProfile { tenancy: Tenancy::Unknown, ..own() };
+        let p = EnvironmentProfile {
+            tenancy: Tenancy::Unknown,
+            ..own()
+        };
         // An unprobed cluster gets the SAME safe posture as an explicitly foreign one.
-        assert_eq!(resolve(&p), resolve(&EnvironmentProfile { tenancy: Tenancy::Foreign, ..own() }));
+        assert_eq!(
+            resolve(&p),
+            resolve(&EnvironmentProfile {
+                tenancy: Tenancy::Foreign,
+                ..own()
+            })
+        );
     }
 
     #[test]
@@ -196,7 +222,10 @@ mod tests {
     #[test]
     fn spot_capacity_lengthens_warmup_in_any_tenancy() {
         // own + spot: own has no warmup override, so spot installs the 900s floor.
-        let own_spot = resolve(&EnvironmentProfile { capacity: CapacityType::Spot, ..own() });
+        let own_spot = resolve(&EnvironmentProfile {
+            capacity: CapacityType::Spot,
+            ..own()
+        });
         assert_eq!(own_spot.warmup_seconds, Some(900));
         // foreign already sets 900; spot keeps it ≥ 900 (no regression).
         let foreign_spot = resolve(&EnvironmentProfile {

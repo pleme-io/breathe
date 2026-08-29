@@ -58,7 +58,11 @@ pub enum ConfigReloadError {
     /// The addressed `key` is not present in the config file.
     KeyMissing { path: String, key: String },
     /// A reload invocation (signal / `RELOAD` command) exited non-zero.
-    Command { argv: String, code: Option<i32>, stderr: String },
+    Command {
+        argv: String,
+        code: Option<i32>,
+        stderr: String,
+    },
 }
 
 impl std::fmt::Display for ConfigReloadError {
@@ -109,8 +113,12 @@ pub trait ConfigReloadEnv: Send + Sync {
     fn read_config_value(&self, path: &str, key: &str) -> Result<u64, ConfigReloadError>;
     /// Set `key = value` in the config file at `path` — rewriting the existing
     /// line in place, or appending the line if the key is absent.
-    fn write_config_value(&self, path: &str, key: &str, value: u64)
-        -> Result<(), ConfigReloadError>;
+    fn write_config_value(
+        &self,
+        path: &str,
+        key: &str,
+        value: u64,
+    ) -> Result<(), ConfigReloadError>;
     /// Trigger the reload that makes a just-written value take effect. `mechanism`
     /// names HOW (e.g. `"sighup"`, `"reload"`) and is interpreted by the impl:
     /// the real impl maps `sighup` → `kill -HUP $(cat <pidfile>)` and `reload` →
@@ -142,12 +150,18 @@ impl FileSignalEnv {
     /// Construct with an explicit `SIGHUP` pidfile (PostgreSQL / nginx).
     #[must_use]
     pub fn with_pidfile(pidfile: impl Into<String>) -> Self {
-        Self { pidfile: Some(pidfile.into()), ..Self::default() }
+        Self {
+            pidfile: Some(pidfile.into()),
+            ..Self::default()
+        }
     }
     /// Construct with an explicit admin `RELOAD` argv prefix (pgbouncer).
     #[must_use]
     pub fn with_reload_command(prefix: Vec<String>) -> Self {
-        Self { reload_argv_prefix: prefix, ..Self::default() }
+        Self {
+            reload_argv_prefix: prefix,
+            ..Self::default()
+        }
     }
 
     /// Run a child process by `(program, argv)` (no shell) and map a non-zero exit
@@ -171,17 +185,27 @@ impl FileSignalEnv {
 
 impl ConfigReloadEnv for FileSignalEnv {
     fn read_config_value(&self, path: &str, key: &str) -> Result<u64, ConfigReloadError> {
-        let text = std::fs::read_to_string(path).map_err(|e| ConfigReloadError::Io(e.to_string()))?;
+        let text =
+            std::fs::read_to_string(path).map_err(|e| ConfigReloadError::Io(e.to_string()))?;
         match parse_config_value(&text, key) {
             Some(raw) => raw
                 .parse::<u64>()
                 .map_err(|e| ConfigReloadError::Parse(format!("{key}={raw:?}: {e}"))),
-            None => Err(ConfigReloadError::KeyMissing { path: path.to_string(), key: key.to_string() }),
+            None => Err(ConfigReloadError::KeyMissing {
+                path: path.to_string(),
+                key: key.to_string(),
+            }),
         }
     }
 
-    fn write_config_value(&self, path: &str, key: &str, value: u64) -> Result<(), ConfigReloadError> {
-        let text = std::fs::read_to_string(path).map_err(|e| ConfigReloadError::Io(e.to_string()))?;
+    fn write_config_value(
+        &self,
+        path: &str,
+        key: &str,
+        value: u64,
+    ) -> Result<(), ConfigReloadError> {
+        let text =
+            std::fs::read_to_string(path).map_err(|e| ConfigReloadError::Io(e.to_string()))?;
         let next = render_config_value(&text, key, value);
         std::fs::write(path, next).map_err(|e| ConfigReloadError::Io(e.to_string()))
     }
@@ -213,7 +237,10 @@ impl ConfigReloadEnv for FileSignalEnv {
                         "reload mechanism requires a configured reload command prefix".into(),
                     ));
                 }
-                let (prog, rest) = self.reload_argv_prefix.split_first().expect("non-empty checked above");
+                let (prog, rest) = self
+                    .reload_argv_prefix
+                    .split_first()
+                    .expect("non-empty checked above");
                 let mut argv: Vec<String> = rest.to_vec();
                 argv.push("RELOAD;".to_string());
                 Self::run(prog, &argv)
@@ -224,7 +251,9 @@ impl ConfigReloadEnv for FileSignalEnv {
             "restart" => Err(ConfigReloadError::Command {
                 argv: format!("reload mechanism `{mechanism}`"),
                 code: None,
-                stderr: "restart reload is deferred — breathe-configreload never restarts a process".into(),
+                stderr:
+                    "restart reload is deferred — breathe-configreload never restarts a process"
+                        .into(),
             }),
             other => Err(ConfigReloadError::Command {
                 argv: format!("reload mechanism `{other}`"),
@@ -282,9 +311,11 @@ pub fn render_config_value(text: &str, key: &str, value: u64) -> String {
         let trimmed = line.trim();
         let is_comment = trimmed.starts_with('#') || trimmed.starts_with(';') || trimmed.is_empty();
         let matches_key = !is_comment
-            && match trimmed.split_once('=').map(|(l, _)| l).or_else(|| {
-                trimmed.split_once(char::is_whitespace).map(|(l, _)| l)
-            }) {
+            && match trimmed
+                .split_once('=')
+                .map(|(l, _)| l)
+                .or_else(|| trimmed.split_once(char::is_whitespace).map(|(l, _)| l))
+            {
                 Some(lhs) => lhs.trim() == key,
                 None => false,
             };
@@ -397,7 +428,11 @@ impl<E: ConfigReloadEnv> Cluster for ConfigReloadCluster<E> {
     // `Cluster::apply`'s doc) — a caller with a shadow verdict has no witness to
     // pass, so this function is unreachable from one. A witness cannot change what
     // bytes go out, so a leaf actuator has nothing to do with the value itself.
-    async fn apply(&self, _witness: &LiveWitness, patch: &SsaPatch) -> Result<AppliedReceipt, ProviderError> {
+    async fn apply(
+        &self,
+        _witness: &LiveWitness,
+        patch: &SsaPatch,
+    ) -> Result<AppliedReceipt, ProviderError> {
         let LimitLayout::ConfigFile { path, key, reload } = &patch.layout else {
             return Err(ProviderError::ApiPermanent(format!(
                 "non-ConfigFile layout on ConfigReloadCluster apply: {:?}",
@@ -406,7 +441,9 @@ impl<E: ConfigReloadEnv> Cluster for ConfigReloadCluster<E> {
         };
         // SHADOW: decide + report, never mutate the config or reload the process.
         if !self.write_enabled {
-            return Ok(AppliedReceipt { source_hash: [0u8; 16] });
+            return Ok(AppliedReceipt {
+                source_hash: [0u8; 16],
+            });
         }
         // Step 1 — carve the config line.
         self.env.write_config_value(path, key, patch.value)?;
@@ -425,7 +462,9 @@ impl<E: ConfigReloadEnv> Cluster for ConfigReloadCluster<E> {
                 self.env.reload(path, reload_mechanism(*other))?;
             }
         }
-        Ok(AppliedReceipt { source_hash: [0u8; 16] })
+        Ok(AppliedReceipt {
+            source_hash: [0u8; 16],
+        })
     }
 }
 
@@ -465,7 +504,10 @@ mod tests {
 
     impl MockConfigReloadEnv {
         fn with_value(self, path: &str, key: &str, value: u64) -> Self {
-            self.values.lock().unwrap().insert((path.to_string(), key.to_string()), value);
+            self.values
+                .lock()
+                .unwrap()
+                .insert((path.to_string(), key.to_string()), value);
             self
         }
         fn writes(&self) -> Vec<(String, String, u64)> {
@@ -487,15 +529,32 @@ mod tests {
                 .unwrap()
                 .get(&id)
                 .copied()
-                .ok_or_else(|| ConfigReloadError::KeyMissing { path: path.to_string(), key: key.to_string() })
+                .ok_or_else(|| ConfigReloadError::KeyMissing {
+                    path: path.to_string(),
+                    key: key.to_string(),
+                })
         }
-        fn write_config_value(&self, path: &str, key: &str, value: u64) -> Result<(), ConfigReloadError> {
-            self.values.lock().unwrap().insert((path.to_string(), key.to_string()), value);
-            self.writes.lock().unwrap().push((path.to_string(), key.to_string(), value));
+        fn write_config_value(
+            &self,
+            path: &str,
+            key: &str,
+            value: u64,
+        ) -> Result<(), ConfigReloadError> {
+            self.values
+                .lock()
+                .unwrap()
+                .insert((path.to_string(), key.to_string()), value);
+            self.writes
+                .lock()
+                .unwrap()
+                .push((path.to_string(), key.to_string(), value));
             Ok(())
         }
         fn reload(&self, path: &str, mechanism: &str) -> Result<(), ConfigReloadError> {
-            self.reloads.lock().unwrap().push((path.to_string(), mechanism.to_string()));
+            self.reloads
+                .lock()
+                .unwrap()
+                .push((path.to_string(), mechanism.to_string()));
             Ok(())
         }
     }
@@ -515,7 +574,11 @@ mod tests {
     }
 
     fn config_layout(path: &str, key: &str, reload: ConfigReload) -> LimitLayout {
-        LimitLayout::ConfigFile { path: path.into(), key: key.into(), reload }
+        LimitLayout::ConfigFile {
+            path: path.into(),
+            key: key.into(),
+            reload,
+        }
     }
 
     // ── pure codec ──────────────────────────────────────────────────
@@ -528,14 +591,24 @@ mod tests {
         assert_eq!(parse_config_value(text, "absent"), None);
         // comment lines + an nginx-style `key value;` line are handled.
         let nginx = "worker_connections 1024;\n# tuned\n";
-        assert_eq!(parse_config_value(nginx, "worker_connections"), Some("1024"));
+        assert_eq!(
+            parse_config_value(nginx, "worker_connections"),
+            Some("1024")
+        );
 
         // render rewrites the existing line in place + appends an absent key.
         let next = render_config_value(text, "default_pool_size", 40);
         assert_eq!(parse_config_value(&next, "default_pool_size"), Some("40"));
-        assert_eq!(parse_config_value(&next, "max_client_conn"), Some("100"), "untouched");
+        assert_eq!(
+            parse_config_value(&next, "max_client_conn"),
+            Some("100"),
+            "untouched"
+        );
         let appended = render_config_value(text, "reserve_pool_size", 5);
-        assert_eq!(parse_config_value(&appended, "reserve_pool_size"), Some("5"));
+        assert_eq!(
+            parse_config_value(&appended, "reserve_pool_size"),
+            Some("5")
+        );
         // mechanism mapping is exhaustive + stable.
         assert_eq!(reload_mechanism(ConfigReload::Sighup), "sighup");
         assert_eq!(reload_mechanism(ConfigReload::Reload), "reload");
@@ -549,7 +622,11 @@ mod tests {
         let env = MockConfigReloadEnv::default().with_value(PGB, "default_pool_size", 20);
         let cluster = ConfigReloadCluster::shadow(env);
         let v = cluster
-            .read_limit(&target(), &config_layout(PGB, "default_pool_size", ConfigReload::Reload), "connections")
+            .read_limit(
+                &target(),
+                &config_layout(PGB, "default_pool_size", ConfigReload::Reload),
+                "connections",
+            )
             .await
             .unwrap();
         assert_eq!(v, 20, "read_limit returns the live config key value");
@@ -564,7 +641,10 @@ mod tests {
             .read_limit(&target(), &LimitLayout::PvcRequest, "storage")
             .await
             .unwrap_err();
-        assert!(matches!(err, ProviderError::ApiPermanent(_)), "wrong layout must be a typed permanent error");
+        assert!(
+            matches!(err, ProviderError::ApiPermanent(_)),
+            "wrong layout must be a typed permanent error"
+        );
     }
 
     // ── apply round-trip ────────────────────────────────────────────
@@ -584,11 +664,20 @@ mod tests {
         };
         cluster.apply(&w(), &patch).await.unwrap();
         // the value was carved …
-        assert_eq!(cluster.env().writes(), vec![(PGB.to_string(), "default_pool_size".to_string(), 40)]);
+        assert_eq!(
+            cluster.env().writes(),
+            vec![(PGB.to_string(), "default_pool_size".to_string(), 40)]
+        );
         // … and the reload was triggered with the pgbouncer mechanism.
-        assert_eq!(cluster.env().reloads(), vec![(PGB.to_string(), "reload".to_string())]);
+        assert_eq!(
+            cluster.env().reloads(),
+            vec![(PGB.to_string(), "reload".to_string())]
+        );
         // round-trip: read_limit now returns the just-applied value.
-        let v = cluster.read_limit(&target(), &layout, "connections").await.unwrap();
+        let v = cluster
+            .read_limit(&target(), &layout, "connections")
+            .await
+            .unwrap();
         assert_eq!(v, 40, "apply→read_limit round-trips the new value");
     }
 
@@ -605,8 +694,14 @@ mod tests {
             value: 8192,
         };
         cluster.apply(&w(), &patch).await.unwrap();
-        assert_eq!(cluster.env().writes(), vec![(PG.to_string(), "work_mem".to_string(), 8192)]);
-        assert_eq!(cluster.env().reloads(), vec![(PG.to_string(), "sighup".to_string())]);
+        assert_eq!(
+            cluster.env().writes(),
+            vec![(PG.to_string(), "work_mem".to_string(), 8192)]
+        );
+        assert_eq!(
+            cluster.env().reloads(),
+            vec![(PG.to_string(), "sighup".to_string())]
+        );
     }
 
     #[tokio::test]
@@ -623,8 +718,15 @@ mod tests {
             value: 262_144,
         };
         cluster.apply(&w(), &patch).await.unwrap();
-        assert_eq!(cluster.env().writes(), vec![(PG.to_string(), "shared_buffers".to_string(), 262_144)], "value still carved");
-        assert!(cluster.env().reloads().is_empty(), "restart reload is deferred — no signal issued");
+        assert_eq!(
+            cluster.env().writes(),
+            vec![(PG.to_string(), "shared_buffers".to_string(), 262_144)],
+            "value still carved"
+        );
+        assert!(
+            cluster.env().reloads().is_empty(),
+            "restart reload is deferred — no signal issued"
+        );
     }
 
     // ── shadow mode ─────────────────────────────────────────────────
@@ -641,8 +743,14 @@ mod tests {
             value: 40,
         };
         cluster.apply(&w(), &patch).await.unwrap();
-        assert!(cluster.env().writes().is_empty(), "shadow mode must not write the config");
-        assert!(cluster.env().reloads().is_empty(), "shadow mode must not reload the process");
+        assert!(
+            cluster.env().writes().is_empty(),
+            "shadow mode must not write the config"
+        );
+        assert!(
+            cluster.env().reloads().is_empty(),
+            "shadow mode must not reload the process"
+        );
     }
 
     // ── read_used is a typed gap; field_owners is empty ─────────────
@@ -663,9 +771,17 @@ mod tests {
     async fn field_owners_is_always_empty_no_managed_fields() {
         let cluster = ConfigReloadCluster::shadow(MockConfigReloadEnv::default());
         let owners = cluster
-            .field_owners(&target(), &config_layout(PGB, "k", ConfigReload::Reload), "connections", "config.value")
+            .field_owners(
+                &target(),
+                &config_layout(PGB, "k", ConfigReload::Reload),
+                "connections",
+                "config.value",
+            )
             .await
             .unwrap();
-        assert!(owners.is_empty(), "config-file values have no k8s managedFields");
+        assert!(
+            owners.is_empty(),
+            "config-file values have no k8s managedFields"
+        );
     }
 }

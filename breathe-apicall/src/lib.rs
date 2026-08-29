@@ -26,7 +26,7 @@
 use async_trait::async_trait;
 use breathe_provider::LiveWitness;
 use breathe_provider::{
-    ApplySemantics, AppliedReceipt, Cluster, DimensionDescriptor, DimensionId, Directionality,
+    AppliedReceipt, ApplySemantics, Cluster, DimensionDescriptor, DimensionId, Directionality,
     FieldOwner, LimitLayout, MetricSource, ProviderError, Sample, SsaPatch, Target,
 };
 
@@ -93,7 +93,12 @@ pub trait ApiCallEnv: Send + Sync {
     /// as a bare scalar (bytes for `maxmemory`, count for a stream limit, …).
     async fn get_config(&self, endpoint: &str, command: &str) -> Result<u64, ApiCallError>;
     /// Write `value` to the parameter named by `command` at `endpoint`.
-    async fn set_config(&self, endpoint: &str, command: &str, value: u64) -> Result<(), ApiCallError>;
+    async fn set_config(
+        &self,
+        endpoint: &str,
+        command: &str,
+        value: u64,
+    ) -> Result<(), ApiCallError>;
 }
 
 /// Which protocol a `command` string addresses — the typed dispatch the real
@@ -197,17 +202,23 @@ impl ApiCallEnv for ProtocolClientEnv {
                     .query_async(&mut con)
                     .await
                     .map_err(|e| ApiCallError::Io(e.to_string()))?;
-                let raw = reply
-                    .get(1)
-                    .ok_or_else(|| ApiCallError::Parse(format!("empty CONFIG GET {param} reply")))?;
-                raw.parse::<u64>().map_err(|e| ApiCallError::Parse(format!("{raw:?}: {e}")))
+                let raw = reply.get(1).ok_or_else(|| {
+                    ApiCallError::Parse(format!("empty CONFIG GET {param} reply"))
+                })?;
+                raw.parse::<u64>()
+                    .map_err(|e| ApiCallError::Parse(format!("{raw:?}: {e}")))
             }
             Protocol::Kafka => Err(ApiCallError::NoClient(Protocol::Kafka.as_str().into())),
             Protocol::Nats => Err(ApiCallError::NoClient(Protocol::Nats.as_str().into())),
         }
     }
 
-    async fn set_config(&self, endpoint: &str, command: &str, value: u64) -> Result<(), ApiCallError> {
+    async fn set_config(
+        &self,
+        endpoint: &str,
+        command: &str,
+        value: u64,
+    ) -> Result<(), ApiCallError> {
         let (protocol, param) = classify_command(command)?;
         match protocol {
             Protocol::Redis => {
@@ -298,7 +309,11 @@ impl<E: ApiCallEnv> Cluster for ApiCallCluster<E> {
     // `Cluster::apply`'s doc) — a caller with a shadow verdict has no witness to
     // pass, so this function is unreachable from one. A witness cannot change what
     // bytes go out, so a leaf actuator has nothing to do with the value itself.
-    async fn apply(&self, _witness: &LiveWitness, patch: &SsaPatch) -> Result<AppliedReceipt, ProviderError> {
+    async fn apply(
+        &self,
+        _witness: &LiveWitness,
+        patch: &SsaPatch,
+    ) -> Result<AppliedReceipt, ProviderError> {
         let LimitLayout::ApiCall { endpoint, command } = &patch.layout else {
             return Err(ProviderError::ApiPermanent(
                 "non-ApiCall layout on ApiCallCluster apply (route k8s/host dimensions to their own Cluster)".into(),
@@ -306,10 +321,14 @@ impl<E: ApiCallEnv> Cluster for ApiCallCluster<E> {
         };
         // SHADOW: decide + report, never mutate the data system.
         if !self.write_enabled {
-            return Ok(AppliedReceipt { source_hash: [0u8; 16] });
+            return Ok(AppliedReceipt {
+                source_hash: [0u8; 16],
+            });
         }
         self.env.set_config(endpoint, command, patch.value).await?;
-        Ok(AppliedReceipt { source_hash: [0u8; 16] })
+        Ok(AppliedReceipt {
+            source_hash: [0u8; 16],
+        })
     }
 }
 
@@ -333,12 +352,24 @@ impl ApiCallParamDescriptor {
     /// A bidirectional Redis `maxmemory` band by endpoint (the census keystone).
     #[must_use]
     pub fn redis_maxmemory(endpoint: impl Into<String>, dir: Directionality) -> Self {
-        Self { endpoint: endpoint.into(), command: "maxmemory".into(), dir }
+        Self {
+            endpoint: endpoint.into(),
+            command: "maxmemory".into(),
+            dir,
+        }
     }
     /// A generic api-call band by explicit endpoint + command verb.
     #[must_use]
-    pub fn new(endpoint: impl Into<String>, command: impl Into<String>, dir: Directionality) -> Self {
-        Self { endpoint: endpoint.into(), command: command.into(), dir }
+    pub fn new(
+        endpoint: impl Into<String>,
+        command: impl Into<String>,
+        dir: Directionality,
+    ) -> Self {
+        Self {
+            endpoint: endpoint.into(),
+            command: command.into(),
+            dir,
+        }
     }
 }
 
@@ -367,7 +398,10 @@ impl DimensionDescriptor for ApiCallParamDescriptor {
         ApplySemantics::ContinuousReconciliation
     }
     fn layout(&self, _target: &Target) -> LimitLayout {
-        LimitLayout::ApiCall { endpoint: self.endpoint.clone(), command: self.command.clone() }
+        LimitLayout::ApiCall {
+            endpoint: self.endpoint.clone(),
+            command: self.command.clone(),
+        }
     }
     fn metric_source(&self, target: &Target) -> MetricSource {
         // The `used` lives on the k8s metrics plane; the controller substitutes the
@@ -412,7 +446,10 @@ mod tests {
     impl MockApiCallEnv {
         fn with(endpoint: &str, command: &str, value: u64) -> Self {
             let m = Self::default();
-            m.values.lock().unwrap().insert((endpoint.into(), command.into()), value);
+            m.values
+                .lock()
+                .unwrap()
+                .insert((endpoint.into(), command.into()), value);
             m
         }
         fn writes(&self) -> Vec<(String, String, u64)> {
@@ -430,12 +467,20 @@ mod tests {
                 .copied()
                 .ok_or_else(|| ApiCallError::Parse("no canned value for this param".into()))
         }
-        async fn set_config(&self, endpoint: &str, command: &str, value: u64) -> Result<(), ApiCallError> {
+        async fn set_config(
+            &self,
+            endpoint: &str,
+            command: &str,
+            value: u64,
+        ) -> Result<(), ApiCallError> {
             self.values
                 .lock()
                 .unwrap()
                 .insert((endpoint.to_string(), command.to_string()), value);
-            self.writes.lock().unwrap().push((endpoint.to_string(), command.to_string(), value));
+            self.writes
+                .lock()
+                .unwrap()
+                .push((endpoint.to_string(), command.to_string(), value));
             Ok(())
         }
     }
@@ -451,33 +496,59 @@ mod tests {
         }
     }
     fn redis_layout() -> LimitLayout {
-        LimitLayout::ApiCall { endpoint: "redis://cache.svc:6379".into(), command: "maxmemory".into() }
+        LimitLayout::ApiCall {
+            endpoint: "redis://cache.svc:6379".into(),
+            command: "maxmemory".into(),
+        }
     }
 
     #[test]
     fn classify_recognizes_bare_redis_param_config_verb_and_other_protocols() {
-        assert_eq!(classify_command("maxmemory").unwrap(), (Protocol::Redis, "maxmemory".into()));
+        assert_eq!(
+            classify_command("maxmemory").unwrap(),
+            (Protocol::Redis, "maxmemory".into())
+        );
         assert_eq!(
             classify_command("CONFIG SET maxmemory").unwrap(),
             (Protocol::Redis, "maxmemory".into())
         );
-        assert_eq!(classify_command("nats stream edit ORDERS --max-bytes").unwrap().0, Protocol::Nats);
-        assert_eq!(classify_command("kafka-configs --alter retention.ms").unwrap().0, Protocol::Kafka);
-        assert!(matches!(classify_command("   "), Err(ApiCallError::BadCommand(_))));
+        assert_eq!(
+            classify_command("nats stream edit ORDERS --max-bytes")
+                .unwrap()
+                .0,
+            Protocol::Nats
+        );
+        assert_eq!(
+            classify_command("kafka-configs --alter retention.ms")
+                .unwrap()
+                .0,
+            Protocol::Kafka
+        );
+        assert!(matches!(
+            classify_command("   "),
+            Err(ApiCallError::BadCommand(_))
+        ));
     }
 
     #[tokio::test]
     async fn read_limit_returns_the_current_redis_maxmemory() {
         let env = MockApiCallEnv::with("redis://cache.svc:6379", "maxmemory", 2 * GI);
         let cluster = ApiCallCluster::shadow(env);
-        let v = cluster.read_limit(&redis_target(), &redis_layout(), "memory").await.unwrap();
+        let v = cluster
+            .read_limit(&redis_target(), &redis_layout(), "memory")
+            .await
+            .unwrap();
         assert_eq!(v, 2 * GI);
     }
 
     #[tokio::test]
     async fn apply_round_trips_in_live_mode_and_writes_nothing_in_shadow() {
         // SHADOW: apply decides + reports, writes nothing.
-        let shadow = ApiCallCluster::shadow(MockApiCallEnv::with("redis://cache.svc:6379", "maxmemory", GI));
+        let shadow = ApiCallCluster::shadow(MockApiCallEnv::with(
+            "redis://cache.svc:6379",
+            "maxmemory",
+            GI,
+        ));
         let patch = SsaPatch {
             target: redis_target(),
             field_manager: "breathe/apicall".into(),
@@ -489,16 +560,30 @@ mod tests {
         assert_eq!(receipt.source_hash, [0u8; 16]);
         assert!(shadow.env().writes().is_empty(), "shadow must not write");
         // the underlying value is unchanged in shadow.
-        assert_eq!(shadow.read_limit(&redis_target(), &redis_layout(), "memory").await.unwrap(), GI);
+        assert_eq!(
+            shadow
+                .read_limit(&redis_target(), &redis_layout(), "memory")
+                .await
+                .unwrap(),
+            GI
+        );
 
         // LIVE: apply writes through, and a subsequent read sees the new value.
-        let live = ApiCallCluster::new(MockApiCallEnv::with("redis://cache.svc:6379", "maxmemory", GI), true);
+        let live = ApiCallCluster::new(
+            MockApiCallEnv::with("redis://cache.svc:6379", "maxmemory", GI),
+            true,
+        );
         live.apply(&w(), &patch).await.unwrap();
         assert_eq!(
             live.env().writes(),
             vec![("redis://cache.svc:6379".into(), "maxmemory".into(), 3 * GI)]
         );
-        assert_eq!(live.read_limit(&redis_target(), &redis_layout(), "memory").await.unwrap(), 3 * GI);
+        assert_eq!(
+            live.read_limit(&redis_target(), &redis_layout(), "memory")
+                .await
+                .unwrap(),
+            3 * GI
+        );
     }
 
     #[tokio::test]
@@ -506,7 +591,10 @@ mod tests {
         let cluster = ApiCallCluster::new(MockApiCallEnv::default(), true);
         // a host knob can never legitimately reach the api-call actuator.
         let host_layout = LimitLayout::Host(breathe_provider::HostKnob::ZfsArcMax);
-        let read_err = cluster.read_limit(&redis_target(), &host_layout, "memory").await.unwrap_err();
+        let read_err = cluster
+            .read_limit(&redis_target(), &host_layout, "memory")
+            .await
+            .unwrap_err();
         assert!(matches!(read_err, ProviderError::ApiPermanent(_)));
 
         let patch = SsaPatch {

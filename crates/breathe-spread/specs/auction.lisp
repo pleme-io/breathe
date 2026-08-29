@@ -34,7 +34,7 @@
 
 ;;; ── THE MOLDINGS (a spread default per use-case) ─────────────────────────────
 
-;; SaaS-steady — the CamelotNodeGroup floor. Cost-optimized arch → x86 at the floor
+;; SaaS-steady — the the isolated node-group architecture floor. Cost-optimized arch → x86 at the floor
 ;; (arm-loses here: Graviton large-spot +19% pricier than m5a NOW; x86 for cost).
 (defauction-spread :saas-steady
   :arch          cost-optimized      ; resolves amd64 (x86) — the LOUD floor case
@@ -46,9 +46,9 @@
   :interruption  retirada-graceful-drain
   :cost          "100% spot cheapest deep pool + cost-floor nodes + scale-down-idle to HA floor"
   :resiliency    "capacity-optimized deepest pool + multi-AZ per-replica + retirada drain + HA floor 2"
-  :realizer      "pangea-architectures::CamelotNodeGroup")
+  :realizer      "pangea-architectures::the isolated node-group architecture")
 
-;; Build-burst — the CamelotBuilderNodeGroup + super-cache-ci pool. Cost-optimized
+;; Build-burst — the the builder node-group architecture + super-cache-ci pool. Cost-optimized
 ;; arch → arm at the builder (the expected win: -37%/build-hr + ~18% faster).
 (defauction-spread :build-burst
   :arch          cost-optimized      ; resolves arm64 — expected, not flagged
@@ -59,7 +59,7 @@
   :interruption  retry-on-reclaim    ; idempotent + cache-backed — no drain agent needed
   :cost          "100% spot, floor-0 scale-to-zero (near-free idle), cost-optimal arm compute"
   :resiliency    "evolving-degrade always places; multi-AZ deep pools; retry-on-reclaim survives a mid-build reclaim"
-  :realizer      "pangea-architectures::CamelotBuilderNodeGroup + breathe-catalog::builder")
+  :realizer      "pangea-architectures::the builder node-group architecture + breathe-catalog::builder")
 
 ;; Eyes-tiny — the observability tap. Cost-optimized arch → arm at tiny sizes
 ;; (t4g burstable < t3 x86 — arm winning small is the norm).
@@ -72,4 +72,4 @@
   :interruption  retirada-graceful-drain
   :cost          "tiny 100% spot footprint (t4g burstable) — near-free"
   :resiliency    "single-AZ keeps the lone eyes volume on a landing node; retirada drain; observation continuity"
-  :realizer      "pangea-architectures::AzTopology + the tendril tap")
+  :realizer      "pangea-architectures::AzTopology + the the observability tap tap")

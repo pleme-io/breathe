@@ -133,18 +133,22 @@ impl BreatheViolation {
     #[must_use]
     pub fn locus(&self) -> (&'static str, Option<String>) {
         match self {
-            BreatheViolation::ClaimedButUncarved { dimension } => {
-                ("breathe-claimed-but-uncarved", Some(dimension.as_str().to_string()))
-            }
-            BreatheViolation::CarveWithoutSetpoint { dimension } => {
-                ("breathe-carve-without-setpoint", Some(dimension.as_str().to_string()))
-            }
-            BreatheViolation::NotDefaultOn { dimension } => {
-                ("breathe-not-default-on", Some(dimension.as_str().to_string()))
-            }
-            BreatheViolation::DualPurposeIncomplete { dimension, .. } => {
-                ("breathe-dual-purpose-incomplete", Some(dimension.as_str().to_string()))
-            }
+            BreatheViolation::ClaimedButUncarved { dimension } => (
+                "breathe-claimed-but-uncarved",
+                Some(dimension.as_str().to_string()),
+            ),
+            BreatheViolation::CarveWithoutSetpoint { dimension } => (
+                "breathe-carve-without-setpoint",
+                Some(dimension.as_str().to_string()),
+            ),
+            BreatheViolation::NotDefaultOn { dimension } => (
+                "breathe-not-default-on",
+                Some(dimension.as_str().to_string()),
+            ),
+            BreatheViolation::DualPurposeIncomplete { dimension, .. } => (
+                "breathe-dual-purpose-incomplete",
+                Some(dimension.as_str().to_string()),
+            ),
         }
     }
 }
@@ -182,11 +186,15 @@ pub fn check(profile: &WorkloadProfile) -> BreatheCheckOutcome {
         if u.carved {
             // clause 2 — a carve must carry a setpoint.
             if u.setpoint.is_none() {
-                violations.push(BreatheViolation::CarveWithoutSetpoint { dimension: u.dimension });
+                violations.push(BreatheViolation::CarveWithoutSetpoint {
+                    dimension: u.dimension,
+                });
             }
             // clause 3 — carving is default-on.
             if !u.default_on {
-                violations.push(BreatheViolation::NotDefaultOn { dimension: u.dimension });
+                violations.push(BreatheViolation::NotDefaultOn {
+                    dimension: u.dimension,
+                });
             }
             // clause 6 — dual-purpose: BOTH effects, never one.
             if u.cost_named && u.resiliency_named {
@@ -200,12 +208,17 @@ pub fn check(profile: &WorkloadProfile) -> BreatheCheckOutcome {
             }
         } else if claimed && u.pending.is_none() {
             // clause 1 + 4 — THE 155GB class: claimed, uncarved, unacknowledged.
-            violations.push(BreatheViolation::ClaimedButUncarved { dimension: u.dimension });
+            violations.push(BreatheViolation::ClaimedButUncarved {
+                dimension: u.dimension,
+            });
         }
         // (uncarved + pending = a tracked interim gap; not a violation.)
     }
 
-    BreatheCheckOutcome { violations, dual_purpose_carves }
+    BreatheCheckOutcome {
+        violations,
+        dual_purpose_carves,
+    }
 }
 
 #[cfg(test)]
@@ -224,7 +237,11 @@ mod tests {
             DimensionUse::carved(DimensionId::Cpu, sp()),
         ]);
         let out = check(&profile);
-        assert!(out.is_valid(), "conformant workload must be clean: {:?}", out.violations);
+        assert!(
+            out.is_valid(),
+            "conformant workload must be clean: {:?}",
+            out.violations
+        );
         assert_eq!(out.dual_purpose_carves, 2);
     }
 
@@ -241,7 +258,9 @@ mod tests {
         assert!(
             out.violations.iter().any(|v| matches!(
                 v,
-                BreatheViolation::ClaimedButUncarved { dimension: DimensionId::Storage }
+                BreatheViolation::ClaimedButUncarved {
+                    dimension: DimensionId::Storage
+                }
             )),
             "storage-claimed-not-carved must be a ClaimedButUncarved violation, got {:?}",
             out.violations
@@ -257,7 +276,11 @@ mod tests {
             "pending-breathe: DatabaseBand unbuilt",
         )]);
         let out = check(&profile);
-        assert!(out.is_valid(), "a pending-acknowledged gap is not a violation: {:?}", out.violations);
+        assert!(
+            out.is_valid(),
+            "a pending-acknowledged gap is not a violation: {:?}",
+            out.violations
+        );
     }
 
     #[test]
@@ -266,7 +289,11 @@ mod tests {
         let mut u = DimensionUse::carved(DimensionId::Cpu, sp());
         u.setpoint = None;
         let out = check(&WorkloadProfile::new(vec![u]));
-        assert!(out.violations.iter().any(|v| matches!(v, BreatheViolation::CarveWithoutSetpoint { .. })));
+        assert!(
+            out.violations
+                .iter()
+                .any(|v| matches!(v, BreatheViolation::CarveWithoutSetpoint { .. }))
+        );
     }
 
     #[test]
@@ -277,7 +304,10 @@ mod tests {
         let out = check(&WorkloadProfile::new(vec![u]));
         assert!(out.violations.iter().any(|v| matches!(
             v,
-            BreatheViolation::DualPurposeIncomplete { resiliency_named: false, .. }
+            BreatheViolation::DualPurposeIncomplete {
+                resiliency_named: false,
+                ..
+            }
         )));
         assert_eq!(out.dual_purpose_carves, 0);
     }
@@ -293,12 +323,21 @@ mod tests {
             DimensionUse::uncarved(DimensionId::Storage), // clause 1+4
         ]);
         let out = check(&profile);
-        assert!(out.violations.len() >= 3, "expected aggregated violations, got {:?}", out.violations);
+        assert!(
+            out.violations.len() >= 3,
+            "expected aggregated violations, got {:?}",
+            out.violations
+        );
     }
 
     #[test]
     fn violation_locus_is_stable_kebab() {
-        let v = BreatheViolation::ClaimedButUncarved { dimension: DimensionId::Storage };
-        assert_eq!(v.locus(), ("breathe-claimed-but-uncarved", Some("storage".to_string())));
+        let v = BreatheViolation::ClaimedButUncarved {
+            dimension: DimensionId::Storage,
+        };
+        assert_eq!(
+            v.locus(),
+            ("breathe-claimed-but-uncarved", Some("storage".to_string()))
+        );
     }
 }

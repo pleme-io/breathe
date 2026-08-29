@@ -12,7 +12,8 @@
 use async_trait::async_trait;
 
 pub use breathe_control::{
-    BoundIntroduction, Capacity, CarvePolicy, Directionality, FieldOwner, Observation, Reclaim, StorageCapability,
+    BoundIntroduction, Capacity, CarvePolicy, Directionality, FieldOwner, Observation, Reclaim,
+    StorageCapability,
 };
 
 // The AUTHORIZATION axis. Lives here — not in a new crate — for the same
@@ -35,23 +36,25 @@ pub mod request;
 // workspace member.
 pub mod manifest;
 pub use manifest::{
-    apply_all, set_scalar_at_marker, AddressedProposal, ApplyOutcome, CommitOutcome, CoordinateGap, EditError,
-    EditOutcome, GitManifestWriter, ManifestCoordinate, ManifestRepo, ProposalOrigin, RepoError, ScalarAssignment,
-    ScalarEdit,
+    AddressedProposal, ApplyOutcome, CommitOutcome, CoordinateGap, EditError, EditOutcome,
+    GitManifestWriter, ManifestCoordinate, ManifestRepo, ProposalOrigin, RepoError,
+    ScalarAssignment, ScalarEdit, apply_all, set_scalar_at_marker,
 };
 
 pub use request::{
-    AboveLimit, AdmittedRequest, AllocatableHeadroom, CarveDirection, ClassPreserved, ClassTransitionBlocked,
-    ClassTransitionProposal, ClassWouldChange, CommitReceipt, ContainerResources, ContentAddr, Durability,
-    ManifestWriter, MemoryResizePolicy, NullManifestWriter, PodResources, PreserveError, QosClass, QosGap,
-    RequestActuator, RequestResource, RequestShrinkEvidence, RequestTarget, ResizeLegality, WorkloadClass,
+    AboveLimit, AdmittedRequest, AllocatableHeadroom, CarveDirection, ClassPreserved,
+    ClassTransitionBlocked, ClassTransitionProposal, ClassWouldChange, CommitReceipt,
+    ContainerResources, ContentAddr, Durability, ManifestWriter, MemoryResizePolicy,
+    NullManifestWriter, PodResources, PreserveError, QosClass, QosGap, RequestActuator,
+    RequestResource, RequestShrinkEvidence, RequestTarget, ResizeLegality, WorkloadClass,
     WouldNotSchedule, WriterError,
 };
 
 pub use gate::{
-    authored_write_gate, legacy_two_state_gate, ConfirmVerdict, EffectiveGate, EffectiveGateReport, GateInputs,
-    GateState, IntentError, IntentKind, LegacyDecision, LegacyPath, LegacyPathKind, LiveWitness, ShadowReason,
-    ShadowReasonKind, WitnessKind, WriteIntent, WriteIntentSpec, CONFIRMED_ANNOTATION,
+    CONFIRMED_ANNOTATION, ConfirmVerdict, EffectiveGate, EffectiveGateReport, GateInputs,
+    GateState, IntentError, IntentKind, LegacyDecision, LegacyPath, LegacyPathKind, LiveWitness,
+    ShadowReason, ShadowReasonKind, WitnessKind, WriteIntent, WriteIntentSpec, authored_write_gate,
+    legacy_two_state_gate,
 };
 
 /// Typed category atom — keys the registry, equals the catalog `:name`, and is
@@ -82,7 +85,17 @@ pub use gate::{
 /// override the doc comments for the wire; the long prose stays exactly where a
 /// human reads it. `dimension_id_schema_stays_small` is the gate that keeps it
 /// that way when the twelfth arm lands.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize, schemars1::JsonSchema)]
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Hash,
+    serde::Serialize,
+    serde::Deserialize,
+    schemars1::JsonSchema,
+)]
 #[serde(rename_all = "kebab-case")]
 #[schemars(crate = "schemars1")]
 #[schemars(
@@ -93,7 +106,9 @@ pub use gate::{
 pub enum DimensionId {
     #[schemars(description = "A container's memory limit.")]
     Memory,
-    #[schemars(description = "A volume's provisioned size. Grow-only: it provisions minimal and grows on demand.")]
+    #[schemars(
+        description = "A volume's provisioned size. Grow-only: it provisions minimal and grows on demand."
+    )]
     Storage,
     #[schemars(description = "A container's CPU limit.")]
     Cpu,
@@ -107,7 +122,9 @@ pub enum DimensionId {
     Cgroup,
     /// HOST: a systemd unit's transient cgroup cpu bandwidth cap (`CPUQuota`) —
     /// the host-plane peer of `pod-cpu-resize`, carved live with zero restart.
-    #[schemars(description = "HOST: a systemd unit's cgroup CPU bandwidth cap (CPUQuota), carved live.")]
+    #[schemars(
+        description = "HOST: a systemd unit's cgroup CPU bandwidth cap (CPUQuota), carved live."
+    )]
     CgroupCpu,
     /// HOST: a GENERIC sysctl / ZFS-parameter band (PR-2). One id for the whole
     /// family — the specific knob (`vm.dirty_bytes`, `zfs_arc_min`, …) + metric +
@@ -171,7 +188,7 @@ pub enum DimensionId {
     /// between the two emits a PROPOSAL, never an in-place write — because
     /// `ValidatePodResize` refuses a class change unconditionally (k8s
     /// release-1.33 `pkg/apis/core/validation/validation.go:5665`, verified
-    /// against the exact minor camelot-eks runs). See [`crate::request`] for why
+    /// against the exact minor private-estate-eks runs). See [`crate::request`] for why
     /// that is a type and not a runtime branch.
     #[schemars(
         description = "A container's resources.requests — the RESERVATION, and the QoS class Kubernetes \
@@ -459,7 +476,11 @@ pub enum HostKnob {
     /// disjoint fields (`rbps`/`wbps`/`riops`/`wiops`) breathe carves
     /// independently. Set via `IO{Read,Write}{Bandwidth,IOPS}Max="<device>
     /// <value>"`. RestartFree (a live cgroup io cap never restarts the unit).
-    CgroupIoMax { unit: String, device: String, field: IoMaxField },
+    CgroupIoMax {
+        unit: String,
+        device: String,
+        field: IoMaxField,
+    },
     /// **Part 1 (SOFT k8s carve):** a k8s POD's cgroup-v2 `memory.high` (SOFT,
     /// reclaim — exceeding it throttles, NEVER kills) — the efficiency-carve target
     /// for a memory band, written by the privileged host-agent DaemonSet directly to
@@ -473,7 +494,12 @@ pub enum HostKnob {
     /// is a typed field, never an assumption. This is the pod-scope mirror of the
     /// host/cgroup `MemoryHigh` lever (already shipped). RestartFree (a live
     /// memory.high write never restarts the container — reclaim, not kill).
-    PodCgroupMemoryHigh { driver: CgroupDriver, qos: String, pod_uid: String, container_runtime_id: String },
+    PodCgroupMemoryHigh {
+        driver: CgroupDriver,
+        qos: String,
+        pod_uid: String,
+        container_runtime_id: String,
+    },
 }
 
 /// The kubelet's cgroup driver — the closed set that selects a pod's cgroup-v2
@@ -482,7 +508,17 @@ pub enum HostKnob {
 /// under each. A closed enum (never a free string) makes "which layout" a total
 /// function: a path is produced for exactly the two drivers k8s supports, and a
 /// future driver is a compile-error-forcing new arm, not a silent wrong path.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Default,
+    serde::Serialize,
+    serde::Deserialize,
+    schemars::JsonSchema,
+)]
 #[serde(rename_all = "camelCase")]
 pub enum CgroupDriver {
     /// systemd driver (kubelet `cgroupDriver: systemd`, the NixOS/containerd
@@ -572,7 +608,10 @@ pub enum HostMetric {
     /// that turns every soft / rate-shaped band [`ThrottleAware`](breathe_control)
     /// (cpu, io, memory reclaim). The single highest-leverage observe-side upgrade
     /// of the census: a non-zero stall means the resource is being throttled NOW.
-    Psi { resource: PsiResource, kind: PsiKind },
+    Psi {
+        resource: PsiResource,
+        kind: PsiKind,
+    },
 }
 
 /// **PR-3:** which `/proc/pressure/<resource>` file a [`HostMetric::Psi`] reads.
@@ -648,7 +687,11 @@ pub enum LimitLayout {
     /// **Step-9/12:** a config-file value edited + reloaded via a signal —
     /// pgbouncer `RELOAD`, nginx/PostgreSQL `SIGHUP`, or a restart. The
     /// `ConfigReloadCluster` actuator owns the edit; `reload` sets the restart cost.
-    ConfigFile { path: String, key: String, reload: ConfigReload },
+    ConfigFile {
+        path: String,
+        key: String,
+        reload: ConfigReload,
+    },
     /// **Step-9:** a protocol API call — Redis `CONFIG SET`, Kafka `AdminClient`,
     /// NATS JetStream edit. RestartFree (the value applies live). The
     /// `ApiCallCluster` actuator owns the connection.
@@ -656,21 +699,39 @@ pub enum LimitLayout {
     /// **Step-12:** a field of an operator-owned k8s CR (CNPG/VictoriaMetrics/
     /// VictoriaLogs/OpenSearch), written via the existing `KubeCluster` SSA.
     /// `restart_free` distinguishes a live-reconciled field from one that rolls.
-    CrField { api_version: String, kind: String, name: String, field_path: String, restart_free: bool },
+    CrField {
+        api_version: String,
+        kind: String,
+        name: String,
+        field_path: String,
+        restart_free: bool,
+    },
     /// **Step-6:** an Istio `DestinationRule` connection-pool field, written via
     /// `KubeCluster` SSA — RestartFree (Envoy live-reloads the cluster config).
     DestinationRuleField { name: String, field_path: String },
     /// **Step-8:** a namespace `ResourceQuota`/`LimitRange` envelope field — the
     /// Densa namespace wall. RestartFree (admission-gating, no workload restart).
-    NamespaceEnvelope { namespace: String, kind: NamespaceEnvelopeKind, field_path: String },
+    NamespaceEnvelope {
+        namespace: String,
+        kind: NamespaceEnvelopeKind,
+        field_path: String,
+    },
     /// **Step-8:** a controller setpoint — HPA `target.averageUtilization`, PDB
     /// `minAvailable`. breathe becomes a meta-controller over the autoscaler.
     /// RestartFree (a setpoint edit; the controller acts).
-    ControllerSetpoint { api_version: String, kind: String, name: String, field_path: String },
+    ControllerSetpoint {
+        api_version: String,
+        kind: String,
+        name: String,
+        field_path: String,
+    },
     /// **Step-5:** pod network bandwidth — the `kubernetes.io/{egress,ingress}-
     /// bandwidth` annotation (rolls) OR a host-tc HTB class (`host_tc=true`,
     /// RestartFree — the golden path). `direction` selects egress/ingress.
-    PodNetworkBandwidth { direction: NetDirection, host_tc: bool },
+    PodNetworkBandwidth {
+        direction: NetDirection,
+        host_tc: bool,
+    },
     /// **HORIZONTAL:** the workload's `.spec.replicas` count — the typed replica
     /// actuator for a `ReplicaBand`. `kind` is the owner (`Deployment` /
     /// `StatefulSet`); the value written is a bare replica count. Asymmetric restart
@@ -796,7 +857,17 @@ impl DisruptionClass {
 /// per node; the actuator refuses any action whose [`DisruptionClass`] the policy
 /// does not permit (returning a typed deferral, never a silent roll). The default
 /// is the cautious one — never restart a workload unless explicitly allowed.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Default,
+    serde::Serialize,
+    serde::Deserialize,
+    schemars::JsonSchema,
+)]
 #[serde(rename_all = "camelCase")]
 pub enum DisruptionPolicy {
     /// Only `RestartFree` actions — the workload is NEVER disturbed. A carve that
@@ -817,7 +888,17 @@ pub enum DisruptionPolicy {
 /// SETS and the scheduler binds against (the owns-vs-yields seam: breathe owns
 /// the policy + emits the scoring hint; it never binds a pod). The node-tier peer
 /// of [`Directionality`]/[`DisruptionPolicy`] — a typed choice, never a free knob.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Default,
+    serde::Serialize,
+    serde::Deserialize,
+    schemars::JsonSchema,
+)]
 #[serde(rename_all = "camelCase")]
 pub enum FillPolicy {
     /// Bin-pack tight — fill a node to the band before provisioning the next.
@@ -896,7 +977,11 @@ pub struct ClassCooldowns {
 impl Default for ClassCooldowns {
     fn default() -> Self {
         // restart_free ≈ a scrape interval (real-time); crossings stay long.
-        Self { restart_free: 15, restart_conditional: 120, restart_requiring: 600 }
+        Self {
+            restart_free: 15,
+            restart_conditional: 120,
+            restart_requiring: 600,
+        }
     }
 }
 
@@ -912,7 +997,8 @@ impl ClassCooldowns {
     /// Structural invariant: free ≤ conditional ≤ requiring (golden is cheapest).
     #[must_use]
     pub fn well_ordered(&self) -> bool {
-        self.restart_free <= self.restart_conditional && self.restart_conditional <= self.restart_requiring
+        self.restart_free <= self.restart_conditional
+            && self.restart_conditional <= self.restart_requiring
     }
 }
 
@@ -959,7 +1045,9 @@ impl LimitLayout {
             // REQUEST layout is not gentler than the LIMIT one: k8s's
             // `resizePolicy` governs restarts on the resize subresource
             // regardless of which side of the pair moved.
-            Self::PodResize { .. } | Self::PodRequestResize { .. } => DisruptionClass::RestartConditional,
+            Self::PodResize { .. } | Self::PodRequestResize { .. } => {
+                DisruptionClass::RestartConditional
+            }
             Self::PodTemplate { .. } | Self::ClusterTopLevel => DisruptionClass::RestartRequiring,
             // App/k8s-plane layouts — restart cost is intrinsic to the mechanism.
             Self::ConfigFile { reload, .. } => reload.disruption_class(),
@@ -968,11 +1056,19 @@ impl LimitLayout {
             | Self::NamespaceEnvelope { .. }
             | Self::ControllerSetpoint { .. } => DisruptionClass::RestartFree,
             Self::CrField { restart_free, .. } => {
-                if *restart_free { DisruptionClass::RestartFree } else { DisruptionClass::RestartRequiring }
+                if *restart_free {
+                    DisruptionClass::RestartFree
+                } else {
+                    DisruptionClass::RestartRequiring
+                }
             }
             // host-tc carve never rolls; the pod-annotation fallback re-creates pods.
             Self::PodNetworkBandwidth { host_tc, .. } => {
-                if *host_tc { DisruptionClass::RestartFree } else { DisruptionClass::RestartRequiring }
+                if *host_tc {
+                    DisruptionClass::RestartFree
+                } else {
+                    DisruptionClass::RestartRequiring
+                }
             }
             // Coarse worst-case: a scale-IN sheds a pod (RestartRequiring). The
             // per-direction `action_class` refines a scale-OUT to RestartFree.
@@ -1004,7 +1100,10 @@ impl LimitLayout {
     ///   knob's value.
     #[must_use]
     pub fn absence_is_unconstrained(&self) -> bool {
-        matches!(self, Self::PodResize { .. } | Self::PodTemplate { .. } | Self::ClusterTopLevel)
+        matches!(
+            self,
+            Self::PodResize { .. } | Self::PodTemplate { .. } | Self::ClusterTopLevel
+        )
     }
 
     /// The PRECISE restart cost of the SPECIFIC carve `(direction, resource)` —
@@ -1045,7 +1144,11 @@ impl LimitLayout {
             // (RestartFree); a scale-IN (shrink) sheds a pod (RestartRequiring).
             // `resource` is "replicas"; the direction is what matters.
             Self::Replica { .. } => {
-                if growing { DisruptionClass::RestartFree } else { DisruptionClass::RestartRequiring }
+                if growing {
+                    DisruptionClass::RestartFree
+                } else {
+                    DisruptionClass::RestartRequiring
+                }
             }
         }
     }
@@ -1072,7 +1175,11 @@ pub enum MetricSource {
     /// read live from metrics-server. When `selector` is set the group is the pods
     /// matching that label selector (the label-selected carve — ARC runners); else
     /// it is the pods whose name starts with `pod_prefix` (the owner's pods).
-    PodMetricsMax { resource: String, pod_prefix: String, selector: Option<String> },
+    PodMetricsMax {
+        resource: String,
+        pod_prefix: String,
+        selector: Option<String>,
+    },
     /// HOST: read directly from procfs/sysfs/cgroup via `HostCluster`.
     /// `KubeCluster` rejects this with a typed error.
     Host(HostMetric),
@@ -1201,7 +1308,11 @@ pub trait Cluster: Send + Sync {
     ///
     /// The witness is deliberately not an input to the write: a witness cannot
     /// change what bytes go out. Its job is to exist, and to be recorded.
-    async fn apply(&self, witness: &LiveWitness, patch: &SsaPatch) -> Result<AppliedReceipt, ProviderError>;
+    async fn apply(
+        &self,
+        witness: &LiveWitness,
+        patch: &SsaPatch,
+    ) -> Result<AppliedReceipt, ProviderError>;
 
     /// Whether an in-place SHRINK of `resource` at `layout` on `target` is
     /// restart-free — `true` iff `layout` is a `PodResize` AND every resized pod's
@@ -1287,7 +1398,10 @@ pub enum SetpointReachability {
     /// Reaching the setpoint needs a carve that crosses out of golden (names the
     /// ceiling) — the band can still PARK golden, but only converges to setpoint
     /// once the operator's `DisruptionPolicy` permits the crossing.
-    RequiresCrossing { ceiling: DisruptionClass, layout: LimitLayout },
+    RequiresCrossing {
+        ceiling: DisruptionClass,
+        layout: LimitLayout,
+    },
 }
 
 /// Does `layout` have a golden path to the setpoint for `resource`, given the
@@ -1296,7 +1410,11 @@ pub enum SetpointReachability {
 /// grow and shrink to be `RestartFree`. Policy-independent: golden-ness is a
 /// property of the action space, not of whether the operator permits a crossing.
 #[must_use]
-pub fn setpoint_reachability(layout: &LimitLayout, dir: Directionality, resource: &str) -> SetpointReachability {
+pub fn setpoint_reachability(
+    layout: &LimitLayout,
+    dir: Directionality,
+    resource: &str,
+) -> SetpointReachability {
     let directions: &[bool] = match dir {
         Directionality::Bidirectional => &[true, false],
         Directionality::GrowOnly => &[true],
@@ -1305,7 +1423,10 @@ pub fn setpoint_reachability(layout: &LimitLayout, dir: Directionality, resource
     for &growing in directions {
         let class = layout.action_class(growing, resource);
         if !class.edge_tier().is_golden() {
-            return SetpointReachability::RequiresCrossing { ceiling: class, layout: layout.clone() };
+            return SetpointReachability::RequiresCrossing {
+                ceiling: class,
+                layout: layout.clone(),
+            };
         }
     }
     SetpointReachability::GoldenToSetpoint
@@ -1424,11 +1545,16 @@ pub trait ResourceProvider: Send + Sync + 'static {
     /// in the `growing` direction. The loop consults this against the band's
     /// `DisruptionPolicy` before committing a carve (the golden-edge gate).
     fn action_class(&self, target: &Target, growing: bool) -> DisruptionClass {
-        self.layout_for(target).action_class(growing, self.resource_key())
+        self.layout_for(target)
+            .action_class(growing, self.resource_key())
     }
     /// Whether this provider has a golden (restart-free) path to the setpoint.
     fn setpoint_reachability(&self, target: &Target) -> SetpointReachability {
-        setpoint_reachability(&self.layout_for(target), self.directionality(), self.resource_key())
+        setpoint_reachability(
+            &self.layout_for(target),
+            self.directionality(),
+            self.resource_key(),
+        )
     }
     async fn observe(&self, target: &Target) -> Result<Observation, ProviderError>;
     /// **THE MUTATION DOOR — the one function in breathe that writes.**
@@ -1476,7 +1602,10 @@ pub struct BandProvider<C: Cluster + 'static, D: DimensionDescriptor> {
 
 impl<C: Cluster + 'static, D: DimensionDescriptor> BandProvider<C, D> {
     pub fn new(cluster: C, descriptor: D) -> Self {
-        Self { cluster, descriptor }
+        Self {
+            cluster,
+            descriptor,
+        }
     }
     /// Borrow the cluster (tests assert applied patches).
     pub fn cluster(&self) -> &C {
@@ -1494,7 +1623,9 @@ impl<C: Cluster + 'static, D: DimensionDescriptor> BandProvider<C, D> {
     /// structurally blind to it behind one shared static manager string.
     fn scoped_field_manager(&self) -> String {
         match self.descriptor.field_manager_scope() {
-            Some((namespace, name)) => format!("{}/{namespace}/{name}", self.descriptor.field_manager()),
+            Some((namespace, name)) => {
+                format!("{}/{namespace}/{name}", self.descriptor.field_manager())
+            }
             None => self.descriptor.field_manager().to_string(),
         }
     }
@@ -1545,7 +1676,9 @@ impl<C: Cluster + 'static, D: DimensionDescriptor> ResourceProvider for BandProv
             Err(ProviderError::MetricsMissing)
                 if matches!(&source, MetricSource::PodMetricsMax { selector: None, .. }) =>
             {
-                self.cluster.read_limit(target, &layout, self.descriptor.resource()).await?;
+                self.cluster
+                    .read_limit(target, &layout, self.descriptor.resource())
+                    .await?;
                 return Err(ProviderError::MetricsMissing);
             }
             other => other?,
@@ -1555,7 +1688,10 @@ impl<C: Cluster + 'static, D: DimensionDescriptor> ResourceProvider for BandProv
         // LAYOUT can tell those apart (`absence_is_unconstrained`). Classifying here
         // — at the one read — is what lets `plan_tick` refuse to invent a bound
         // nobody asked for, instead of seeding one from an ambiguous zero.
-        let raw_limit = self.cluster.read_limit(target, &layout, self.descriptor.resource()).await?;
+        let raw_limit = self
+            .cluster
+            .read_limit(target, &layout, self.descriptor.resource())
+            .await?;
         let bound = if raw_limit == 0 && layout.absence_is_unconstrained() {
             Capacity::Absent
         } else {
@@ -1563,7 +1699,12 @@ impl<C: Cluster + 'static, D: DimensionDescriptor> ResourceProvider for BandProv
         };
         let owners = self
             .cluster
-            .field_owners(target, &layout, self.descriptor.resource(), self.descriptor.logical_field())
+            .field_owners(
+                target,
+                &layout,
+                self.descriptor.resource(),
+                self.descriptor.logical_field(),
+            )
             .await?;
         // Restart-cost refinement input: is an in-place shrink of this resource
         // restart-free on this target (resizePolicy NotRequired)? Conservative
@@ -1638,9 +1779,16 @@ impl<C: Cluster + 'static, D: DimensionDescriptor> ResourceProvider for BandProv
         to_value: u64,
     ) -> Result<AssignReceipt, ProviderError> {
         let layout = self.descriptor.layout(target);
-        let from = self.cluster.read_limit(target, &layout, self.descriptor.resource()).await?;
+        let from = self
+            .cluster
+            .read_limit(target, &layout, self.descriptor.resource())
+            .await?;
         if to_value == from {
-            return Ok(AssignReceipt { from, to: to_value, source_hash: [0u8; 16] });
+            return Ok(AssignReceipt {
+                from,
+                to: to_value,
+                source_hash: [0u8; 16],
+            });
         }
         let patch = SsaPatch {
             target: target.clone(),
@@ -1653,11 +1801,18 @@ impl<C: Cluster + 'static, D: DimensionDescriptor> ResourceProvider for BandProv
         // `Cluster::apply` is the I/O door, and it is reached by callers other
         // than this one (`PodMemoryHigh`, `ReplicaBand`), so it demands its own.
         let applied = self.cluster.apply(witness, &patch).await?;
-        Ok(AssignReceipt { from, to: to_value, source_hash: applied.source_hash })
+        Ok(AssignReceipt {
+            from,
+            to: to_value,
+            source_hash: applied.source_hash,
+        })
     }
 
     async fn release(&self, _target: &Target) -> Result<ReleaseReceipt, ProviderError> {
-        Ok(ReleaseReceipt { baseline: None, source_hash: [0u8; 16] })
+        Ok(ReleaseReceipt {
+            baseline: None,
+            source_hash: [0u8; 16],
+        })
     }
 }
 
@@ -1678,7 +1833,17 @@ impl<C: Cluster + 'static, D: DimensionDescriptor> ResourceProvider for BandProv
 /// A SHAPE of resource — the infra-scale peer of [`DimensionId`]. M0 ships only
 /// the seed shape `NodeOnDemand`; M3+ add `NodeSpot` / `Accelerator` /
 /// `ServerlessSlot` / `EdgePlacement` / `JitBuilder` / … (docs/PROVISIONING.md §8).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Hash,
+    serde::Serialize,
+    serde::Deserialize,
+    schemars::JsonSchema,
+)]
 #[serde(rename_all = "kebab-case")]
 pub enum Forma {
     /// An on-demand cloud node: `used` = node demand (scheduled + pending),
@@ -1791,20 +1956,90 @@ impl FormaDescriptor for FormaSpec {
 /// term-locked → GrowOnly). A new shape is one row here + a Provedor; the band
 /// law is shape-blind, so it converges on a GPU count or LB unit exactly as a node.
 pub const FORMA_CATALOG: &[FormaSpec] = &[
-    FormaSpec { forma: Forma::NodeOnDemand, directionality: Directionality::Bidirectional, relief_latency_secs: 180, unit: "node" },
-    FormaSpec { forma: Forma::NodeSpot, directionality: Directionality::Bidirectional, relief_latency_secs: 120, unit: "node" },
-    FormaSpec { forma: Forma::ProvisionedIops, directionality: Directionality::Bidirectional, relief_latency_secs: 60, unit: "iops" },
-    FormaSpec { forma: Forma::ProvisionedThroughput, directionality: Directionality::Bidirectional, relief_latency_secs: 60, unit: "bytes-per-sec" },
-    FormaSpec { forma: Forma::DynamoCapacity, directionality: Directionality::Bidirectional, relief_latency_secs: 30, unit: "capacity-unit" },
-    FormaSpec { forma: Forma::Commitment, directionality: Directionality::GrowOnly, relief_latency_secs: 3600, unit: "cents" },
-    FormaSpec { forma: Forma::Accelerator, directionality: Directionality::Bidirectional, relief_latency_secs: 300, unit: "gpu" },
-    FormaSpec { forma: Forma::ServerlessSlot, directionality: Directionality::Bidirectional, relief_latency_secs: 60, unit: "slot" },
-    FormaSpec { forma: Forma::ZoneCapacity, directionality: Directionality::Bidirectional, relief_latency_secs: 120, unit: "instance" },
-    FormaSpec { forma: Forma::EdgePlacement, directionality: Directionality::Bidirectional, relief_latency_secs: 120, unit: "instance" },
-    FormaSpec { forma: Forma::LbCapacity, directionality: Directionality::Bidirectional, relief_latency_secs: 180, unit: "lcu" },
-    FormaSpec { forma: Forma::EgressBandwidth, directionality: Directionality::Bidirectional, relief_latency_secs: 120, unit: "bits-per-sec" },
-    FormaSpec { forma: Forma::JitBuilder, directionality: Directionality::Bidirectional, relief_latency_secs: 120, unit: "builder" },
-    FormaSpec { forma: Forma::LogIngestion, directionality: Directionality::Bidirectional, relief_latency_secs: 30, unit: "percent" },
+    FormaSpec {
+        forma: Forma::NodeOnDemand,
+        directionality: Directionality::Bidirectional,
+        relief_latency_secs: 180,
+        unit: "node",
+    },
+    FormaSpec {
+        forma: Forma::NodeSpot,
+        directionality: Directionality::Bidirectional,
+        relief_latency_secs: 120,
+        unit: "node",
+    },
+    FormaSpec {
+        forma: Forma::ProvisionedIops,
+        directionality: Directionality::Bidirectional,
+        relief_latency_secs: 60,
+        unit: "iops",
+    },
+    FormaSpec {
+        forma: Forma::ProvisionedThroughput,
+        directionality: Directionality::Bidirectional,
+        relief_latency_secs: 60,
+        unit: "bytes-per-sec",
+    },
+    FormaSpec {
+        forma: Forma::DynamoCapacity,
+        directionality: Directionality::Bidirectional,
+        relief_latency_secs: 30,
+        unit: "capacity-unit",
+    },
+    FormaSpec {
+        forma: Forma::Commitment,
+        directionality: Directionality::GrowOnly,
+        relief_latency_secs: 3600,
+        unit: "cents",
+    },
+    FormaSpec {
+        forma: Forma::Accelerator,
+        directionality: Directionality::Bidirectional,
+        relief_latency_secs: 300,
+        unit: "gpu",
+    },
+    FormaSpec {
+        forma: Forma::ServerlessSlot,
+        directionality: Directionality::Bidirectional,
+        relief_latency_secs: 60,
+        unit: "slot",
+    },
+    FormaSpec {
+        forma: Forma::ZoneCapacity,
+        directionality: Directionality::Bidirectional,
+        relief_latency_secs: 120,
+        unit: "instance",
+    },
+    FormaSpec {
+        forma: Forma::EdgePlacement,
+        directionality: Directionality::Bidirectional,
+        relief_latency_secs: 120,
+        unit: "instance",
+    },
+    FormaSpec {
+        forma: Forma::LbCapacity,
+        directionality: Directionality::Bidirectional,
+        relief_latency_secs: 180,
+        unit: "lcu",
+    },
+    FormaSpec {
+        forma: Forma::EgressBandwidth,
+        directionality: Directionality::Bidirectional,
+        relief_latency_secs: 120,
+        unit: "bits-per-sec",
+    },
+    FormaSpec {
+        forma: Forma::JitBuilder,
+        directionality: Directionality::Bidirectional,
+        relief_latency_secs: 120,
+        unit: "builder",
+    },
+    FormaSpec {
+        forma: Forma::LogIngestion,
+        directionality: Directionality::Bidirectional,
+        relief_latency_secs: 30,
+        unit: "percent",
+    },
 ];
 
 /// Look up a Forma's spec (its descriptor data) from the catalog.
@@ -1877,7 +2112,7 @@ impl FormaDescriptor for NodeOnDemandDescriptor {
 #[cfg(test)]
 mod tests {
     use super::{DimensionId, DisruptionClass, DisruptionPolicy, HostKnob, LimitLayout};
-    use super::{forma_spec, Directionality, Forma, FormaDescriptor, FORMA_CATALOG};
+    use super::{Directionality, FORMA_CATALOG, Forma, FormaDescriptor, forma_spec};
 
     /// `ALL` really is every variant, in the slot `index` names. The compiler
     /// already refuses a new variant that skips `index` (`E0004`); this pins the
@@ -1885,11 +2120,20 @@ mod tests {
     #[test]
     fn all_is_total() {
         for (slot, d) in DimensionId::ALL.into_iter().enumerate() {
-            assert_eq!(d.index(), slot, "{d} sits in ALL[{slot}] but index() says {}", d.index());
+            assert_eq!(
+                d.index(),
+                slot,
+                "{d} sits in ALL[{slot}] but index() says {}",
+                d.index()
+            );
         }
         // Distinctness: every arm gets its own slot, no accidental repeat.
         for d in DimensionId::ALL {
-            assert_eq!(DimensionId::ALL.iter().filter(|x| **x == d).count(), 1, "{d} appears twice in ALL");
+            assert_eq!(
+                DimensionId::ALL.iter().filter(|x| **x == d).count(),
+                1,
+                "{d} appears twice in ALL"
+            );
         }
     }
 
@@ -1915,7 +2159,9 @@ mod tests {
         let mut generator = schemars1::SchemaGenerator::default();
         let schema = <DimensionId as schemars1::JsonSchema>::json_schema(&mut generator);
         let bytes = serde_json::to_string(&schema).unwrap().len();
-        println!("DIMENSION_ID_SCHEMA {bytes} bytes (budget {BUDGET}; was 4711 with doc comments inlined)");
+        println!(
+            "DIMENSION_ID_SCHEMA {bytes} bytes (budget {BUDGET}; was 4711 with doc comments inlined)"
+        );
         assert!(
             bytes <= BUDGET,
             "the DimensionId wire schema is {bytes} bytes, over the {BUDGET}-byte budget.\n\
@@ -1928,7 +2174,10 @@ mod tests {
         // leaving an agent unable to tell `cgroup` from `cgroup-cpu`.
         let text = serde_json::to_string(&schema).unwrap();
         for d in DimensionId::ALL {
-            assert!(text.contains(d.as_str()), "{d} missing from its own wire schema");
+            assert!(
+                text.contains(d.as_str()),
+                "{d} missing from its own wire schema"
+            );
         }
         assert_eq!(
             text.matches("\"description\"").count(),
@@ -1945,7 +2194,11 @@ mod tests {
     fn serde_labels_match_as_str() {
         for d in DimensionId::ALL {
             let json = serde_json::to_value(d).unwrap();
-            assert_eq!(json.as_str(), Some(d.as_str()), "serde label != as_str for {d}");
+            assert_eq!(
+                json.as_str(),
+                Some(d.as_str()),
+                "serde label != as_str for {d}"
+            );
             let back: DimensionId = serde_json::from_value(json).unwrap();
             assert_eq!(back, d);
         }
@@ -1960,8 +2213,17 @@ mod tests {
         assert_eq!(DimensionId::parse("bogus"), None);
         // The five kinds the old five-arm `BandKind` could not name. This row is
         // the regression guard for the coherence gap itself, not decoration.
-        for missing in ["cgroup-cpu", "host-param", "kube-param", "app-param", "replica"] {
-            assert!(DimensionId::parse(missing).is_some(), "{missing} must be addressable by every surface");
+        for missing in [
+            "cgroup-cpu",
+            "host-param",
+            "kube-param",
+            "app-param",
+            "replica",
+        ] {
+            assert!(
+                DimensionId::parse(missing).is_some(),
+                "{missing} must be addressable by every surface"
+            );
         }
     }
 
@@ -1970,8 +2232,14 @@ mod tests {
     /// is genuinely a minority carve-out, not "everything" or "nothing".
     #[test]
     fn dry_run_is_honored_by_exactly_the_two_param_kinds() {
-        let honored: Vec<_> = DimensionId::ALL.into_iter().filter(|d| d.dry_run_is_honored()).collect();
-        assert_eq!(honored, vec![DimensionId::HostParam, DimensionId::KubeParam]);
+        let honored: Vec<_> = DimensionId::ALL
+            .into_iter()
+            .filter(|d| d.dry_run_is_honored())
+            .collect();
+        assert_eq!(
+            honored,
+            vec![DimensionId::HostParam, DimensionId::KubeParam]
+        );
     }
 
     #[test]
@@ -1979,40 +2247,84 @@ mod tests {
         // every Forma variant resolves to exactly one catalog spec (a bijection),
         // and the spec's data drives the descriptor (the data-driven FormaSpec).
         let all = [
-            Forma::NodeOnDemand, Forma::NodeSpot, Forma::ProvisionedIops, Forma::ProvisionedThroughput,
-            Forma::DynamoCapacity, Forma::Commitment, Forma::Accelerator, Forma::ServerlessSlot,
-            Forma::ZoneCapacity, Forma::EdgePlacement, Forma::LbCapacity, Forma::EgressBandwidth,
-            Forma::JitBuilder, Forma::LogIngestion,
+            Forma::NodeOnDemand,
+            Forma::NodeSpot,
+            Forma::ProvisionedIops,
+            Forma::ProvisionedThroughput,
+            Forma::DynamoCapacity,
+            Forma::Commitment,
+            Forma::Accelerator,
+            Forma::ServerlessSlot,
+            Forma::ZoneCapacity,
+            Forma::EdgePlacement,
+            Forma::LbCapacity,
+            Forma::EgressBandwidth,
+            Forma::JitBuilder,
+            Forma::LogIngestion,
         ];
-        assert_eq!(FORMA_CATALOG.len(), all.len(), "catalog row count == Forma variant count");
+        assert_eq!(
+            FORMA_CATALOG.len(),
+            all.len(),
+            "catalog row count == Forma variant count"
+        );
         for f in all {
             let spec = forma_spec(f).expect("every Forma has a catalog spec");
             assert_eq!(spec.forma(), f);
-            assert!(spec.relief_latency_secs() > 0, "{f} has a provisioning dead-time");
+            assert!(
+                spec.relief_latency_secs() > 0,
+                "{f} has a provisioning dead-time"
+            );
             assert!(!spec.unit().is_empty());
         }
         // the one irreversible shape is GrowOnly; an on-demand node breathes both ways.
-        assert_eq!(forma_spec(Forma::Commitment).unwrap().directionality(), Directionality::GrowOnly);
-        assert_eq!(forma_spec(Forma::NodeOnDemand).unwrap().directionality(), Directionality::Bidirectional);
+        assert_eq!(
+            forma_spec(Forma::Commitment).unwrap().directionality(),
+            Directionality::GrowOnly
+        );
+        assert_eq!(
+            forma_spec(Forma::NodeOnDemand).unwrap().directionality(),
+            Directionality::Bidirectional
+        );
         assert_eq!(Forma::JitBuilder.as_str(), "jit-builder");
     }
 
     #[test]
     fn layouts_classify_by_restart_cost() {
-        assert_eq!(LimitLayout::PvcRequest.disruption_class(), DisruptionClass::RestartFree);
-        assert_eq!(LimitLayout::Host(HostKnob::ZfsArcMax).disruption_class(), DisruptionClass::RestartFree);
+        assert_eq!(
+            LimitLayout::PvcRequest.disruption_class(),
+            DisruptionClass::RestartFree
+        );
+        assert_eq!(
+            LimitLayout::Host(HostKnob::ZfsArcMax).disruption_class(),
+            DisruptionClass::RestartFree
+        );
         // PodResize is honestly RestartConditional (memory-shrink may restart).
-        assert_eq!(LimitLayout::PodResize { container: None }.disruption_class(), DisruptionClass::RestartConditional);
-        assert_eq!(LimitLayout::PodTemplate { container: None }.disruption_class(), DisruptionClass::RestartRequiring);
-        assert_eq!(LimitLayout::ClusterTopLevel.disruption_class(), DisruptionClass::RestartRequiring);
+        assert_eq!(
+            LimitLayout::PodResize { container: None }.disruption_class(),
+            DisruptionClass::RestartConditional
+        );
+        assert_eq!(
+            LimitLayout::PodTemplate { container: None }.disruption_class(),
+            DisruptionClass::RestartRequiring
+        );
+        assert_eq!(
+            LimitLayout::ClusterTopLevel.disruption_class(),
+            DisruptionClass::RestartRequiring
+        );
     }
 
     #[test]
     fn pod_resize_is_strictly_less_disruptive_than_pod_template() {
         // the keystone: the SAME carve is RestartRequiring via the template but
         // only RestartConditional via resize — never a forced roll.
-        let roll = LimitLayout::PodTemplate { container: Some("app".into()) }.disruption_class();
-        let live = LimitLayout::PodResize { container: Some("app".into()) }.disruption_class();
+        let roll = LimitLayout::PodTemplate {
+            container: Some("app".into()),
+        }
+        .disruption_class();
+        let live = LimitLayout::PodResize {
+            container: Some("app".into()),
+        }
+        .disruption_class();
         assert_eq!(roll, DisruptionClass::RestartRequiring);
         assert!(roll.may_restart() && live.may_restart());
         assert_ne!(live, DisruptionClass::RestartRequiring); // resize never forces a full roll
@@ -2024,7 +2336,10 @@ mod tests {
         assert!(RestartFree.edge_tier().is_golden());
         assert!(!RestartConditional.edge_tier().is_golden());
         assert!(!RestartRequiring.edge_tier().is_golden());
-        assert_eq!(RestartRequiring.edge_tier(), super::EdgeTier::CeilingCrossing(RestartRequiring));
+        assert_eq!(
+            RestartRequiring.edge_tier(),
+            super::EdgeTier::CeilingCrossing(RestartRequiring)
+        );
     }
 
     #[test]
@@ -2038,9 +2353,18 @@ mod tests {
         assert_eq!(resize.action_class(true, "cpu"), RestartFree);
         assert_eq!(resize.action_class(false, "cpu"), RestartFree);
         // host + pvc always restart-free; template always requires a roll.
-        assert_eq!(LimitLayout::PvcRequest.action_class(false, "storage"), RestartFree);
-        assert_eq!(LimitLayout::Host(HostKnob::ZfsArcMax).action_class(false, "memory"), RestartFree);
-        assert_eq!(LimitLayout::PodTemplate { container: None }.action_class(true, "memory"), RestartRequiring);
+        assert_eq!(
+            LimitLayout::PvcRequest.action_class(false, "storage"),
+            RestartFree
+        );
+        assert_eq!(
+            LimitLayout::Host(HostKnob::ZfsArcMax).action_class(false, "memory"),
+            RestartFree
+        );
+        assert_eq!(
+            LimitLayout::PodTemplate { container: None }.action_class(true, "memory"),
+            RestartRequiring
+        );
     }
 
     #[test]
@@ -2048,41 +2372,82 @@ mod tests {
         use DisruptionClass::{RestartConditional, RestartFree, RestartRequiring};
         // The ONLY class resizePolicy refines: a conditional memory shrink with
         // NotRequired becomes golden; with RestartContainer (false) it stays.
-        assert_eq!(RestartConditional.refined_by_resize_policy(true), RestartFree);
-        assert_eq!(RestartConditional.refined_by_resize_policy(false), RestartConditional);
+        assert_eq!(
+            RestartConditional.refined_by_resize_policy(true),
+            RestartFree
+        );
+        assert_eq!(
+            RestartConditional.refined_by_resize_policy(false),
+            RestartConditional
+        );
         // Every other class is invariant under the flag (no spurious downgrade of a
         // template roll, no change to an already-golden grow).
-        assert_eq!(RestartRequiring.refined_by_resize_policy(true), RestartRequiring);
+        assert_eq!(
+            RestartRequiring.refined_by_resize_policy(true),
+            RestartRequiring
+        );
         assert_eq!(RestartFree.refined_by_resize_policy(true), RestartFree);
         // Composed with the per-direction class: a NotRequired pod's memory shrink
         // is golden end to end; a grow already was.
         let resize = LimitLayout::PodResize { container: None };
-        assert_eq!(resize.action_class(false, "memory").refined_by_resize_policy(true), RestartFree);
-        assert_eq!(resize.action_class(false, "memory").refined_by_resize_policy(false), RestartConditional);
+        assert_eq!(
+            resize
+                .action_class(false, "memory")
+                .refined_by_resize_policy(true),
+            RestartFree
+        );
+        assert_eq!(
+            resize
+                .action_class(false, "memory")
+                .refined_by_resize_policy(false),
+            RestartConditional
+        );
     }
 
     #[test]
     fn setpoint_reachability_names_the_golden_paths() {
-        use super::{setpoint_reachability, Directionality, DisruptionClass, SetpointReachability};
+        use super::{Directionality, DisruptionClass, SetpointReachability, setpoint_reachability};
         // cpu in-place: golden both directions.
         assert_eq!(
-            setpoint_reachability(&LimitLayout::PodResize { container: None }, Directionality::Bidirectional, "cpu"),
+            setpoint_reachability(
+                &LimitLayout::PodResize { container: None },
+                Directionality::Bidirectional,
+                "cpu"
+            ),
             SetpointReachability::GoldenToSetpoint
         );
         // storage online-expand (grow-only): golden.
         assert_eq!(
-            setpoint_reachability(&LimitLayout::PvcRequest, Directionality::GrowOnly, "storage"),
+            setpoint_reachability(
+                &LimitLayout::PvcRequest,
+                Directionality::GrowOnly,
+                "storage"
+            ),
             SetpointReachability::GoldenToSetpoint
         );
         // memory in-place, bidirectional: the SHRINK is a conditional crossing.
         assert_eq!(
-            setpoint_reachability(&LimitLayout::PodResize { container: None }, Directionality::Bidirectional, "memory"),
-            SetpointReachability::RequiresCrossing { ceiling: DisruptionClass::RestartConditional, layout: LimitLayout::PodResize { container: None } }
+            setpoint_reachability(
+                &LimitLayout::PodResize { container: None },
+                Directionality::Bidirectional,
+                "memory"
+            ),
+            SetpointReachability::RequiresCrossing {
+                ceiling: DisruptionClass::RestartConditional,
+                layout: LimitLayout::PodResize { container: None }
+            }
         );
         // CNPG top-level: any carve is a full crossing.
         assert!(matches!(
-            setpoint_reachability(&LimitLayout::ClusterTopLevel, Directionality::Bidirectional, "memory"),
-            SetpointReachability::RequiresCrossing { ceiling: DisruptionClass::RestartRequiring, .. }
+            setpoint_reachability(
+                &LimitLayout::ClusterTopLevel,
+                Directionality::Bidirectional,
+                "memory"
+            ),
+            SetpointReachability::RequiresCrossing {
+                ceiling: DisruptionClass::RestartRequiring,
+                ..
+            }
         ));
     }
 
@@ -2090,7 +2455,10 @@ mod tests {
     fn disruption_policy_gates_actions_by_class() {
         use DisruptionClass::{RestartConditional, RestartFree, RestartRequiring};
         // RestartFreeOnly (the default): only restart-free actions pass.
-        assert_eq!(DisruptionPolicy::default(), DisruptionPolicy::RestartFreeOnly);
+        assert_eq!(
+            DisruptionPolicy::default(),
+            DisruptionPolicy::RestartFreeOnly
+        );
         assert!(DisruptionPolicy::RestartFreeOnly.permits(RestartFree));
         assert!(!DisruptionPolicy::RestartFreeOnly.permits(RestartConditional));
         assert!(!DisruptionPolicy::RestartFreeOnly.permits(RestartRequiring));
@@ -2178,7 +2546,10 @@ pub mod mock {
         #[must_use]
         pub fn new(used: u64, age_secs: u64, limit: u64, owners: Vec<FieldOwner>) -> Self {
             Self {
-                used: Sample { value: used, age_secs },
+                used: Sample {
+                    value: used,
+                    age_secs,
+                },
                 limit,
                 owners,
                 resize_restart_free: false,
@@ -2279,7 +2650,10 @@ pub mod mock {
             if let Some(ts) = &self.throttle_source
                 && source == ts
             {
-                return Ok(Sample { value: self.throttle_signal, age_secs: 0 });
+                return Ok(Sample {
+                    value: self.throttle_signal,
+                    age_secs: 0,
+                });
             }
             match &self.read_used_error {
                 Some(e) => Err(e.clone()),
@@ -2306,12 +2680,18 @@ pub mod mock {
         ) -> Result<Vec<FieldOwner>, ProviderError> {
             Ok(self.owners.clone())
         }
-        async fn apply(&self, witness: &crate::gate::LiveWitness, patch: &SsaPatch) -> Result<AppliedReceipt, ProviderError> {
+        async fn apply(
+            &self,
+            witness: &crate::gate::LiveWitness,
+            patch: &SsaPatch,
+        ) -> Result<AppliedReceipt, ProviderError> {
             // Record WHAT authorized each write, so a test can assert the witness
             // that reached the door, not merely that a patch did.
             self.applied.lock().unwrap().push(patch.clone());
             self.witnessed_by.lock().unwrap().push(witness.kind());
-            Ok(AppliedReceipt { source_hash: [0u8; 16] })
+            Ok(AppliedReceipt {
+                source_hash: [0u8; 16],
+            })
         }
         async fn read_resize_restart_free(
             &self,
@@ -2376,20 +2756,29 @@ pub mod mock {
         /// records nothing.
         #[must_use]
         pub fn failing(e: ProviderError) -> Self {
-            Self { fail_with: Some(e), carves: Mutex::new(Vec::new()) }
+            Self {
+                fail_with: Some(e),
+                carves: Mutex::new(Vec::new()),
+            }
         }
 
         /// Every recorded carve, in order.
         #[must_use]
         pub fn carves(&self) -> Vec<(ClassPreserved, SsaPatch)> {
-            self.carves.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone()
+            self.carves
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone()
         }
 
         /// How many in-place writes actually happened. `0` is the assertion a
         /// shadow-gated tick must satisfy.
         #[must_use]
         pub fn write_count(&self) -> usize {
-            self.carves.lock().unwrap_or_else(std::sync::PoisonError::into_inner).len()
+            self.carves
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .len()
         }
     }
 
@@ -2408,7 +2797,9 @@ pub mod mock {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .push((preserved.clone(), patch.clone()));
-            Ok(AppliedReceipt { source_hash: [0u8; 16] })
+            Ok(AppliedReceipt {
+                source_hash: [0u8; 16],
+            })
         }
     }
 }
@@ -2421,7 +2812,7 @@ mod forma_seed {
     //! NOT the point `setpoint`). This is the entire basis for `Forma` reusing
     //! `breathe-control` verbatim (docs/PROVISIONING.md §1.1).
     use super::{Forma, FormaDescriptor, NodeOnDemandDescriptor};
-    use breathe_control::{decide, BandConfig, Decision};
+    use breathe_control::{BandConfig, Decision, decide};
 
     /// A node-count band config. `*_bytes` is the unit-blind field name (the band
     /// law never knows it is bytes); here the unit is *nodes*.
@@ -2465,7 +2856,10 @@ mod forma_seed {
         assert_eq!(Forma::NodeOnDemand.as_str(), "node-on-demand");
         assert_eq!(Forma::NodeOnDemand.to_string(), "node-on-demand");
         assert_eq!(d.unit(), "node");
-        assert!(d.relief_latency_secs() > 0, "relief latency must be > 0 (P8 dead-time)");
+        assert!(
+            d.relief_latency_secs() > 0,
+            "relief latency must be > 0 (P8 dead-time)"
+        );
     }
 
     #[test]
@@ -2477,14 +2871,17 @@ mod forma_seed {
                 let util = demand as f64 / limit as f64;
                 // Per MATH §3.3: settles IN the deadband, not at the setpoint.
                 let in_band = util <= cfg.grow_above + 1e-9 && util >= cfg.shrink_below - 1e-9;
-                let at_wall = matches!(last, Decision::AtCeiling { .. } | Decision::NoSafeShrink { .. })
-                    || limit == cfg.ceiling_bytes
+                let at_wall = matches!(
+                    last,
+                    Decision::AtCeiling { .. } | Decision::NoSafeShrink { .. }
+                ) || limit == cfg.ceiling_bytes
                     || limit == cfg.floor_bytes;
                 assert!(
                     in_band || at_wall,
                     "demand={demand} l0={l0} → limit={limit} util={util:.3} last={last:?} \
                      (want in-band [{},{}] or a wall)",
-                    cfg.shrink_below, cfg.grow_above
+                    cfg.shrink_below,
+                    cfg.grow_above
                 );
                 // never-over-commit: the settled limit covers the demand (the
                 // provisioning peer of never-OOM), unless the floor binds below it.

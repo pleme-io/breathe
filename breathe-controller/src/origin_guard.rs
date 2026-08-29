@@ -2,7 +2,7 @@
 //!
 //! `node_forma::claim_unassigned_node_for_pool` OPENS membership: on a `Grew`
 //! tick it claims one Ready, unclaimed node INTO a `BreatheCloudPool`.
-//! `origin_guard` is the CLOSING half: it PROTECTS a named node — Camelot's
+//! `origin_guard` is the CLOSING half: it PROTECTS a named node — the private estate's
 //! origin/control-plane node is the first, driving use — by keeping it
 //! tainted against every workload except an explicit allowlist.
 //! theory/CORRENTEZA.md §4/§11.3 already names this shape as a degenerate
@@ -35,9 +35,9 @@ use std::sync::Arc;
 use breathe_crd::{IsolationBand, IsolationBandStatus, TaintSpec, WorkloadRef};
 use k8s_openapi::api::core::v1::{Node, Pod};
 use kube::{
+    Client, ResourceExt,
     api::{Api, ListParams, Patch, PatchParams},
     runtime::controller::Action,
-    Client, ResourceExt,
 };
 use metrics::{counter, gauge};
 use tracing::{debug, info, warn};
@@ -52,7 +52,11 @@ fn has_taint(node: &Node, key: &str, value: Option<&str>, effect: &str) -> bool 
     node.spec
         .as_ref()
         .and_then(|s| s.taints.as_ref())
-        .is_some_and(|taints| taints.iter().any(|t| t.key == key && t.value.as_deref() == value && t.effect == effect))
+        .is_some_and(|taints| {
+            taints
+                .iter()
+                .any(|t| t.key == key && t.value.as_deref() == value && t.effect == effect)
+        })
 }
 
 /// The outcome of ensuring ONE target node carries the band's taint this tick.
@@ -87,12 +91,20 @@ fn taint_outcome_label(o: &TaintOutcome) -> &'static str {
 /// patch); otherwise, ONLY when `!dry_run`, preserves every OTHER existing
 /// taint via [`upsert_taint`] (a k8s JSON merge patch REPLACES the whole
 /// `spec.taints` list) and patches.
-async fn ensure_taint(client: &Client, node_name: &str, taint: &TaintSpec, dry_run: bool) -> TaintOutcome {
+async fn ensure_taint(
+    client: &Client,
+    node_name: &str,
+    taint: &TaintSpec,
+    dry_run: bool,
+) -> TaintOutcome {
     let api = Api::<Node>::all(client.clone());
     let node = match api.get_opt(node_name).await {
         Ok(Some(n)) => n,
         Ok(None) => {
-            warn!(node = node_name, "IsolationBand: target node not found (non-fatal; retried next tick)");
+            warn!(
+                node = node_name,
+                "IsolationBand: target node not found (non-fatal; retried next tick)"
+            );
             return TaintOutcome::NodeNotFound;
         }
         Err(e) => {
@@ -106,10 +118,17 @@ async fn ensure_taint(client: &Client, node_name: &str, taint: &TaintSpec, dry_r
     if dry_run {
         return TaintOutcome::WouldTaint;
     }
-    let existing = node.spec.as_ref().and_then(|s| s.taints.clone()).unwrap_or_default();
+    let existing = node
+        .spec
+        .as_ref()
+        .and_then(|s| s.taints.clone())
+        .unwrap_or_default();
     let taints = upsert_taint(&existing, &taint.key, taint.value.as_deref(), &taint.effect);
     let patch = serde_json::json!({ "spec": { "taints": taints } });
-    match api.patch(node_name, &PatchParams::default(), &Patch::Merge(&patch)).await {
+    match api
+        .patch(node_name, &PatchParams::default(), &Patch::Merge(&patch))
+        .await
+    {
         Ok(_) => {
             info!(node = node_name, key = %taint.key, effect = %taint.effect, "IsolationBand: tainted node");
             TaintOutcome::Tainted
@@ -153,7 +172,10 @@ pub(crate) fn is_authorized_pod(
 ) -> bool {
     allowed.iter().any(|w| {
         w.namespace == pod_namespace
-            && (pod_name == w.name || owner_names.iter().any(|o| *o == w.name || is_replicaset_of(o, &w.name)))
+            && (pod_name == w.name
+                || owner_names
+                    .iter()
+                    .any(|o| *o == w.name || is_replicaset_of(o, &w.name)))
     })
 }
 
@@ -163,7 +185,11 @@ pub(crate) fn is_authorized_pod(
 /// OBSERVATION ONLY — mutates nothing. Best-effort: a list error logs +
 /// yields an empty (i.e. "found nothing wrong") result rather than a status
 /// that misreports a violation the reconcile could not actually observe.
-async fn unauthorized_pods_on(client: &Client, node_name: &str, allowed: &[WorkloadRef]) -> Vec<String> {
+async fn unauthorized_pods_on(
+    client: &Client,
+    node_name: &str,
+    allowed: &[WorkloadRef],
+) -> Vec<String> {
     let lp = ListParams::default().fields(&format!("spec.nodeName={node_name}"));
     let pods = match Api::<Pod>::all(client.clone()).list(&lp).await {
         Ok(l) => l.items,
@@ -277,7 +303,11 @@ async fn resolve_selector_nodes(
 ) -> Option<Vec<String>> {
     let selector = selector?;
     // Equality-based `nodeSelector` convention: ALL pairs must match.
-    let expr = selector.iter().map(|(k, v)| format!("{k}={v}")).collect::<Vec<_>>().join(",");
+    let expr = selector
+        .iter()
+        .map(|(k, v)| format!("{k}={v}"))
+        .collect::<Vec<_>>()
+        .join(",");
     let lp = ListParams::default().labels(&expr);
     match Api::<Node>::all(client.clone()).list(&lp).await {
         Ok(list) => Some(list.items.iter().map(ResourceExt::name_any).collect()),
@@ -294,7 +324,10 @@ async fn resolve_selector_nodes(
 /// `node_forma::reconcile_cloud_pool` (which acts only on a `Grew` tick),
 /// this reconcile runs the SAME protect-and-observe pass every tick — a
 /// standing posture, not an event response.
-pub async fn reconcile_isolation_band(cr: Arc<IsolationBand>, ctx: Arc<Ctx>) -> Result<Action, Error> {
+pub async fn reconcile_isolation_band(
+    cr: Arc<IsolationBand>,
+    ctx: Arc<Ctx>,
+) -> Result<Action, Error> {
     let name = cr.name_any();
     // Threaded through the SAME two-key `outorga::PromotionPolicy::decide` every
     // `Band` uses (`breathe_crd::legacy_effective_dry_run` — see its doc for the
@@ -328,15 +361,20 @@ pub async fn reconcile_isolation_band(cr: Arc<IsolationBand>, ctx: Arc<Ctx>) -> 
             "band" => name.clone(), "node" => node_name.clone(), "outcome" => taint_outcome_label(&outcome)
         )
         .increment(1);
-        if matches!(outcome, TaintOutcome::AlreadyTainted | TaintOutcome::Tainted) {
+        if matches!(
+            outcome,
+            TaintOutcome::AlreadyTainted | TaintOutcome::Tainted
+        ) {
             nodes_tainted += 1;
         }
-        let mut found = unauthorized_pods_on(&ctx.client, node_name, &cr.spec.allowed_workloads).await;
+        let mut found =
+            unauthorized_pods_on(&ctx.client, node_name, &cr.spec.allowed_workloads).await;
         unauthorized.append(&mut found);
     }
 
     gauge!("breathe_isolation_nodes_tainted", "band" => name.clone()).set(nodes_tainted as f64);
-    gauge!("breathe_isolation_unauthorized_pods", "band" => name.clone()).set(unauthorized.len() as f64);
+    gauge!("breathe_isolation_unauthorized_pods", "band" => name.clone())
+        .set(unauthorized.len() as f64);
 
     let status = isolation_band_status(nodes_tainted, &unauthorized, selector_resolved, &gate);
     info!(
@@ -353,7 +391,10 @@ pub async fn reconcile_isolation_band(cr: Arc<IsolationBand>, ctx: Arc<Ctx>) -> 
 async fn patch_status(client: &Client, name: &str, status: &IsolationBandStatus) {
     let api: Api<IsolationBand> = Api::all(client.clone());
     let patch = serde_json::json!({ "status": status });
-    if let Err(e) = api.patch_status(name, &PatchParams::default(), &Patch::Merge(&patch)).await {
+    if let Err(e) = api
+        .patch_status(name, &PatchParams::default(), &Patch::Merge(&patch))
+        .await
+    {
         warn!(band = %name, error = %e, "IsolationBand status patch failed (non-fatal)");
     }
 }
@@ -366,57 +407,106 @@ pub fn error_policy_isolation_band(_cr: Arc<IsolationBand>, err: &Error, ctx: Ar
 
 #[cfg(test)]
 mod tests {
-    use super::{has_taint, is_authorized_pod, is_replicaset_of, isolation_band_status, taint_outcome_label, TaintOutcome};
+    use super::{
+        TaintOutcome, has_taint, is_authorized_pod, is_replicaset_of, isolation_band_status,
+        taint_outcome_label,
+    };
     use k8s_openapi::api::core::v1::{Node, NodeSpec, Taint};
     use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
 
     fn node_with_taints(taints: Vec<Taint>) -> Node {
         Node {
             metadata: ObjectMeta::default(),
-            spec: Some(NodeSpec { taints: (!taints.is_empty()).then_some(taints), ..Default::default() }),
+            spec: Some(NodeSpec {
+                taints: (!taints.is_empty()).then_some(taints),
+                ..Default::default()
+            }),
             status: None,
         }
     }
 
     fn t(key: &str, value: Option<&str>, effect: &str) -> Taint {
-        Taint { key: key.to_string(), value: value.map(str::to_string), effect: effect.to_string(), ..Default::default() }
+        Taint {
+            key: key.to_string(),
+            value: value.map(str::to_string),
+            effect: effect.to_string(),
+            ..Default::default()
+        }
     }
 
     fn wref(ns: &str, name: &str) -> breathe_crd::WorkloadRef {
-        breathe_crd::WorkloadRef { namespace: ns.to_string(), name: name.to_string() }
+        breathe_crd::WorkloadRef {
+            namespace: ns.to_string(),
+            name: name.to_string(),
+        }
     }
 
     // ── has_taint ──────────────────────────────────────────────────────────
 
     #[test]
     fn has_taint_matches_key_value_and_effect_exactly() {
-        let node = node_with_taints(vec![t("breathe.pleme.io/origin-reserved", None, "NoSchedule")]);
-        assert!(has_taint(&node, "breathe.pleme.io/origin-reserved", None, "NoSchedule"));
-        assert!(!has_taint(&node, "breathe.pleme.io/origin-reserved", None, "NoExecute"), "effect must match exactly");
-        assert!(!has_taint(&node, "some-other-key", None, "NoSchedule"), "key must match exactly");
+        let node = node_with_taints(vec![t(
+            "breathe.pleme.io/origin-reserved",
+            None,
+            "NoSchedule",
+        )]);
+        assert!(has_taint(
+            &node,
+            "breathe.pleme.io/origin-reserved",
+            None,
+            "NoSchedule"
+        ));
+        assert!(
+            !has_taint(&node, "breathe.pleme.io/origin-reserved", None, "NoExecute"),
+            "effect must match exactly"
+        );
+        assert!(
+            !has_taint(&node, "some-other-key", None, "NoSchedule"),
+            "key must match exactly"
+        );
     }
 
     #[test]
     fn has_taint_is_false_on_a_bare_node() {
         let node = node_with_taints(vec![]);
-        assert!(!has_taint(&node, "breathe.pleme.io/origin-reserved", None, "NoSchedule"));
+        assert!(!has_taint(
+            &node,
+            "breathe.pleme.io/origin-reserved",
+            None,
+            "NoSchedule"
+        ));
     }
 
     #[test]
     fn has_taint_distinguishes_by_value() {
         let node = node_with_taints(vec![t("dedicated", Some("gpu"), "NoSchedule")]);
         assert!(has_taint(&node, "dedicated", Some("gpu"), "NoSchedule"));
-        assert!(!has_taint(&node, "dedicated", Some("cpu"), "NoSchedule"), "a differing value is a different taint");
-        assert!(!has_taint(&node, "dedicated", None, "NoSchedule"), "a valueless probe does not match a valued taint");
+        assert!(
+            !has_taint(&node, "dedicated", Some("cpu"), "NoSchedule"),
+            "a differing value is a different taint"
+        );
+        assert!(
+            !has_taint(&node, "dedicated", None, "NoSchedule"),
+            "a valueless probe does not match a valued taint"
+        );
     }
 
     // ── is_replicaset_of ───────────────────────────────────────────────────
 
     #[test]
     fn replicaset_of_matches_the_single_hash_segment_shape() {
-        assert!(is_replicaset_of("pangea-operator-7f8b9c", "pangea-operator"));
-        assert!(!is_replicaset_of("pangea-operator", "pangea-operator"), "no trailing hash at all is not a ReplicaSet name");
-        assert!(!is_replicaset_of("pangea-operator-", "pangea-operator"), "an empty hash segment is not a ReplicaSet name");
+        assert!(is_replicaset_of(
+            "pangea-operator-7f8b9c",
+            "pangea-operator"
+        ));
+        assert!(
+            !is_replicaset_of("pangea-operator", "pangea-operator"),
+            "no trailing hash at all is not a ReplicaSet name"
+        );
+        assert!(
+            !is_replicaset_of("pangea-operator-", "pangea-operator"),
+            "an empty hash segment is not a ReplicaSet name"
+        );
     }
 
     #[test]
@@ -424,7 +514,10 @@ mod tests {
         // THE false-match this function exists to close: a bare `starts_with`
         // check would wrongly treat "pangea-operator-canary"'s ReplicaSet as
         // belonging to the "pangea-operator" Deployment.
-        assert!(!is_replicaset_of("pangea-operator-canary-7f8b9c", "pangea-operator"));
+        assert!(!is_replicaset_of(
+            "pangea-operator-canary-7f8b9c",
+            "pangea-operator"
+        ));
     }
 
     // ── is_authorized_pod ─────────────────────────────────────────────────
@@ -432,8 +525,16 @@ mod tests {
     #[test]
     fn a_bare_pod_matches_by_its_own_name() {
         let allowed = vec![wref("breathe-system", "breathe-controller")];
-        assert!(is_authorized_pod("breathe-system", "breathe-controller", &[], &allowed));
-        assert!(!is_authorized_pod("breathe-system", "breathe-controller-2", &[], &allowed), "no owner + a differing bare name is unauthorized");
+        assert!(is_authorized_pod(
+            "breathe-system",
+            "breathe-controller",
+            &[],
+            &allowed
+        ));
+        assert!(
+            !is_authorized_pod("breathe-system", "breathe-controller-2", &[], &allowed),
+            "no owner + a differing bare name is unauthorized"
+        );
     }
 
     #[test]
@@ -442,7 +543,12 @@ mod tests {
         // (`cilium-abcde`); the owner reference name is the DaemonSet's exact
         // name (`cilium`) — no ReplicaSet hop in between.
         let allowed = vec![wref("kube-system", "cilium")];
-        assert!(is_authorized_pod("kube-system", "cilium-abcde", &["cilium".to_string()], &allowed));
+        assert!(is_authorized_pod(
+            "kube-system",
+            "cilium-abcde",
+            &["cilium".to_string()],
+            &allowed
+        ));
     }
 
     #[test]
@@ -451,42 +557,78 @@ mod tests {
         // "pangea-operator-<hash>" — the Deployment's own name is never a
         // direct owner reference. The prefix match closes that hop without
         // an extra apiserver call to resolve the ReplicaSet's own owner.
-        let allowed = vec![wref("camelot", "pangea-operator")];
-        assert!(is_authorized_pod("camelot", "pangea-operator-7f8b9c-x2z9k", &["pangea-operator-7f8b9c".to_string()], &allowed));
+        let allowed = vec![wref("isolated", "pangea-operator")];
+        assert!(is_authorized_pod(
+            "isolated",
+            "pangea-operator-7f8b9c-x2z9k",
+            &["pangea-operator-7f8b9c".to_string()],
+            &allowed
+        ));
         // A DIFFERENT deployment sharing a name prefix must NOT false-match
         // ("pangea-operator-canary" is not "pangea-operator").
-        let not_allowed = vec![wref("camelot", "pangea-operator")];
-        assert!(!is_authorized_pod("camelot", "pangea-operator-canary-abcde", &["pangea-operator-canary-7f8b9c".to_string()], &not_allowed));
+        let not_allowed = vec![wref("isolated", "pangea-operator")];
+        assert!(!is_authorized_pod(
+            "isolated",
+            "pangea-operator-canary-abcde",
+            &["pangea-operator-canary-7f8b9c".to_string()],
+            &not_allowed
+        ));
     }
 
     #[test]
     fn namespace_must_match_even_if_the_name_matches() {
         let allowed = vec![wref("kube-system", "cilium")];
-        assert!(!is_authorized_pod("camelot", "cilium-abcde", &["cilium".to_string()], &allowed), "a same-named workload in a different namespace is not the allowed one");
+        assert!(
+            !is_authorized_pod(
+                "isolated",
+                "cilium-abcde",
+                &["cilium".to_string()],
+                &allowed
+            ),
+            "a same-named workload in a different namespace is not the allowed one"
+        );
     }
 
     #[test]
     fn an_empty_allowlist_authorizes_nothing() {
-        assert!(!is_authorized_pod("kube-system", "anything", &["anything".to_string()], &[]));
+        assert!(!is_authorized_pod(
+            "kube-system",
+            "anything",
+            &["anything".to_string()],
+            &[]
+        ));
     }
 
     // ── isolation_band_status ─────────────────────────────────────────────
 
     #[test]
     fn status_is_protecting_when_no_unauthorized_pods() {
-        let s = isolation_band_status(1, &[], None, &breathe_provider::legacy_two_state_gate(true, false));
+        let s = isolation_band_status(
+            1,
+            &[],
+            None,
+            &breathe_provider::legacy_two_state_gate(true, false),
+        );
         assert_eq!(s.phase.as_deref(), Some("Protecting"));
         assert_eq!(s.nodes_tainted, Some(1));
         assert_eq!(s.unauthorized_count, Some(0));
         assert!(s.unauthorized_pods.is_empty());
         assert_eq!(s.effective_dry_run, Some(true));
-        assert_eq!(s.selector_resolved, None, "no selector declared ⇒ the field stays absent, not 0");
+        assert_eq!(
+            s.selector_resolved, None,
+            "no selector declared ⇒ the field stays absent, not 0"
+        );
     }
 
     #[test]
     fn status_is_violated_when_unauthorized_pods_are_found() {
         let found = vec!["default/stray-pod".to_string()];
-        let s = isolation_band_status(1, &found, None, &breathe_provider::legacy_two_state_gate(false, false));
+        let s = isolation_band_status(
+            1,
+            &found,
+            None,
+            &breathe_provider::legacy_two_state_gate(false, false),
+        );
         assert_eq!(s.phase.as_deref(), Some("Violated"));
         assert_eq!(s.unauthorized_count, Some(1));
         assert_eq!(s.unauthorized_pods, found);
@@ -513,15 +655,27 @@ mod tests {
     // silent vacuous pass.
     #[test]
     fn a_selector_that_matches_nothing_is_degraded_never_protecting() {
-        let s = isolation_band_status(0, &[], Some(0), &breathe_provider::legacy_two_state_gate(false, false));
+        let s = isolation_band_status(
+            0,
+            &[],
+            Some(0),
+            &breathe_provider::legacy_two_state_gate(false, false),
+        );
         assert_eq!(
             s.phase.as_deref(),
             Some("Degraded"),
             "a selector matching ZERO nodes must never read as Protecting — zero nodes to inspect \
              yields zero findings, which is an empty world, not a clean one"
         );
-        assert_eq!(s.selector_resolved, Some(0), "the count is surfaced so the operator sees WHY it degraded");
-        assert!(s.unauthorized_pods.is_empty(), "and it is genuinely empty — that is exactly the trap");
+        assert_eq!(
+            s.selector_resolved,
+            Some(0),
+            "the count is surfaced so the operator sees WHY it degraded"
+        );
+        assert!(
+            s.unauthorized_pods.is_empty(),
+            "and it is genuinely empty — that is exactly the trap"
+        );
     }
 
     #[test]
@@ -529,7 +683,12 @@ mod tests {
         // The contrast case that proves `Degraded` keys on the EMPTY WORLD and
         // not merely on "a selector was declared" — otherwise every healthy
         // pool-scoped band would sit permanently yellow and be ignored.
-        let s = isolation_band_status(3, &[], Some(3), &breathe_provider::legacy_two_state_gate(false, false));
+        let s = isolation_band_status(
+            3,
+            &[],
+            Some(3),
+            &breathe_provider::legacy_two_state_gate(false, false),
+        );
         assert_eq!(s.phase.as_deref(), Some("Protecting"));
         assert_eq!(s.selector_resolved, Some(3));
     }
@@ -539,7 +698,12 @@ mod tests {
         // A stale selector that still matches one node with a stray pod on it:
         // the live violation is the more urgent truth, so it wins.
         let found = vec!["default/stray-pod".to_string()];
-        let s = isolation_band_status(0, &found, Some(0), &breathe_provider::legacy_two_state_gate(false, false));
+        let s = isolation_band_status(
+            0,
+            &found,
+            Some(0),
+            &breathe_provider::legacy_two_state_gate(false, false),
+        );
         assert_eq!(s.phase.as_deref(), Some("Violated"));
     }
 
@@ -578,8 +742,14 @@ mod tests {
 
     #[test]
     fn merge_handles_either_surface_being_empty() {
-        assert_eq!(super::merge_target_nodes(&["a".into()], &[]), vec!["a".to_string()]);
-        assert_eq!(super::merge_target_nodes(&[], &["a".into()]), vec!["a".to_string()]);
+        assert_eq!(
+            super::merge_target_nodes(&["a".into()], &[]),
+            vec!["a".to_string()]
+        );
+        assert_eq!(
+            super::merge_target_nodes(&[], &["a".into()]),
+            vec!["a".to_string()]
+        );
         assert!(super::merge_target_nodes(&[], &[]).is_empty());
     }
 
@@ -596,6 +766,10 @@ mod tests {
         ]
         .into_iter()
         .collect();
-        assert_eq!(labels.len(), 5, "every taint outcome gets a distinct metric label");
+        assert_eq!(
+            labels.len(),
+            5,
+            "every taint outcome gets a distinct metric label"
+        );
     }
 }

@@ -106,8 +106,8 @@ pub async fn resolve_trigger(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     /// A mock `NatsTrigger` that records how many times `subscribe` was called
     /// and returns a scripted outcome — no socket, no broker, no cluster.
@@ -130,31 +130,60 @@ mod tests {
     #[tokio::test]
     async fn url_unset_never_calls_subscribe() {
         let calls = Arc::new(AtomicUsize::new(0));
-        let mock = MockTrigger { calls: calls.clone(), outcome: Ok(vec![()]) };
+        let mock = MockTrigger {
+            calls: calls.clone(),
+            outcome: Ok(vec![()]),
+        };
 
         let trigger = resolve_trigger(None, true, &mock, "escuta.*.memoryband.>").await;
 
         assert!(trigger.is_none());
-        assert_eq!(calls.load(Ordering::SeqCst), 0, "gate 1 must short-circuit before ever touching the trigger");
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            0,
+            "gate 1 must short-circuit before ever touching the trigger"
+        );
     }
 
     #[tokio::test]
     async fn disabled_never_calls_subscribe_even_with_a_url() {
         let calls = Arc::new(AtomicUsize::new(0));
-        let mock = MockTrigger { calls: calls.clone(), outcome: Ok(vec![()]) };
+        let mock = MockTrigger {
+            calls: calls.clone(),
+            outcome: Ok(vec![()]),
+        };
 
-        let trigger = resolve_trigger(Some("nats://x:4222".into()), false, &mock, "escuta.*.memoryband.>").await;
+        let trigger = resolve_trigger(
+            Some("nats://x:4222".into()),
+            false,
+            &mock,
+            "escuta.*.memoryband.>",
+        )
+        .await;
 
         assert!(trigger.is_none());
-        assert_eq!(calls.load(Ordering::SeqCst), 0, "gate 2 must short-circuit before ever touching the trigger");
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            0,
+            "gate 2 must short-circuit before ever touching the trigger"
+        );
     }
 
     #[tokio::test]
     async fn url_set_and_enabled_subscribes_and_returns_the_stream() {
         let calls = Arc::new(AtomicUsize::new(0));
-        let mock = MockTrigger { calls: calls.clone(), outcome: Ok(vec![(), ()]) };
+        let mock = MockTrigger {
+            calls: calls.clone(),
+            outcome: Ok(vec![(), ()]),
+        };
 
-        let trigger = resolve_trigger(Some("nats://x:4222".into()), true, &mock, "escuta.*.memoryband.>").await;
+        let trigger = resolve_trigger(
+            Some("nats://x:4222".into()),
+            true,
+            &mock,
+            "escuta.*.memoryband.>",
+        )
+        .await;
 
         assert!(trigger.is_some());
         assert_eq!(calls.load(Ordering::SeqCst), 1);
@@ -165,11 +194,23 @@ mod tests {
     #[tokio::test]
     async fn subscribe_failure_degrades_to_none_not_a_panic() {
         let calls = Arc::new(AtomicUsize::new(0));
-        let mock = MockTrigger { calls: calls.clone(), outcome: Err("connection refused".into()) };
+        let mock = MockTrigger {
+            calls: calls.clone(),
+            outcome: Err("connection refused".into()),
+        };
 
-        let trigger = resolve_trigger(Some("nats://x:4222".into()), true, &mock, "escuta.*.memoryband.>").await;
+        let trigger = resolve_trigger(
+            Some("nats://x:4222".into()),
+            true,
+            &mock,
+            "escuta.*.memoryband.>",
+        )
+        .await;
 
-        assert!(trigger.is_none(), "a broker-unreachable failure must degrade to watch-only, never panic/propagate");
+        assert!(
+            trigger.is_none(),
+            "a broker-unreachable failure must degrade to watch-only, never panic/propagate"
+        );
         assert_eq!(calls.load(Ordering::SeqCst), 1);
     }
 }

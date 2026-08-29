@@ -15,7 +15,7 @@ signed entry in a verifiable attestation chain.
 > Corrected 2026-08-06: this line read "**private**" and was stale. Visibility
 > is not a matter of intent here, it is observable — and it was observed the
 > expensive way. `.github/workflows/image.yml` records that pinning a job to
-> the self-hosted `camelot-builder-pleme-eks` label left **4 runs queued
+> the self-hosted the self-hosted builder pool label left **4 runs queued
 > forever from 2026-07-27**, because GitHub never assigns a PUBLIC
 > repository's jobs to a self-hosted runner (a fork PR could otherwise execute
 > arbitrary code on the cluster). A private repo would simply have run them.

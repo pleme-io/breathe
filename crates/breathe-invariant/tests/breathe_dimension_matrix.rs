@@ -35,21 +35,42 @@ struct MatrixRow {
 /// The matrix — ONE row per dimension in the catalog. Adding a catalog entry
 /// without a row here fails `matrix_covers_every_dimension`.
 const MATRIX: &[MatrixRow] = &[
-    MatrixRow { dimension: DimensionId::Memory, expected_maturity: Maturity::Shipped },
-    MatrixRow { dimension: DimensionId::Cpu, expected_maturity: Maturity::Shipped },
-    MatrixRow { dimension: DimensionId::Replica, expected_maturity: Maturity::Shipped },
-    MatrixRow { dimension: DimensionId::Storage, expected_maturity: Maturity::Landing },
-    MatrixRow { dimension: DimensionId::Isolation, expected_maturity: Maturity::Landing },
+    MatrixRow {
+        dimension: DimensionId::Memory,
+        expected_maturity: Maturity::Shipped,
+    },
+    MatrixRow {
+        dimension: DimensionId::Cpu,
+        expected_maturity: Maturity::Shipped,
+    },
+    MatrixRow {
+        dimension: DimensionId::Replica,
+        expected_maturity: Maturity::Shipped,
+    },
+    MatrixRow {
+        dimension: DimensionId::Storage,
+        expected_maturity: Maturity::Landing,
+    },
+    MatrixRow {
+        dimension: DimensionId::Isolation,
+        expected_maturity: Maturity::Landing,
+    },
     // DatabaseBand promoted Gap→Landing: breathe-invariant::database ships the
     // architecture-aware contract (ReplicationTopology + discovery seam +
     // FailoverMachine + 5-engine DB_ARCHITECTURES + DatabasePermutation lattice).
-    MatrixRow { dimension: DimensionId::Database, expected_maturity: Maturity::Landing },
+    MatrixRow {
+        dimension: DimensionId::Database,
+        expected_maturity: Maturity::Landing,
+    },
     // RequestBand — the RESERVATION dimension, entered AT Landing 2026-07-26.
     // Every row above carves a LIMIT; this one carves the request. Its absence
     // was the gap `no_dimension_claimed_but_uncarved` exists to catch and could
     // not, because §II.7's requests-floor lever was claimed in prose without a
     // catalogued dimension to hang the gate on. Now it has one.
-    MatrixRow { dimension: DimensionId::Request, expected_maturity: Maturity::Landing },
+    MatrixRow {
+        dimension: DimensionId::Request,
+        expected_maturity: Maturity::Landing,
+    },
 ];
 
 #[test]
@@ -64,7 +85,10 @@ fn matrix_covers_every_dimension() {
         catalog_ids, matrix_ids,
         "matrix ⇄ catalog drift: every catalogued dimension needs exactly one matrix row"
     );
-    assert!(MATRIX.len() >= 7, "matrix regressed below the seven known dimensions");
+    assert!(
+        MATRIX.len() >= 7,
+        "matrix regressed below the seven known dimensions"
+    );
 }
 
 #[test]
@@ -77,11 +101,17 @@ fn matrix_maturity_agrees_with_catalog() {
         if d.maturity != row.expected_maturity {
             failures.push(format!(
                 "{}: matrix says {:?}, catalog says {:?}",
-                row.dimension.as_str(), row.expected_maturity, d.maturity
+                row.dimension.as_str(),
+                row.expected_maturity,
+                d.maturity
             ));
         }
     }
-    assert!(failures.is_empty(), "maturity drift:\n  - {}", failures.join("\n  - "));
+    assert!(
+        failures.is_empty(),
+        "maturity drift:\n  - {}",
+        failures.join("\n  - ")
+    );
 }
 
 #[test]
@@ -126,7 +156,8 @@ fn gap_dimensions_are_honestly_uncarved() {
         }
         let out = check(&fixture::fixture_for(row.dimension));
         assert_eq!(
-            out.dual_purpose_carves, 0,
+            out.dual_purpose_carves,
+            0,
             "gap dimension {} is carving — promote its maturity deliberately",
             row.dimension.as_str()
         );
@@ -159,7 +190,10 @@ fn the_invariant_catches_the_155gb_storage_class_adversarially() {
     // but leaving it uncarved with NO pending note. The checker MUST report
     // ClaimedButUncarved — proves the gate has teeth, not a vacuous pass.
     let out = check(&fixture::uncarved_claim_fixture(DimensionId::Storage));
-    assert!(!out.is_valid(), "an uncarved storage claim must be a violation");
+    assert!(
+        !out.is_valid(),
+        "an uncarved storage claim must be a violation"
+    );
     assert!(
         out.violations.iter().any(|v| matches!(
             v,
@@ -203,8 +237,8 @@ fn critical_workload_must_be_sealed() {
     // (CeilingC1): the class is CI-caught, not discovered live (the
     // victoria-logs-422 receipt).
     use breathe_invariant::isolation::{
-        all_critical_sealed, IsolationPosture, PlacementIsolation, QosClass, SealError,
-        WorkloadClass,
+        IsolationPosture, PlacementIsolation, QosClass, SealError, WorkloadClass,
+        all_critical_sealed,
     };
 
     // (a) A Critical-with-BestEffort posture is rejected at construction — the
@@ -251,10 +285,17 @@ fn the_carve_never_strips_the_seal_of_a_critical_workload() {
     // The carve-preserves-the-seal constraint, at the matrix layer: even when the
     // cost carve wants to right-size a critical workload's reservation DOWN, the
     // seal floor is the lower bound — isolation is preserved THROUGH the carve.
-    use breathe_invariant::isolation::{carve_respecting_seal, IsolationPosture, WorkloadClass};
+    use breathe_invariant::isolation::{IsolationPosture, WorkloadClass, carve_respecting_seal};
     let critical = IsolationPosture::for_class(WorkloadClass::Critical, 1024, 1024).unwrap();
     // The workload idles; the cost carve would drop to 64 — the seal holds 1024.
     let carved = carve_respecting_seal(64, &critical);
-    assert_eq!(carved.target(), 1024, "cost cannot carve a critical reservation below its seal");
-    assert!(carved.seal_bound(), "the seal bound the carve (isolation preserved over cost)");
+    assert_eq!(
+        carved.target(),
+        1024,
+        "cost cannot carve a critical reservation below its seal"
+    );
+    assert!(
+        carved.seal_bound(),
+        "the seal bound the carve (isolation preserved over cost)"
+    );
 }

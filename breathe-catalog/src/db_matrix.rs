@@ -6,7 +6,7 @@
 //! band — it breathes on its OWN engine knobs (InnoDB buffer pool, Neo4j page
 //! cache) under the correct REPLICA topology (a MySQL primary+replicas tier is
 //! `masterSlave`; a Neo4j store is `persistent`). This module enumerates those
-//! knobs as typed `AppParam` INSTANCES so the Camelot mysql/neo4j tiers breathe by
+//! knobs as typed `AppParam` INSTANCES so the private estate mysql/neo4j tiers breathe by
 //! the right per-engine algorithm.
 //!
 //! Each row is one `AppParam` instance; the reflection tests below fail the build
@@ -107,7 +107,7 @@ pub const DB_MATRIX: &[DbKnobSpec] = &[
         knob: "shared_buffers",
         dimension: DimensionId::AppParam,
         directionality: Directionality::Bidirectional,
-        // NOTE (live-verified 2026-07-14 on Camelot): this actuator string
+        // NOTE (live-verified 2026-07-14 on the private estate): this actuator string
         // describes BARE Postgres only. A CNPG-managed instance must NOT be
         // carved via a direct postgresql.conf file edit — CNPG's own operator
         // owns that file and re-renders it from Cluster.spec.postgresql.parameters
@@ -129,7 +129,7 @@ pub const DB_MATRIX: &[DbKnobSpec] = &[
         knob: "max_connections",
         dimension: DimensionId::AppParam,
         directionality: Directionality::Bidirectional,
-        // NOTE (live-verified 2026-07-14 on Camelot): same CNPG caveat as
+        // NOTE (live-verified 2026-07-14 on the private estate): same CNPG caveat as
         // shared_buffers above — bare Postgres only; a CNPG-managed cluster
         // uses KubeParamBand's CrField layout against
         // Cluster.spec.postgresql.parameters.max_connections instead of a
@@ -203,8 +203,13 @@ pub const DB_MATRIX: &[DbKnobSpec] = &[
 
 /// Every engine the matrix covers (the domain side of the coverage check). 5/5 —
 /// MySQL, PostgreSQL, Redis, MongoDB, Neo4j.
-pub const ALL_DB_ENGINES: [DbEngine; 5] =
-    [DbEngine::MySql, DbEngine::Postgres, DbEngine::Redis, DbEngine::Mongo, DbEngine::Neo4j];
+pub const ALL_DB_ENGINES: [DbEngine; 5] = [
+    DbEngine::MySql,
+    DbEngine::Postgres,
+    DbEngine::Redis,
+    DbEngine::Mongo,
+    DbEngine::Neo4j,
+];
 
 /// The rows for one engine.
 #[must_use]
@@ -214,8 +219,8 @@ pub fn rows_for(engine: DbEngine) -> impl Iterator<Item = &'static DbKnobSpec> {
 
 #[cfg(test)]
 mod tests {
-    use super::{rows_for, DbEngine, ALL_DB_ENGINES, DB_MATRIX};
-    use crate::{RequiresTarget, REPLICA_TOPOLOGY_AXIS};
+    use super::{ALL_DB_ENGINES, DB_MATRIX, DbEngine, rows_for};
+    use crate::{REPLICA_TOPOLOGY_AXIS, RequiresTarget};
     use breathe_provider::DimensionId;
 
     /// EVERY matrix row is an `AppParam` instance — a DB knob is an application-
@@ -224,7 +229,12 @@ mod tests {
     #[test]
     fn every_row_is_an_app_param() {
         for r in DB_MATRIX {
-            assert_eq!(r.dimension, DimensionId::AppParam, "{} must be an AppParam instance", r.knob);
+            assert_eq!(
+                r.dimension,
+                DimensionId::AppParam,
+                "{} must be an AppParam instance",
+                r.knob
+            );
         }
     }
 
@@ -233,7 +243,11 @@ mod tests {
     #[test]
     fn all_engines_are_covered() {
         for e in ALL_DB_ENGINES {
-            assert!(rows_for(e).next().is_some(), "no matrix rows for {}", e.as_str());
+            assert!(
+                rows_for(e).next().is_some(),
+                "no matrix rows for {}",
+                e.as_str()
+            );
         }
         assert_eq!(ALL_DB_ENGINES.len(), 5, "the db_matrix codes 5/5 engines");
     }
@@ -243,7 +257,12 @@ mod tests {
     fn engine_knob_pairs_are_unique() {
         for (i, a) in DB_MATRIX.iter().enumerate() {
             for b in &DB_MATRIX[i + 1..] {
-                assert!(!(a.engine == b.engine && a.knob == b.knob), "duplicate {} knob {}", a.engine.as_str(), a.knob);
+                assert!(
+                    !(a.engine == b.engine && a.knob == b.knob),
+                    "duplicate {} knob {}",
+                    a.engine.as_str(),
+                    a.knob
+                );
             }
         }
     }
@@ -257,7 +276,12 @@ mod tests {
             let arm = REPLICA_TOPOLOGY_AXIS
                 .iter()
                 .find(|a| a.crd_kind == r.topology_kind)
-                .unwrap_or_else(|| panic!("{}'s topology {} is not a real axis arm", r.knob, r.topology_kind));
+                .unwrap_or_else(|| {
+                    panic!(
+                        "{}'s topology {} is not a real axis arm",
+                        r.knob, r.topology_kind
+                    )
+                });
             assert!(
                 matches!(arm.requires_target, RequiresTarget::Kind("StatefulSet")),
                 "{}: a database tier must breathe under a stateful topology, not {}",
@@ -275,14 +299,25 @@ mod tests {
     fn engines_use_the_expected_topology() {
         for e in [DbEngine::MySql, DbEngine::Postgres, DbEngine::Redis] {
             for r in rows_for(e) {
-                assert_eq!(r.topology_kind, "masterSlave", "{} breathes the read-replicas (masterSlave)", e.as_str());
+                assert_eq!(
+                    r.topology_kind,
+                    "masterSlave",
+                    "{} breathes the read-replicas (masterSlave)",
+                    e.as_str()
+                );
             }
         }
         for r in rows_for(DbEngine::Mongo) {
-            assert_eq!(r.topology_kind, "fullyDistributed", "MongoDB is a majority-election replica set (fullyDistributed)");
+            assert_eq!(
+                r.topology_kind, "fullyDistributed",
+                "MongoDB is a majority-election replica set (fullyDistributed)"
+            );
         }
         for r in rows_for(DbEngine::Neo4j) {
-            assert_eq!(r.topology_kind, "persistent", "Neo4j is a persistent single-writer store");
+            assert_eq!(
+                r.topology_kind, "persistent",
+                "Neo4j is a persistent single-writer store"
+            );
         }
     }
 
@@ -292,9 +327,17 @@ mod tests {
     fn roll_requirement_matches_the_actuator() {
         for r in DB_MATRIX {
             if r.requires_roll {
-                assert!(r.actuator.contains("restart"), "{} requires a roll but its actuator is not a rolling one", r.knob);
+                assert!(
+                    r.actuator.contains("restart"),
+                    "{} requires a roll but its actuator is not a rolling one",
+                    r.knob
+                );
             } else {
-                assert!(r.actuator.contains("SET"), "{} is a live carve but its actuator is not a SET-style one", r.knob);
+                assert!(
+                    r.actuator.contains("SET"),
+                    "{} is a live carve but its actuator is not a SET-style one",
+                    r.knob
+                );
             }
         }
     }
@@ -305,10 +348,21 @@ mod tests {
     #[test]
     fn db_matrix_is_declared_in_the_lisp() {
         const PRESETS_LISP: &str = include_str!("../../specs/presets.lisp");
-        assert!(PRESETS_LISP.contains(":db-matrix"), "the presets lisp must declare :db-matrix");
+        assert!(
+            PRESETS_LISP.contains(":db-matrix"),
+            "the presets lisp must declare :db-matrix"
+        );
         for r in DB_MATRIX {
-            assert!(PRESETS_LISP.contains(r.knob), "the lisp :db-matrix is missing the {} knob", r.knob);
-            assert!(PRESETS_LISP.contains(r.engine.as_str()), "the lisp :db-matrix is missing the {} engine", r.engine.as_str());
+            assert!(
+                PRESETS_LISP.contains(r.knob),
+                "the lisp :db-matrix is missing the {} knob",
+                r.knob
+            );
+            assert!(
+                PRESETS_LISP.contains(r.engine.as_str()),
+                "the lisp :db-matrix is missing the {} engine",
+                r.engine.as_str()
+            );
         }
     }
 }

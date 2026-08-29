@@ -18,9 +18,9 @@ use std::sync::Arc;
 use breathe_crd::{QuinhaoPool, QuinhaoPoolStatus, StorageBand};
 use breathe_runtime::now_secs;
 use kube::{
+    Client, ResourceExt,
     api::{Api, Patch, PatchParams},
     runtime::controller::Action,
-    Client, ResourceExt,
 };
 use metrics::gauge;
 use tracing::{info, warn};
@@ -33,8 +33,16 @@ use crate::{Ctx, Error};
 /// the pool falls back to its explicit `poolCapacity` storage entry.
 async fn storage_band_observed(client: &Client, cr: &QuinhaoPool) -> Option<u64> {
     let r = cr.spec.storage_band_ref.as_ref()?;
-    let ns = r.namespace.clone().or_else(|| cr.namespace()).unwrap_or_default();
-    let band = Api::<StorageBand>::namespaced(client.clone(), &ns).get_opt(&r.name).await.ok().flatten()?;
+    let ns = r
+        .namespace
+        .clone()
+        .or_else(|| cr.namespace())
+        .unwrap_or_default();
+    let band = Api::<StorageBand>::namespaced(client.clone(), &ns)
+        .get_opt(&r.name)
+        .await
+        .ok()
+        .flatten()?;
     let observed = band.status.and_then(|s| s.observed_capacity)?;
     u64::try_from(observed).ok()
 }
@@ -58,9 +66,11 @@ pub async fn reconcile_quinhao_pool(cr: Arc<QuinhaoPool>, ctx: Arc<Ctx>) -> Resu
 
     // Surface the per-dim band as gauges (the "watch it divide" view).
     for (dim, band) in &status.band {
-        gauge!("breathe_quinhao_band", "pool" => name.clone(), "dim" => dim.clone()).set(*band as f64);
+        gauge!("breathe_quinhao_band", "pool" => name.clone(), "dim" => dim.clone())
+            .set(*band as f64);
     }
-    gauge!("breathe_quinhao_claims", "pool" => name.clone()).set(status.claim_count.unwrap_or(0) as f64);
+    gauge!("breathe_quinhao_claims", "pool" => name.clone())
+        .set(status.claim_count.unwrap_or(0) as f64);
 
     info!(
         pool = %name,
@@ -80,7 +90,10 @@ pub async fn reconcile_quinhao_pool(cr: Arc<QuinhaoPool>, ctx: Arc<Ctx>) -> Resu
 async fn patch_status(client: &Client, ns: &str, name: &str, status: &QuinhaoPoolStatus) {
     let api: Api<QuinhaoPool> = Api::namespaced(client.clone(), ns);
     let patch = serde_json::json!({ "status": status });
-    if let Err(e) = api.patch_status(name, &PatchParams::default(), &Patch::Merge(&patch)).await {
+    if let Err(e) = api
+        .patch_status(name, &PatchParams::default(), &Patch::Merge(&patch))
+        .await
+    {
         warn!(pool = %name, error = %e, "QuinhaoPool status patch failed (non-fatal)");
     }
 }

@@ -2,9 +2,10 @@
 //! hand-authoring. `cargo run -p breathe-crd --bin crdgen > crds/bands.yaml`.
 
 use breathe_crd::{
-    AppBand, ArcBand, BreatheCloudPool, BreatheConfig, BreatheNodePool, BreatheOverview, BreathePolicy, BreathePosture, CgroupBand,
-    CgroupCpuBand, CpuBand, Densa, HostParamBand, IsolationBand, KubeParamBand, MemoryBand, PodMemoryHigh,
-    QuinhaoPool, ReplicaBand, RequestBand, StorageBand,
+    AppBand, ArcBand, BreatheCloudPool, BreatheConfig, BreatheNodePool, BreatheOverview,
+    BreathePolicy, BreathePosture, CgroupBand, CgroupCpuBand, CpuBand, Densa, HostParamBand,
+    IsolationBand, KubeParamBand, MemoryBand, PodMemoryHigh, QuinhaoPool, ReplicaBand, RequestBand,
+    StorageBand,
 };
 use kube::CustomResourceExt;
 
@@ -40,7 +41,7 @@ fn main() {
         // BU2 — the node-count Forma enrollment (Forma ⇄ Densa envelope)
         BreatheCloudPool::crd(),
         // correnteza — the membership-CLOSING peer: a named node kept tainted
-        // against everything but an allowlist (Camelot's origin node first).
+        // against everything but an allowlist (the private estate's origin node first).
         IsolationBand::crd(),
         // the fleet-overview dashboard object + the fleet config
         BreatheOverview::crd(),
@@ -51,6 +52,9 @@ fn main() {
         QuinhaoPool::crd(),
     ];
     for crd in crds {
-        print!("---\n{}", serde_yaml::to_string(&crd).expect("serialize CRD"));
+        print!(
+            "---\n{}",
+            serde_yaml::to_string(&crd).expect("serialize CRD")
+        );
     }
 }

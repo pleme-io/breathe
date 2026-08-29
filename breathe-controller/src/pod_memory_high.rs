@@ -17,13 +17,13 @@
 //! apiserver storing it, the host-agent reconciling the cgroup write on the node —
 //! needs the LIVE cluster (`pending-deploy`); only the build is unrep-at-library.
 
-use breathe_control::{plan_k8s_memory_carve, BandConfig, BandLaw};
+use breathe_control::{BandConfig, BandLaw, plan_k8s_memory_carve};
 use breathe_crd::{CgroupDriverSpec, MemoryBand, PodMemoryHigh, PodMemoryHighSpec};
 use breathe_kube::{KubeCluster, PodCgroupCoords};
 use breathe_provider::Target;
 use kube::{
-    api::{Api, Patch, PatchParams},
     ResourceExt,
+    api::{Api, Patch, PatchParams},
 };
 
 /// Build the typed `PodMemoryHigh` DISPATCH CR for ONE managed pod — the pure
@@ -81,7 +81,13 @@ pub fn dispatch_name(band_name: &str, pod_uid: &str) -> String {
 /// the efficiency carve warrants a soft write, `None` for an in-band hold / refused
 /// shrink. Reuses `plan_k8s_memory_carve` so the HARD `memory.max` is never touched.
 #[must_use]
-pub fn soft_target_for(used: u64, peak_used: u64, hard_current: u64, live_soft: u64, cfg: &BandConfig) -> Option<u64> {
+pub fn soft_target_for(
+    used: u64,
+    peak_used: u64,
+    hard_current: u64,
+    live_soft: u64,
+    cfg: &BandConfig,
+) -> Option<u64> {
     plan_k8s_memory_carve(&BandLaw, used, peak_used, hard_current, live_soft, cfg).soft_target
 }
 
@@ -131,10 +137,17 @@ pub async fn ensure_soft_carve_dispatch(
     let mut applied = 0usize;
     for (coords, node) in targets {
         let name = dispatch_name(&band_name, &coords.pod_uid);
-        let dispatch = build_pod_memory_high_dispatch(&name, &node, &coords, driver, soft_bytes, &owner, dry_run);
+        let dispatch = build_pod_memory_high_dispatch(
+            &name, &node, &coords, driver, soft_bytes, &owner, dry_run,
+        );
         // idempotent SSA — the controller owns the dispatch field manager; re-applying
         // the same (band, pod) updates the desired bytes in place, never spawns dupes.
-        api.patch(&name, &PatchParams::apply("breathe/soft-carve"), &Patch::Apply(&dispatch)).await?;
+        api.patch(
+            &name,
+            &PatchParams::apply("breathe/soft-carve"),
+            &Patch::Apply(&dispatch),
+        )
+        .await?;
         applied += 1;
     }
     Ok(applied)
@@ -168,7 +181,10 @@ mod tests {
         assert_eq!(pmh.spec.qos_class, "Burstable");
         assert_eq!(pmh.spec.pod_uid, "abc12345-6789-def0-1234-56789abcdef0");
         assert_eq!(pmh.spec.container_runtime_id, "containerd://deadbeefcafe");
-        assert_eq!(pmh.spec.owner_band.as_deref(), Some("authentik/authentik-worker-memory"));
+        assert_eq!(
+            pmh.spec.owner_band.as_deref(),
+            Some("authentik/authentik-worker-memory")
+        );
         // the dispatch maps to the SOFT pod-memory.high knob — NEVER memory.max.
         match pmh.spec.provider_knob() {
             breathe_provider::HostKnob::PodCgroupMemoryHigh { driver, .. } => {
@@ -180,11 +196,22 @@ mod tests {
 
     #[test]
     fn dispatch_carries_the_chosen_cgroup_driver() {
-        let pmh = build_pod_memory_high_dispatch("n", "rio", &coords(), CgroupDriverSpec::Cgroupfs, 1024, "b/m", false);
+        let pmh = build_pod_memory_high_dispatch(
+            "n",
+            "rio",
+            &coords(),
+            CgroupDriverSpec::Cgroupfs,
+            1024,
+            "b/m",
+            false,
+        );
         assert_eq!(pmh.spec.cgroup_driver, CgroupDriverSpec::Cgroupfs);
         assert!(matches!(
             pmh.spec.provider_knob(),
-            breathe_provider::HostKnob::PodCgroupMemoryHigh { driver: breathe_provider::CgroupDriver::Cgroupfs, .. }
+            breathe_provider::HostKnob::PodCgroupMemoryHigh {
+                driver: breathe_provider::CgroupDriver::Cgroupfs,
+                ..
+            }
         ));
     }
 
@@ -192,15 +219,36 @@ mod tests {
     fn dispatch_name_is_stable_and_idempotent_per_band_and_pod() {
         let a = dispatch_name("authentik-worker-memory", "uid-1");
         let b = dispatch_name("authentik-worker-memory", "uid-1");
-        assert_eq!(a, b, "the same (band, pod) yields the same dispatch name (idempotent SSA)");
-        assert_ne!(a, dispatch_name("authentik-worker-memory", "uid-2"), "a different pod is a different dispatch");
-        assert!(a.len() <= 253, "the dispatch name must be a valid DNS-1123 object name");
+        assert_eq!(
+            a, b,
+            "the same (band, pod) yields the same dispatch name (idempotent SSA)"
+        );
+        assert_ne!(
+            a,
+            dispatch_name("authentik-worker-memory", "uid-2"),
+            "a different pod is a different dispatch"
+        );
+        assert!(
+            a.len() <= 253,
+            "the dispatch name must be a valid DNS-1123 object name"
+        );
     }
 
     #[test]
     fn dry_run_dispatch_is_marked_shadow() {
-        let pmh = build_pod_memory_high_dispatch("n", "rio", &coords(), CgroupDriverSpec::Systemd, 1024, "b/m", true);
-        assert!(pmh.spec.dry_run, "a shadow dispatch carries dryRun so the agent observes, never writes");
+        let pmh = build_pod_memory_high_dispatch(
+            "n",
+            "rio",
+            &coords(),
+            CgroupDriverSpec::Systemd,
+            1024,
+            "b/m",
+            true,
+        );
+        assert!(
+            pmh.spec.dry_run,
+            "a shadow dispatch carries dryRun so the agent observes, never writes"
+        );
     }
 
     #[test]
@@ -210,7 +258,10 @@ mod tests {
         const GI: u64 = 1 << 30;
         // idle 400Mi @ 2Gi hard, 2Gi soft ⇒ an efficiency carve reclaims memory.high.
         let t = soft_target_for(400 * MI, 400 * MI, 2 * GI, 2 * GI, &cfg);
-        assert!(t.is_some_and(|v| v < 2 * GI), "an efficiency carve dispatches a tighter soft target");
+        assert!(
+            t.is_some_and(|v| v < 2 * GI),
+            "an efficiency carve dispatches a tighter soft target"
+        );
         // in-band (util ~0.78 @ 1Gi) ⇒ no dispatch (hold).
         assert_eq!(soft_target_for(800 * MI, 800 * MI, GI, GI, &cfg), None);
         // an unset soft cgroup (u64::MAX) on an idle pod snaps down to a real target.

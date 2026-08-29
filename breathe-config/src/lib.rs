@@ -106,7 +106,7 @@ pub struct ScaleConfig {
     /// heartbeat — `docs/BREATHE.md` § 8 row 8: "attest state-changes + a
     /// periodic in-band heartbeat, not every Hold". Without it a Holding band
     /// wrote one row per reconcile forever (~576k rows/day across ~100
-    /// camelot-eks bands on the 15s cooldown path; ~31k/day gated).
+    /// private-estate-eks bands on the 15s cooldown path; ~31k/day gated).
     ///
     /// The heartbeat is what keeps the chain a LIVENESS signal: a gap longer
     /// than this is real evidence the controller stopped, not merely that
@@ -380,19 +380,31 @@ mod tests {
         assert_eq!(cfg.scale.store, StoreConfig::InMemory);
         assert_eq!(cfg.scale.cache, CacheConfig::None);
         assert_eq!(cfg.scale.coordination, CoordinationConfig::SingleReplica);
-        assert_eq!(cfg.scale.window, 6, "window matches today's hardcoded LinearTrendPrevisor(6)");
+        assert_eq!(
+            cfg.scale.window, 6,
+            "window matches today's hardcoded LinearTrendPrevisor(6)"
+        );
         assert_eq!(
             cfg.scale.decision_heartbeat_seconds, 900,
             "the decision-log heartbeat is AUTHORED, not a compiled-in constant"
         );
         assert_eq!(cfg.scale.reconcile_workers, 0, "0 = kube-runtime default");
-        assert!(cfg.scale.dimensions.is_empty(), "empty = all dimensions (today)");
+        assert!(
+            cfg.scale.dimensions.is_empty(),
+            "empty = all dimensions (today)"
+        );
     }
 
     #[test]
     fn default_delegates_to_prescribed_default_and_bare_equals_it() {
-        assert_eq!(BreatheServiceConfig::default(), BreatheServiceConfig::prescribed_default());
-        assert_eq!(BreatheServiceConfig::bare(), BreatheServiceConfig::prescribed_default());
+        assert_eq!(
+            BreatheServiceConfig::default(),
+            BreatheServiceConfig::prescribed_default()
+        );
+        assert_eq!(
+            BreatheServiceConfig::bare(),
+            BreatheServiceConfig::prescribed_default()
+        );
     }
 
     // ── round-trip + empty-yaml ───────────────────────────────────────────
@@ -443,12 +455,18 @@ mod tests {
         .unwrap();
         assert_eq!(small.scale.store, StoreConfig::InMemory);
 
-        let pg: ScaleConfig =
-            serde_yaml::from_str("store:\n  type: postgres\n  spec:\n    dsn: 'postgres://x'\n    poolMax: 20\n").unwrap();
+        let pg: ScaleConfig = serde_yaml::from_str(
+            "store:\n  type: postgres\n  spec:\n    dsn: 'postgres://x'\n    poolMax: 20\n",
+        )
+        .unwrap();
         match pg.store {
             StoreConfig::Postgres(p) => {
                 assert_eq!(p.pool_max, 20);
-                assert_eq!(p.pool_min, default_pg_pool_min(), "unspecified field takes its serde default");
+                assert_eq!(
+                    p.pool_min,
+                    default_pg_pool_min(),
+                    "unspecified field takes its serde default"
+                );
                 assert_eq!(p.dsn.expose(), "postgres://x");
             }
             StoreConfig::InMemory => panic!("expected Postgres"),
@@ -466,7 +484,10 @@ mod tests {
         // Unspecified takes the prescribed default, so an existing ConfigMap
         // (written before this field existed) still loads.
         let unset: ScaleConfig = serde_yaml::from_str("window: 9\n").unwrap();
-        assert_eq!(unset.decision_heartbeat_seconds, default_decision_heartbeat_seconds());
+        assert_eq!(
+            unset.decision_heartbeat_seconds,
+            default_decision_heartbeat_seconds()
+        );
     }
 
     // ── deny_unknown_fields (typo rejection) ──────────────────────────────
@@ -479,7 +500,8 @@ mod tests {
 
     #[test]
     fn unknown_scale_field_is_rejected() {
-        let err = serde_yaml::from_str::<BreatheServiceConfig>("scale:\n  windwo: 9\n").unwrap_err();
+        let err =
+            serde_yaml::from_str::<BreatheServiceConfig>("scale:\n  windwo: 9\n").unwrap_err();
         assert!(err.to_string().contains("windwo"), "msg: {err}");
     }
 
@@ -516,7 +538,11 @@ mod tests {
     fn load_and_watch_tolerates_a_missing_path() {
         // The notify watcher errors on an absent path; load_and_watch must degrade
         // to a one-shot default load rather than crash the controller.
-        let store = load_and_watch(Path::new("/nonexistent-breathe-cfg-test/config.yaml"), |_| {}).unwrap();
+        let store = load_and_watch(
+            Path::new("/nonexistent-breathe-cfg-test/config.yaml"),
+            |_| {},
+        )
+        .unwrap();
         assert_eq!(**store.get(), BreatheServiceConfig::prescribed_default());
     }
 
@@ -530,7 +556,8 @@ mod tests {
         unsafe { std::env::set_var("BREATHE_PROMETHEUS_URL", "http://collide:9090") };
         let loaded = load(Path::new("/nonexistent-breathe-cfg-test/config.yaml"));
         unsafe { std::env::remove_var("BREATHE_PROMETHEUS_URL") };
-        let store = loaded.expect("legacy BREATHE_ env must not collide with the BREATHE_SVC_ config");
+        let store =
+            loaded.expect("legacy BREATHE_ env must not collide with the BREATHE_SVC_ config");
         assert_eq!(**store.get(), BreatheServiceConfig::prescribed_default());
     }
 }

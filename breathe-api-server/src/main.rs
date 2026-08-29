@@ -20,13 +20,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     tracing_subscriber::fmt()
         .json()
-        .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info,breathe_api_server=info")))
+        .with_env_filter(
+            EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| EnvFilter::new("info,breathe_api_server=info")),
+        )
         .init();
 
-    let http_bind = std::env::var("BREATHE_API_BIND").unwrap_or_else(|_| "0.0.0.0:8080".to_string());
-    let grpc_bind = std::env::var("BREATHE_GRPC_BIND").unwrap_or_else(|_| "0.0.0.0:8081".to_string());
+    let http_bind =
+        std::env::var("BREATHE_API_BIND").unwrap_or_else(|_| "0.0.0.0:8080".to_string());
+    let grpc_bind =
+        std::env::var("BREATHE_GRPC_BIND").unwrap_or_else(|_| "0.0.0.0:8081".to_string());
 
-    let store = Arc::new(KubeStore::from_env().await.map_err(|e| format!("kube client: {e}"))?);
+    let store = Arc::new(
+        KubeStore::from_env()
+            .await
+            .map_err(|e| format!("kube client: {e}"))?,
+    );
     let app = breathe_api_server::router(store.clone());
     let grpc = breathe_api_server::grpc::server(store);
 
@@ -40,7 +49,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
     let grpc_task = tokio::spawn(async move {
-        if let Err(e) = tonic::transport::Server::builder().add_service(grpc).serve(grpc_addr).await {
+        if let Err(e) = tonic::transport::Server::builder()
+            .add_service(grpc)
+            .serve(grpc_addr)
+            .await
+        {
             tracing::error!(error = %e, "grpc server exited");
         }
     });

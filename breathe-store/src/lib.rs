@@ -460,7 +460,10 @@ mod tests {
         for e in &mixed_sequence() {
             oracle = old_status_for_counters(oracle, e);
             folded = folded.fold(e);
-            assert_eq!(folded, oracle, "fold diverged from the old status_for logic");
+            assert_eq!(
+                folded, oracle,
+                "fold diverged from the old status_for logic"
+            );
         }
         // 3 Applied, 1 Deferred, 2 Conflict on top of the seed.
         assert_eq!(
@@ -501,9 +504,13 @@ mod tests {
         let log = InMemDecisionLog::new();
         let band = BandRef::new("CpuBand", "ns", "x");
         for _ in 0..(RECENT_CAP + 20) {
-            log.append(&band, CumulativeCounters::ZERO, entry("Observed", CounterClass::NoCount))
-                .await
-                .unwrap();
+            log.append(
+                &band,
+                CumulativeCounters::ZERO,
+                entry("Observed", CounterClass::NoCount),
+            )
+            .await
+            .unwrap();
         }
         assert_eq!(log.recent(&band).len(), RECENT_CAP);
     }
@@ -514,11 +521,19 @@ mod tests {
         let a = BandRef::new("MemoryBand", "ns", "a");
         let b = BandRef::new("MemoryBand", "ns", "b");
         let ca = log
-            .append(&a, CumulativeCounters::ZERO, entry("Applied", CounterClass::Carve))
+            .append(
+                &a,
+                CumulativeCounters::ZERO,
+                entry("Applied", CounterClass::Carve),
+            )
             .await
             .unwrap();
         let cb = log
-            .append(&b, CumulativeCounters::ZERO, entry("Conflict", CounterClass::Conflict))
+            .append(
+                &b,
+                CumulativeCounters::ZERO,
+                entry("Conflict", CounterClass::Conflict),
+            )
             .await
             .unwrap();
         assert_eq!(ca.carves, 1);
@@ -568,7 +583,10 @@ mod tests {
             assert_eq!(CounterClass::from_tag(c.tag()), c);
         }
         // unknown tag ⇒ NoCount (forward-compatible).
-        assert_eq!(CounterClass::from_tag("future-class"), CounterClass::NoCount);
+        assert_eq!(
+            CounterClass::from_tag("future-class"),
+            CounterClass::NoCount
+        );
     }
 
     #[test]
@@ -586,12 +604,29 @@ mod tests {
         assert_eq!(h1, decision_content_hash(&band, 1, &applied, &GENESIS_HASH));
 
         // Tamper-evident on EVERY input: seq, class, prev_hash, band all matter.
-        assert_ne!(h1, decision_content_hash(&band, 1, &conflict, &GENESIS_HASH), "class");
-        assert_ne!(h1, decision_content_hash(&band, 2, &applied, &GENESIS_HASH), "seq");
-        assert_ne!(h1, decision_content_hash(&band, 1, &applied, &h2), "prev_hash");
         assert_ne!(
             h1,
-            decision_content_hash(&BandRef::new("MemoryBand", "ns", "other"), 1, &applied, &GENESIS_HASH),
+            decision_content_hash(&band, 1, &conflict, &GENESIS_HASH),
+            "class"
+        );
+        assert_ne!(
+            h1,
+            decision_content_hash(&band, 2, &applied, &GENESIS_HASH),
+            "seq"
+        );
+        assert_ne!(
+            h1,
+            decision_content_hash(&band, 1, &applied, &h2),
+            "prev_hash"
+        );
+        assert_ne!(
+            h1,
+            decision_content_hash(
+                &BandRef::new("MemoryBand", "ns", "other"),
+                1,
+                &applied,
+                &GENESIS_HASH
+            ),
             "band_ref"
         );
     }
@@ -617,19 +652,46 @@ mod tests {
         // A genuine noCount row vs the same row with its stored counter_class
         // mutated to a non-canonical string — the hash MUST differ (verify_chain
         // hashes the raw stored tag, never the lossy from_tag round-trip).
-        let genuine =
-            decision_content_hash_fields(&band, 1, "Observed", "noCount", None, None, false, &GENESIS_HASH);
+        let genuine = decision_content_hash_fields(
+            &band,
+            1,
+            "Observed",
+            "noCount",
+            None,
+            None,
+            false,
+            &GENESIS_HASH,
+        );
         for tampered_tag in ["junk", "", "NoCount", "nocount", "noCountX"] {
             let tampered = decision_content_hash_fields(
-                &band, 1, "Observed", tampered_tag, None, None, false, &GENESIS_HASH,
+                &band,
+                1,
+                "Observed",
+                tampered_tag,
+                None,
+                None,
+                false,
+                &GENESIS_HASH,
             );
-            assert_ne!(genuine, tampered, "mutating counter_class to {tampered_tag:?} must change the hash");
+            assert_ne!(
+                genuine, tampered,
+                "mutating counter_class to {tampered_tag:?} must change the hash"
+            );
         }
         // The wrapper hashes the same bytes the raw fn does for a real entry.
         let e = entry("Observed", CounterClass::NoCount);
         assert_eq!(
             decision_content_hash(&band, 1, &e, &GENESIS_HASH),
-            decision_content_hash_fields(&band, 1, "Observed", "noCount", None, None, false, &GENESIS_HASH),
+            decision_content_hash_fields(
+                &band,
+                1,
+                "Observed",
+                "noCount",
+                None,
+                None,
+                false,
+                &GENESIS_HASH
+            ),
         );
     }
 }

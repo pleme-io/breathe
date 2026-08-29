@@ -59,7 +59,10 @@ impl std::fmt::Display for PodCoordError {
             Self::NoPodUid => f.write_str("pod has no metadata.uid"),
             Self::NoQosClass => f.write_str("pod has no status.qosClass (not yet scheduled)"),
             Self::NoContainerId { container } => {
-                write!(f, "no running container with a containerID for {container:?} (container not started)")
+                write!(
+                    f,
+                    "no running container with a containerID for {container:?} (container not started)"
+                )
             }
         }
     }
@@ -76,7 +79,10 @@ impl std::error::Error for PodCoordError {}
 pub fn container_id_from_status(pod: &Value, want: &Option<String>) -> Option<String> {
     let statuses = pod.pointer("/status/containerStatuses")?.as_array()?;
     let pick = |s: &Value| -> Option<String> {
-        s.get("containerID").and_then(Value::as_str).filter(|id| !id.is_empty()).map(String::from)
+        s.get("containerID")
+            .and_then(Value::as_str)
+            .filter(|id| !id.is_empty())
+            .map(String::from)
     };
     match want {
         Some(name) => statuses
@@ -92,7 +98,10 @@ pub fn container_id_from_status(pod: &Value, want: &Option<String>) -> Option<St
 /// until the pod is scheduled. Pure.
 #[must_use]
 pub fn node_name_from_pod(pod: &Value) -> Option<String> {
-    pod.pointer("/spec/nodeName").and_then(Value::as_str).filter(|s| !s.is_empty()).map(String::from)
+    pod.pointer("/spec/nodeName")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+        .map(String::from)
 }
 
 /// Resolve ONE pod's cgroup coordinates from its live JSON — the pure core of the
@@ -103,7 +112,10 @@ pub fn node_name_from_pod(pod: &Value) -> Option<String> {
 ///
 /// # Errors
 /// A typed [`PodCoordError`] naming the first missing coordinate field.
-pub fn pod_coords_from_value(pod: &Value, container: &Option<String>) -> Result<PodCgroupCoords, PodCoordError> {
+pub fn pod_coords_from_value(
+    pod: &Value,
+    container: &Option<String>,
+) -> Result<PodCgroupCoords, PodCoordError> {
     let pod_uid = pod
         .pointer("/metadata/uid")
         .and_then(Value::as_str)
@@ -117,8 +129,14 @@ pub fn pod_coords_from_value(pod: &Value, container: &Option<String>) -> Result<
         .map(String::from)
         .ok_or(PodCoordError::NoQosClass)?;
     let container_runtime_id =
-        container_id_from_status(pod, container).ok_or_else(|| PodCoordError::NoContainerId { container: container.clone() })?;
-    Ok(PodCgroupCoords { qos, pod_uid, container_runtime_id })
+        container_id_from_status(pod, container).ok_or_else(|| PodCoordError::NoContainerId {
+            container: container.clone(),
+        })?;
+    Ok(PodCgroupCoords {
+        qos,
+        pod_uid,
+        container_runtime_id,
+    })
 }
 
 #[cfg(test)]
@@ -173,19 +191,30 @@ mod tests {
             "metadata": { "uid": "u" },
             "status": { "qosClass": "Guaranteed", "containerStatuses": [ { "name": "c", "containerID": "cri-o://abc123" } ] }
         });
-        assert_eq!(pod_coords_from_value(&pod, &Some("c".into())).unwrap().container_runtime_id, "cri-o://abc123");
+        assert_eq!(
+            pod_coords_from_value(&pod, &Some("c".into()))
+                .unwrap()
+                .container_runtime_id,
+            "cri-o://abc123"
+        );
     }
 
     #[test]
     fn a_missing_uid_is_a_typed_parse_rejection() {
         let pod = json!({ "status": { "qosClass": "Burstable", "containerStatuses": [ { "name": "c", "containerID": "containerd://x" } ] } });
-        assert_eq!(pod_coords_from_value(&pod, &Some("c".into())), Err(PodCoordError::NoPodUid));
+        assert_eq!(
+            pod_coords_from_value(&pod, &Some("c".into())),
+            Err(PodCoordError::NoPodUid)
+        );
     }
 
     #[test]
     fn a_missing_qos_is_a_typed_parse_rejection() {
         let pod = json!({ "metadata": { "uid": "u" }, "status": { "containerStatuses": [ { "name": "c", "containerID": "containerd://x" } ] } });
-        assert_eq!(pod_coords_from_value(&pod, &Some("c".into())), Err(PodCoordError::NoQosClass));
+        assert_eq!(
+            pod_coords_from_value(&pod, &Some("c".into())),
+            Err(PodCoordError::NoQosClass)
+        );
     }
 
     #[test]
@@ -193,9 +222,15 @@ mod tests {
         let pod = json!({ "spec": { "nodeName": "rio" }, "metadata": { "uid": "u" } });
         assert_eq!(node_name_from_pod(&pod), Some("rio".to_string()));
         // unscheduled pod ⇒ no node.
-        assert_eq!(node_name_from_pod(&json!({ "metadata": { "uid": "u" } })), None);
+        assert_eq!(
+            node_name_from_pod(&json!({ "metadata": { "uid": "u" } })),
+            None
+        );
         // empty nodeName is not a node.
-        assert_eq!(node_name_from_pod(&json!({ "spec": { "nodeName": "" } })), None);
+        assert_eq!(
+            node_name_from_pod(&json!({ "spec": { "nodeName": "" } })),
+            None
+        );
     }
 
     #[test]
@@ -208,12 +243,16 @@ mod tests {
         });
         assert_eq!(
             pod_coords_from_value(&pod, &Some("c".into())),
-            Err(PodCoordError::NoContainerId { container: Some("c".into()) })
+            Err(PodCoordError::NoContainerId {
+                container: Some("c".into())
+            })
         );
         // a named container that doesn't exist is likewise refused.
         assert_eq!(
             pod_coords_from_value(&burstable_pod(), &Some("missing".into())),
-            Err(PodCoordError::NoContainerId { container: Some("missing".into()) })
+            Err(PodCoordError::NoContainerId {
+                container: Some("missing".into())
+            })
         );
     }
 }

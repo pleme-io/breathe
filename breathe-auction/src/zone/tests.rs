@@ -10,12 +10,12 @@ use shigoto_types::JobScope;
 use crate::quinhao::{Demand, DemandVector, PoolCapacity, Quinhao};
 
 use super::{
-    allocate_for_zone, dimension_job, dimension_tick_dag, dimensions_with_structural_dependencies, forma_job,
-    zone_tick_dag, AllocationPolicy, BreatheZone, ZoneError,
+    AllocationPolicy, BreatheZone, ZoneError, allocate_for_zone, dimension_job, dimension_tick_dag,
+    dimensions_with_structural_dependencies, forma_job, zone_tick_dag,
 };
 
 fn scope() -> JobScope {
-    JobScope::Workspace("camelot-controllers".into())
+    JobScope::Workspace("isolated-controllers".into())
 }
 
 // ── dimension_tick_dag — the real, catalog-driven within-DimensionId edges ──
@@ -37,7 +37,11 @@ fn replica_resolves_before_memory_and_cpu_in_the_real_catalog() {
     assert_eq!(waves[0], vec![replica], "Replica is the only wave-0 job");
     assert!(waves[1].contains(&memory), "Memory is gated on Replica");
     assert!(waves[1].contains(&cpu), "Cpu is gated on Replica");
-    assert_eq!(waves.len(), 2, "exactly 2 waves: {{replica}} -> {{memory, cpu}}");
+    assert_eq!(
+        waves.len(),
+        2,
+        "exactly 2 waves: {{replica}} -> {{memory, cpu}}"
+    );
 }
 
 #[test]
@@ -49,7 +53,11 @@ fn an_edge_to_a_dimension_outside_the_zone_is_dropped_not_dangling() {
     let d = dimension_tick_dag(&scope(), &dims);
     let waves = d.waves(None).unwrap();
 
-    assert_eq!(waves.len(), 1, "no Replica enrolled -> no edge -> everything in wave 0");
+    assert_eq!(
+        waves.len(),
+        1,
+        "no Replica enrolled -> no edge -> everything in wave 0"
+    );
     assert_eq!(waves[0].len(), 2);
     assert_eq!(d.edge_count(), 0);
 }
@@ -57,9 +65,19 @@ fn an_edge_to_a_dimension_outside_the_zone_is_dropped_not_dangling() {
 #[test]
 fn dimensions_with_structural_dependencies_matches_the_real_catalog_today() {
     let map = dimensions_with_structural_dependencies();
-    assert_eq!(map.get(&DimensionId::Memory), Some(&[DimensionId::Replica].as_slice()));
-    assert_eq!(map.get(&DimensionId::Cpu), Some(&[DimensionId::Replica].as_slice()));
-    assert_eq!(map.get(&DimensionId::Storage), None, "Storage has no depends_on edge today");
+    assert_eq!(
+        map.get(&DimensionId::Memory),
+        Some(&[DimensionId::Replica].as_slice())
+    );
+    assert_eq!(
+        map.get(&DimensionId::Cpu),
+        Some(&[DimensionId::Replica].as_slice())
+    );
+    assert_eq!(
+        map.get(&DimensionId::Storage),
+        None,
+        "Storage has no depends_on edge today"
+    );
     // The RESERVATION dimension carries TWO edges, and both are real:
     //   Replica — a request's cluster-wide cost is per-pod × replicas, so the
     //             allocatable-headroom admission cannot be computed without the
@@ -75,24 +93,28 @@ fn dimensions_with_structural_dependencies_matches_the_real_catalog_today() {
         Some(&[DimensionId::Replica, DimensionId::Memory].as_slice()),
         "Request gates on Replica (headroom × replicas) AND Memory (the shared request_floor)"
     );
-    assert_eq!(map.len(), 3, "exactly 3 dimensions carry a structural dependency in the shipped catalog");
+    assert_eq!(
+        map.len(),
+        3,
+        "exactly 3 dimensions carry a structural dependency in the shipped catalog"
+    );
 }
 
 // ── BreatheZone / zone_tick_dag — the cross-catalog Forma -> DimensionId bridge ──
 
-const CAMELOT_FORMAS: &[Forma] = &[Forma::NodeSpot];
-const CAMELOT_DIMS: &[DimensionId] = &[DimensionId::Cpu, DimensionId::Memory];
+const ISOLATED_FORMAS: &[Forma] = &[Forma::NodeSpot];
+const ISOLATED_DIMS: &[DimensionId] = &[DimensionId::Cpu, DimensionId::Memory];
 
 #[test]
-fn zone_tick_dag_resolves_the_camelot_incident() {
+fn zone_tick_dag_resolves_the_isolated_incident() {
     // The exact worked incident theory/BREATHABILITY.md §II.6.8 names: a
     // node-pool shape decision (Forma::NodeSpot) must resolve before the
     // Cpu/Memory bands that assume a pod-density ceiling it implies.
     let zone = BreatheZone {
         scope: scope(),
-        formas: CAMELOT_FORMAS,
-        dims: CAMELOT_DIMS,
-        gated_dims: CAMELOT_DIMS,
+        formas: ISOLATED_FORMAS,
+        dims: ISOLATED_DIMS,
+        gated_dims: ISOLATED_DIMS,
         allocation_policy: AllocationPolicy::PerAxisIndependent,
     };
     let d = zone_tick_dag(&zone).unwrap();
@@ -104,7 +126,11 @@ fn zone_tick_dag_resolves_the_camelot_incident() {
 
     assert_eq!(waves[0], vec![node_spot], "NodeSpot alone in wave 0");
     let wave1: HashSet<_> = waves[1].iter().cloned().collect();
-    assert_eq!(wave1, HashSet::from([cpu, mem]), "Cpu and Memory both gated into wave 1, concurrent with each other");
+    assert_eq!(
+        wave1,
+        HashSet::from([cpu, mem]),
+        "Cpu and Memory both gated into wave 1, concurrent with each other"
+    );
     assert_eq!(waves.len(), 2);
 }
 
@@ -118,7 +144,7 @@ fn zone_tick_dag_composes_both_edge_sources_correctly() {
     let dims: &[DimensionId] = &[DimensionId::Memory, DimensionId::Cpu, DimensionId::Replica];
     let zone = BreatheZone {
         scope: scope(),
-        formas: CAMELOT_FORMAS,
+        formas: ISOLATED_FORMAS,
         dims,
         gated_dims: &[DimensionId::Memory, DimensionId::Cpu],
         allocation_policy: AllocationPolicy::PerAxisIndependent,
@@ -132,22 +158,38 @@ fn zone_tick_dag_composes_both_edge_sources_correctly() {
     let cpu = dimension_job(&scope(), DimensionId::Cpu);
 
     let wave0: HashSet<_> = waves[0].iter().cloned().collect();
-    assert_eq!(wave0, HashSet::from([node_spot, replica]), "NodeSpot and Replica both free in wave 0");
+    assert_eq!(
+        wave0,
+        HashSet::from([node_spot, replica]),
+        "NodeSpot and Replica both free in wave 0"
+    );
     let wave1: HashSet<_> = waves[1].iter().cloned().collect();
-    assert_eq!(wave1, HashSet::from([memory, cpu]), "Memory/Cpu gated by BOTH depends_on(Replica, dropped-not-enrolled-as-gate) and the Forma gate");
+    assert_eq!(
+        wave1,
+        HashSet::from([memory, cpu]),
+        "Memory/Cpu gated by BOTH depends_on(Replica, dropped-not-enrolled-as-gate) and the Forma gate"
+    );
 }
 
 #[test]
 fn zone_validate_refuses_a_gate_on_a_dim_this_zone_does_not_enroll() {
     let zone = BreatheZone {
         scope: scope(),
-        formas: CAMELOT_FORMAS,
+        formas: ISOLATED_FORMAS,
         dims: &[DimensionId::Cpu],
         gated_dims: &[DimensionId::Memory], // NOT in dims
         allocation_policy: AllocationPolicy::PerAxisIndependent,
     };
-    assert_eq!(zone.validate(), Err(ZoneError::GatedDimNotEnrolled { dim: DimensionId::Memory }));
-    assert!(zone_tick_dag(&zone).is_err(), "zone_tick_dag propagates the refusal, never builds a bad Dag");
+    assert_eq!(
+        zone.validate(),
+        Err(ZoneError::GatedDimNotEnrolled {
+            dim: DimensionId::Memory
+        })
+    );
+    assert!(
+        zone_tick_dag(&zone).is_err(),
+        "zone_tick_dag propagates the refusal, never builds a bad Dag"
+    );
 }
 
 #[test]
@@ -156,14 +198,18 @@ fn a_zone_with_no_gates_is_flat_everything_in_one_wave() {
     // depends_on edges apply. Storage has no depends_on -> flat.
     let zone = BreatheZone {
         scope: scope(),
-        formas: CAMELOT_FORMAS,
+        formas: ISOLATED_FORMAS,
         dims: &[DimensionId::Storage],
         gated_dims: &[],
         allocation_policy: AllocationPolicy::PerAxisIndependent,
     };
     let d = zone_tick_dag(&zone).unwrap();
     let waves = d.waves(None).unwrap();
-    assert_eq!(waves.len(), 1, "no edges at all -> everything free in wave 0");
+    assert_eq!(
+        waves.len(),
+        1,
+        "no edges at all -> everything free in wave 0"
+    );
     assert_eq!(waves[0].len(), 2, "NodeSpot + Storage, both ungated");
 }
 
@@ -171,8 +217,18 @@ fn a_zone_with_no_gates_is_flat_everything_in_one_wave() {
 
 fn cs(storage: u64, cpu: u64) -> DemandVector {
     DemandVector::new(
-        Demand { weight: 1, min: 0, max: u64::MAX, demand: storage },
-        Demand { weight: 1, min: 0, max: u64::MAX, demand: cpu },
+        Demand {
+            weight: 1,
+            min: 0,
+            max: u64::MAX,
+            demand: storage,
+        },
+        Demand {
+            weight: 1,
+            min: 0,
+            max: u64::MAX,
+            demand: cpu,
+        },
         Demand::absent(),
         Demand::absent(),
     )
@@ -182,14 +238,16 @@ fn cs(storage: u64, cpu: u64) -> DemandVector {
 fn allocate_for_zone_per_axis_independent_matches_allocate_fabric_directly() {
     let zone = BreatheZone {
         scope: scope(),
-        formas: CAMELOT_FORMAS,
-        dims: CAMELOT_DIMS,
-        gated_dims: CAMELOT_DIMS,
+        formas: ISOLATED_FORMAS,
+        dims: ISOLATED_DIMS,
+        gated_dims: ISOLATED_DIMS,
         allocation_policy: AllocationPolicy::PerAxisIndependent,
     };
     let claimants = vec![Quinhao::root("a", cs(4, 1)), Quinhao::root("b", cs(1, 3))];
-    let via_zone = allocate_for_zone(&zone, PoolCapacity::new(18, 9, 0, 0), 1.0, &claimants).unwrap();
-    let direct = crate::quinhao::allocate_fabric(PoolCapacity::new(18, 9, 0, 0), 1.0, &claimants).unwrap();
+    let via_zone =
+        allocate_for_zone(&zone, PoolCapacity::new(18, 9, 0, 0), 1.0, &claimants).unwrap();
+    let direct =
+        crate::quinhao::allocate_fabric(PoolCapacity::new(18, 9, 0, 0), 1.0, &claimants).unwrap();
     assert_eq!(via_zone.get("a"), direct.get("a"));
     assert_eq!(via_zone.get("b"), direct.get("b"));
 }
@@ -198,14 +256,17 @@ fn allocate_for_zone_per_axis_independent_matches_allocate_fabric_directly() {
 fn allocate_for_zone_dominant_resource_fairness_matches_allocate_drf_fabric_directly() {
     let zone = BreatheZone {
         scope: scope(),
-        formas: CAMELOT_FORMAS,
-        dims: CAMELOT_DIMS,
-        gated_dims: CAMELOT_DIMS,
+        formas: ISOLATED_FORMAS,
+        dims: ISOLATED_DIMS,
+        gated_dims: ISOLATED_DIMS,
         allocation_policy: AllocationPolicy::DominantResourceFairness,
     };
     let claimants = vec![Quinhao::root("a", cs(4, 1)), Quinhao::root("b", cs(1, 3))];
-    let via_zone = allocate_for_zone(&zone, PoolCapacity::new(18, 9, 0, 0), 1.0, &claimants).unwrap();
-    let direct = crate::quinhao::allocate_drf_fabric(PoolCapacity::new(18, 9, 0, 0), 1.0, &claimants).unwrap();
+    let via_zone =
+        allocate_for_zone(&zone, PoolCapacity::new(18, 9, 0, 0), 1.0, &claimants).unwrap();
+    let direct =
+        crate::quinhao::allocate_drf_fabric(PoolCapacity::new(18, 9, 0, 0), 1.0, &claimants)
+            .unwrap();
     assert_eq!(via_zone.get("a"), direct.get("a"));
     assert_eq!(via_zone.get("b"), direct.get("b"));
     // The hand-verified DRF numbers, reached THROUGH the zone dispatcher this time.
@@ -219,12 +280,34 @@ fn allocate_for_zone_the_two_policies_genuinely_disagree_on_the_same_input() {
     // the result, not just the code path taken to reach an identical one.
     let claimants = vec![Quinhao::root("a", cs(4, 1)), Quinhao::root("b", cs(1, 3))];
     let per_axis = allocate_for_zone(
-        &BreatheZone { scope: scope(), formas: CAMELOT_FORMAS, dims: CAMELOT_DIMS, gated_dims: CAMELOT_DIMS, allocation_policy: AllocationPolicy::PerAxisIndependent },
-        PoolCapacity::new(18, 9, 0, 0), 1.0, &claimants,
-    ).unwrap();
+        &BreatheZone {
+            scope: scope(),
+            formas: ISOLATED_FORMAS,
+            dims: ISOLATED_DIMS,
+            gated_dims: ISOLATED_DIMS,
+            allocation_policy: AllocationPolicy::PerAxisIndependent,
+        },
+        PoolCapacity::new(18, 9, 0, 0),
+        1.0,
+        &claimants,
+    )
+    .unwrap();
     let drf = allocate_for_zone(
-        &BreatheZone { scope: scope(), formas: CAMELOT_FORMAS, dims: CAMELOT_DIMS, gated_dims: CAMELOT_DIMS, allocation_policy: AllocationPolicy::DominantResourceFairness },
-        PoolCapacity::new(18, 9, 0, 0), 1.0, &claimants,
-    ).unwrap();
-    assert_ne!(per_axis.get("a"), drf.get("a"), "PerAxisIndependent and DominantResourceFairness genuinely diverge on the same claimants");
+        &BreatheZone {
+            scope: scope(),
+            formas: ISOLATED_FORMAS,
+            dims: ISOLATED_DIMS,
+            gated_dims: ISOLATED_DIMS,
+            allocation_policy: AllocationPolicy::DominantResourceFairness,
+        },
+        PoolCapacity::new(18, 9, 0, 0),
+        1.0,
+        &claimants,
+    )
+    .unwrap();
+    assert_ne!(
+        per_axis.get("a"),
+        drf.get("a"),
+        "PerAxisIndependent and DominantResourceFairness genuinely diverge on the same claimants"
+    );
 }

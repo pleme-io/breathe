@@ -364,7 +364,10 @@ mod tests {
     #[test]
     fn prescribed_default_matches_legacy_hardcoded_values() {
         let c = HostAgentConfig::prescribed_default();
-        assert_eq!(c.reconcile.requeue_seconds, 30, "BREATHE_REQUEUE_SECONDS default");
+        assert_eq!(
+            c.reconcile.requeue_seconds, 30,
+            "BREATHE_REQUEUE_SECONDS default"
+        );
         assert_eq!(c.reconcile.controller_name, "breathe-host-agent");
         assert!(c.metrics.enabled);
         assert_eq!(c.metrics.port, 9101, "9100 is the host node-exporter");
@@ -391,7 +394,10 @@ mod tests {
     ///, subtly-different tier.
     #[test]
     fn default_delegates_to_prescribed() {
-        assert_eq!(HostAgentConfig::default(), HostAgentConfig::prescribed_default());
+        assert_eq!(
+            HostAgentConfig::default(),
+            HostAgentConfig::prescribed_default()
+        );
     }
 
     /// A partial overlay must leave untouched keys at their prescribed values.
@@ -407,7 +413,10 @@ mod tests {
             overlaid.reconcile.requeue_seconds, 30,
             "an unnamed key keeps its prescribed value"
         );
-        assert!(overlaid.dimensions.arc, "an unnamed section stays prescribed");
+        assert!(
+            overlaid.dimensions.arc,
+            "an unnamed section stays prescribed"
+        );
     }
 
     /// An unknown log format is a startup error, not a silent fallback to

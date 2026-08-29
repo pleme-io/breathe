@@ -2,7 +2,7 @@
 # (breathe-retirada-ci, theory/BREATHABILITY.md "Retirada's job-shaped
 # sibling"). Confirmed 2026-07-23 against two real incidents
 # (this repo's own run 29930406877, hardened-images' 30007679929) that
-# the actual failure mode on camelot-builder-pleme is a job sitting
+# the actual failure mode on one cluster-builder-pleme is a job sitting
 # queued with ZERO runner ever assigned until GitHub's own 24h
 # queue-timeout gives up -- not a mid-job spot reclaim. Any job
 # confirmed starved past the threshold gets automatically redispatched

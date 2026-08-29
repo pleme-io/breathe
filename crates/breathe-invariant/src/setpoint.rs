@@ -43,10 +43,16 @@ impl std::fmt::Display for SetpointError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             SetpointError::NotPositive => {
-                write!(f, "utilization setpoint must be > 0 (carve-to-zero is forbidden)")
+                write!(
+                    f,
+                    "utilization setpoint must be > 0 (carve-to-zero is forbidden)"
+                )
             }
             SetpointError::AtOrAboveOne => {
-                write!(f, "utilization setpoint must be < 1 (a setpoint needs headroom)")
+                write!(
+                    f,
+                    "utilization setpoint must be < 1 (a setpoint needs headroom)"
+                )
             }
             SetpointError::NotFinite => write!(f, "utilization setpoint must be finite"),
         }
@@ -153,10 +159,22 @@ mod tests {
 
     #[test]
     fn try_from_ratio_enforces_the_open_interval() {
-        assert_eq!(UtilizationSetpoint::try_from_ratio(0.0), Err(SetpointError::NotPositive));
-        assert_eq!(UtilizationSetpoint::try_from_ratio(-0.1), Err(SetpointError::NotPositive));
-        assert_eq!(UtilizationSetpoint::try_from_ratio(1.0), Err(SetpointError::AtOrAboveOne));
-        assert_eq!(UtilizationSetpoint::try_from_ratio(f64::NAN), Err(SetpointError::NotFinite));
+        assert_eq!(
+            UtilizationSetpoint::try_from_ratio(0.0),
+            Err(SetpointError::NotPositive)
+        );
+        assert_eq!(
+            UtilizationSetpoint::try_from_ratio(-0.1),
+            Err(SetpointError::NotPositive)
+        );
+        assert_eq!(
+            UtilizationSetpoint::try_from_ratio(1.0),
+            Err(SetpointError::AtOrAboveOne)
+        );
+        assert_eq!(
+            UtilizationSetpoint::try_from_ratio(f64::NAN),
+            Err(SetpointError::NotFinite)
+        );
         assert!(UtilizationSetpoint::try_from_ratio(0.8).is_ok());
     }
 

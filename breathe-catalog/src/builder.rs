@@ -1,7 +1,7 @@
 //! `builder` — the DEFAULT breathe posture for the SUPER-CACHE-CI BUILD case
 //! (theory/SUPER-CACHE-CI.md; theory/BREATHABILITY.md §II.6 flex-window).
 //!
-//! The [`preset`](crate::preset) module arms the Camelot *SaaS* workloads (the
+//! The [`preset`](crate::preset) module arms the private estate *SaaS* workloads (the
 //! steady, HA-floored, storage-bearing services). A *builder* pool breathes on a
 //! DIFFERENT setpoint — **bursty**: floor 0 (pure ephemeral, cache-backed), a big
 //! RAMDISK sized to hold the whole build tree in RAM (never-touch-disk), max
@@ -12,7 +12,7 @@
 //! INHERITS it by default (Pillar 12 — declare, don't author per-build). It is the
 //! offline-buildable half: the typed ladder + the burst preset + the parallelism
 //! contract, all with `zero live cluster`. The live wake/auction/reclaim-drain are
-//! LiveTODO (they need the `CamelotBuilderNodeGroup` infra + the ARC queue-scaler);
+//! LiveTODO (they need the `the builder node-group architecture` infra + the ARC queue-scaler);
 //! the tier-honest markers below never round those up.
 //!
 //! ── /algorithmic-prowess-seal (best-fit algorithm per sub-problem, NO ML) ──
@@ -26,17 +26,17 @@
 //!   NO on-demand arm in the ladder type, and the union-of-tiers is proven
 //!   non-empty (the floor tier is always reachable) → the never-place / on-demand
 //!   states are unrepresentable in this crate (parse-time-rejected at the Ruby DSL
-//!   boundary; see the diff to `CamelotBuilderNodeGroup` this seals into).
+//!   boundary; see the diff to `the builder node-group architecture` this seals into).
 //!
 //! Reflection tests below FAIL THE BUILD if the ladder is not strictly-preferred,
 //! if a tier repeats a family (no extra depth), if the union under-covers the
 //! diversified floor, or if the parallelism contract does not saturate the box.
 
-use crate::cost::{FlexWindow, CAMELOT_FLEX_WINDOW};
+use crate::cost::{FlexWindow, SPOT_AGGRESSIVE_FLEX_WINDOW};
 
 /// The optimization OBJECTIVE a builder pool is tuned for — orthogonal to the
 /// evolving-degrade DEPTH (which widens the pool for capacity). This is the Rust
-/// mirror of `CamelotBuilderNodeGroup::BUILDER_PERF`.
+/// mirror of `the builder node-group architecture::BUILDER_PERF`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BuilderObjective {
     /// Cheapest small deep node. The scale-to-zero floor keeps it near-free; the
@@ -69,7 +69,7 @@ impl BuilderObjective {
 /// the LAST rung is the FLOOR — a broad diversified tier that the auction can
 /// always place from. There is NO on-demand rung: the type has no field for it, so
 /// an on-demand fallback is unrepresentable HERE (it is parse-rejected at the Ruby
-/// DSL boundary in `CamelotBuilderNodeGroup::reject_on_demand!`).
+/// DSL boundary in `the builder node-group architecture::reject_on_demand!`).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct DegradeTier {
     /// Preference rank — 0 is the MOST-preferred (fastest) tier; higher = the
@@ -114,7 +114,7 @@ pub const AMD64_DEGRADE_LADDER: &[DegradeTier] = &[
         rank: 2,
         label: "broad-diversified-floor",
         families: &["m6i", "m6a", "m7i", "m5", "m5a", "c6i", "c6a", "r6i", "r6a"],
-        note: "the diversified cost-floor menu (mirrors cost::CAMELOT_INSTANCE_FAMILIES) \
+        note: "the diversified cost-floor menu (mirrors cost::SPOT_AGGRESSIVE_INSTANCE_FAMILIES) \
                — the FLOOR that ALWAYS places; slower per-node but a build still RUNS. \
                Never on-demand — scarcity widens the pool, it never leaves spot",
     },
@@ -229,7 +229,7 @@ pub fn planned_concurrency((max_jobs, cores): (u32, u32)) -> u32 {
 }
 
 /// The DEFAULT breathe posture for the super-cache-ci BUILD use-case class — the
-/// bursty peer of [`crate::preset::CAMELOT`] (which arms the SaaS workloads). One
+/// bursty peer of [`crate::preset::SPOT_AGGRESSIVE`] (which arms the SaaS workloads). One
 /// typed row so any super-cache-ci build inherits the whole posture by default:
 /// time-floor objective (preferred) + evolving-degrade (never on-demand) +
 /// RAMDISK-by-default + max-parallel + scale-to-zero + 100%-spot + retry-on-reclaim.
@@ -278,7 +278,7 @@ pub const SUPER_CACHE_CI_BUILD: BuilderBreatheClass = BuilderBreatheClass {
     degrade_ladder_amd64: AMD64_DEGRADE_LADDER,
     retry_on_spot_reclaim: true,
     spot_fraction: 1.0,
-    flex_window: CAMELOT_FLEX_WINDOW,
+    flex_window: SPOT_AGGRESSIVE_FLEX_WINDOW,
 };
 
 /// The floor (least-preferred) tier of a ladder — the one that ALWAYS places.
@@ -313,11 +313,11 @@ pub fn ladder_family_union(ladder: &'static [DegradeTier]) -> Vec<&'static str> 
 #[cfg(test)]
 mod tests {
     use super::{
-        floor_tier, fastest_tier, ladder_family_union, partition_narrow, planned_concurrency,
-        BuilderObjective, ADAPTIVE_PARTITION, AMD64_DEGRADE_LADDER,
-        ARM64_DEGRADE_LADDER, SUPER_CACHE_CI_BUILD,
+        ADAPTIVE_PARTITION, AMD64_DEGRADE_LADDER, ARM64_DEGRADE_LADDER, BuilderObjective,
+        SUPER_CACHE_CI_BUILD, fastest_tier, floor_tier, ladder_family_union, partition_narrow,
+        planned_concurrency,
     };
-    use crate::cost::{CAMELOT_INSTANCE_FAMILIES, MIN_DIVERSIFIED_FAMILIES};
+    use crate::cost::{MIN_DIVERSIFIED_FAMILIES, SPOT_AGGRESSIVE_INSTANCE_FAMILIES};
 
     const LADDERS: [&[super::DegradeTier]; 2] = [AMD64_DEGRADE_LADDER, ARM64_DEGRADE_LADDER];
 
@@ -327,11 +327,17 @@ mod tests {
     #[test]
     fn ladder_ranks_are_a_total_order() {
         for ladder in LADDERS {
-            assert!(!ladder.is_empty(), "a degrade ladder must have at least a floor tier");
+            assert!(
+                !ladder.is_empty(),
+                "a degrade ladder must have at least a floor tier"
+            );
             let mut ranks: Vec<u8> = ladder.iter().map(|t| t.rank).collect();
             ranks.sort_unstable();
             for (i, r) in ranks.iter().enumerate() {
-                assert_eq!(*r as usize, i, "ranks must be contiguous from 0 (a total order); got {ranks:?}");
+                assert_eq!(
+                    *r as usize, i,
+                    "ranks must be contiguous from 0 (a total order); got {ranks:?}"
+                );
             }
         }
     }
@@ -344,7 +350,12 @@ mod tests {
                 let mut fams: Vec<&str> = t.families.to_vec();
                 fams.sort_unstable();
                 fams.dedup();
-                assert_eq!(fams.len(), t.families.len(), "tier {} repeats a family", t.label);
+                assert_eq!(
+                    fams.len(),
+                    t.families.len(),
+                    "tier {} repeats a family",
+                    t.label
+                );
             }
         }
     }
@@ -368,16 +379,19 @@ mod tests {
     }
 
     /// The amd64 floor tier MIRRORS the shared diversified cost menu — the ladder's
-    /// floor is exactly the `cost::CAMELOT_INSTANCE_FAMILIES` set, so the two
+    /// floor is exactly the `cost::SPOT_AGGRESSIVE_INSTANCE_FAMILIES` set, so the two
     /// diversified surfaces can never silently disagree (one source of "the floor").
     #[test]
     fn amd64_floor_mirrors_the_shared_cost_menu() {
         let floor = floor_tier(AMD64_DEGRADE_LADDER).expect("floor");
         let mut floor_fams: Vec<&str> = floor.families.to_vec();
         floor_fams.sort_unstable();
-        let mut menu: Vec<&str> = CAMELOT_INSTANCE_FAMILIES.to_vec();
+        let mut menu: Vec<&str> = SPOT_AGGRESSIVE_INSTANCE_FAMILIES.to_vec();
         menu.sort_unstable();
-        assert_eq!(floor_fams, menu, "the amd64 degrade floor must mirror cost::CAMELOT_INSTANCE_FAMILIES");
+        assert_eq!(
+            floor_fams, menu,
+            "the amd64 degrade floor must mirror cost::SPOT_AGGRESSIVE_INSTANCE_FAMILIES"
+        );
     }
 
     /// The union across the ladder is at least as deep as the floor — degrading UP
@@ -392,7 +406,10 @@ mod tests {
                 union.len() >= floor.families.len(),
                 "the ladder union must be at least as deep as its floor"
             );
-            assert!(union.len() >= MIN_DIVERSIFIED_FAMILIES, "the union must be diversified");
+            assert!(
+                union.len() >= MIN_DIVERSIFIED_FAMILIES,
+                "the union must be diversified"
+            );
         }
     }
 
@@ -417,12 +434,27 @@ mod tests {
     #[test]
     fn parallelism_is_the_adaptive_partition() {
         let p = ADAPTIVE_PARTITION;
-        assert!(p.auto_tune, "the tuner must be armed (discover V + partition over N)");
-        assert_eq!(p.nix_max_jobs, "auto", "max-jobs sentinel hands control to the tuner");
+        assert!(
+            p.auto_tune,
+            "the tuner must be armed (discover V + partition over N)"
+        );
+        assert_eq!(
+            p.nix_max_jobs, "auto",
+            "max-jobs sentinel hands control to the tuner"
+        );
         assert_eq!(p.nix_cores, 0, "cores sentinel hands control to the tuner");
-        assert_eq!(p.dag_shape, "narrow", "the target fleet is a narrow (monolithic) DAG");
-        assert!(p.across_images_concurrent, "the service fan must be concurrent (wall-clock = slowest, not sum)");
-        assert_eq!(p.matrix_max_parallel, 0, "the matrix is uncapped by default (scale-to-zero absorbs the burst)");
+        assert_eq!(
+            p.dag_shape, "narrow",
+            "the target fleet is a narrow (monolithic) DAG"
+        );
+        assert!(
+            p.across_images_concurrent,
+            "the service fan must be concurrent (wall-clock = slowest, not sum)"
+        );
+        assert_eq!(
+            p.matrix_max_parallel, 0,
+            "the matrix is uncapped by default (scale-to-zero absorbs the burst)"
+        );
     }
 
     /// THE SEALED INVARIANT: the partition never OVER-subscribes the box
@@ -435,17 +467,40 @@ mod tests {
             for &n in &[4u32, 6, 8, 9, 12, 16] {
                 let p = partition_narrow(v, n);
                 let planned = planned_concurrency(p);
-                assert!(planned <= v, "planned {planned} must not exceed V {v} (N={n})");
-                assert!(v - planned < n, "slack {} must be < N {n} (saturating; V={v})", v - planned);
+                assert!(
+                    planned <= v,
+                    "planned {planned} must not exceed V {v} (N={n})"
+                );
+                assert!(
+                    v - planned < n,
+                    "slack {} must be < N {n} (saturating; V={v})",
+                    v - planned
+                );
                 assert!(p.1 >= 1, "cores must clamp to >= 1 (never a 0-core build)");
             }
         }
         // the prompt's worked cases
-        assert_eq!(partition_narrow(96, 9), (9, 10), "V=96,N=9 → 9 jobs × 10 cores (90 ≤ 96)");
-        assert_eq!(partition_narrow(192, 9), (9, 21), "V=192,N=9 → 9 × 21 (189 ≤ 192)");
-        assert_eq!(partition_narrow(32, 9), (9, 3), "V=32,N=9 → 9 × 3 (27 ≤ 32)");
+        assert_eq!(
+            partition_narrow(96, 9),
+            (9, 10),
+            "V=96,N=9 → 9 jobs × 10 cores (90 ≤ 96)"
+        );
+        assert_eq!(
+            partition_narrow(192, 9),
+            (9, 21),
+            "V=192,N=9 → 9 × 21 (189 ≤ 192)"
+        );
+        assert_eq!(
+            partition_narrow(32, 9),
+            (9, 3),
+            "V=32,N=9 → 9 × 3 (27 ≤ 32)"
+        );
         // a lone build owns the box
-        assert_eq!(partition_narrow(96, 0), (1, 96), "N=0 → lone build, all cores");
+        assert_eq!(
+            partition_narrow(96, 0),
+            (1, 96),
+            "N=0 → lone build, all cores"
+        );
     }
 
     /// THE super-cache-ci build posture: time-floor-preferred, floor 0, big RAMDISK,
@@ -455,13 +510,32 @@ mod tests {
     fn super_cache_ci_build_is_the_best_build_times_posture() {
         let b = SUPER_CACHE_CI_BUILD;
         assert_eq!(b.class, "super-cache-ci-build");
-        assert_eq!(b.objective, BuilderObjective::TimeFloor, "time-floor is the best-build-times default");
+        assert_eq!(
+            b.objective,
+            BuilderObjective::TimeFloor,
+            "time-floor is the best-build-times default"
+        );
         assert_eq!(b.floor, 0, "pure ephemeral — scale-from-zero");
-        assert!(b.ramdisk_gib >= 32, "the RAMDISK must hold the build tree in RAM (never-touch-disk)");
-        assert!(b.retry_on_spot_reclaim, "a mid-build reclaim must be survived, not fatal");
-        assert!((b.spot_fraction - 1.0).abs() < f64::EPSILON, "100% spot — never on-demand");
-        assert_eq!(b.parallelism, ADAPTIVE_PARTITION, "the build inherits the adaptive-partition contract");
-        assert!(b.scale_to_zero_idle_secs > 0, "aggressive scale-to-zero keeps it near-free at idle");
+        assert!(
+            b.ramdisk_gib >= 32,
+            "the RAMDISK must hold the build tree in RAM (never-touch-disk)"
+        );
+        assert!(
+            b.retry_on_spot_reclaim,
+            "a mid-build reclaim must be survived, not fatal"
+        );
+        assert!(
+            (b.spot_fraction - 1.0).abs() < f64::EPSILON,
+            "100% spot — never on-demand"
+        );
+        assert_eq!(
+            b.parallelism, ADAPTIVE_PARTITION,
+            "the build inherits the adaptive-partition contract"
+        );
+        assert!(
+            b.scale_to_zero_idle_secs > 0,
+            "aggressive scale-to-zero keeps it near-free at idle"
+        );
     }
 
     /// The fastest tier is genuinely the latest-gen compute (rank 0), distinct from
@@ -474,8 +548,14 @@ mod tests {
             let fast = fastest_tier(ladder).expect("fastest");
             let floor = floor_tier(ladder).expect("floor");
             assert_eq!(fast.rank, 0, "the fastest tier is rank 0");
-            assert!(ladder.len() >= 2, "an evolving-degrade ladder has >= 2 tiers (fastest + a floor to degrade to)");
-            assert_ne!(fast.label, floor.label, "the fastest tier must differ from the floor (the ladder evolves)");
+            assert!(
+                ladder.len() >= 2,
+                "an evolving-degrade ladder has >= 2 tiers (fastest + a floor to degrade to)"
+            );
+            assert_ne!(
+                fast.label, floor.label,
+                "the fastest tier must differ from the floor (the ladder evolves)"
+            );
         }
     }
 

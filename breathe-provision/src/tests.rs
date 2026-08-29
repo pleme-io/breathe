@@ -1,8 +1,8 @@
-use super::{reconcile_forma, FormaTick};
+use super::{FormaTick, reconcile_forma};
 use breathe_admission::{Allocatable, CapacidadeProof, Portao, PortaoKind, StubGate, Viveiro};
 use breathe_auction::{BandLeiloeiro, ReactivePrevisor};
 use breathe_control::BandConfig;
-use breathe_provider::{Forma, FormaSample, ProvisionReceipt, Provedor, ProviderError};
+use breathe_provider::{Forma, FormaSample, Provedor, ProviderError, ProvisionReceipt};
 
 /// A minimal no-dependency executor (the loop's awaited futures are immediately
 /// ready in tests — the mocks never block). Keeps the crate runtime-free.
@@ -33,7 +33,10 @@ struct MockProvedor {
 #[async_trait::async_trait]
 impl Provedor for MockProvedor {
     async fn observe(&self) -> Result<FormaSample, ProviderError> {
-        Ok(FormaSample { used: self.used, capacity: self.capacity })
+        Ok(FormaSample {
+            used: self.used,
+            capacity: self.capacity,
+        })
     }
     async fn provision(&self, n: u64) -> Result<ProvisionReceipt, ProviderError> {
         Ok(ProvisionReceipt::DryRun { would: n as i64 })
@@ -55,7 +58,10 @@ struct FailingProvisionProvedor {
 #[async_trait::async_trait]
 impl Provedor for FailingProvisionProvedor {
     async fn observe(&self) -> Result<FormaSample, ProviderError> {
-        Ok(FormaSample { used: self.used, capacity: self.capacity })
+        Ok(FormaSample {
+            used: self.used,
+            capacity: self.capacity,
+        })
     }
     async fn provision(&self, _n: u64) -> Result<ProvisionReceipt, ProviderError> {
         Err(ProviderError::ApiPermanent("nodegroup not ACTIVE".into()))
@@ -91,14 +97,19 @@ pub(crate) fn open_cfg() -> BandConfig {
 }
 
 pub(crate) fn capacidade_gate(floor: u64) -> Vec<Box<dyn Portao<NodeRef>>> {
-    vec![Box::new(CapacidadeProof { required_floor: floor })]
+    vec![Box::new(CapacidadeProof {
+        required_floor: floor,
+    })]
 }
 
 #[test]
 fn grow_provisions_and_admits_into_the_viveiro() {
     // util 0.90 > grow_above → Crescer; the new units pass CapacidadeProof and
     // land in the Viveiro VALIDATED (never raw).
-    let provedor = MockProvedor { used: 90, capacity: 100 };
+    let provedor = MockProvedor {
+        used: 90,
+        capacity: 100,
+    };
     let mut viveiro: Viveiro<NodeRef> = Viveiro::new();
     let tick = block_on(reconcile_forma(
         Forma::NodeOnDemand,
@@ -112,13 +123,29 @@ fn grow_provisions_and_admits_into_the_viveiro() {
         |_id| NodeRef { allocatable: 64 },
     ));
     match tick {
-        FormaTick::Grew { forma, requested, admitted, rejected, provision_error } => {
-            assert_eq!(provision_error, None, "the mock provedor never fails provision()");
+        FormaTick::Grew {
+            forma,
+            requested,
+            admitted,
+            rejected,
+            provision_error,
+        } => {
+            assert_eq!(
+                provision_error, None,
+                "the mock provedor never fails provision()"
+            );
             assert_eq!(forma, Forma::NodeOnDemand);
             assert!(requested > 0);
-            assert_eq!(admitted, requested, "every provisioned unit cleared the gate");
+            assert_eq!(
+                admitted, requested,
+                "every provisioned unit cleared the gate"
+            );
             assert_eq!(rejected, 0);
-            assert_eq!(viveiro.len() as u64, admitted, "the pool holds exactly the admitted units");
+            assert_eq!(
+                viveiro.len() as u64,
+                admitted,
+                "the pool holds exactly the admitted units"
+            );
         }
         other => panic!("expected Grew, got {other:?}"),
     }
@@ -128,7 +155,10 @@ fn grow_provisions_and_admits_into_the_viveiro() {
 fn an_undersized_node_is_provisioned_but_never_admitted() {
     // The grow happens, but CapacidadeProof rejects (floor 999 > allocatable 64),
     // so NOTHING enters the pool — a provisioned-but-unvalidated unit is not usable.
-    let provedor = MockProvedor { used: 90, capacity: 100 };
+    let provedor = MockProvedor {
+        used: 90,
+        capacity: 100,
+    };
     let mut viveiro: Viveiro<NodeRef> = Viveiro::new();
     let tick = block_on(reconcile_forma(
         Forma::NodeOnDemand,
@@ -142,10 +172,18 @@ fn an_undersized_node_is_provisioned_but_never_admitted() {
         |_id| NodeRef { allocatable: 64 },
     ));
     match tick {
-        FormaTick::Grew { admitted, rejected, requested, .. } => {
+        FormaTick::Grew {
+            admitted,
+            rejected,
+            requested,
+            ..
+        } => {
             assert_eq!(admitted, 0, "an undersized node must NOT be admitted");
             assert_eq!(rejected, requested);
-            assert!(viveiro.is_empty(), "the pool stays empty — no unvalidated unit");
+            assert!(
+                viveiro.is_empty(),
+                "the pool stays empty — no unvalidated unit"
+            );
         }
         other => panic!("expected Grew, got {other:?}"),
     }
@@ -161,7 +199,10 @@ fn a_failing_provision_surfaces_the_error_never_silently() {
     // the error is captured and threaded through `FormaTick::Grew`, not
     // dropped, regardless of what the (deliberately decoupled) admission
     // gate simulation below decides.
-    let provedor = FailingProvisionProvedor { used: 90, capacity: 100 };
+    let provedor = FailingProvisionProvedor {
+        used: 90,
+        capacity: 100,
+    };
     let mut viveiro: Viveiro<NodeRef> = Viveiro::new();
     let tick = block_on(reconcile_forma(
         Forma::NodeOnDemand,
@@ -175,7 +216,9 @@ fn a_failing_provision_surfaces_the_error_never_silently() {
         |_id| NodeRef { allocatable: 64 },
     ));
     match tick {
-        FormaTick::Grew { provision_error, .. } => {
+        FormaTick::Grew {
+            provision_error, ..
+        } => {
             assert_eq!(
                 provision_error.as_deref(),
                 Some("permanent API error: nodegroup not ACTIVE"),
@@ -190,7 +233,10 @@ fn a_failing_provision_surfaces_the_error_never_silently() {
 fn a_stub_gate_keeps_everything_out_fail_safe() {
     // An unimplemented gate Defers; the unit never reaches Pronto, so nothing is
     // admitted while a gate is a stub (fail-safe — never a silent admit).
-    let provedor = MockProvedor { used: 90, capacity: 100 };
+    let provedor = MockProvedor {
+        used: 90,
+        capacity: 100,
+    };
     let mut viveiro: Viveiro<NodeRef> = Viveiro::new();
     let gates: Vec<Box<dyn Portao<NodeRef>>> = vec![Box::new(StubGate(PortaoKind::QuotaCheck))];
     let tick = block_on(reconcile_forma(
@@ -210,7 +256,10 @@ fn a_stub_gate_keeps_everything_out_fail_safe() {
 
 #[test]
 fn in_band_demand_holds() {
-    let provedor = MockProvedor { used: 75, capacity: 100 };
+    let provedor = MockProvedor {
+        used: 75,
+        capacity: 100,
+    };
     let mut viveiro: Viveiro<NodeRef> = Viveiro::new();
     let tick = block_on(reconcile_forma(
         Forma::NodeOnDemand,
@@ -231,8 +280,14 @@ fn in_band_demand_holds() {
 fn demand_beyond_the_envelope_escalates() {
     // capped ceiling (capacity == ceiling == 100) + demand 200 → EnvelopeExhausted,
     // never a silent under-provision.
-    let provedor = MockProvedor { used: 200, capacity: 100 };
-    let capped = BandConfig { ceiling_bytes: 100, ..open_cfg() };
+    let provedor = MockProvedor {
+        used: 200,
+        capacity: 100,
+    };
+    let capped = BandConfig {
+        ceiling_bytes: 100,
+        ..open_cfg()
+    };
     let mut viveiro: Viveiro<NodeRef> = Viveiro::new();
     let tick = block_on(reconcile_forma(
         Forma::NodeOnDemand,

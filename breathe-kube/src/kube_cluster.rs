@@ -19,14 +19,15 @@ use breathe_provider::{
 };
 use k8s_openapi::api::storage::v1::StorageClass;
 use kube::{
+    Client,
     api::{Api, ApiResource, DynamicObject, ListParams, Patch, PatchParams},
     core::GroupVersionKind,
-    Client,
 };
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::managed_fields::{
-    cnpg_cluster_limit_segments, cnpg_storage_segments, field_owners, pod_template_limit_segments, pvc_request_segments,
+    cnpg_cluster_limit_segments, cnpg_storage_segments, field_owners, pod_template_limit_segments,
+    pvc_request_segments,
 };
 
 pub struct KubeCluster {
@@ -38,7 +39,11 @@ pub struct KubeCluster {
 impl KubeCluster {
     #[must_use]
     pub fn new(client: Client, prometheus_url: String) -> Self {
-        Self { client, prometheus_url, http: reqwest::Client::new() }
+        Self {
+            client,
+            prometheus_url,
+            http: reqwest::Client::new(),
+        }
     }
 
     fn group_version(target: &Target) -> (String, String) {
@@ -63,10 +68,13 @@ impl KubeCluster {
     }
 
     async fn get_owner(&self, target: &Target) -> Result<DynamicObject, ProviderError> {
-        self.api_for(target).get(&target.name).await.map_err(|e| match e {
-            kube::Error::Api(ae) if ae.code == 404 => ProviderError::TargetNotFound,
-            other => ProviderError::ApiTransient(other.to_string()),
-        })
+        self.api_for(target)
+            .get(&target.name)
+            .await
+            .map_err(|e| match e {
+                kube::Error::Api(ae) if ae.code == 404 => ProviderError::TargetNotFound,
+                other => ProviderError::ApiTransient(other.to_string()),
+            })
     }
 
     /// Resolve the managed container name for a pod-template layout (the given
@@ -102,7 +110,9 @@ impl KubeCluster {
                         .find(|c| c.get("name").and_then(Value::as_str) == Some(name.as_str()))?,
                     None => containers.first()?,
                 };
-                c.pointer(&format!("/resources/limits/{resource}")).and_then(Value::as_str).map(String::from)
+                c.pointer(&format!("/resources/limits/{resource}"))
+                    .and_then(Value::as_str)
+                    .map(String::from)
             }
             // PodResize reads from the live pods (handled in read_limit), not the
             // fetched owner object — so there is nothing to read here.
@@ -126,26 +136,42 @@ impl KubeCluster {
             }
             // HORIZONTAL: the workload's current replica count (`.spec.replicas`),
             // rendered as a bare integer string the Count unit parses.
-            LimitLayout::Replica { .. } => data.pointer("/spec/replicas").map(json_scalar_to_string),
+            LimitLayout::Replica { .. } => {
+                data.pointer("/spec/replicas").map(json_scalar_to_string)
+            }
             // external-protocol / network layouts are never read on a k8s object here
             // (their actuators own the read) — typed None, never a silent wrong value.
-            LimitLayout::ConfigFile { .. } | LimitLayout::ApiCall { .. } | LimitLayout::PodNetworkBandwidth { .. } => None,
+            LimitLayout::ConfigFile { .. }
+            | LimitLayout::ApiCall { .. }
+            | LimitLayout::PodNetworkBandwidth { .. } => None,
         }
     }
 
     /// A pod's container quantity at `kind` (`limits`/`requests`) for `resource`.
-    fn pod_container_qty(pod_data: &Value, container: &Option<String>, kind: &str, resource: &str) -> Option<String> {
+    fn pod_container_qty(
+        pod_data: &Value,
+        container: &Option<String>,
+        kind: &str,
+        resource: &str,
+    ) -> Option<String> {
         let containers = pod_data.pointer("/spec/containers")?.as_array()?;
         let c = match container {
-            Some(name) => containers.iter().find(|c| c.get("name").and_then(Value::as_str) == Some(name.as_str()))?,
+            Some(name) => containers
+                .iter()
+                .find(|c| c.get("name").and_then(Value::as_str) == Some(name.as_str()))?,
             None => containers.first()?,
         };
-        c.pointer(&format!("/resources/{kind}/{resource}")).and_then(Value::as_str).map(String::from)
+        c.pointer(&format!("/resources/{kind}/{resource}"))
+            .and_then(Value::as_str)
+            .map(String::from)
     }
 
     /// The first container name on a pod (when the band names none).
     fn pod_first_container(pod_data: &Value) -> Option<String> {
-        pod_data.pointer("/spec/containers/0/name").and_then(Value::as_str).map(String::from)
+        pod_data
+            .pointer("/spec/containers/0/name")
+            .and_then(Value::as_str)
+            .map(String::from)
     }
 
     /// True iff the pod's managed container declares `resizePolicy[<resource>] =
@@ -153,15 +179,27 @@ impl KubeCluster {
     /// restarting the container. Absent policy ⇒ false (k8s defaults to
     /// `RestartContainer`); a missing container/spec ⇒ false. This is the live fact
     /// that turns a memory shrink from `RestartConditional` into `RestartFree`.
-    fn container_resize_not_required(pod_data: &Value, container: &Option<String>, resource: &str) -> bool {
-        let Some(containers) = pod_data.pointer("/spec/containers").and_then(Value::as_array) else {
+    fn container_resize_not_required(
+        pod_data: &Value,
+        container: &Option<String>,
+        resource: &str,
+    ) -> bool {
+        let Some(containers) = pod_data
+            .pointer("/spec/containers")
+            .and_then(Value::as_array)
+        else {
             return false;
         };
         let c = match container {
-            Some(name) => containers.iter().find(|c| c.get("name").and_then(Value::as_str) == Some(name.as_str())),
+            Some(name) => containers
+                .iter()
+                .find(|c| c.get("name").and_then(Value::as_str) == Some(name.as_str())),
             None => containers.first(),
         };
-        let Some(policies) = c.and_then(|c| c.pointer("/resizePolicy")).and_then(Value::as_array) else {
+        let Some(policies) = c
+            .and_then(|c| c.pointer("/resizePolicy"))
+            .and_then(Value::as_array)
+        else {
             return false;
         };
         policies.iter().any(|p| {
@@ -172,8 +210,14 @@ impl KubeCluster {
 
     /// Build a label selector (`k=v,k2=v2`) from an owner's `spec.selector.matchLabels`.
     fn owner_pod_selector(owner_data: &Value) -> Option<String> {
-        let ml = owner_data.pointer("/spec/selector/matchLabels")?.as_object()?;
-        let sel = ml.iter().filter_map(|(k, v)| v.as_str().map(|v| format!("{k}={v}"))).collect::<Vec<_>>().join(",");
+        let ml = owner_data
+            .pointer("/spec/selector/matchLabels")?
+            .as_object()?;
+        let sel = ml
+            .iter()
+            .filter_map(|(k, v)| v.as_str().map(|v| format!("{k}={v}")))
+            .collect::<Vec<_>>()
+            .join(",");
         (!sel.is_empty()).then_some(sel)
     }
 
@@ -193,7 +237,8 @@ impl KubeCluster {
         };
         let gvk = GroupVersionKind::gvk("", "v1", "Pod");
         let ar = ApiResource::from_gvk(&gvk);
-        let api: Api<DynamicObject> = Api::namespaced_with(self.client.clone(), &target.namespace, &ar);
+        let api: Api<DynamicObject> =
+            Api::namespaced_with(self.client.clone(), &target.namespace, &ar);
         let pods = api
             .list(&ListParams::default().labels(&sel))
             .await
@@ -231,22 +276,33 @@ impl KubeCluster {
         }
         let gvk = GroupVersionKind::gvk("", "v1", "Pod");
         let ar = ApiResource::from_gvk(&gvk);
-        let pod_api: Api<DynamicObject> = Api::namespaced_with(self.client.clone(), &target.namespace, &ar);
-        let pp = PatchParams { field_manager: Some(field_manager.to_owned()), ..Default::default() };
+        let pod_api: Api<DynamicObject> =
+            Api::namespaced_with(self.client.clone(), &target.namespace, &ar);
+        let pp = PatchParams {
+            field_manager: Some(field_manager.to_owned()),
+            ..Default::default()
+        };
         for pod in &pods {
-            let Some(pod_name) = pod.metadata.name.clone() else { continue };
+            let Some(pod_name) = pod.metadata.name.clone() else {
+                continue;
+            };
             let cname = match container {
                 Some(c) => c.to_owned(),
-                None => Self::pod_first_container(&pod.data).ok_or(ProviderError::NoCapacityField)?,
+                None => {
+                    Self::pod_first_container(&pod.data).ok_or(ProviderError::NoCapacityField)?
+                }
             };
             let resources = mk_resources(&pod.data, &cname);
-            let body = json!({ "spec": { "containers": [ { "name": cname, "resources": resources } ] } });
+            let body =
+                json!({ "spec": { "containers": [ { "name": cname, "resources": resources } ] } });
             pod_api
                 .patch_subresource("resize", &pod_name, &pp, &Patch::Strategic(&body))
                 .await
                 .map_err(|e| ProviderError::ApiPermanent(e.to_string()))?;
         }
-        Ok(AppliedReceipt { source_hash: [0u8; 16] })
+        Ok(AppliedReceipt {
+            source_hash: [0u8; 16],
+        })
     }
 
     /// **Part 1 (SOFT k8s carve):** resolve the cgroup-path coordinates of EVERY
@@ -330,13 +386,19 @@ impl KubeCluster {
             .pointer("/data/result/0/value")
             .and_then(Value::as_array)
             .ok_or(ProviderError::MetricsMissing)?;
-        let ts = pair.first().and_then(Value::as_f64).ok_or(ProviderError::MetricsMissing)?;
+        let ts = pair
+            .first()
+            .and_then(Value::as_f64)
+            .ok_or(ProviderError::MetricsMissing)?;
         let value: f64 = pair
             .get(1)
             .and_then(Value::as_str)
             .and_then(|s| s.parse::<f64>().ok())
             .ok_or(ProviderError::MetricsMissing)?;
-        let now = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs_f64()).unwrap_or(ts);
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs_f64())
+            .unwrap_or(ts);
         Ok((value, (now - ts).max(0.0) as u64))
     }
 
@@ -346,7 +408,10 @@ impl KubeCluster {
     /// dimension-agnostic `used` contract of the [`Cluster`] trait.
     async fn prometheus_used(&self, promql: &str) -> Result<Sample, ProviderError> {
         let (value, age_secs) = self.query_scalar(promql).await?;
-        Ok(Sample { value: value as u64, age_secs })
+        Ok(Sample {
+            value: value as u64,
+            age_secs,
+        })
     }
 
     /// The ALWAYS-ON metric source: read live container usage from metrics-server
@@ -371,7 +436,10 @@ impl KubeCluster {
             Some(s) => ListParams::default().labels(s),
             None => ListParams::default(),
         };
-        let list = api.list(&lp).await.map_err(|e| Self::classify_pod_metrics_error(e.to_string()))?;
+        let list = api
+            .list(&lp)
+            .await
+            .map_err(|e| Self::classify_pod_metrics_error(e.to_string()))?;
         // A label-selected group with ZERO matching pods is DORMANT (the ephemeral
         // target is scaled to zero — no runner between builds), not an error. The
         // server already filtered by label, so an empty list IS an empty group.
@@ -393,7 +461,10 @@ impl KubeCluster {
                 continue;
             };
             for c in containers {
-                if let Some(raw) = c.pointer(&format!("/usage/{resource}")).and_then(Value::as_str) {
+                if let Some(raw) = c
+                    .pointer(&format!("/usage/{resource}"))
+                    .and_then(Value::as_str)
+                {
                     let v = Unit::for_resource(resource).parse(raw);
                     if let Some(v) = v {
                         found = true;
@@ -406,7 +477,10 @@ impl KubeCluster {
             return Err(ProviderError::MetricsMissing);
         }
         // metrics-server samples are recent (scrape window ~15-30s); treat as fresh.
-        Ok(Sample { value: max, age_secs: 0 })
+        Ok(Sample {
+            value: max,
+            age_secs: 0,
+        })
     }
 
     /// Recognize the "metrics.k8s.io API group is not registered at all"
@@ -443,7 +517,9 @@ impl KubeCluster {
 /// A JSON scalar rendered to a string — `"10Gi"` stays a string, `100` becomes
 /// `"100"`. Reads a generic CR field's current value regardless of its JSON type.
 fn json_scalar_to_string(v: &Value) -> String {
-    v.as_str().map(String::from).unwrap_or_else(|| v.to_string())
+    v.as_str()
+        .map(String::from)
+        .unwrap_or_else(|| v.to_string())
 }
 
 /// Build the SSA `spec` content for a `/spec/...` JSON-pointer `field_path` set to
@@ -455,20 +531,33 @@ fn nested_json_under_spec(field_path: &str, value: Value) -> Value {
     let trimmed = field_path.trim_start_matches('/');
     let rel = trimmed.strip_prefix("spec/").unwrap_or(trimmed);
     let mut node = value;
-    for seg in rel.split('/').filter(|s| !s.is_empty()).collect::<Vec<_>>().into_iter().rev() {
+    for seg in rel
+        .split('/')
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+    {
         node = json!({ seg: node });
     }
     node
 }
 
-fn resize_resources_block(qos: &str, resource: &str, value: u64, current_request: Option<&str>) -> Value {
+fn resize_resources_block(
+    qos: &str,
+    resource: &str,
+    value: u64,
+    current_request: Option<&str>,
+) -> Value {
     let unit = Unit::for_resource(resource);
     let qty = Quantity { value, unit }.to_string();
     if qos == "Guaranteed" {
         return json!({ "limits": { resource: qty.clone() }, "requests": { resource: qty } });
     }
     match current_request.and_then(|r| unit.parse(r)) {
-        Some(req) if req > value => json!({ "limits": { resource: qty.clone() }, "requests": { resource: qty } }),
+        Some(req) if req > value => {
+            json!({ "limits": { resource: qty.clone() }, "requests": { resource: qty } })
+        }
         _ => json!({ "limits": { resource: qty } }),
     }
 }
@@ -492,7 +581,11 @@ fn resize_resources_block(qos: &str, resource: &str, value: u64, current_request
 /// `status.qosClass` string, the way the limit path does, would be a second
 /// source of truth for the one fact this dimension turns on.
 fn request_resources_block(resource: &str, value: u64) -> Value {
-    let qty = Quantity { value, unit: Unit::for_resource(resource) }.to_string();
+    let qty = Quantity {
+        value,
+        unit: Unit::for_resource(resource),
+    }
+    .to_string();
     json!({ "requests": { resource: qty } })
 }
 
@@ -504,7 +597,8 @@ fn request_resources_block(resource: &str, value: u64) -> Value {
 /// is caught EARLIER, at capability-discovery time, before a bad sample has
 /// to land. Absence from this list is NOT proof of correctness — it is the
 /// honest default (a class we have no reason to distrust).
-const NO_PER_VOLUME_METRICS_PROVISIONERS: &[&str] = &["rancher.io/local-path", "kubernetes.io/host-path"];
+const NO_PER_VOLUME_METRICS_PROVISIONERS: &[&str] =
+    &["rancher.io/local-path", "kubernetes.io/host-path"];
 
 /// The JSON-pointer to the StorageClass NAME on a storage layout's fetched
 /// owner object. `PvcRequest`'s owner IS the PVC (`spec.storageClassName`,
@@ -516,10 +610,14 @@ const NO_PER_VOLUME_METRICS_PROVISIONERS: &[&str] = &["rancher.io/local-path", "
 /// falls back to the namespace default, which this pointer can't see).
 fn storage_class_name_for(data: &Value, layout: &LimitLayout) -> Option<String> {
     match layout {
-        LimitLayout::PvcRequest => data.pointer("/spec/storageClassName").and_then(Value::as_str).map(String::from),
-        LimitLayout::ClusterStorage => {
-            data.pointer("/spec/storage/storageClass").and_then(Value::as_str).map(String::from)
-        }
+        LimitLayout::PvcRequest => data
+            .pointer("/spec/storageClassName")
+            .and_then(Value::as_str)
+            .map(String::from),
+        LimitLayout::ClusterStorage => data
+            .pointer("/spec/storage/storageClass")
+            .and_then(Value::as_str)
+            .map(String::from),
         _ => None,
     }
 }
@@ -541,8 +639,13 @@ impl Cluster for KubeCluster {
     async fn read_used(&self, source: &MetricSource) -> Result<Sample, ProviderError> {
         match source {
             MetricSource::Prometheus(promql) => self.prometheus_used(promql).await,
-            MetricSource::PodMetricsMax { resource, pod_prefix, selector } => {
-                self.pod_metrics_max(resource, pod_prefix, selector.as_deref()).await
+            MetricSource::PodMetricsMax {
+                resource,
+                pod_prefix,
+                selector,
+            } => {
+                self.pod_metrics_max(resource, pod_prefix, selector.as_deref())
+                    .await
             }
             // A host metric can never reach the k8s boundary — the controller
             // routes host dimensions to `HostCluster`. Typed, never silent.
@@ -577,7 +680,9 @@ impl Cluster for KubeCluster {
             None => Ok(0),
             // Parse in the resource's base unit (cpu → millicores, else bytes) so
             // a cpu limit "1" reads as 1000, not 1.
-            Some(qty) => Unit::for_resource(resource).parse(&qty).ok_or(ProviderError::NoCapacityField),
+            Some(qty) => Unit::for_resource(resource)
+                .parse(&qty)
+                .ok_or(ProviderError::NoCapacityField),
         }
     }
 
@@ -597,7 +702,10 @@ impl Cluster for KubeCluster {
         // has no gettable owner, and the managed-field competitor that WOULD
         // matter for requests (a Deployment template owned by Flux) lives on the
         // template, not on the pod these layouts write.
-        if matches!(layout, LimitLayout::PodResize { .. } | LimitLayout::PodRequestResize { .. }) {
+        if matches!(
+            layout,
+            LimitLayout::PodResize { .. } | LimitLayout::PodRequestResize { .. }
+        ) {
             return Ok(Vec::new());
         }
         let obj = self.get_owner(target).await?;
@@ -642,7 +750,11 @@ impl Cluster for KubeCluster {
     // `Cluster::apply`'s doc) — a caller with a shadow verdict has no witness to
     // pass, so this function is unreachable from one. A witness cannot change what
     // bytes go out, so the SSA patch itself has nothing to do with the value.
-    async fn apply(&self, _witness: &LiveWitness, patch: &SsaPatch) -> Result<AppliedReceipt, ProviderError> {
+    async fn apply(
+        &self,
+        _witness: &LiveWitness,
+        patch: &SsaPatch,
+    ) -> Result<AppliedReceipt, ProviderError> {
         let target = &patch.target;
 
         // IN-PLACE RESIZE: carve the live pods via the `pods/{name}/resize`
@@ -654,20 +766,45 @@ impl Cluster for KubeCluster {
             // the `resources` block differs between a limit carve and a request
             // carve, so only the block builder is per-dimension.
             return self
-                .patch_pods_resize(target, container.as_deref(), &patch.field_manager, |pod_data, cname| {
-                    let qos = pod_data.pointer("/status/qosClass").and_then(Value::as_str).unwrap_or("Burstable");
-                    let current_req =
-                        Self::pod_container_qty(pod_data, &Some(cname.to_owned()), "requests", &patch.resource);
-                    resize_resources_block(qos, &patch.resource, patch.value, current_req.as_deref())
-                })
+                .patch_pods_resize(
+                    target,
+                    container.as_deref(),
+                    &patch.field_manager,
+                    |pod_data, cname| {
+                        let qos = pod_data
+                            .pointer("/status/qosClass")
+                            .and_then(Value::as_str)
+                            .unwrap_or("Burstable");
+                        let current_req = Self::pod_container_qty(
+                            pod_data,
+                            &Some(cname.to_owned()),
+                            "requests",
+                            &patch.resource,
+                        );
+                        resize_resources_block(
+                            qos,
+                            &patch.resource,
+                            patch.value,
+                            current_req.as_deref(),
+                        )
+                    },
+                )
                 .await;
         }
 
         let (g, v) = Self::group_version(target);
-        let api_version = if g.is_empty() { v.clone() } else { format!("{g}/{v}") };
+        let api_version = if g.is_empty() {
+            v.clone()
+        } else {
+            format!("{g}/{v}")
+        };
         // Render in the resource's base unit: bytes as a bare integer, cpu with
         // the `m` suffix (a bare "250" would be read by k8s as 250 *cores*).
-        let qty = Quantity { value: patch.value, unit: Unit::for_resource(&patch.resource) }.to_string();
+        let qty = Quantity {
+            value: patch.value,
+            unit: Unit::for_resource(&patch.resource),
+        }
+        .to_string();
         let res = &patch.resource;
         let spec = match &patch.layout {
             LimitLayout::ClusterTopLevel => json!({ "resources": { "limits": { res: qty } } }),
@@ -769,7 +906,9 @@ impl Cluster for KubeCluster {
                 )),
                 other => ProviderError::ApiPermanent(other.to_string()),
             })?;
-        Ok(AppliedReceipt { source_hash: [0u8; 16] })
+        Ok(AppliedReceipt {
+            source_hash: [0u8; 16],
+        })
     }
 
     /// Phase 2 (resizePolicy-aware shrink): is an in-place shrink of `resource`
@@ -793,7 +932,9 @@ impl Cluster for KubeCluster {
         if pods.is_empty() {
             return Ok(false);
         }
-        Ok(pods.iter().all(|p| Self::container_resize_not_required(&p.data, container, resource)))
+        Ok(pods
+            .iter()
+            .all(|p| Self::container_resize_not_required(&p.data, container, resource)))
     }
 
     /// Part 3: read the target's LIVE declared `resources.requests.<resource>` — the
@@ -815,7 +956,9 @@ impl Cluster for KubeCluster {
             LimitLayout::PodResize { container } | LimitLayout::PodTemplate { container } => {
                 let mut max = 0u64;
                 for pod in self.owner_pods(target).await? {
-                    if let Some(q) = Self::pod_container_qty(&pod.data, container, "requests", resource) {
+                    if let Some(q) =
+                        Self::pod_container_qty(&pod.data, container, "requests", resource)
+                    {
                         if let Some(v) = unit.parse(&q) {
                             max = max.max(v);
                         }
@@ -852,12 +995,19 @@ impl Cluster for KubeCluster {
         _resource: &str,
     ) -> Result<bool, ProviderError> {
         // only pod-backed layouts have a per-pod restart concept.
-        if !matches!(layout, LimitLayout::PodResize { .. } | LimitLayout::PodTemplate { .. }) {
+        if !matches!(
+            layout,
+            LimitLayout::PodResize { .. } | LimitLayout::PodTemplate { .. }
+        ) {
             return Ok(false);
         }
         let pods = self.owner_pods(target).await?;
         for pod in &pods {
-            let Some(statuses) = pod.data.pointer("/status/containerStatuses").and_then(Value::as_array) else {
+            let Some(statuses) = pod
+                .data
+                .pointer("/status/containerStatuses")
+                .and_then(Value::as_array)
+            else {
                 continue;
             };
             for cs in statuses {
@@ -871,7 +1021,10 @@ impl Cluster for KubeCluster {
                 }
                 // a container currently waiting AFTER a restart (it died and is backing
                 // off / re-pulling) is also still un-stable — treat as restarting.
-                let restart_count = cs.pointer("/restartCount").and_then(Value::as_u64).unwrap_or(0);
+                let restart_count = cs
+                    .pointer("/restartCount")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0);
                 let waiting = cs.pointer("/state/waiting").is_some();
                 if restart_count > 0 && waiting {
                     return Ok(true);
@@ -894,7 +1047,10 @@ impl Cluster for KubeCluster {
         target: &Target,
         layout: &LimitLayout,
     ) -> Result<Option<StorageCapability>, ProviderError> {
-        if !matches!(layout, LimitLayout::PvcRequest | LimitLayout::ClusterStorage) {
+        if !matches!(
+            layout,
+            LimitLayout::PvcRequest | LimitLayout::ClusterStorage
+        ) {
             return Ok(None);
         }
         let obj = self.get_owner(target).await?;
@@ -921,7 +1077,10 @@ impl Cluster for KubeCluster {
 /// witness proving container `a`'s carve is class-safe while patching container
 /// `b`. It cannot be a type: `SsaPatch` is the fleet-wide payload for ten
 /// dimensions and must not grow a request-specific field.
-fn witness_matches_patch(preserved: &ClassPreserved, patch: &SsaPatch) -> Result<(), ProviderError> {
+fn witness_matches_patch(
+    preserved: &ClassPreserved,
+    patch: &SsaPatch,
+) -> Result<(), ProviderError> {
     if preserved.to() != patch.value {
         return Err(ProviderError::ApiPermanent(
             "request actuation refused: the ClassPreserved witness authorizes a different value \
@@ -946,7 +1105,10 @@ fn witness_matches_patch(preserved: &ClassPreserved, patch: &SsaPatch) -> Result
     // A layout with no container pinned resolves per-pod at write time and
     // defers to the witness's own container, so only a PINNED mismatch is a
     // refusal.
-    if container.as_deref().is_some_and(|c| c != preserved.container()) {
+    if container
+        .as_deref()
+        .is_some_and(|c| c != preserved.container())
+    {
         return Err(ProviderError::ApiPermanent(
             "request actuation refused: the ClassPreserved witness authorizes a different \
              container than the patch targets"
@@ -993,7 +1155,9 @@ impl RequestActuator for KubeCluster {
 #[cfg(test)]
 mod tests {
     use super::{request_resources_block, resize_resources_block, witness_matches_patch};
-    use breathe_provider::request::{ClassPreserved, ContainerResources, PodResources, RequestResource};
+    use breathe_provider::request::{
+        ClassPreserved, ContainerResources, PodResources, RequestResource,
+    };
     use breathe_provider::{LimitLayout, SsaPatch, Target};
     use serde_json::json;
 
@@ -1010,14 +1174,20 @@ mod tests {
     fn the_request_block_writes_requests_and_never_limits() {
         let block = request_resources_block("memory", 2 * GI);
         assert_eq!(block, json!({ "requests": { "memory": "2147483648" } }));
-        assert!(block.get("limits").is_none(), "a request carve must NEVER write a limit");
+        assert!(
+            block.get("limits").is_none(),
+            "a request carve must NEVER write a limit"
+        );
     }
 
     /// cpu renders with the `m` suffix — a bare `250` would be read by k8s as
     /// 250 *cores*, a 1000× over-reservation that would never schedule.
     #[test]
     fn the_request_block_renders_cpu_in_millicores() {
-        assert_eq!(request_resources_block("cpu", 250), json!({ "requests": { "cpu": "250m" } }));
+        assert_eq!(
+            request_resources_block("cpu", 250),
+            json!({ "requests": { "cpu": "250m" } })
+        );
     }
 
     /// The two block builders are genuinely different shapes, and the LIMIT one
@@ -1027,8 +1197,14 @@ mod tests {
     fn the_limit_block_and_the_request_block_are_not_interchangeable() {
         let limit_side = resize_resources_block("Guaranteed", "memory", 2 * GI, Some("1Gi"));
         let request_side = request_resources_block("memory", 2 * GI);
-        assert!(limit_side.get("limits").is_some(), "the limit builder writes limits");
-        assert!(request_side.get("limits").is_none(), "the request builder does not");
+        assert!(
+            limit_side.get("limits").is_some(),
+            "the limit builder writes limits"
+        );
+        assert!(
+            request_side.get("limits").is_none(),
+            "the request builder does not"
+        );
         assert_ne!(limit_side, request_side);
     }
 
@@ -1056,7 +1232,7 @@ mod tests {
     fn patch_for(container: &str, resource: &str, value: u64) -> SsaPatch {
         SsaPatch {
             target: Target {
-                namespace: "camelot-build".into(),
+                namespace: "isolated-build".into(),
                 name: "sui-cache-pg".into(),
                 kind: "StatefulSet".into(),
                 api_version: "apps/v1".into(),
@@ -1064,7 +1240,9 @@ mod tests {
                 pod_selector: None,
             },
             field_manager: "breathe-request".into(),
-            layout: LimitLayout::PodRequestResize { container: Some(container.into()) },
+            layout: LimitLayout::PodRequestResize {
+                container: Some(container.into()),
+            },
             resource: resource.into(),
             value,
         }
@@ -1103,7 +1281,9 @@ mod tests {
     fn a_request_write_on_a_limit_layout_is_refused() {
         let w = ClassPreserved::check(&pod(), "db", RequestResource::Memory, 512 * MI).unwrap();
         let mut p = patch_for("db", "memory", 512 * MI);
-        p.layout = LimitLayout::PodResize { container: Some("db".into()) };
+        p.layout = LimitLayout::PodResize {
+            container: Some("db".into()),
+        };
         assert!(witness_matches_patch(&w, &p).is_err());
     }
 
@@ -1162,11 +1342,17 @@ mod tests {
     fn generic_cr_path_builds_the_nested_ssa_spec() {
         // an Istio DestinationRule connection-pool field (Step-6) → nested spec.
         assert_eq!(
-            super::nested_json_under_spec("/spec/trafficPolicy/connectionPool/tcp/maxConnections", json!(100)),
+            super::nested_json_under_spec(
+                "/spec/trafficPolicy/connectionPool/tcp/maxConnections",
+                json!(100)
+            ),
             json!({ "trafficPolicy": { "connectionPool": { "tcp": { "maxConnections": 100 } } } })
         );
         // a ResourceQuota field (Step-8).
-        assert_eq!(super::nested_json_under_spec("/spec/hard/limits.cpu", json!(8000)), json!({ "hard": { "limits.cpu": 8000 } }));
+        assert_eq!(
+            super::nested_json_under_spec("/spec/hard/limits.cpu", json!(8000)),
+            json!({ "hard": { "limits.cpu": 8000 } })
+        );
         // reads back string-or-number uniformly.
         assert_eq!(super::json_scalar_to_string(&json!(100)), "100");
         assert_eq!(super::json_scalar_to_string(&json!("10Gi")), "10Gi");
@@ -1199,46 +1385,80 @@ mod tests {
 
         let c = Some("app".to_string());
         // NotRequired ⇒ a memory shrink is restart-free (golden).
-        assert!(KubeCluster::container_resize_not_required(&not_required, &c, "memory"));
+        assert!(KubeCluster::container_resize_not_required(
+            &not_required,
+            &c,
+            "memory"
+        ));
         // RestartContainer (explicit) ⇒ not restart-free.
-        assert!(!KubeCluster::container_resize_not_required(&restart_container, &c, "memory"));
+        assert!(!KubeCluster::container_resize_not_required(
+            &restart_container,
+            &c,
+            "memory"
+        ));
         // Absent policy ⇒ false (k8s default is RestartContainer for memory).
-        assert!(!KubeCluster::container_resize_not_required(&no_policy, &c, "memory"));
+        assert!(!KubeCluster::container_resize_not_required(
+            &no_policy, &c, "memory"
+        ));
         // A named container that doesn't exist ⇒ false (never assume).
-        assert!(!KubeCluster::container_resize_not_required(&not_required, &Some("missing".into()), "memory"));
+        assert!(!KubeCluster::container_resize_not_required(
+            &not_required,
+            &Some("missing".into()),
+            "memory"
+        ));
         // None ⇒ first container; resolves the same policy.
-        assert!(KubeCluster::container_resize_not_required(&not_required, &None, "memory"));
+        assert!(KubeCluster::container_resize_not_required(
+            &not_required,
+            &None,
+            "memory"
+        ));
     }
 
     // ── STORAGE CAPABILITY DISCOVERY (the fail-fast fix) ─────────────────────
 
     #[test]
     fn storage_class_name_for_reads_the_pvc_field_for_pvc_request() {
-        use super::{storage_class_name_for, LimitLayout};
+        use super::{LimitLayout, storage_class_name_for};
         let pvc = json!({ "spec": { "storageClassName": "local-path", "resources": { "requests": { "storage": "10Gi" } } } });
-        assert_eq!(storage_class_name_for(&pvc, &LimitLayout::PvcRequest), Some("local-path".to_string()));
+        assert_eq!(
+            storage_class_name_for(&pvc, &LimitLayout::PvcRequest),
+            Some("local-path".to_string())
+        );
     }
 
     #[test]
     fn storage_class_name_for_reads_the_cnpg_cluster_field_for_cluster_storage() {
-        use super::{storage_class_name_for, LimitLayout};
-        let cluster = json!({ "spec": { "storage": { "storageClass": "ebs-gp3", "size": "10Gi" } } });
-        assert_eq!(storage_class_name_for(&cluster, &LimitLayout::ClusterStorage), Some("ebs-gp3".to_string()));
+        use super::{LimitLayout, storage_class_name_for};
+        let cluster =
+            json!({ "spec": { "storage": { "storageClass": "ebs-gp3", "size": "10Gi" } } });
+        assert_eq!(
+            storage_class_name_for(&cluster, &LimitLayout::ClusterStorage),
+            Some("ebs-gp3".to_string())
+        );
     }
 
     #[test]
     fn storage_class_name_for_is_none_when_unset_or_not_applicable() {
-        use super::{storage_class_name_for, LimitLayout};
+        use super::{LimitLayout, storage_class_name_for};
         // omitted storageClassName (shouldn't happen post-admission, but must not panic).
-        assert_eq!(storage_class_name_for(&json!({ "spec": {} }), &LimitLayout::PvcRequest), None);
+        assert_eq!(
+            storage_class_name_for(&json!({ "spec": {} }), &LimitLayout::PvcRequest),
+            None
+        );
         // a CNPG cluster whose storage.storageClass was never set (namespace default).
         assert_eq!(
-            storage_class_name_for(&json!({ "spec": { "storage": { "size": "10Gi" } } }), &LimitLayout::ClusterStorage),
+            storage_class_name_for(
+                &json!({ "spec": { "storage": { "size": "10Gi" } } }),
+                &LimitLayout::ClusterStorage
+            ),
             None
         );
         // no PVC/StorageClass concept for this layout at all.
         assert_eq!(
-            storage_class_name_for(&json!({ "spec": {} }), &LimitLayout::PodTemplate { container: None }),
+            storage_class_name_for(
+                &json!({ "spec": {} }),
+                &LimitLayout::PodTemplate { container: None }
+            ),
             None
         );
     }
@@ -1247,7 +1467,7 @@ mod tests {
     fn storage_capability_from_flags_the_local_path_denylist_as_unsupported() {
         use super::storage_capability_from;
         use k8s_openapi::api::storage::v1::StorageClass;
-        // the real Camelot shape: local-path, no expansion, no per-volume metrics.
+        // the real the private estate shape: local-path, no expansion, no per-volume metrics.
         let sc = StorageClass {
             provisioner: "rancher.io/local-path".into(),
             allow_volume_expansion: None,
@@ -1279,7 +1499,11 @@ mod tests {
         // independent, and either being false is fatal (see StorageCapability's doc).
         use super::storage_capability_from;
         use k8s_openapi::api::storage::v1::StorageClass;
-        let sc = StorageClass { provisioner: "ebs.csi.aws.com".into(), allow_volume_expansion: Some(false), ..Default::default() };
+        let sc = StorageClass {
+            provisioner: "ebs.csi.aws.com".into(),
+            allow_volume_expansion: Some(false),
+            ..Default::default()
+        };
         let cap = storage_capability_from(&sc);
         assert!(cap.per_volume_metrics); // not on the denylist
         assert!(!cap.volume_expansion); // but expansion is off
@@ -1291,16 +1515,22 @@ mod tests {
         // The exact raw string kube-rs produces when metrics.k8s.io/v1beta1
         // isn't registered at all (metrics-server never installed) — a plain
         // 404 body the apiserver's generic handler returns, not a structured
-        // Status the client can parse (live-cluster-observed on Camelot EKS).
+        // Status the client can parse (live-cluster-observed on the private estate EKS).
         let raw = "ApiError: \"404 page not found\\n\": Failed to parse error data \
                     (ErrorResponse { status: \"404 Not Found\", message: \"\\\"404 page not found\\\\n\\\"\", \
                     reason: \"Failed to parse error data\", code: 404 })"
             .to_string();
         match super::KubeCluster::classify_pod_metrics_error(raw.clone()) {
             breathe_provider::ProviderError::ApiTransient(msg) => {
-                assert!(msg.contains("metrics-server not installed"), "message was: {msg}");
+                assert!(
+                    msg.contains("metrics-server not installed"),
+                    "message was: {msg}"
+                );
                 assert!(msg.contains("metrics.k8s.io"), "message was: {msg}");
-                assert!(msg.contains(&raw), "original error text must stay in the message for debugging");
+                assert!(
+                    msg.contains(&raw),
+                    "original error text must stay in the message for debugging"
+                );
             }
             other => panic!("expected ApiTransient, got {other:?}"),
         }
