@@ -1,6 +1,6 @@
 [package]
 name = "breathe-crd"
-version = "0.1.29"
+version = "0.1.58"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -9,16 +9,16 @@ repository.workspace = true
 description = "The MemoryBand CRD (breathe.pleme.io/v1) — the typed per-target enrollment contract; the controller reconciles only declared bands (theory/BREATHE.md §4)."
 
 [dependencies]
-breathe-control = { path = "../breathe-control", version = "0.1.29" }
-breathe-provider = { path = "../breathe-provider", version = "0.1.29" }
-breathe-auction = { path = "../breathe-auction", version = "0.1.29" }
+breathe-control = { path = "../breathe-control", version = "0.1.58" }
+breathe-provider = { path = "../breathe-provider", version = "0.1.58" }
+breathe-auction = { path = "../breathe-auction", version = "0.1.58" }
 # The BREATHABILITY contract's ISOLATION algebra — the canonical home of
 # `QosClass` / `WorkloadClass` and the seal. `RequestBandSpec`'s `qosTarget` /
 # `workloadClass` are JsonSchema MIRRORS of those two enums (this crate's own
 # `PromotionMode`↔`outorga::PromotionMode` precedent: the CRD surface needs
 # schemars, which the contract crate deliberately does not carry), with a total
 # conversion and a drift test that iterates the upstream's `ALL`.
-breathe-invariant = { path = "../crates/breathe-invariant", version = "0.1.29" }
+breathe-invariant = { path = "../crates/breathe-invariant", version = "0.1.58" }
 # The generic progressive-authority promotion FSM (shadow → confirm → effect,
 # + a fleet freeze) — a k8s-free lift of THIS crate's own `Band` promotion
 # lifecycle, extracted 2026-06-30 into formigueiro so it and breathe share one
