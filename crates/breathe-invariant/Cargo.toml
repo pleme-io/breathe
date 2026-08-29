@@ -29,7 +29,7 @@
 # the isolation was one-directional all along.
 [package]
 name = "breathe-invariant"
-version = "0.1.29"
+version = "0.1.58"
 edition = "2024"
 rust-version = "1.89"
 license = "MIT"
