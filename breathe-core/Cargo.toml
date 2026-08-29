@@ -1,6 +1,6 @@
 [package]
 name = "breathe-core"
-version = "0.1.29"
+version = "0.1.58"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -9,12 +9,12 @@ repository.workspace = true
 description = "The composed reconcile loop for breathe — binds the proven band law to a provider's atomic I/O (observe → plan → assign). breathe-core owns the loop; it is not inherited (theory/BREATHE.md §2.3)."
 
 [dependencies]
-breathe-control = { path = "../breathe-control", version = "0.1.29" }
-breathe-provider = { path = "../breathe-provider", version = "0.1.29" }
+breathe-control = { path = "../breathe-control", version = "0.1.58" }
+breathe-provider = { path = "../breathe-provider", version = "0.1.58" }
 
 [dev-dependencies]
-breathe-provider = { path = "../breathe-provider", version = "0.1.29", features = ["mock"] }
-breathe-dimensions = { path = "../breathe-dimensions", version = "0.1.29" }
+breathe-provider = { path = "../breathe-provider", version = "0.1.58", features = ["mock"] }
+breathe-dimensions = { path = "../breathe-dimensions", version = "0.1.58" }
 tokio = { version = "1.40", features = ["macros", "rt"] }
 
 [lints]
