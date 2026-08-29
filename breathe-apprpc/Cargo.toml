@@ -1,6 +1,6 @@
 [package]
 name = "breathe-apprpc"
-version = "0.1.29"
+version = "0.1.58"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -9,14 +9,14 @@ repository.workspace = true
 description = "The AppRpcCluster Cluster impl — breathe's APP-ADMIN-ENDPOINT I/O boundary (Go GOMEMLIMIT, Kafka/RabbitMQ queue prefetch, adaptive-concurrency bounds). The hands that read + carve a running app's live runtime knobs via its admin HTTP endpoint. Handles LimitLayout::ApiCall { endpoint, command }; RestartFree by construction (the knob applies live). Side effects abstracted behind the AppRpcEnv trait (the typed-spec-triplet testability seam)."
 
 [dependencies]
-breathe-control = { path = "../breathe-control", version = "0.1.29" }
-breathe-provider = { path = "../breathe-provider", version = "0.1.29" }
+breathe-control = { path = "../breathe-control", version = "0.1.58" }
+breathe-provider = { path = "../breathe-provider", version = "0.1.58" }
 async-trait = "0.1"
 # Typed Rust HTTP client (rustls, no openssl) — no shelling to curl.
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 
 [dev-dependencies]
-breathe-provider = { path = "../breathe-provider", version = "0.1.29", features = ["mock"] }
+breathe-provider = { path = "../breathe-provider", version = "0.1.58", features = ["mock"] }
 tokio = { version = "1", features = ["macros", "rt"] }
 
 [lints]
