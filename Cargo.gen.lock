@@ -31,7 +31,7 @@
     "breathe-runtime/Cargo.toml": "f873c371cad2dee94a1990cc2002c83693209e7f8b03e3d5e9cdceaf8b616255",
     "breathe-store/Cargo.toml": "6c8691fa6675ec8af2c620a0a8cfcf15e149fb9ff231fbd03eea96956b33db1d",
     "crates/breathe-invariant/Cargo.toml": "d1bfb84f281b85edb5d10e5a35281d9c153203e42b3e8d1d87ae4791bf064be5",
-    "crates/breathe-spread/Cargo.toml": "05e0be0a78c4285c5bdcdf6b0d8cbd6896f760f79f8b5a4cfba129413fe6be80"
+    "crates/breathe-spread/Cargo.toml": "676212758e3c8564e33c0720bac4097c45378cdc8c12f1e99230cb15e112e50d"
   },
   "target_resolves": {
     "base": {
