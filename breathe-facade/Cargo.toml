@@ -1,6 +1,6 @@
 [package]
 name = "breathe-facade"
-version = "0.1.29"
+version = "0.1.58"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -9,11 +9,11 @@ repository.workspace = true
 description = "The typed facade over breathe's k8s CRD state — the BreatheStore trait (KubeStore real / mockable) shared by every surface (MCP, REST, gRPC, GraphQL). The CRDs ARE the state; this is a typed projection + mutation morphism over kube::Api<T>, not a second store. Solved once so all surfaces drive the same core."
 
 [dependencies]
-breathe-crd = { path = "../breathe-crd", version = "0.1.29" }
+breathe-crd = { path = "../breathe-crd", version = "0.1.58" }
 # The canonical ten-arm DimensionId (and CONFIRMED_ANNOTATION) — the kind
 # vocabulary every surface dispatches on, re-exported rather than re-declared.
-breathe-provider = { path = "../breathe-provider", version = "0.1.29" }
-breathe-catalog = { path = "../breathe-catalog", version = "0.1.29" }
+breathe-provider = { path = "../breathe-provider", version = "0.1.58" }
+breathe-catalog = { path = "../breathe-catalog", version = "0.1.58" }
 kube = { version = "0.96", features = ["client", "runtime", "derive", "rustls-tls"], default-features = false }
 k8s-openapi = { version = "0.23", features = ["latest"] }
 async-trait = "0.1"
