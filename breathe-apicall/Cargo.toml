@@ -1,6 +1,6 @@
 [package]
 name = "breathe-apicall"
-version = "0.1.29"
+version = "0.1.58"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -9,8 +9,8 @@ repository.workspace = true
 description = "The ApiCallCluster Cluster impl — breathe's PROTOCOL-API I/O boundary (Redis CONFIG SET, Kafka, NATS JetStream). The hands that apply a LimitLayout::ApiCall { endpoint, command } decision by reading/writing a live data-system parameter via a TYPED Rust client (the `redis` crate) — no shell, no CLI. Mirrors HostCluster; reuses the one BandProvider. Side effects abstracted behind the async ApiCallEnv trait (the typed-spec-triplet testability seam)."
 
 [dependencies]
-breathe-control = { path = "../breathe-control", version = "0.1.29" }
-breathe-provider = { path = "../breathe-provider", version = "0.1.29" }
+breathe-control = { path = "../breathe-control", version = "0.1.58" }
+breathe-provider = { path = "../breathe-provider", version = "0.1.58" }
 async-trait = "0.1"
 # Typed Redis client (async, tokio) — no shelling to redis-cli.
 redis = { version = "0.27", default-features = false, features = ["tokio-comp"] }
