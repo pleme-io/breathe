@@ -1,6 +1,6 @@
 [package]
 name = "breathe-provider"
-version = "0.1.29"
+version = "0.1.58"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -9,7 +9,7 @@ repository.workspace = true
 description = "The ResourceProvider + Cluster traits — the non-overloadable, category-atomic I/O boundary every breathe dimension implements (theory/BREATHE.md §3). No controller dependency."
 
 [dependencies]
-breathe-control = { path = "../breathe-control", version = "0.1.29" }
+breathe-control = { path = "../breathe-control", version = "0.1.58" }
 # The BREATHABILITY contract crate — consumed for its ISOLATION algebra, which
 # the `request` module below is the runtime face of: `QosClass` (the k8s-derived
 # seal strength), `WorkloadClass` (the criticality axis), `IsolationPosture::
@@ -17,7 +17,7 @@ breathe-control = { path = "../breathe-control", version = "0.1.29" }
 # `carve_respecting_seal -> SealedCarve` (a below-seal carve has no code path in
 # the OUTPUT type). Reused, never re-declared: this is the one home of that
 # algebra, and the Request dimension is its second consumer.
-breathe-invariant = { path = "../crates/breathe-invariant", version = "0.1.29" }
+breathe-invariant = { path = "../crates/breathe-invariant", version = "0.1.58" }
 async-trait = "0.1"
 # DisruptionPolicy is the one canonical restart-policy type: the behavior gate
 # (permits()) here AND the per-band CRD field (breathe-crd) — so it carries the
