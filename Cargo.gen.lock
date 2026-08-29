@@ -1,37 +1,37 @@
 {
   "schema_version": 2,
-  "cargo_lock_sha256": "93e9bcc06e8f132afeea1860c236e631fe81d30e6de11648f29d80d7b2360e6c",
+  "cargo_lock_sha256": "6ad7d16fd7121c1d760020252cf2289e57f928e917a23ce05dd2616c1a4e1917",
   "manifest_sha256": {
     "Cargo.toml": "fb522df56773295398f811768dd9448dc735de3ea66771a671198aa666ef08c1",
-    "breathe-actuator/Cargo.toml": "9ecbd58bfdd409b20d88f5540c61c70aaa3d96f8022c4fd04468373ec622a982",
-    "breathe-admission/Cargo.toml": "50342b259ec24b12b7a19a66427ed151602e4433f3ab2fdc43cd44f7972c40cb",
-    "breathe-api-server/Cargo.toml": "6d53d625556176279512562565d1fc5573a586e60837257074ecd5b2e57a1ab2",
-    "breathe-apicall/Cargo.toml": "b3adb2f5de81c22929e843a0481d6def2db54485251134136c4d3abefc8b86c5",
-    "breathe-apprpc/Cargo.toml": "8f6a8389cf1223c9d52ca66834637d98822a185fec58799af260cc367f051024",
-    "breathe-auction/Cargo.toml": "9188ebf88d5a9bdb38f207190ce152c0eb4f47c31eab4cc1c483ca87827df6a3",
-    "breathe-catalog/Cargo.toml": "bd8efd8065ebdb03d4f7ca87a5cc3923313508ed5147e7006d6e576a5eb29895",
-    "breathe-config/Cargo.toml": "627c6b125ad4cca9c461c8846f2dd263f4bf302390ff44d809e7ffe65c66dc40",
-    "breathe-configreload/Cargo.toml": "9f4a88c503c32e33bb6a1ca232aca6e663cb89b810935d99ec634b80817d309f",
-    "breathe-control/Cargo.toml": "e0cd62e4dfd68c723a9e12b6a5b0c9ec7f48fd8d6d0cc7e6e4ba66e8ddff6bd2",
-    "breathe-controller/Cargo.toml": "749c145841e005f0257c3d15e87d6acec498f8bef1b94814a1592af4c345be8b",
-    "breathe-core/Cargo.toml": "8f9cef4107a98e25ac3cd717f7df52c0584b9aba29aa932aebd1781c3c37e418",
-    "breathe-crd/Cargo.toml": "18c62ae158793a55639c69b5f0df47a4dcb76bd91eda5b7a592109abf39c7035",
-    "breathe-dimensions/Cargo.toml": "83c6626104b82ecfafb7942f62a8e9459d4bc81b04bc7c63d01c6148b1757fae",
-    "breathe-discovery/Cargo.toml": "d6b01d386369b37964120c6b92dc675bd1752d6f7045a0c09b383cc4b910ce31",
-    "breathe-facade/Cargo.toml": "4bf6e4eae7bccd4776239fca0025c3ed28ecd4cae08cb121d6a6036ce906dde0",
-    "breathe-host-agent/Cargo.toml": "a491b92fefe586c116216ca73ea2fab5be54b4af8294ebdab4f10e09d0bce5fb",
-    "breathe-host/Cargo.toml": "0edfa0ce41027935a2e9e449924172408eedb1d1e3c44de056173980b0f661cc",
-    "breathe-jmx/Cargo.toml": "e6b67d318e9a70267a0e8dcb71628792631bd626d0413a27732f321abdd2c7f4",
-    "breathe-kube/Cargo.toml": "c8f86adf3c112fa045ab076c058761ce50b95ae498ff8dd32534f15b62647b8f",
-    "breathe-mcp/Cargo.toml": "6e2028c506ee7c702130fe93505fb1afec9c379c987ba6ee2fe2e5616fb412fa",
-    "breathe-nodewaste/Cargo.toml": "50d4cec3a671692dc994662b968b07e21671495ac4c6e686be2e1fd30996eb29",
-    "breathe-provider/Cargo.toml": "f1e9d709e221820f5b1b61bc9abeada980b0b0fdf0c10236a3de040dd5b86b37",
-    "breathe-provision/Cargo.toml": "4c28526baf27313ac16f4683c13001e287c50394590a6f436e52c0c5480701e1",
-    "breathe-retirada-ci/Cargo.toml": "e885f8ed070465e00cedc46b5991e558d74ad04c01ee5624a08869ae9fdbb31c",
-    "breathe-runtime/Cargo.toml": "f873c371cad2dee94a1990cc2002c83693209e7f8b03e3d5e9cdceaf8b616255",
-    "breathe-store/Cargo.toml": "6c8691fa6675ec8af2c620a0a8cfcf15e149fb9ff231fbd03eea96956b33db1d",
-    "crates/breathe-invariant/Cargo.toml": "d1bfb84f281b85edb5d10e5a35281d9c153203e42b3e8d1d87ae4791bf064be5",
-    "crates/breathe-spread/Cargo.toml": "676212758e3c8564e33c0720bac4097c45378cdc8c12f1e99230cb15e112e50d"
+    "breathe-actuator/Cargo.toml": "a8c3b8b233c30fbca82609cee0a423f275f17f2639846f910b91906058c9ab98",
+    "breathe-admission/Cargo.toml": "35668123f778b381c620e1d21cd36e11b85d291eddde5ef8c7937b429b5cde88",
+    "breathe-api-server/Cargo.toml": "c25d9751fd8e8a486d6c81e6241e29707115ef5aef0c62752d97208a08bc5781",
+    "breathe-apicall/Cargo.toml": "a282aa903ffe0b4cf6b2cd953dc4ce98260a9a1a2c6f9f0fee89081e4e048808",
+    "breathe-apprpc/Cargo.toml": "17b74a9bcd2b21beef605546443baa2f3bbd7facfca1d9e2624c98a4a6c520eb",
+    "breathe-auction/Cargo.toml": "2d231268506898105ae706486304f80adc7d683bc6e526dfd5a303f6877419cc",
+    "breathe-catalog/Cargo.toml": "3bed7f806d53e2575ed26799bf2633321dbe9b31f934d43b13e2ae347c8c7b98",
+    "breathe-config/Cargo.toml": "45930d71ebcfe9a0156827f723566a60d5d5c0afb283fa70075e1592c6e5a89e",
+    "breathe-configreload/Cargo.toml": "4306e295fe7301f772c8a416b1fc49b3f751570abe080988f79cac75d85f3493",
+    "breathe-control/Cargo.toml": "d52dbdf9a50e579d1f334f9d99b189d848c081298b66e12de61363afb37fc709",
+    "breathe-controller/Cargo.toml": "4679fcd9c4a30fedf1491e06bd52e1a16fd80cf36f59013767ea907528c78a57",
+    "breathe-core/Cargo.toml": "226521725186e7b6f9e9a788a92b13b135b1fca92a86846a9ac06e9180b57bc4",
+    "breathe-crd/Cargo.toml": "829846376135fc3c711afe2d2617a4493079dac531a7a2ab2b5cd3e62906fb16",
+    "breathe-dimensions/Cargo.toml": "0ecb406c2cf07c23ecafa7c2bdeac05cfcae9b8ecee4f443a9ace5b74b38e9d2",
+    "breathe-discovery/Cargo.toml": "0b2b6a320d85405efd6be2f09f3b0c3ecf792969ca54b6008ac4e00692cac1e4",
+    "breathe-facade/Cargo.toml": "ee7804fa0fe0ba3f9e27188c20cc1e099f7e975f0d94d439dd6533f735776166",
+    "breathe-host-agent/Cargo.toml": "04d65208811b8b12a39cd3d483eaf70704b8b12b7deff578b81b90ead35e1b3b",
+    "breathe-host/Cargo.toml": "b7587ee811f0b6fea6b1547c5c778ef4740a8e4734a338daf3dc265802822297",
+    "breathe-jmx/Cargo.toml": "9c13690670840526bd3bca028ff1e951e3dc1271811097ad84e94cb92a8bc84e",
+    "breathe-kube/Cargo.toml": "597c84834d1271a3dbdb772c53cb49782279eac55101d7967a0817d1b8e50feb",
+    "breathe-mcp/Cargo.toml": "4d2514659213688a7f15e3460e6b2e7e2cfb6bd3b73ce5cfb7d235dc71ec5bba",
+    "breathe-nodewaste/Cargo.toml": "ce07177450aaf8f2b91674504faa6610112b079487055dfbbd2d641b32dd273b",
+    "breathe-provider/Cargo.toml": "1e81fb508c486ef148482bc28f6a84e37bf5dae4802690af7d407210541c7514",
+    "breathe-provision/Cargo.toml": "ad409b6e78339ba6b73a218148d61028f5d43776612b578b54c923be4c6a7249",
+    "breathe-retirada-ci/Cargo.toml": "9d9eecb2ad7cf8bd9ed31f97b7807fd662e51530798ed15a291b4cb2cbee14f2",
+    "breathe-runtime/Cargo.toml": "b85d587455ccce752d92755fb9b04777405be6dd248b9c2bf019db5b735e57af",
+    "breathe-store/Cargo.toml": "c3ccad463c718d11f3397c75eab4b897fd35ab5f6449b21f0665f53bb25bd44c",
+    "crates/breathe-invariant/Cargo.toml": "fd57e6bcd1d3d9691c506b345592763080108e3edf2ab3893f134aa2aba34c19",
+    "crates/breathe-spread/Cargo.toml": "7e2e0e1c1eb5376a250d11f6eb2601aac25987e339d8a3e5a37baed88bab01e9"
   },
   "target_resolves": {
     "base": {
@@ -5372,7 +5372,7 @@
         "build_dependencies": [],
         "features": []
       },
-      "breathe-actuator-0.1.29": {
+      "breathe-actuator-0.1.58": {
         "runtime_dependencies": [
           {
             "name": "async_trait",
@@ -5386,7 +5386,7 @@
           },
           {
             "name": "breathe_apicall",
-            "package_key": "breathe-apicall-0.1.29",
+            "package_key": "breathe-apicall-0.1.58",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -5396,7 +5396,7 @@
           },
           {
             "name": "breathe_apprpc",
-            "package_key": "breathe-apprpc-0.1.29",
+            "package_key": "breathe-apprpc-0.1.58",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -5406,7 +5406,7 @@
           },
           {
             "name": "breathe_configreload",
-            "package_key": "breathe-configreload-0.1.29",
+            "package_key": "breathe-configreload-0.1.58",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -5416,7 +5416,7 @@
           },
           {
             "name": "breathe_jmx",
-            "package_key": "breathe-jmx-0.1.29",
+            "package_key": "breathe-jmx-0.1.58",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -5426,7 +5426,7 @@
           },
           {
             "name": "breathe_kube",
-            "package_key": "breathe-kube-0.1.29",
+            "package_key": "breathe-kube-0.1.58",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -5436,7 +5436,7 @@
           },
           {
             "name": "breathe_provider",
-            "package_key": "breathe-provider-0.1.29",
+            "package_key": "breathe-provider-0.1.58",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -5448,7 +5448,7 @@
         "build_dependencies": [],
         "features": []
       },
-      "breathe-admission-0.1.29": {
+      "breathe-admission-0.1.58": {
         "runtime_dependencies": [
           {
             "name": "async_trait",
@@ -5462,7 +5462,7 @@
           },
           {
             "name": "breathe_provider",
-            "package_key": "breathe-provider-0.1.29",
+            "package_key": "breathe-provider-0.1.58",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -5506,7 +5506,7 @@
         "build_dependencies": [],
         "features": []
       },
-      "breathe-api-server-0.1.29": {
+      "breathe-api-server-0.1.58": {
         "runtime_dependencies": [
           {
             "name": "async_graphql",
@@ -5540,7 +5540,7 @@
           },
           {
             "name": "breathe_facade",
-            "package_key": "breathe-facade-0.1.29",
+            "package_key": "breathe-facade-0.1.58",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -5550,7 +5550,7 @@
           },
           {
             "name": "breathe_provider",
-            "package_key": "breathe-provider-0.1.29",
+            "package_key": "breathe-provider-0.1.58",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -5733,7 +5733,7 @@
         ],
         "features": []
       },
-      "breathe-apicall-0.1.29": {
+      "breathe-apicall-0.1.58": {
         "runtime_dependencies": [
           {
             "name": "async_trait",
@@ -5747,7 +5747,7 @@
           },
           {
             "name": "breathe_control",
-            "package_key": "breathe-control-0.1.29",
+            "package_key": "breathe-control-0.1.58",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -5757,7 +5757,7 @@
           },
           {
             "name": "breathe_provider",
-            "package_key": "breathe-provider-0.1.29",
+            "package_key": "breathe-provider-0.1.58",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -5781,7 +5781,7 @@
         "build_dependencies": [],
         "features": []
       },
-      "breathe-apprpc-0.1.29": {
+      "breathe-apprpc-0.1.58": {
         "runtime_dependencies": [
           {
             "name": "async_trait",
@@ -5795,7 +5795,7 @@
           },
           {
             "name": "breathe_control",
-            "package_key": "breathe-control-0.1.29",
+            "package_key": "breathe-control-0.1.58",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -5805,7 +5805,7 @@
           },
           {
             "name": "breathe_provider",
-            "package_key": "breathe-provider-0.1.29",
+            "package_key": "breathe-provider-0.1.58",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -5829,11 +5829,11 @@
         "build_dependencies": [],
         "features": []
       },
-      "breathe-auction-0.1.29": {
+      "breathe-auction-0.1.58": {
         "runtime_dependencies": [
           {
             "name": "breathe_catalog",
-            "package_key": "breathe-catalog-0.1.29",
+            "package_key": "breathe-catalog-0.1.58",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -5843,7 +5843,7 @@
           },
           {
             "name": "breathe_control",
-            "package_key": "breathe-control-0.1.29",
+            "package_key": "breathe-control-0.1.58",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -5853,7 +5853,7 @@
           },
           {
             "name": "breathe_provider",
-            "package_key": "breathe-provider-0.1.29",
+            "package_key": "breathe-provider-0.1.58",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -5885,11 +5885,11 @@
         "build_dependencies": [],
         "features": []
       },
-      "breathe-catalog-0.1.29": {
+      "breathe-catalog-0.1.58": {
         "runtime_dependencies": [
           {
             "name": "breathe_provider",
-            "package_key": "breathe-provider-0.1.29",
+            "package_key": "breathe-provider-0.1.58",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -5901,7 +5901,7 @@
         "build_dependencies": [],
         "features": []
       },
-      "breathe-config-0.1.29": {
+      "breathe-config-0.1.58": {
         "runtime_dependencies": [
           {
             "name": "kanchi",
@@ -5949,7 +5949,7 @@
         "build_dependencies": [],
         "features": []
       },
-      "breathe-configreload-0.1.29": {
+      "breathe-configreload-0.1.58": {
         "runtime_dependencies": [
           {
             "name": "async_trait",
@@ -5963,7 +5963,7 @@
           },
           {
             "name": "breathe_control",
-            "package_key": "breathe-control-0.1.29",
+            "package_key": "breathe-control-0.1.58",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -5973,7 +5973,7 @@
           },
           {
             "name": "breathe_provider",
-            "package_key": "breathe-provider-0.1.29",
+            "package_key": "breathe-provider-0.1.58",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -5985,12 +5985,12 @@
         "build_dependencies": [],
         "features": []
       },
-      "breathe-control-0.1.29": {
+      "breathe-control-0.1.58": {
         "runtime_dependencies": [],
         "build_dependencies": [],
         "features": []
       },
-      "breathe-controller-0.1.29": {
+      "breathe-controller-0.1.58": {
         "runtime_dependencies": [
           {
             "name": "async_nats",
@@ -6056,7 +6056,7 @@
           },
           {
             "name": "breathe_actuator",
-            "package_key": "breathe-actuator-0.1.29",
+            "package_key": "breathe-actuator-0.1.58",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -6066,7 +6066,7 @@
           },
           {
             "name": "breathe_admission",
-            "package_key": "breathe-admission-0.1.29",
+            "package_key": "breathe-admission-0.1.58",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -6076,7 +6076,7 @@
           },
           {
             "name": "breathe_auction",
-            "package_key": "breathe-auction-0.1.29",
+            "package_key": "breathe-auction-0.1.58",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -6086,7 +6086,7 @@
           },
           {
             "name": "breathe_config",
-            "package_key": "breathe-config-0.1.29",
+            "package_key": "breathe-config-0.1.58",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -6096,7 +6096,7 @@
           },
           {
             "name": "breathe_control",
-            "package_key": "breathe-control-0.1.29",
+            "package_key": "breathe-control-0.1.58",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -6106,7 +6106,7 @@
           },
           {
             "name": "breathe_core",
-            "package_key": "breathe-core-0.1.29",
+            "package_key": "breathe-core-0.1.58",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -6116,7 +6116,7 @@
           },
           {
             "name": "breathe_crd",
-            "package_key": "breathe-crd-0.1.29",
+            "package_key": "breathe-crd-0.1.58",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -6126,7 +6126,7 @@
           },
           {
             "name": "breathe_dimensions",
-            "package_key": "breathe-dimensions-0.1.29",
+            "package_key": "breathe-dimensions-0.1.58",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -6136,7 +6136,7 @@
           },
           {
             "name": "breathe_discovery",
-            "package_key": "breathe-discovery-0.1.29",
+            "package_key": "breathe-discovery-0.1.58",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -6146,7 +6146,7 @@
           },
           {
             "name": "breathe_kube",
-            "package_key": "breathe-kube-0.1.29",
+            "package_key": "breathe-kube-0.1.58",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -6156,7 +6156,7 @@
           },
           {
             "name": "breathe_provider",
-            "package_key": "breathe-provider-0.1.29",
+            "package_key": "breathe-provider-0.1.58",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -6166,7 +6166,7 @@
           },
           {
             "name": "breathe_provision",
-            "package_key": "breathe-provision-0.1.29",
+            "package_key": "breathe-provision-0.1.58",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -6176,7 +6176,7 @@
           },
           {
             "name": "breathe_runtime",
-            "package_key": "breathe-runtime-0.1.29",
+            "package_key": "breathe-runtime-0.1.58",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -6186,7 +6186,7 @@
           },
           {
             "name": "breathe_spread",
-            "package_key": "breathe-spread-0.1.29",
+            "package_key": "breathe-spread-0.1.58",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -6196,7 +6196,7 @@
           },
           {
             "name": "breathe_store",
-            "package_key": "breathe-store-0.1.29",
+            "package_key": "breathe-store-0.1.58",
             "kind": "normal",
             "features": [
               "postgres"
@@ -6338,11 +6338,11 @@
         "build_dependencies": [],
         "features": []
       },
-      "breathe-core-0.1.29": {
+      "breathe-core-0.1.58": {
         "runtime_dependencies": [
           {
             "name": "breathe_control",
-            "package_key": "breathe-control-0.1.29",
+            "package_key": "breathe-control-0.1.58",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -6352,7 +6352,7 @@
           },
           {
             "name": "breathe_provider",
-            "package_key": "breathe-provider-0.1.29",
+            "package_key": "breathe-provider-0.1.58",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -6364,7 +6364,7 @@
         "build_dependencies": [],
         "features": []
       },
-      "breathe-crd-0.1.29": {
+      "breathe-crd-0.1.58": {
         "runtime_dependencies": [
           {
             "name": "anyhow",
@@ -6378,7 +6378,7 @@
           },
           {
             "name": "breathe_auction",
-            "package_key": "breathe-auction-0.1.29",
+            "package_key": "breathe-auction-0.1.58",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -6388,7 +6388,7 @@
           },
           {
             "name": "breathe_control",
-            "package_key": "breathe-control-0.1.29",
+            "package_key": "breathe-control-0.1.58",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -6398,7 +6398,7 @@
           },
           {
             "name": "breathe_invariant",
-            "package_key": "breathe-invariant-0.1.29",
+            "package_key": "breathe-invariant-0.1.58",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -6408,7 +6408,7 @@
           },
           {
             "name": "breathe_provider",
-            "package_key": "breathe-provider-0.1.29",
+            "package_key": "breathe-provider-0.1.58",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -6508,11 +6508,11 @@
         "build_dependencies": [],
         "features": []
       },
-      "breathe-dimensions-0.1.29": {
+      "breathe-dimensions-0.1.58": {
         "runtime_dependencies": [
           {
             "name": "breathe_provider",
-            "package_key": "breathe-provider-0.1.29",
+            "package_key": "breathe-provider-0.1.58",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -6524,12 +6524,12 @@
         "build_dependencies": [],
         "features": []
       },
-      "breathe-discovery-0.1.29": {
+      "breathe-discovery-0.1.58": {
         "runtime_dependencies": [],
         "build_dependencies": [],
         "features": []
       },
-      "breathe-facade-0.1.29": {
+      "breathe-facade-0.1.58": {
         "runtime_dependencies": [
           {
             "name": "async_trait",
@@ -6543,7 +6543,7 @@
           },
           {
             "name": "breathe_catalog",
-            "package_key": "breathe-catalog-0.1.29",
+            "package_key": "breathe-catalog-0.1.58",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -6553,7 +6553,7 @@
           },
           {
             "name": "breathe_crd",
-            "package_key": "breathe-crd-0.1.29",
+            "package_key": "breathe-crd-0.1.58",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -6563,7 +6563,7 @@
           },
           {
             "name": "breathe_provider",
-            "package_key": "breathe-provider-0.1.29",
+            "package_key": "breathe-provider-0.1.58",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -6644,7 +6644,7 @@
         "build_dependencies": [],
         "features": []
       },
-      "breathe-host-0.1.29": {
+      "breathe-host-0.1.58": {
         "runtime_dependencies": [
           {
             "name": "async_trait",
@@ -6658,7 +6658,7 @@
           },
           {
             "name": "breathe_control",
-            "package_key": "breathe-control-0.1.29",
+            "package_key": "breathe-control-0.1.58",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -6668,7 +6668,7 @@
           },
           {
             "name": "breathe_provider",
-            "package_key": "breathe-provider-0.1.29",
+            "package_key": "breathe-provider-0.1.58",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -6680,11 +6680,11 @@
         "build_dependencies": [],
         "features": []
       },
-      "breathe-host-agent-0.1.29": {
+      "breathe-host-agent-0.1.58": {
         "runtime_dependencies": [
           {
             "name": "breathe_control",
-            "package_key": "breathe-control-0.1.29",
+            "package_key": "breathe-control-0.1.58",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -6694,7 +6694,7 @@
           },
           {
             "name": "breathe_core",
-            "package_key": "breathe-core-0.1.29",
+            "package_key": "breathe-core-0.1.58",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -6704,7 +6704,7 @@
           },
           {
             "name": "breathe_crd",
-            "package_key": "breathe-crd-0.1.29",
+            "package_key": "breathe-crd-0.1.58",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -6714,7 +6714,7 @@
           },
           {
             "name": "breathe_host",
-            "package_key": "breathe-host-0.1.29",
+            "package_key": "breathe-host-0.1.58",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -6724,7 +6724,7 @@
           },
           {
             "name": "breathe_nodewaste",
-            "package_key": "breathe-nodewaste-0.1.29",
+            "package_key": "breathe-nodewaste-0.1.58",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -6734,7 +6734,7 @@
           },
           {
             "name": "breathe_provider",
-            "package_key": "breathe-provider-0.1.29",
+            "package_key": "breathe-provider-0.1.58",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -6744,7 +6744,7 @@
           },
           {
             "name": "breathe_runtime",
-            "package_key": "breathe-runtime-0.1.29",
+            "package_key": "breathe-runtime-0.1.58",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -6916,7 +6916,7 @@
         "build_dependencies": [],
         "features": []
       },
-      "breathe-invariant-0.1.29": {
+      "breathe-invariant-0.1.58": {
         "runtime_dependencies": [
           {
             "name": "serde",
@@ -6944,7 +6944,7 @@
         "build_dependencies": [],
         "features": []
       },
-      "breathe-jmx-0.1.29": {
+      "breathe-jmx-0.1.58": {
         "runtime_dependencies": [
           {
             "name": "async_trait",
@@ -6958,7 +6958,7 @@
           },
           {
             "name": "breathe_control",
-            "package_key": "breathe-control-0.1.29",
+            "package_key": "breathe-control-0.1.58",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -6968,7 +6968,7 @@
           },
           {
             "name": "breathe_provider",
-            "package_key": "breathe-provider-0.1.29",
+            "package_key": "breathe-provider-0.1.58",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -6992,7 +6992,7 @@
         "build_dependencies": [],
         "features": []
       },
-      "breathe-kube-0.1.29": {
+      "breathe-kube-0.1.58": {
         "runtime_dependencies": [
           {
             "name": "async_trait",
@@ -7006,7 +7006,7 @@
           },
           {
             "name": "breathe_control",
-            "package_key": "breathe-control-0.1.29",
+            "package_key": "breathe-control-0.1.58",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -7016,7 +7016,7 @@
           },
           {
             "name": "breathe_provider",
-            "package_key": "breathe-provider-0.1.29",
+            "package_key": "breathe-provider-0.1.58",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -7076,7 +7076,7 @@
         "build_dependencies": [],
         "features": []
       },
-      "breathe-mcp-0.1.29": {
+      "breathe-mcp-0.1.58": {
         "runtime_dependencies": [
           {
             "name": "anyhow",
@@ -7090,7 +7090,7 @@
           },
           {
             "name": "breathe_facade",
-            "package_key": "breathe-facade-0.1.29",
+            "package_key": "breathe-facade-0.1.58",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -7100,7 +7100,7 @@
           },
           {
             "name": "breathe_provider",
-            "package_key": "breathe-provider-0.1.29",
+            "package_key": "breathe-provider-0.1.58",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -7204,12 +7204,12 @@
         "build_dependencies": [],
         "features": []
       },
-      "breathe-nodewaste-0.1.29": {
+      "breathe-nodewaste-0.1.58": {
         "runtime_dependencies": [],
         "build_dependencies": [],
         "features": []
       },
-      "breathe-provider-0.1.29": {
+      "breathe-provider-0.1.58": {
         "runtime_dependencies": [
           {
             "name": "async_trait",
@@ -7233,7 +7233,7 @@
           },
           {
             "name": "breathe_control",
-            "package_key": "breathe-control-0.1.29",
+            "package_key": "breathe-control-0.1.58",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -7243,7 +7243,7 @@
           },
           {
             "name": "breathe_invariant",
-            "package_key": "breathe-invariant-0.1.29",
+            "package_key": "breathe-invariant-0.1.58",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -7299,7 +7299,7 @@
           "mock"
         ]
       },
-      "breathe-provision-0.1.29": {
+      "breathe-provision-0.1.58": {
         "runtime_dependencies": [
           {
             "name": "async_trait",
@@ -7313,7 +7313,7 @@
           },
           {
             "name": "breathe_admission",
-            "package_key": "breathe-admission-0.1.29",
+            "package_key": "breathe-admission-0.1.58",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -7323,7 +7323,7 @@
           },
           {
             "name": "breathe_auction",
-            "package_key": "breathe-auction-0.1.29",
+            "package_key": "breathe-auction-0.1.58",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -7333,7 +7333,7 @@
           },
           {
             "name": "breathe_control",
-            "package_key": "breathe-control-0.1.29",
+            "package_key": "breathe-control-0.1.58",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -7343,7 +7343,7 @@
           },
           {
             "name": "breathe_provider",
-            "package_key": "breathe-provider-0.1.29",
+            "package_key": "breathe-provider-0.1.58",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -7355,7 +7355,7 @@
         "build_dependencies": [],
         "features": []
       },
-      "breathe-retirada-ci-0.1.29": {
+      "breathe-retirada-ci-0.1.58": {
         "runtime_dependencies": [
           {
             "name": "anyhow",
@@ -7474,11 +7474,11 @@
           "watch-cli"
         ]
       },
-      "breathe-runtime-0.1.29": {
+      "breathe-runtime-0.1.58": {
         "runtime_dependencies": [
           {
             "name": "breathe_control",
-            "package_key": "breathe-control-0.1.29",
+            "package_key": "breathe-control-0.1.58",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -7488,7 +7488,7 @@
           },
           {
             "name": "breathe_core",
-            "package_key": "breathe-core-0.1.29",
+            "package_key": "breathe-core-0.1.58",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -7498,7 +7498,7 @@
           },
           {
             "name": "breathe_crd",
-            "package_key": "breathe-crd-0.1.29",
+            "package_key": "breathe-crd-0.1.58",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -7508,7 +7508,7 @@
           },
           {
             "name": "breathe_provider",
-            "package_key": "breathe-provider-0.1.29",
+            "package_key": "breathe-provider-0.1.58",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -7518,7 +7518,7 @@
           },
           {
             "name": "breathe_store",
-            "package_key": "breathe-store-0.1.29",
+            "package_key": "breathe-store-0.1.58",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -7576,7 +7576,7 @@
         "build_dependencies": [],
         "features": []
       },
-      "breathe-spread-0.1.29": {
+      "breathe-spread-0.1.58": {
         "runtime_dependencies": [
           {
             "name": "serde",
@@ -7604,7 +7604,7 @@
         "build_dependencies": [],
         "features": []
       },
-      "breathe-store-0.1.29": {
+      "breathe-store-0.1.58": {
         "runtime_dependencies": [
           {
             "name": "async_trait",
@@ -33114,21 +33114,21 @@
     "block2-0.6.2": {
       "edition": "2021"
     },
-    "breathe-actuator-0.1.29": {
+    "breathe-actuator-0.1.58": {
       "edition": "2024",
       "lib_target": {
         "name": "breathe_actuator",
         "path": "src/lib.rs"
       }
     },
-    "breathe-admission-0.1.29": {
+    "breathe-admission-0.1.58": {
       "edition": "2024",
       "lib_target": {
         "name": "breathe_admission",
         "path": "src/lib.rs"
       }
     },
-    "breathe-api-server-0.1.29": {
+    "breathe-api-server-0.1.58": {
       "edition": "2024",
       "build_script": "build.rs",
       "lib_target": {
@@ -33142,56 +33142,56 @@
         }
       ]
     },
-    "breathe-apicall-0.1.29": {
+    "breathe-apicall-0.1.58": {
       "edition": "2024",
       "lib_target": {
         "name": "breathe_apicall",
         "path": "src/lib.rs"
       }
     },
-    "breathe-apprpc-0.1.29": {
+    "breathe-apprpc-0.1.58": {
       "edition": "2024",
       "lib_target": {
         "name": "breathe_apprpc",
         "path": "src/lib.rs"
       }
     },
-    "breathe-auction-0.1.29": {
+    "breathe-auction-0.1.58": {
       "edition": "2024",
       "lib_target": {
         "name": "breathe_auction",
         "path": "src/lib.rs"
       }
     },
-    "breathe-catalog-0.1.29": {
+    "breathe-catalog-0.1.58": {
       "edition": "2024",
       "lib_target": {
         "name": "breathe_catalog",
         "path": "src/lib.rs"
       }
     },
-    "breathe-config-0.1.29": {
+    "breathe-config-0.1.58": {
       "edition": "2024",
       "lib_target": {
         "name": "breathe_config",
         "path": "src/lib.rs"
       }
     },
-    "breathe-configreload-0.1.29": {
+    "breathe-configreload-0.1.58": {
       "edition": "2024",
       "lib_target": {
         "name": "breathe_configreload",
         "path": "src/lib.rs"
       }
     },
-    "breathe-control-0.1.29": {
+    "breathe-control-0.1.58": {
       "edition": "2024",
       "lib_target": {
         "name": "breathe_control",
         "path": "src/lib.rs"
       }
     },
-    "breathe-controller-0.1.29": {
+    "breathe-controller-0.1.58": {
       "edition": "2024",
       "binaries": [
         {
@@ -33200,14 +33200,14 @@
         }
       ]
     },
-    "breathe-core-0.1.29": {
+    "breathe-core-0.1.58": {
       "edition": "2024",
       "lib_target": {
         "name": "breathe_core",
         "path": "src/lib.rs"
       }
     },
-    "breathe-crd-0.1.29": {
+    "breathe-crd-0.1.58": {
       "edition": "2024",
       "lib_target": {
         "name": "breathe_crd",
@@ -33220,35 +33220,35 @@
         }
       ]
     },
-    "breathe-dimensions-0.1.29": {
+    "breathe-dimensions-0.1.58": {
       "edition": "2024",
       "lib_target": {
         "name": "breathe_dimensions",
         "path": "src/lib.rs"
       }
     },
-    "breathe-discovery-0.1.29": {
+    "breathe-discovery-0.1.58": {
       "edition": "2024",
       "lib_target": {
         "name": "breathe_discovery",
         "path": "src/lib.rs"
       }
     },
-    "breathe-facade-0.1.29": {
+    "breathe-facade-0.1.58": {
       "edition": "2024",
       "lib_target": {
         "name": "breathe_facade",
         "path": "src/lib.rs"
       }
     },
-    "breathe-host-0.1.29": {
+    "breathe-host-0.1.58": {
       "edition": "2024",
       "lib_target": {
         "name": "breathe_host",
         "path": "src/lib.rs"
       }
     },
-    "breathe-host-agent-0.1.29": {
+    "breathe-host-agent-0.1.58": {
       "edition": "2024",
       "binaries": [
         {
@@ -33257,28 +33257,28 @@
         }
       ]
     },
-    "breathe-invariant-0.1.29": {
+    "breathe-invariant-0.1.58": {
       "edition": "2024",
       "lib_target": {
         "name": "breathe_invariant",
         "path": "src/lib.rs"
       }
     },
-    "breathe-jmx-0.1.29": {
+    "breathe-jmx-0.1.58": {
       "edition": "2024",
       "lib_target": {
         "name": "breathe_jmx",
         "path": "src/lib.rs"
       }
     },
-    "breathe-kube-0.1.29": {
+    "breathe-kube-0.1.58": {
       "edition": "2024",
       "lib_target": {
         "name": "breathe_kube",
         "path": "src/lib.rs"
       }
     },
-    "breathe-mcp-0.1.29": {
+    "breathe-mcp-0.1.58": {
       "edition": "2024",
       "lib_target": {
         "name": "breathe_mcp",
@@ -33291,28 +33291,28 @@
         }
       ]
     },
-    "breathe-nodewaste-0.1.29": {
+    "breathe-nodewaste-0.1.58": {
       "edition": "2024",
       "lib_target": {
         "name": "breathe_nodewaste",
         "path": "src/lib.rs"
       }
     },
-    "breathe-provider-0.1.29": {
+    "breathe-provider-0.1.58": {
       "edition": "2024",
       "lib_target": {
         "name": "breathe_provider",
         "path": "src/lib.rs"
       }
     },
-    "breathe-provision-0.1.29": {
+    "breathe-provision-0.1.58": {
       "edition": "2024",
       "lib_target": {
         "name": "breathe_provision",
         "path": "src/lib.rs"
       }
     },
-    "breathe-retirada-ci-0.1.29": {
+    "breathe-retirada-ci-0.1.58": {
       "edition": "2024",
       "lib_target": {
         "name": "breathe_retirada_ci",
@@ -33325,21 +33325,21 @@
         }
       ]
     },
-    "breathe-runtime-0.1.29": {
+    "breathe-runtime-0.1.58": {
       "edition": "2024",
       "lib_target": {
         "name": "breathe_runtime",
         "path": "src/lib.rs"
       }
     },
-    "breathe-spread-0.1.29": {
+    "breathe-spread-0.1.58": {
       "edition": "2024",
       "lib_target": {
         "name": "breathe_spread",
         "path": "src/lib.rs"
       }
     },
-    "breathe-store-0.1.29": {
+    "breathe-store-0.1.58": {
       "edition": "2024",
       "lib_target": {
         "name": "breathe_store",
