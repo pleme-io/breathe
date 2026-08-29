@@ -1,6 +1,6 @@
 [package]
 name = "breathe-catalog"
-version = "0.1.29"
+version = "0.1.58"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -9,13 +9,13 @@ repository.workspace = true
 description = "The self-describing breathe dimensions catalog (CATALOG REFLECTION). Adding a dimension REQUIRES a catalog row in the same change; the reflection tests fail the build otherwise."
 
 [dependencies]
-breathe-provider = { path = "../breathe-provider", version = "0.1.29" }
+breathe-provider = { path = "../breathe-provider", version = "0.1.58" }
 
 [dev-dependencies]
 # CATALOG REFLECTION: the topology sub-axis reflection tests cross-check the catalog
 # against the `Topology` Rust border. Already a transitive dep (via breathe-provider);
 # made explicit for the test cross-check.
-breathe-control = { path = "../breathe-control", version = "0.1.29" }
+breathe-control = { path = "../breathe-control", version = "0.1.58" }
 
 [lints]
 workspace = true
