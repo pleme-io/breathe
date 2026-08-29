@@ -40,7 +40,7 @@
 # their churn; it only lets a REAL Rust dependent (breathe-controller) exist.
 [package]
 name = "breathe-spread"
-version = "0.1.29"
+version = "0.1.58"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
