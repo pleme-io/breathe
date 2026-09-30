@@ -1,8 +1,8 @@
 {
   "schema_version": 2,
-  "cargo_lock_sha256": "6ad7d16fd7121c1d760020252cf2289e57f928e917a23ce05dd2616c1a4e1917",
+  "cargo_lock_sha256": "53fb5ab6dba9d53c86c7793c7c0c22c4b0b58858c1a4578a643058c07af01c23",
   "manifest_sha256": {
-    "Cargo.toml": "fb522df56773295398f811768dd9448dc735de3ea66771a671198aa666ef08c1",
+    "Cargo.toml": "9c920a10ee98919471ed88d30a0a8b585204b41324f7bafc3b2e655c44d20f63",
     "breathe-actuator/Cargo.toml": "a8c3b8b233c30fbca82609cee0a423f275f17f2639846f910b91906058c9ab98",
     "breathe-admission/Cargo.toml": "35668123f778b381c620e1d21cd36e11b85d291eddde5ef8c7937b429b5cde88",
     "breathe-api-server/Cargo.toml": "c25d9751fd8e8a486d6c81e6241e29707115ef5aef0c62752d97208a08bc5781",
@@ -22,7 +22,7 @@
     "breathe-host-agent/Cargo.toml": "04d65208811b8b12a39cd3d483eaf70704b8b12b7deff578b81b90ead35e1b3b",
     "breathe-host/Cargo.toml": "b7587ee811f0b6fea6b1547c5c778ef4740a8e4734a338daf3dc265802822297",
     "breathe-jmx/Cargo.toml": "9c13690670840526bd3bca028ff1e951e3dc1271811097ad84e94cb92a8bc84e",
-    "breathe-kube/Cargo.toml": "597c84834d1271a3dbdb772c53cb49782279eac55101d7967a0817d1b8e50feb",
+    "breathe-kube/Cargo.toml": "174242cfca2f9b4e054db12a721e2d77036e98fd0ea126953c5ac3724d7de297",
     "breathe-mcp/Cargo.toml": "4d2514659213688a7f15e3460e6b2e7e2cfb6bd3b73ce5cfb7d235dc71ec5bba",
     "breathe-nodewaste/Cargo.toml": "ce07177450aaf8f2b91674504faa6610112b079487055dfbbd2d641b32dd273b",
     "breathe-provider/Cargo.toml": "1e81fb508c486ef148482bc28f6a84e37bf5dae4802690af7d407210541c7514",
@@ -31,6 +31,7 @@
     "breathe-runtime/Cargo.toml": "b85d587455ccce752d92755fb9b04777405be6dd248b9c2bf019db5b735e57af",
     "breathe-store/Cargo.toml": "c3ccad463c718d11f3397c75eab4b897fd35ab5f6449b21f0665f53bb25bd44c",
     "crates/breathe-invariant/Cargo.toml": "fd57e6bcd1d3d9691c506b345592763080108e3edf2ab3893f134aa2aba34c19",
+    "crates/breathe-resize/Cargo.toml": "66da0dc9b6275b5d713be728bbb56abd1380db5fe26b02e4ea09c7f8257e8a0d",
     "crates/breathe-spread/Cargo.toml": "7e2e0e1c1eb5376a250d11f6eb2601aac25987e339d8a3e5a37baed88bab01e9"
   },
   "target_resolves": {
@@ -7025,6 +7026,16 @@
             "tree": "target"
           },
           {
+            "name": "breathe_resize",
+            "package_key": "breathe-resize-0.1.58",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
             "name": "k8s_openapi",
             "package_key": "k8s-openapi-0.23.0",
             "kind": "normal",
@@ -7344,6 +7355,32 @@
           {
             "name": "breathe_provider",
             "package_key": "breathe-provider-0.1.58",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          }
+        ],
+        "build_dependencies": [],
+        "features": []
+      },
+      "breathe-resize-0.1.58": {
+        "runtime_dependencies": [
+          {
+            "name": "breathe_control",
+            "package_key": "breathe-control-0.1.58",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "serde_json",
+            "package_key": "serde_json-1.0.150",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -33309,6 +33346,13 @@
       "edition": "2024",
       "lib_target": {
         "name": "breathe_provision",
+        "path": "src/lib.rs"
+      }
+    },
+    "breathe-resize-0.1.58": {
+      "edition": "2024",
+      "lib_target": {
+        "name": "breathe_resize",
         "path": "src/lib.rs"
       }
     },

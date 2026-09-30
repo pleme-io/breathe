@@ -1303,6 +1303,7 @@ dependencies = [
  "async-trait",
  "breathe-control",
  "breathe-provider",
+ "breathe-resize",
  "k8s-openapi",
  "kube",
  "reqwest",
@@ -1356,6 +1357,14 @@ dependencies = [
  "breathe-auction",
  "breathe-control",
  "breathe-provider",
+]
+
+[[package]]
+name = "breathe-resize"
+version = "0.1.58"
+dependencies = [
+ "breathe-control",
+ "serde_json",
 ]
 
 [[package]]

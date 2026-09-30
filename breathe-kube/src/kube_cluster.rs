@@ -8,6 +8,9 @@
 //! The layout interpretation — CNPG `Cluster` top-level, pod-template, PVC — is
 //! the only K8s-specific branching, and it lives here, not in the descriptors.
 
+// The in-place resize's pure decisions live in ONE crate, shared with ensaio
+// visita (lifted 2026-09-30); this file keeps only the kube-rs I/O around them.
+use breathe_resize::{limit_block as resize_resources_block, request_block as request_resources_block};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
@@ -184,28 +187,7 @@ impl KubeCluster {
         container: &Option<String>,
         resource: &str,
     ) -> bool {
-        let Some(containers) = pod_data
-            .pointer("/spec/containers")
-            .and_then(Value::as_array)
-        else {
-            return false;
-        };
-        let c = match container {
-            Some(name) => containers
-                .iter()
-                .find(|c| c.get("name").and_then(Value::as_str) == Some(name.as_str())),
-            None => containers.first(),
-        };
-        let Some(policies) = c
-            .and_then(|c| c.pointer("/resizePolicy"))
-            .and_then(Value::as_array)
-        else {
-            return false;
-        };
-        policies.iter().any(|p| {
-            p.get("resourceName").and_then(Value::as_str) == Some(resource)
-                && p.get("restartPolicy").and_then(Value::as_str) == Some("NotRequired")
-        })
+        breathe_resize::restart_free(pod_data, container.as_deref(), resource)
     }
 
     /// Build a label selector (`k=v,k2=v2`) from an owner's `spec.selector.matchLabels`.
@@ -508,12 +490,9 @@ impl KubeCluster {
     }
 }
 
-/// The QoS-preserving `resources` block for an in-place pod resize. A Guaranteed
-/// pod (requests == limits) keeps requests == limits so it STAYS Guaranteed
-/// (both grow and shrink); a Burstable/BestEffort pod sets the limit and clamps
-/// its request DOWN to the new limit only if the old request would now exceed it
-/// (k8s rejects request > limit) — otherwise the request is left untouched.
-/// Pure + unit-tested; the actuator's only QoS-relevant decision lives here.
+// `resize_resources_block` (the QoS-preserving limit block) is
+// `breathe_resize::limit_block`, imported at the top of this file.
+
 /// A JSON scalar rendered to a string — `"10Gi"` stays a string, `100` becomes
 /// `"100"`. Reads a generic CR field's current value regardless of its JSON type.
 fn json_scalar_to_string(v: &Value) -> String {
@@ -543,51 +522,9 @@ fn nested_json_under_spec(field_path: &str, value: Value) -> Value {
     node
 }
 
-fn resize_resources_block(
-    qos: &str,
-    resource: &str,
-    value: u64,
-    current_request: Option<&str>,
-) -> Value {
-    let unit = Unit::for_resource(resource);
-    let qty = Quantity { value, unit }.to_string();
-    if qos == "Guaranteed" {
-        return json!({ "limits": { resource: qty.clone() }, "requests": { resource: qty } });
-    }
-    match current_request.and_then(|r| unit.parse(r)) {
-        Some(req) if req > value => {
-            json!({ "limits": { resource: qty.clone() }, "requests": { resource: qty } })
-        }
-        _ => json!({ "limits": { resource: qty } }),
-    }
-}
-
-/// The `resources` block for an in-place REQUEST carve — the RESERVATION
-/// sibling of [`resize_resources_block`].
-///
-/// **It writes `requests` and NOTHING else, and that omission is the safety
-/// property.** A limit carve legitimately touches both sides of the pair
-/// (`resize_resources_block` mirrors the value into `requests` for a Guaranteed
-/// pod, and clamps `requests` down when a shrink would leave `request > limit`).
-/// A request carve must never touch `limits`, because the `QoS` class is a
-/// function of the requests-vs-limits *relation*: moving the other side is
-/// precisely how a within-class carve turns into an undeclared class transition,
-/// which `ValidatePodResize` rejects outright.
-///
-/// The class-preservation decision is NOT made here. It was made — over the
-/// whole pod, every container, every resource — by
-/// `breathe_provider::request::ClassPreserved::check`, and this function is
-/// reached only with that witness in hand. Re-deriving it from one pod's
-/// `status.qosClass` string, the way the limit path does, would be a second
-/// source of truth for the one fact this dimension turns on.
-fn request_resources_block(resource: &str, value: u64) -> Value {
-    let qty = Quantity {
-        value,
-        unit: Unit::for_resource(resource),
-    }
-    .to_string();
-    json!({ "requests": { resource: qty } })
-}
+// `request_resources_block` (the REQUEST carve's block: `requests` and nothing
+// else, so a within-class carve can never become an undeclared QoS-class
+// transition) is `breathe_resize::request_block`, imported above.
 
 /// Provisioners known to report NODE-WIDE (not per-volume) usage stats via
 /// `kubelet_volume_stats_used_bytes` — `local-path`'s hostPath-backed PVs are

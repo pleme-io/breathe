@@ -34,6 +34,7 @@ signed entry in a verifiable attestation chain.
 | `breathe-core` | the composed reconcile loop — binds the band law to a provider's I/O. breathe-core **owns** the loop; it is not inherited. |
 | `breathe-catalog` | the self-describing `(defdimension …)` dimensions catalog + CATALOG REFLECTION tests. Adding a dimension **fails the build** without a catalog row. |
 | `breathe-dimensions` | the shipped dimension providers (memory/cpu/storage): observe working-set/limit, carve `resources.limits.*` via **true SSA** (the owner rolls). |
+| `breathe-resize` | the in-place pod resize (`pods/{name}/resize`) as **pure functions** — the `resizePolicy` restart check, the QoS-preserving limit block, the request-only block, the subresource body, and convergence against `status.containerStatuses[].resources`. **One home, two consumers:** `breathe-kube`'s actuators (kube-rs) and ensaio `visita`'s reversible `resize-pod` fixture (kubectl). Lifted out of `breathe-kube` 2026-09-30 so the two cannot drift. |
 | `breathe-facade` | the one typed `BreatheStore` seam every operator surface drives — MCP, REST, GraphQL and gRPC all dispatch on `breathe_provider::DimensionId`, so all **ten** band kinds are reachable from all four. |
 
 ## Invariants (do not regress — see `theory/BREATHE.md` §15)

@@ -50,6 +50,9 @@ members = [
   # the claimed-but-uncarved class this dimension closes — now runs in breathe
   # CI instead of being invisible to it.
   "crates/breathe-invariant",
+  # The in-place pod resize as pure functions — ONE home shared by breathe-kube
+  # and ensaio visita (lifted out of breathe-kube 2026-09-30).
+  "crates/breathe-resize",
 ]
 
 [workspace.package]
