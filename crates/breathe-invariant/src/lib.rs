@@ -17,7 +17,7 @@
 //! NOT depend on the breathe band crates (deliberately decoupled from their
 //! churn, exactly as `gen-pdc` stays decoupled from the adapter crates). The
 //! breathe substrate REALIZES the carve; this crate is the CONTRACT the
-//! doctrine surfaces (`theory/BREATHABILITY.md`, the `/breathability` +
+//! doctrine surfaces (`theory/BREATHABILITY.md`, the `/autorevivy` +
 //! `/the private estate` skills, the org rule) point to as the canonical lock.
 //!
 //! ## The invariant

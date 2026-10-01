@@ -78,7 +78,7 @@ arm loses) — the operator's "be vocal where arm is not winning" as a CI gate.
 ## Reference note (for the contextualizify surfaces)
 
 The BREATHABILITY doctrine's 100 %-spot / flex-window section
-(`theory/BREATHABILITY.md` §II.6) and the `/breathability` + `/the private estate` skills
+(`theory/BREATHABILITY.md` §II.6) and the `/autorevivy` + `/the private estate` skills
 should point at **`pleme-io/breathe/crates/breathe-spread`** as the CANONICAL LOCK
 of the arch × auction × spot spread — the compute peer of the `breathe-invariant`
 dimension lock. The doctrine PROSE is the model; this crate is the typed contract
