@@ -24,10 +24,11 @@ serde_json = "1"
 serde_yaml = "0.9"
 thiserror = "2"
 clap = { version = "4", features = ["derive"], optional = true }
+shikumi = { version = "0.1" }
 
 [features]
 default = ["cli"]
-cli = ["dep:clap"]
+cli = ["dep:clap", "shikumi/cli"]
 
 [lints.clippy]
 pedantic = "warn"

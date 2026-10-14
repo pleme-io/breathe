@@ -26,6 +26,8 @@ pub enum Advisory {
     StartupDbFanout { service: String },
     HpaCeilingUnbacked { max_replicas: u32, placeable: u32 },
     PendingPodsPresent { cpu: String, mem: String },
+    NoPodsObserved { service: String },
+    UndeclaredPool { pool: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -293,8 +295,32 @@ pub fn plan(req: &Request, current: Sizing, cluster: &ClusterState) -> Result<Pl
     if cluster.pending_cpu.0 > 0 || cluster.pending_mem.0 > 0 {
         advisories.push(Advisory::PendingPodsPresent { cpu: cluster.pending_cpu.render(), mem: cluster.pending_mem.render() });
     }
-    if req.observed.replicas < 2 || current.hpa_min < 2 {
-        refusals.push(Refusal::SingleReplica { replicas: req.observed.replicas.min(current.hpa_min) });
+    let (running, hosting) = req
+        .chart
+        .pod_label
+        .as_ref()
+        .map_or((0, Vec::new()), |l| cluster.hosting(req.namespace.as_deref(), &l.key, &format!("{}{}", l.prefix, req.service)));
+    if req.chart.pod_label.is_some() && hosting.is_empty() {
+        advisories.push(Advisory::NoPodsObserved { service: req.service.clone() });
+    }
+    let replicas_now = req.observed.replicas.unwrap_or(running);
+    let pools: Vec<PoolDecl> = if hosting.is_empty() {
+        req.pools.clone()
+    } else {
+        hosting
+            .iter()
+            .map(|h| match req.pools.iter().find(|d| d.matches(h)) {
+                Some(d) => PoolDecl { name: h.clone(), max_nodes: d.max_nodes, ceiling_in_module: d.ceiling_in_module },
+                None => {
+                    advisories.push(Advisory::UndeclaredPool { pool: h.clone() });
+                    let n = u32::try_from(cluster.pool(h).len()).unwrap_or(u32::MAX);
+                    PoolDecl { name: h.clone(), max_nodes: n, ceiling_in_module: true }
+                }
+            })
+            .collect()
+    };
+    if replicas_now < 2 || current.hpa_min < 2 {
+        refusals.push(Refusal::SingleReplica { replicas: replicas_now.min(current.hpa_min) });
     }
 
     let ladder = match sizings(current, req.raise, &req.policy) {
@@ -305,14 +331,14 @@ pub fn plan(req: &Request, current: Sizing, cluster: &ClusterState) -> Result<Pl
         }
     };
 
-    let mut shadow = Shadow::new(cluster, &req.pools);
+    let mut shadow = Shadow::new(cluster, &pools);
     if shadow.slots.is_empty() {
-        refusals.push(Refusal::NoSchedulableNodes { pools: req.pools.iter().map(|p| p.name.clone()).collect() });
+        refusals.push(Refusal::NoSchedulableNodes { pools: pools.iter().map(|p| p.name.clone()).collect() });
         return Err(refusals);
     }
 
     let mut before = current;
-    let mut replicas = req.observed.replicas;
+    let mut replicas = replicas_now;
     let mut index = 0u32;
     for after in ladder {
         index += 1;
@@ -355,12 +381,12 @@ pub fn plan(req: &Request, current: Sizing, cluster: &ClusterState) -> Result<Pl
             shadow = s;
             at
         } else {
-            let lifted = req.pools.iter().position(|p| !p.ceiling_in_module).and_then(|r| attempt(&shadow, &demand, Some(r)).map(|x| (r, x)));
+            let lifted = pools.iter().position(|p| !p.ceiling_in_module).and_then(|r| attempt(&shadow, &demand, Some(r)).map(|x| (r, x)));
             let Some((r, (s, at))) = lifted else {
-                refusals.push(Refusal::PoolCeilingInModule { step: index, pools: req.pools.iter().map(|p| p.name.clone()).collect() });
+                refusals.push(Refusal::PoolCeilingInModule { step: index, pools: pools.iter().map(|p| p.name.clone()).collect() });
                 break;
             };
-            steps.push(Step::PoolCeiling { index, pool: req.pools[r].name.clone(), from: req.pools[r].max_nodes, to: s.counts[r] });
+            steps.push(Step::PoolCeiling { index, pool: pools[r].name.clone(), from: pools[r].max_nodes, to: s.counts[r] });
             index += 1;
             shadow = s;
             at
@@ -368,7 +394,7 @@ pub fn plan(req: &Request, current: Sizing, cluster: &ClusterState) -> Result<Pl
         shadow.unplace(&at[..at.len().min(surge as usize)], cpu, mem);
 
         let mut nodes_to_add = 0;
-        for (i, p) in req.pools.iter().enumerate() {
+        for (i, p) in pools.iter().enumerate() {
             let n = shadow.added[i] - added_before[i];
             if n > 0 {
                 nodes_to_add += n;
@@ -473,10 +499,11 @@ mod tests {
             tenant: "tenant-a".into(),
             environment: Tier::Staging,
             service: "api".into(),
+            namespace: None,
             startup_db_fanout: false,
             chart: crate::values::tests::chart(),
             raise,
-            observed: Observed { replicas: 3, mem_p95: None, cpu_p95: None, db_conns_per_pod: None },
+            observed: Observed { replicas: Some(3), mem_p95: None, cpu_p95: None, db_conns_per_pod: None },
             pools: vec![PoolDecl { name: "pool-a".into(), max_nodes, ceiling_in_module: in_module }],
             db: None,
             policy: Policy::default(),
@@ -514,7 +541,7 @@ mod tests {
     fn refuses_a_single_replica_service() {
         let c = cluster(vec![node("pool-a", 6000, 20)]);
         let mut r = request(Raise::CpuRequest(Millicores(1200)), 10, false);
-        r.observed.replicas = 1;
+        r.observed.replicas = Some(1);
         assert!(plan(&r, sizing(), &c).unwrap_err().iter().any(|x| matches!(x, Refusal::SingleReplica { .. })));
     }
 
@@ -546,7 +573,7 @@ mod tests {
     fn predicts_the_hpa_scaling_down_when_requests_grow_without_load() {
         let c = cluster(vec![node("pool-a", 7000, 20), node("pool-a", 7000, 20)]);
         let mut r = request(Raise::CpuRequest(Millicores(2000)), 10, false);
-        r.observed.replicas = 6;
+        r.observed.replicas = Some(6);
         r.observed.mem_p95 = Some(Bytes(GI / 2));
         let p = plan(&r, sizing(), &c).unwrap();
         assert!(p.advisories.contains(&Advisory::HpaReplicaShift { step: 1, before: 6, after: 3 }));
@@ -559,5 +586,58 @@ mod tests {
         r.observed.db_conns_per_pod = Some(15);
         r.db = Some(DbBudget { max_connections: 170 });
         assert!(plan(&r, sizing(), &c).unwrap_err().iter().any(|x| matches!(x, Refusal::DbConnectionBudget { .. })));
+    }
+}
+
+#[cfg(test)]
+mod observed_tests {
+    use super::*;
+    use crate::model::{Observed, PodLabel};
+    use crate::observe::{NodeState, PodState};
+
+    const GI: u64 = 1 << 30;
+
+    fn node(name: &str, pool: &str) -> NodeState {
+        NodeState {
+            name: name.into(),
+            pool: pool.into(),
+            schedulable: true,
+            alloc_cpu: Millicores(4000),
+            alloc_mem: Bytes(16 * GI),
+            ..NodeState::default()
+        }
+    }
+
+    fn pod(app: &str, node: &str) -> PodState {
+        PodState { namespace: "ns".into(), labels: [("app".to_string(), app.to_string())].into(), node: Some(node.into()), running: true }
+    }
+
+    #[test]
+    fn replicas_and_pools_come_from_the_workload_pods_and_undeclared_pools_cannot_grow() {
+        let cluster = ClusterState {
+            nodes: vec![node("n1", "general-a"), node("n2", "arm-b"), node("n3", "other")],
+            pods: vec![pod("svc-api", "n1"), pod("svc-api", "n2"), pod("svc-worker", "n3")],
+            ..ClusterState::default()
+        };
+        let mut chart = crate::values::tests::chart();
+        chart.pod_label = Some(PodLabel { key: "app".into(), prefix: "svc-".into() });
+        let req = Request {
+            tenant: "t".into(),
+            environment: Tier::Staging,
+            service: "api".into(),
+            namespace: Some("ns".into()),
+            startup_db_fanout: false,
+            chart,
+            raise: Raise::CpuRequest(Millicores(1200)),
+            observed: Observed::default(),
+            pools: vec![PoolDecl { name: "general-*".into(), max_nodes: 5, ceiling_in_module: false }],
+            db: None,
+            policy: Policy::default(),
+        };
+        let current = crate::values::tests::chart().defaults;
+        let p = plan(&req, Sizing { cpu_request: Millicores(1000), ..current }, &cluster).unwrap();
+        assert!(p.advisories.contains(&Advisory::UndeclaredPool { pool: "arm-b".into() }));
+        let Step::PodSizing { prediction, .. } = &p.steps[0] else { panic!("pod step first") };
+        assert_eq!(prediction.replicas_before, 2);
     }
 }

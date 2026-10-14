@@ -39,6 +39,28 @@ pub struct Chart {
     pub root: String,
     pub keys: Keys,
     pub defaults: Sizing,
+    #[serde(default)]
+    pub pod_label: Option<PodLabel>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PodLabel {
+    pub key: String,
+    #[serde(default)]
+    pub prefix: String,
+}
+
+impl PoolDecl {
+    #[must_use]
+    pub fn matches(&self, pool: &str) -> bool {
+        match (self.name.strip_prefix('*'), self.name.strip_suffix('*')) {
+            (Some(tail), _) if tail.ends_with('*') => pool.contains(&tail[..tail.len() - 1]),
+            (Some(tail), _) => pool.ends_with(tail),
+            (None, Some(head)) => pool.starts_with(head),
+            (None, None) => pool == self.name,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -50,10 +72,11 @@ pub enum Raise {
     MaxReplicas(u32),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Observed {
-    pub replicas: u32,
+    #[serde(default)]
+    pub replicas: Option<u32>,
     #[serde(default)]
     pub mem_p95: Option<Bytes>,
     #[serde(default)]
@@ -106,6 +129,8 @@ pub struct Request {
     pub environment: Tier,
     pub service: String,
     #[serde(default)]
+    pub namespace: Option<String>,
+    #[serde(default)]
     pub startup_db_fanout: bool,
     pub chart: Chart,
     #[serde(with = "serde_yaml::with::singleton_map")]
@@ -116,4 +141,23 @@ pub struct Request {
     pub db: Option<DbBudget>,
     #[serde(default)]
     pub policy: Policy,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::PoolDecl;
+
+    fn decl(name: &str) -> PoolDecl {
+        PoolDecl { name: name.into(), max_nodes: 1, ceiling_in_module: false }
+    }
+
+    #[test]
+    fn pool_names_match_exactly_or_by_one_star() {
+        assert!(decl("a-np").matches("a-np"));
+        assert!(!decl("a-np").matches("a-np-v2"));
+        assert!(decl("site-*").matches("site-a-np"));
+        assert!(decl("*-v2").matches("zone-a-v2"));
+        assert!(decl("*-n4a-*").matches("site-a-n4a-od"));
+        assert!(!decl("*-n4a-*").matches("site-a-n2-od"));
+    }
 }

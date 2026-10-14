@@ -177,6 +177,7 @@ pub(crate) mod tests {
                 hpa_mem_pct: 60,
                 hpa_cpu_pct: 70,
             },
+            pod_label: None,
         }
     }
 

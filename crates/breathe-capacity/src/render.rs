@@ -19,6 +19,12 @@ fn advisory(a: &Advisory) -> String {
         Advisory::HpaCeilingUnbacked { max_replicas, placeable } => {
             format!("hpaMaxReplicas {max_replicas} exceeds what the pools can place at their ceilings ({placeable})")
         }
+        Advisory::NoPodsObserved { service } => {
+            format!("no running pods of {service} were observed; placement falls back to the declared pools")
+        }
+        Advisory::UndeclaredPool { pool } => {
+            format!("{pool} hosts this workload but declares no ceiling; it is treated as unable to grow")
+        }
         Advisory::PendingPodsPresent { cpu, mem } => {
             format!("pods are already Pending ({cpu} cpu, {mem} memory); resolve them before adding demand")
         }

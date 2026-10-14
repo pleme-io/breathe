@@ -1122,6 +1122,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_yaml",
+ "shikumi",
  "thiserror 2.0.18",
 ]
 
@@ -2021,7 +2022,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -4372,7 +4373,7 @@ dependencies = [
  "once_cell",
  "socket2 0.6.4",
  "tracing",
- "windows-sys 0.60.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -4731,7 +4732,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.12.1",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -5207,16 +5208,18 @@ dependencies = [
 
 [[package]]
 name = "shikumi"
-version = "0.1.486"
+version = "0.1.1082"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2d0f27d0bc2b30443e83e5a52aade37c5a7bb0b02c8450965bf56c01115b2f17"
+checksum = "1bf83a01a3a1fb4e82976dc3e10951ba88d0bc48b1d10fcd6eac03ddea9b8118"
 dependencies = [
  "arc-swap",
  "async-trait",
+ "clap",
  "figment",
  "gen-platform",
  "gen-types",
  "notify",
+ "schemars 1.2.1",
  "serde",
  "serde_json",
  "serde_yaml",
@@ -5654,10 +5657,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.4.3",
+ "getrandom 0.3.4",
  "once_cell",
  "rustix 1.1.4",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -6484,7 +6487,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.48.0",
 ]
 
 [[package]]

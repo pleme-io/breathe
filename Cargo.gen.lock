@@ -1,6 +1,6 @@
 {
   "schema_version": 2,
-  "cargo_lock_sha256": "8e1c6d6d69e7509d4fe39e35b2c78d0ab219248b593c7fa4af8a2a1220aede4f",
+  "cargo_lock_sha256": "1ab280cee3f3dcf93ea08d4e65d678894ec6960f271d1231ab21e695b32563a1",
   "manifest_sha256": {
     "Cargo.toml": "947de8aaef8cd046126aec7d13927b61922532bebc4ff9cb678f87ccbf37e7e9",
     "breathe-actuator/Cargo.toml": "a8c3b8b233c30fbca82609cee0a423f275f17f2639846f910b91906058c9ab98",
@@ -30,7 +30,7 @@
     "breathe-retirada-ci/Cargo.toml": "9d9eecb2ad7cf8bd9ed31f97b7807fd662e51530798ed15a291b4cb2cbee14f2",
     "breathe-runtime/Cargo.toml": "b85d587455ccce752d92755fb9b04777405be6dd248b9c2bf019db5b735e57af",
     "breathe-store/Cargo.toml": "c3ccad463c718d11f3397c75eab4b897fd35ab5f6449b21f0665f53bb25bd44c",
-    "crates/breathe-capacity/Cargo.toml": "7a4768451a39f2afaee8fd7ceacc01ea2a544f950fe8597897c8d2c47fec45cd",
+    "crates/breathe-capacity/Cargo.toml": "7e03c3673f2e06ae0203ba5598b4264a6d67dfee62b00bfd0871524ab7a95516",
     "crates/breathe-invariant/Cargo.toml": "fd57e6bcd1d3d9691c506b345592763080108e3edf2ab3893f134aa2aba34c19",
     "crates/breathe-resize/Cargo.toml": "66da0dc9b6275b5d713be728bbb56abd1380db5fe26b02e4ea09c7f8257e8a0d",
     "crates/breathe-spread/Cargo.toml": "7e2e0e1c1eb5376a250d11f6eb2601aac25987e339d8a3e5a37baed88bab01e9"
@@ -5944,6 +5944,16 @@
             "tree": "target"
           },
           {
+            "name": "shikumi",
+            "package_key": "shikumi-0.1.1082",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
             "name": "thiserror",
             "package_key": "thiserror-2.0.18",
             "kind": "normal",
@@ -6002,7 +6012,7 @@
           },
           {
             "name": "shikumi",
-            "package_key": "shikumi-0.1.486",
+            "package_key": "shikumi-0.1.1082",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -6933,7 +6943,7 @@
           },
           {
             "name": "shikumi",
-            "package_key": "shikumi-0.1.486",
+            "package_key": "shikumi-0.1.1082",
             "kind": "normal",
             "features": [],
             "uses_default_features": true,
@@ -10268,104 +10278,6 @@
         "features": [
           "std",
           "wasm_js"
-        ]
-      },
-      "getrandom-0.4.3": {
-        "runtime_dependencies": [
-          {
-            "name": "cfg_if",
-            "package_key": "cfg-if-1.0.4",
-            "kind": "normal",
-            "features": [],
-            "uses_default_features": true,
-            "optional": false,
-            "target": null,
-            "tree": "target"
-          },
-          {
-            "name": "libc",
-            "package_key": "libc-0.2.186",
-            "kind": "normal",
-            "features": [],
-            "uses_default_features": false,
-            "optional": false,
-            "target": "cfg(all(any(target_os = \"linux\", target_os = \"android\"), not(any(all(target_os = \"linux\", target_env = \"\"), getrandom_backend = \"custom\", getrandom_backend = \"linux_raw\", getrandom_backend = \"rdrand\", getrandom_backend = \"rndr\"))))",
-            "tree": "target"
-          },
-          {
-            "name": "libc",
-            "package_key": "libc-0.2.186",
-            "kind": "normal",
-            "features": [],
-            "uses_default_features": false,
-            "optional": false,
-            "target": "cfg(any(target_os = \"dragonfly\", target_os = \"freebsd\", target_os = \"hurd\", target_os = \"illumos\", target_os = \"cygwin\", all(target_os = \"horizon\", target_arch = \"arm\")))",
-            "tree": "target"
-          },
-          {
-            "name": "libc",
-            "package_key": "libc-0.2.186",
-            "kind": "normal",
-            "features": [],
-            "uses_default_features": false,
-            "optional": false,
-            "target": "cfg(any(target_os = \"haiku\", target_os = \"redox\", target_os = \"nto\", target_os = \"aix\"))",
-            "tree": "target"
-          },
-          {
-            "name": "libc",
-            "package_key": "libc-0.2.186",
-            "kind": "normal",
-            "features": [],
-            "uses_default_features": false,
-            "optional": false,
-            "target": "cfg(any(target_os = \"ios\", target_os = \"visionos\", target_os = \"watchos\", target_os = \"tvos\"))",
-            "tree": "target"
-          },
-          {
-            "name": "libc",
-            "package_key": "libc-0.2.186",
-            "kind": "normal",
-            "features": [],
-            "uses_default_features": false,
-            "optional": false,
-            "target": "cfg(any(target_os = \"macos\", target_os = \"openbsd\", target_os = \"vita\", target_os = \"emscripten\"))",
-            "tree": "target"
-          },
-          {
-            "name": "libc",
-            "package_key": "libc-0.2.186",
-            "kind": "normal",
-            "features": [],
-            "uses_default_features": false,
-            "optional": false,
-            "target": "cfg(target_os = \"netbsd\")",
-            "tree": "target"
-          },
-          {
-            "name": "libc",
-            "package_key": "libc-0.2.186",
-            "kind": "normal",
-            "features": [],
-            "uses_default_features": false,
-            "optional": false,
-            "target": "cfg(target_os = \"solaris\")",
-            "tree": "target"
-          },
-          {
-            "name": "libc",
-            "package_key": "libc-0.2.186",
-            "kind": "normal",
-            "features": [],
-            "uses_default_features": false,
-            "optional": false,
-            "target": "cfg(target_os = \"vxworks\")",
-            "tree": "target"
-          }
-        ],
-        "build_dependencies": [],
-        "features": [
-          "std"
         ]
       },
       "h2-0.3.27": {
@@ -19714,7 +19626,7 @@
         "build_dependencies": [],
         "features": []
       },
-      "shikumi-0.1.486": {
+      "shikumi-0.1.1082": {
         "runtime_dependencies": [
           {
             "name": "arc_swap",
@@ -19735,6 +19647,18 @@
             "optional": false,
             "target": null,
             "tree": "host"
+          },
+          {
+            "name": "clap",
+            "package_key": "clap-4.6.4",
+            "kind": "normal",
+            "features": [
+              "derive"
+            ],
+            "uses_default_features": true,
+            "optional": true,
+            "target": null,
+            "tree": "target"
           },
           {
             "name": "figment",
@@ -19793,6 +19717,16 @@
             "tree": "target"
           },
           {
+            "name": "schemars",
+            "package_key": "schemars-1.2.1",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
             "name": "serde",
             "package_key": "serde-1.0.228",
             "kind": "normal",
@@ -19847,6 +19781,7 @@
         ],
         "build_dependencies": [],
         "features": [
+          "cli",
           "default"
         ]
       },
@@ -22068,7 +22003,7 @@
           },
           {
             "name": "getrandom",
-            "package_key": "getrandom-0.4.3",
+            "package_key": "getrandom-0.3.4",
             "kind": "normal",
             "features": [],
             "uses_default_features": false,
@@ -33790,10 +33725,6 @@
       "edition": "2021",
       "build_script": "build.rs"
     },
-    "getrandom-0.4.3": {
-      "edition": "2024",
-      "build_script": "build.rs"
-    },
     "h2-0.3.27": {
       "edition": "2018"
     },
@@ -34635,7 +34566,7 @@
     "shigoto-types-0.1.10": {
       "edition": "2024"
     },
-    "shikumi-0.1.486": {
+    "shikumi-0.1.1082": {
       "edition": "2024"
     },
     "shlex-2.0.1": {

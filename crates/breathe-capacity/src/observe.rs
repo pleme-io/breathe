@@ -61,9 +61,37 @@ pub struct ClusterState {
     pub nodes: Vec<NodeState>,
     pub pending_cpu: Millicores,
     pub pending_mem: Bytes,
+    pub pods: Vec<PodState>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PodState {
+    pub namespace: String,
+    pub labels: BTreeMap<String, String>,
+    pub node: Option<String>,
+    pub running: bool,
 }
 
 impl ClusterState {
+    #[must_use]
+    pub fn hosting(&self, namespace: Option<&str>, key: &str, value: &str) -> (u32, Vec<String>) {
+        let pods: Vec<&PodState> = self
+            .pods
+            .iter()
+            .filter(|p| namespace.is_none_or(|ns| p.namespace == ns) && p.labels.get(key).is_some_and(|v| v == value))
+            .collect();
+        let running = u32::try_from(pods.iter().filter(|p| p.running).count()).unwrap_or(u32::MAX);
+        let mut pools: Vec<String> = pods
+            .iter()
+            .filter_map(|p| p.node.as_deref())
+            .filter_map(|n| self.nodes.iter().find(|x| x.name == n).map(|x| x.pool.clone()))
+            .collect();
+        pools.sort();
+        pools.dedup();
+        (running, pools)
+    }
+
     #[must_use]
     pub fn pool(&self, name: &str) -> Vec<&NodeState> {
         self.nodes.iter().filter(|n| n.pool == name).collect()
@@ -106,6 +134,15 @@ impl ClusterState {
                 continue;
             }
             let (cpu, mem) = pod_requests(&p["spec"]);
+            state.pods.push(PodState {
+                namespace: p["metadata"]["namespace"].as_str().unwrap_or_default().to_string(),
+                labels: p["metadata"]["labels"]
+                    .as_object()
+                    .map(|m| m.iter().filter_map(|(k, v)| v.as_str().map(|v| (k.clone(), v.to_string()))).collect())
+                    .unwrap_or_default(),
+                node: p["spec"]["nodeName"].as_str().map(str::to_string),
+                running: phase == "Running",
+            });
             let daemon = p["metadata"]["ownerReferences"]
                 .as_array()
                 .is_some_and(|o| o.iter().any(|r| r["kind"] == "DaemonSet"));
