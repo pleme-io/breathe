@@ -1037,7 +1037,7 @@ sections over-claimed and are superseded here where they conflict.
    a rolling update) and **Flux must cede that field** — NOT the pods directly (CNPG
    would revert them). M0 ships with `dryRun`/shadow first to prove this coexistence
    before any live carve.
-6. **`OutcomeChain` is not turn-key.** Today it is hardwired to Akeyless validation CRs.
+6. **`OutcomeChain` is not turn-key.** Today it is hardwired to one deployment's validation CRs.
    breathe needs a **generic appender extracted first** (solve-once / load-bearing fix)
    plus the now-real tameshi Ed25519 signer. M1 dependency, named honestly — not "wire it".
 7. **`breathe-core` owns its loop.** `reconciler-engine` rejects `TypedAction::Custom`,

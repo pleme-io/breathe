@@ -11,7 +11,7 @@
 > maximum utilization. The thesis, verified in code: this is a **pure
 > additive extension** of the eight existing breathe crates (>90% reuse,
 > tests green), not a rewrite. `breathe` is held **private** (this doc lives
-> in `breathe/docs/`, not public `theory/`) pending the akeyless
+> in `breathe/docs/`, not public `theory/`) pending a private
 > ephemeral-env integration.
 
 > **Governing discipline — layered + explicit.** Resource control is

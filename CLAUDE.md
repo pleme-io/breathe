@@ -2,7 +2,7 @@
 
 > skip-auto-release: **the stated reason for this waiver is VOID — the repo is
 > PUBLIC.** Corrected 2026-08-06. This read "breathe is **PRIVATE** during the
-> akeyless ephemeral-environment integration. Its crates must NOT publish to
+> private ephemeral-environment integration. Its crates must NOT publish to
 > public crates.io (that would leak private code)". The premise is false, so
 > the conclusion does not follow: there is no private code here to leak.
 >
