@@ -67,6 +67,7 @@
       controllerFlake = memberFlake "breathe-controller" { };
       agentFlake      = memberFlake "breathe-host-agent" { };
       mcpFlake        = memberFlake "breathe-mcp" { };
+      capacityFlake   = memberFlake "breathe-capacity" { };
       # breathe-api-server's build.rs compiles proto/breathe.proto via
       # tonic-build → prost-build, which shells out to `protoc` — the
       # gen-pattern analog of buildRustPackage's nativeBuildInputs =
@@ -151,6 +152,7 @@
           breathe-controller = binFor controllerFlake system;
           breathe-host-agent = binFor agentFlake system;
           breathe-mcp = binFor mcpFlake system;
+          breathe-capacity = binFor capacityFlake system;
           breathe-api-server = binFor apiServerFlake system;
         }
         // (if lib.elem system linuxSystems
@@ -187,6 +189,10 @@
           breathe-mcp = {
             type = "app";
             program = "${binFor mcpFlake system}/bin/breathe-mcp";
+          };
+          breathe-capacity = {
+            type = "app";
+            program = "${binFor capacityFlake system}/bin/breathe-capacity";
           };
           breathe-api-server = {
             type = "app";

@@ -53,6 +53,7 @@ members = [
   # The in-place pod resize as pure functions — ONE home shared by breathe-kube
   # and ensaio visita (lifted out of breathe-kube 2026-09-30).
   "crates/breathe-resize",
+  "crates/breathe-capacity",
 ]
 
 [workspace.package]

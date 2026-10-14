@@ -1,8 +1,8 @@
 {
   "schema_version": 2,
-  "cargo_lock_sha256": "53fb5ab6dba9d53c86c7793c7c0c22c4b0b58858c1a4578a643058c07af01c23",
+  "cargo_lock_sha256": "8e1c6d6d69e7509d4fe39e35b2c78d0ab219248b593c7fa4af8a2a1220aede4f",
   "manifest_sha256": {
-    "Cargo.toml": "9c920a10ee98919471ed88d30a0a8b585204b41324f7bafc3b2e655c44d20f63",
+    "Cargo.toml": "947de8aaef8cd046126aec7d13927b61922532bebc4ff9cb678f87ccbf37e7e9",
     "breathe-actuator/Cargo.toml": "a8c3b8b233c30fbca82609cee0a423f275f17f2639846f910b91906058c9ab98",
     "breathe-admission/Cargo.toml": "35668123f778b381c620e1d21cd36e11b85d291eddde5ef8c7937b429b5cde88",
     "breathe-api-server/Cargo.toml": "c25d9751fd8e8a486d6c81e6241e29707115ef5aef0c62752d97208a08bc5781",
@@ -30,6 +30,7 @@
     "breathe-retirada-ci/Cargo.toml": "9d9eecb2ad7cf8bd9ed31f97b7807fd662e51530798ed15a291b4cb2cbee14f2",
     "breathe-runtime/Cargo.toml": "b85d587455ccce752d92755fb9b04777405be6dd248b9c2bf019db5b735e57af",
     "breathe-store/Cargo.toml": "c3ccad463c718d11f3397c75eab4b897fd35ab5f6449b21f0665f53bb25bd44c",
+    "crates/breathe-capacity/Cargo.toml": "7a4768451a39f2afaee8fd7ceacc01ea2a544f950fe8597897c8d2c47fec45cd",
     "crates/breathe-invariant/Cargo.toml": "fd57e6bcd1d3d9691c506b345592763080108e3edf2ab3893f134aa2aba34c19",
     "crates/breathe-resize/Cargo.toml": "66da0dc9b6275b5d713be728bbb56abd1380db5fe26b02e4ea09c7f8257e8a0d",
     "crates/breathe-spread/Cargo.toml": "7e2e0e1c1eb5376a250d11f6eb2601aac25987e339d8a3e5a37baed88bab01e9"
@@ -5885,6 +5886,79 @@
         ],
         "build_dependencies": [],
         "features": []
+      },
+      "breathe-capacity-0.1.58": {
+        "runtime_dependencies": [
+          {
+            "name": "breathe_control",
+            "package_key": "breathe-control-0.1.58",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "clap",
+            "package_key": "clap-4.6.4",
+            "kind": "normal",
+            "features": [
+              "derive"
+            ],
+            "uses_default_features": true,
+            "optional": true,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "serde",
+            "package_key": "serde-1.0.228",
+            "kind": "normal",
+            "features": [
+              "derive"
+            ],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "serde_json",
+            "package_key": "serde_json-1.0.150",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "serde_yaml",
+            "package_key": "serde_yaml-0.9.34+deprecated",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "thiserror",
+            "package_key": "thiserror-2.0.18",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          }
+        ],
+        "build_dependencies": [],
+        "features": [
+          "cli",
+          "default"
+        ]
       },
       "breathe-catalog-0.1.58": {
         "runtime_dependencies": [
@@ -33199,6 +33273,19 @@
         "name": "breathe_auction",
         "path": "src/lib.rs"
       }
+    },
+    "breathe-capacity-0.1.58": {
+      "edition": "2024",
+      "lib_target": {
+        "name": "breathe_capacity",
+        "path": "src/lib.rs"
+      },
+      "binaries": [
+        {
+          "name": "breathe-capacity",
+          "path": "src/main.rs"
+        }
+      ]
     },
     "breathe-catalog-0.1.58": {
       "edition": "2024",
