@@ -7,10 +7,9 @@ held — per category — inside a typed utilization band (default **80% used /
 signed entry in a verifiable attestation chain.
 
 > Architecture of record: [`theory/BREATHE.md`](https://github.com/pleme-io/theory/blob/main/BREATHE.md).
-> `breathe` is **public**. It integrates with akeyless ephemeral-environment
-> generation / instantiation / long-term-existence control, and that
-> integration is not a reason to keep the repo closed — nothing here carries
-> akeyless-side identifiers or credentials.
+> `breathe` is **public**. Private deployments drive it through their own
+> configuration layers, and nothing here carries a deployment's identifiers
+> or credentials.
 >
 > Corrected 2026-08-06: this line read "**private**" and was stale. Visibility
 > is not a matter of intent here, it is observable — and it was observed the
