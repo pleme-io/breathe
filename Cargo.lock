@@ -2278,9 +2278,9 @@ dependencies = [
 
 [[package]]
 name = "gen-macros"
-version = "0.1.20"
+version = "0.1.52"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "81ddd5ea37d8f45ed74262dc8c1b006c7c4de1db350a58b726a805eec289b074"
+checksum = "45aa54e78709c6e9644351c49be01154ea4e2ec8f52197e06312d594b3fc9b7b"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -2289,9 +2289,9 @@ dependencies = [
 
 [[package]]
 name = "gen-platform"
-version = "0.1.20"
+version = "0.1.52"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a7f1ce4869216a81852aa23581fca1d15fdde687970b12b9211128acf953ba20"
+checksum = "1bbe0fc580d799cdec0d3e87f0b70eac8958aaf5d5f2051652512aca3ea2c07b"
 dependencies = [
  "gen-macros",
  "gen-types",
@@ -2303,9 +2303,9 @@ dependencies = [
 
 [[package]]
 name = "gen-types"
-version = "0.1.20"
+version = "0.1.52"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "76e7426fbeff2378f2f440ddecd24a3bb9c391630a890672353de13b6f37b1b7"
+checksum = "a36de42423d45a3a53484df348c00d9691603252d6630dd3f980e01d560da7eb"
 dependencies = [
  "blake3",
  "chrono",
@@ -5208,9 +5208,9 @@ dependencies = [
 
 [[package]]
 name = "shikumi"
-version = "0.1.1082"
+version = "0.1.1083"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1bf83a01a3a1fb4e82976dc3e10951ba88d0bc48b1d10fcd6eac03ddea9b8118"
+checksum = "253ee1f04558dcc476384a4be719428df4322816ad73c5e2e7731d3808cc5523"
 dependencies = [
  "arc-swap",
  "async-trait",
@@ -6487,7 +6487,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.48.0",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
