@@ -15,7 +15,7 @@ serde = { version = "1", features = ["derive"] }
 thiserror = "2"
 
 [dev-dependencies]
-serde_yaml = "0.9"
+serde_norway = "0.9"
 
 [lints]
 workspace = true

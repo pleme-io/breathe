@@ -133,7 +133,7 @@ pub struct Request {
     #[serde(default)]
     pub startup_db_fanout: bool,
     pub chart: Chart,
-    #[serde(with = "serde_yaml::with::singleton_map")]
+    #[serde(with = "serde_norway::with::singleton_map")]
     pub raise: Raise,
     pub observed: Observed,
     pub pools: Vec<PoolDecl>,

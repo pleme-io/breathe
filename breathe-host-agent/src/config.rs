@@ -407,7 +407,7 @@ mod tests {
     fn partial_yaml_overlay_keeps_other_fields_prescribed() {
         let yaml = "metrics:\n  port: 9201\n";
         let overlaid: HostAgentConfig =
-            serde_yaml::from_str(yaml).expect("partial overlay must deserialize");
+            serde_norway::from_str(yaml).expect("partial overlay must deserialize");
         assert_eq!(overlaid.metrics.port, 9201, "the named key changes");
         assert_eq!(
             overlaid.reconcile.requeue_seconds, 30,
@@ -425,7 +425,7 @@ mod tests {
     fn unknown_log_format_is_rejected() {
         let yaml = "logging:\n  format: yaml-lol\n";
         assert!(
-            serde_yaml::from_str::<HostAgentConfig>(yaml).is_err(),
+            serde_norway::from_str::<HostAgentConfig>(yaml).is_err(),
             "an unknown encoder must fail to parse, never default silently"
         );
     }
@@ -435,8 +435,8 @@ mod tests {
     #[test]
     fn round_trips_through_yaml() {
         let c = HostAgentConfig::prescribed_default();
-        let s = serde_yaml::to_string(&c).expect("serialize");
-        let back: HostAgentConfig = serde_yaml::from_str(&s).expect("deserialize");
+        let s = serde_norway::to_string(&c).expect("serialize");
+        let back: HostAgentConfig = serde_norway::from_str(&s).expect("deserialize");
         assert_eq!(c, back);
     }
 

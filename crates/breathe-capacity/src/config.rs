@@ -28,7 +28,7 @@ pub struct Target {
 pub struct Run {
     pub target: Option<String>,
     pub service: Option<String>,
-    #[serde(with = "serde_yaml::with::singleton_map")]
+    #[serde(with = "serde_norway::with::singleton_map")]
     pub raise: Option<Raise>,
     pub observed: Option<Observed>,
     pub db: Option<DbBudget>,

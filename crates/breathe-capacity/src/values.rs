@@ -1,7 +1,7 @@
 use crate::model::{Chart, Sizing};
 use crate::quantity::{Bytes, Millicores};
 use serde::Serialize;
-use serde_yaml::Value;
+use serde_norway::Value;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -35,7 +35,7 @@ fn scalar(v: &Value) -> Option<String> {
 }
 
 pub fn read_sizing(text: &str, chart: &Chart, svc: &str) -> Result<Sizing, ValuesError> {
-    let doc: Value = serde_yaml::from_str(text).map_err(|e| ValuesError::Yaml(e.to_string()))?;
+    let doc: Value = serde_norway::from_str(text).map_err(|e| ValuesError::Yaml(e.to_string()))?;
     let block = doc
         .get(chart.root.as_str())
         .and_then(|r| r.get(svc))
@@ -136,7 +136,7 @@ pub fn apply(text: &str, root: &str, edits: &[Edit]) -> Result<String, ValuesErr
     if text.ends_with('\n') {
         out.push('\n');
     }
-    let doc: Value = serde_yaml::from_str(&out).map_err(|e| ValuesError::Yaml(e.to_string()))?;
+    let doc: Value = serde_norway::from_str(&out).map_err(|e| ValuesError::Yaml(e.to_string()))?;
     for e in edits {
         let got = doc
             .get(root)

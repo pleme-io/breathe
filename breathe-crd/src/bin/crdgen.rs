@@ -54,7 +54,7 @@ fn main() {
     for crd in crds {
         print!(
             "---\n{}",
-            serde_yaml::to_string(&crd).expect("serialize CRD")
+            serde_norway::to_string(&crd).expect("serialize CRD")
         );
     }
 }

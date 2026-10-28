@@ -1247,8 +1247,8 @@ mod tests {
         let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../spec/breathe.openapi.yaml");
         let raw =
             std::fs::read_to_string(path).expect("the spec is where the crate doc says it is");
-        let spec: serde_yaml::Value =
-            serde_yaml::from_str(&raw).expect("spec/breathe.openapi.yaml must be valid YAML");
+        let spec: serde_norway::Value =
+            serde_norway::from_str(&raw).expect("spec/breathe.openapi.yaml must be valid YAML");
 
         let declared: Vec<String> = spec["components"]["schemas"]["BandKind"]["enum"]
             .as_sequence()
@@ -1273,7 +1273,7 @@ mod tests {
             "/api/v1/bands/{kind}/{namespace}/{name}/confirm",
         ] {
             assert!(
-                paths.contains_key(serde_yaml::Value::from(route)),
+                paths.contains_key(serde_norway::Value::from(route)),
                 "{route} is served by the router but absent from the spec"
             );
         }

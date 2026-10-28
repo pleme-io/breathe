@@ -50,7 +50,7 @@ async-trait = "0.1"
 # generated artifact. `openapi_spec_band_kinds_match_the_code` parses the real file
 # and pins it to DimensionId::ALL. That claim needs a YAML reader to be mechanical
 # rather than a comment.
-serde_yaml = "0.9"
+serde_norway = "0.9"
 tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"
 # The canonical dimension count — the catalog tests assert against ALL_DIMENSIONS

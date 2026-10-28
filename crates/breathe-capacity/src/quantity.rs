@@ -64,10 +64,10 @@ macro_rules! quantity_serde {
 
         impl<'de> Deserialize<'de> for $t {
             fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
-                let v = serde_yaml::Value::deserialize(d)?;
+                let v = serde_norway::Value::deserialize(d)?;
                 let s = match &v {
-                    serde_yaml::Value::String(s) => s.clone(),
-                    serde_yaml::Value::Number(n) => n.to_string(),
+                    serde_norway::Value::String(s) => s.clone(),
+                    serde_norway::Value::Number(n) => n.to_string(),
                     _ => return Err(serde::de::Error::custom(concat!("expected a ", $what, " quantity"))),
                 };
                 <$t>::parse(&s).ok_or_else(|| {

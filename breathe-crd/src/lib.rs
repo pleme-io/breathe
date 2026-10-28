@@ -5255,7 +5255,7 @@ mod tests {
         // the parse-time bound: the apiserver rejects an arcMaxGiB whose *2^30
         // would overflow, so an overflowing ceiling is unrepresentable at admission.
         let crd = <BreatheNodePool as kube::CustomResourceExt>::crd();
-        let yaml = serde_yaml::to_string(&crd).unwrap();
+        let yaml = serde_norway::to_string(&crd).unwrap();
         assert!(
             yaml.contains("maximum"),
             "BreatheNodePool GiB fields must emit an OpenAPI maximum"
@@ -5642,7 +5642,7 @@ mod tests {
         // the generated CRD schema advertises the camelCase property — what the
         // apiserver validates a hand-authored CR against.
         let crd = <KubeParamBand as kube::CustomResourceExt>::crd();
-        let yaml = serde_yaml::to_string(&crd).unwrap();
+        let yaml = serde_norway::to_string(&crd).unwrap();
         assert!(
             yaml.contains("fieldPath"),
             "the KubeParamBand CRD must advertise fieldPath (camelCase)"
@@ -5691,7 +5691,7 @@ mod tests {
         }
         // the generated CRD advertises the camelCase desiredBytes the apiserver validates.
         let crd = <PodMemoryHigh as kube::CustomResourceExt>::crd();
-        let yaml = serde_yaml::to_string(&crd).unwrap();
+        let yaml = serde_norway::to_string(&crd).unwrap();
         assert!(
             yaml.contains("desiredBytes"),
             "the PodMemoryHigh CRD must advertise desiredBytes (camelCase)"
@@ -6435,7 +6435,7 @@ mod tests {
     #[test]
     fn replica_band_crd_advertises_its_camelcase_surface() {
         let crd = <ReplicaBand as kube::CustomResourceExt>::crd();
-        let yaml = serde_yaml::to_string(&crd).unwrap();
+        let yaml = serde_norway::to_string(&crd).unwrap();
         assert!(
             yaml.contains("haFloor"),
             "the CRD must advertise haFloor (camelCase)"
@@ -6519,7 +6519,7 @@ mod tests {
     #[test]
     fn replica_band_crd_advertises_the_topology_surface() {
         let crd = <ReplicaBand as kube::CustomResourceExt>::crd();
-        let yaml = serde_yaml::to_string(&crd).unwrap();
+        let yaml = serde_norway::to_string(&crd).unwrap();
         assert!(
             yaml.contains("topology"),
             "the CRD must advertise the topology field"
@@ -6660,7 +6660,7 @@ mod tests {
         // numeric fields + disruptionPolicy explicitly — this proves the Option<T>
         // conversion is wire-compatible: an EXISTING CR deserializes to Some(value)
         // unchanged, never silently regresses to None.
-        let cpu: CpuBand = serde_yaml::from_str(
+        let cpu: CpuBand = serde_norway::from_str(
             r#"
 apiVersion: breathe.pleme.io/v1
 kind: CpuBand
@@ -6925,7 +6925,7 @@ spec:
 
     #[test]
     fn the_three_example_postures_deserialize_and_drive_a_real_band_end_to_end() {
-        let platform: BreathePosture = serde_yaml::from_str(POSTURE_PLATFORM_DEFAULT_YAML)
+        let platform: BreathePosture = serde_norway::from_str(POSTURE_PLATFORM_DEFAULT_YAML)
             .expect("platform-default deserializes");
         assert_eq!(platform.spec.setpoint, 0.8);
         assert_eq!(
@@ -6933,7 +6933,7 @@ spec:
             DisruptionPolicy::RestartFreeOnly
         );
 
-        let stateful: BreathePosture = serde_yaml::from_str(POSTURE_STATEFUL_WORKLOAD_YAML)
+        let stateful: BreathePosture = serde_norway::from_str(POSTURE_STATEFUL_WORKLOAD_YAML)
             .expect("stateful-workload deserializes");
         assert_eq!(
             stateful.spec.disruption_policy,
@@ -6941,7 +6941,7 @@ spec:
         );
 
         let storage: BreathePosture =
-            serde_yaml::from_str(POSTURE_STORAGE_VOLUME_YAML).expect("storage-volume deserializes");
+            serde_norway::from_str(POSTURE_STORAGE_VOLUME_YAML).expect("storage-volume deserializes");
         assert_eq!(storage.spec.cooldown_seconds, 3600);
         assert_eq!(storage.spec.max_staleness_seconds, 300);
 
@@ -6949,7 +6949,7 @@ spec:
         // `stateful-workload` resolves to THAT posture's tuple — proving the
         // fixture -> BreathePostureSpec -> Band::band_config_with_posture wiring,
         // not just each half in isolation.
-        let bare: CpuBand = serde_yaml::from_str(
+        let bare: CpuBand = serde_norway::from_str(
             r#"
 apiVersion: breathe.pleme.io/v1
 kind: CpuBand
@@ -7003,7 +7003,7 @@ spec:
     /// author declared no limit.
     #[test]
     fn an_unauthored_band_may_not_introduce_a_bound() {
-        let bare: CpuBand = serde_yaml::from_str(
+        let bare: CpuBand = serde_norway::from_str(
             r#"
 apiVersion: breathe.pleme.io/v1
 kind: CpuBand
@@ -7028,7 +7028,7 @@ spec:
     /// diverge.
     #[test]
     fn an_authored_allowance_reaches_the_reconcile_input() {
-        let ceded: MemoryBand = serde_yaml::from_str(
+        let ceded: MemoryBand = serde_norway::from_str(
             r#"
 apiVersion: breathe.pleme.io/v1
 kind: MemoryBand
@@ -7121,7 +7121,7 @@ spec:
     /// A minimal `RequestBand` parses, and every default is the safe one.
     #[test]
     fn a_minimal_request_band_defaults_to_the_safe_posture() {
-        let b: RequestBand = serde_yaml::from_str(
+        let b: RequestBand = serde_norway::from_str(
             r"
 apiVersion: breathe.pleme.io/v1
 kind: RequestBand
@@ -7154,7 +7154,7 @@ spec:
     #[test]
     fn the_unit_follows_the_resource() {
         let build = |res: &str| -> RequestBand {
-            serde_yaml::from_str(&format!(
+            serde_norway::from_str(&format!(
                 r#"
 apiVersion: breathe.pleme.io/v1
 kind: RequestBand
@@ -7183,7 +7183,7 @@ spec:
     #[test]
     fn request_policy_falls_through_the_same_three_tiers() {
         let band = |spec_extra: &str| -> RequestBand {
-            serde_yaml::from_str(&format!(
+            serde_norway::from_str(&format!(
                 r"
 apiVersion: breathe.pleme.io/v1
 kind: RequestBand
@@ -7278,7 +7278,7 @@ spec:
         critical.workload_class = Some(WorkloadClassSpec::Critical);
         critical.qos_target = Some(QosClassSpec::Guaranteed);
 
-        let weaker: RequestBand = serde_yaml::from_str(
+        let weaker: RequestBand = serde_norway::from_str(
             r"
 apiVersion: breathe.pleme.io/v1
 kind: RequestBand
@@ -7309,7 +7309,7 @@ spec:
     /// is currently serving. This pins that it does not.
     #[test]
     fn a_live_posture_without_the_request_axis_still_deserializes() {
-        let p: BreathePosture = serde_yaml::from_str(
+        let p: BreathePosture = serde_norway::from_str(
             r"
 apiVersion: breathe.pleme.io/v1
 kind: BreathePosture
@@ -7353,7 +7353,7 @@ spec:
 ",
         );
         y.push_str(spec_extra);
-        serde_yaml::from_str(&y).expect("the RequestBand fixture parses")
+        serde_norway::from_str(&y).expect("the RequestBand fixture parses")
     }
 
     /// A band that must survive a rollout and cannot say where it lives is
@@ -7455,7 +7455,7 @@ spec:
     /// Re-capture it whenever the helper's `RequestBand` arm changes.
     #[test]
     fn the_helmworks_rendered_request_band_parses_into_this_type() {
-        let b: RequestBand = serde_yaml::from_str(
+        let b: RequestBand = serde_norway::from_str(
             r#"
 apiVersion: breathe.pleme.io/v1
 kind: RequestBand
@@ -7510,7 +7510,7 @@ spec:
     /// than silently ephemeral).
     #[test]
     fn the_chart_minimal_request_band_is_born_shadowed_and_reports_its_gap() {
-        let b: RequestBand = serde_yaml::from_str(
+        let b: RequestBand = serde_norway::from_str(
             r"
 apiVersion: breathe.pleme.io/v1
 kind: RequestBand
@@ -7567,7 +7567,7 @@ spec:
     /// carries the band's container through.
     #[test]
     fn the_request_band_carves_the_request_layout() {
-        let b: RequestBand = serde_yaml::from_str(
+        let b: RequestBand = serde_norway::from_str(
             r"
 apiVersion: breathe.pleme.io/v1
 kind: RequestBand

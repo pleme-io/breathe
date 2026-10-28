@@ -413,7 +413,7 @@ mod tests {
     fn empty_yaml_yields_the_very_small_default() {
         // A pre-existing controller with no config file (empty doc) gets the
         // very-small tier — the backwards-compat guarantee.
-        let cfg: BreatheServiceConfig = serde_yaml::from_str("{}").unwrap();
+        let cfg: BreatheServiceConfig = serde_norway::from_str("{}").unwrap();
         assert_eq!(cfg, BreatheServiceConfig::prescribed_default());
     }
 
@@ -440,8 +440,8 @@ mod tests {
                 dimensions: vec!["memory".into(), "cpu".into()],
             },
         };
-        let y = serde_yaml::to_string(&cfg).unwrap();
-        let back: BreatheServiceConfig = serde_yaml::from_str(&y).unwrap();
+        let y = serde_norway::to_string(&cfg).unwrap();
+        let back: BreatheServiceConfig = serde_norway::from_str(&y).unwrap();
         assert_eq!(cfg, back);
     }
 
@@ -449,13 +449,13 @@ mod tests {
 
     #[test]
     fn unit_arms_are_type_only_and_struct_arms_carry_a_spec() {
-        let small: BreatheServiceConfig = serde_yaml::from_str(
+        let small: BreatheServiceConfig = serde_norway::from_str(
             "scale:\n  store: { type: inMemory }\n  cache: { type: none }\n  coordination: { type: singleReplica }\n",
         )
         .unwrap();
         assert_eq!(small.scale.store, StoreConfig::InMemory);
 
-        let pg: ScaleConfig = serde_yaml::from_str(
+        let pg: ScaleConfig = serde_norway::from_str(
             "store:\n  type: postgres\n  spec:\n    dsn: 'postgres://x'\n    poolMax: 20\n",
         )
         .unwrap();
@@ -476,14 +476,14 @@ mod tests {
     #[test]
     fn decision_heartbeat_is_operator_authorable_including_the_gate_off_escape_hatch() {
         // The knob exists in YAML (not compiled in) and round-trips.
-        let cfg: ScaleConfig = serde_yaml::from_str("decisionHeartbeatSeconds: 120\n").unwrap();
+        let cfg: ScaleConfig = serde_norway::from_str("decisionHeartbeatSeconds: 120\n").unwrap();
         assert_eq!(cfg.decision_heartbeat_seconds, 120);
         // 0 = the explicit escape hatch (write every tick — the pre-gate behavior).
-        let off: ScaleConfig = serde_yaml::from_str("decisionHeartbeatSeconds: 0\n").unwrap();
+        let off: ScaleConfig = serde_norway::from_str("decisionHeartbeatSeconds: 0\n").unwrap();
         assert_eq!(off.decision_heartbeat_seconds, 0);
         // Unspecified takes the prescribed default, so an existing ConfigMap
         // (written before this field existed) still loads.
-        let unset: ScaleConfig = serde_yaml::from_str("window: 9\n").unwrap();
+        let unset: ScaleConfig = serde_norway::from_str("window: 9\n").unwrap();
         assert_eq!(
             unset.decision_heartbeat_seconds,
             default_decision_heartbeat_seconds()
@@ -494,20 +494,20 @@ mod tests {
 
     #[test]
     fn unknown_top_level_field_is_rejected() {
-        let err = serde_yaml::from_str::<BreatheServiceConfig>("scal: {}\n").unwrap_err();
+        let err = serde_norway::from_str::<BreatheServiceConfig>("scal: {}\n").unwrap_err();
         assert!(err.to_string().contains("scal"), "msg: {err}");
     }
 
     #[test]
     fn unknown_scale_field_is_rejected() {
         let err =
-            serde_yaml::from_str::<BreatheServiceConfig>("scale:\n  windwo: 9\n").unwrap_err();
+            serde_norway::from_str::<BreatheServiceConfig>("scale:\n  windwo: 9\n").unwrap_err();
         assert!(err.to_string().contains("windwo"), "msg: {err}");
     }
 
     #[test]
     fn unknown_postgres_field_is_rejected() {
-        let err = serde_yaml::from_str::<ScaleConfig>(
+        let err = serde_norway::from_str::<ScaleConfig>(
             "store:\n  type: postgres\n  spec:\n    dsn: x\n    poolMaxx: 9\n",
         )
         .unwrap_err();
@@ -520,7 +520,7 @@ mod tests {
     fn secret_redacts_in_debug_but_serializes_transparently() {
         let s = Secret::new("hunter2");
         assert_eq!(format!("{s:?}"), "Secret(<redacted>)");
-        assert_eq!(serde_yaml::to_string(&s).unwrap().trim(), "hunter2");
+        assert_eq!(serde_norway::to_string(&s).unwrap().trim(), "hunter2");
         assert_eq!(s.expose(), "hunter2");
     }
 
