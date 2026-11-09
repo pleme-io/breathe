@@ -12,8 +12,8 @@ description = "The predict → optimize → auction decision layer for the breat
 breathe-control = { path = "../breathe-control", version = "0.1.58" }
 breathe-provider = { path = "../breathe-provider", version = "0.1.58" }
 # Promoted from a dev-only worked-example dependency (2026-07-17): `zone`
-# below is a real, reusable library surface -- theory/BREATHABILITY.md
-# §II.6.8's "breathable autonomous zone" mechanism, consuming
+# below is a real, reusable library surface -- the "breathable autonomous
+# zone" mechanism, consuming
 # breathe-catalog's ALREADY-SHIPPED `DimensionSpec.depends_on` DAG (never
 # previously consumed for tick-time ordering, only rendered to JSON) via
 # shigoto's real Dag/JobId types.

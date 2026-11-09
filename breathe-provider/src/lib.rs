@@ -2,7 +2,7 @@
 //! trait, the `DimensionDescriptor` trait, and the **one generic
 //! [`BandProvider`]** that implements [`ResourceProvider`] for every dimension.
 //!
-//! The compounding shape (theory/BREATHE.md §3): the observe/assign/release
+//! The compounding shape: the observe/assign/release
 //! *orchestration* is solved exactly once, in `BandProvider`; a new dimension
 //! supplies only its genuinely-specific data via a `DimensionDescriptor`
 //! (metric query, owned field, directionality, owner layout). A provider never

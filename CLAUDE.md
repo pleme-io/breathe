@@ -171,9 +171,6 @@ A band resolves the pods it carves two ways, on one seam (`KubeCluster::owner_po
   (operator-owned fields, single-writer-first) — correct + safe. **Named trigger
   to go live:** a CSI storageClass with **per-volume accounting + enforced
   quotas** (Longhorn / Ceph-RBD / EBS), then cede the field as memory did.
-- **Program backlog:** the full carve-vector enumeration (96 vectors, 7 hazard
-  classes, 15-PR sequenced plan) + the shipped ledger live in
-  `theory/BREATHABILITY-PROGRAM.md`.
 
 ## Build + ship
 

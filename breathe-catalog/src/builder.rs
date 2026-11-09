@@ -1,5 +1,5 @@
 //! `builder` — the DEFAULT breathe posture for the SUPER-CACHE-CI BUILD case
-//! (theory/SUPER-CACHE-CI.md; theory/BREATHABILITY.md §II.6 flex-window).
+//! (the flex-window).
 //!
 //! The [`preset`](crate::preset) module arms the private estate *SaaS* workloads (the
 //! steady, HA-floored, storage-bearing services). A *builder* pool breathes on a

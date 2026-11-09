@@ -13,7 +13,7 @@
 //! [`crate::kube_cluster::KubeCluster::resolve_pod_cgroup_coords`]; everything in
 //! THIS module is exercised against pod JSON with zero cluster.
 //!
-//! `tier-honest` (per `theory/UNREPRESENTABILITY.md` §II): the coordinate
+//! `tier-honest`: the coordinate
 //! EXTRACTION is `parse-time-rejected` — a pod that doesn't carry a usable
 //! `(uid, qos, containerID)` triple yields an `Err` at the parse boundary, before
 //! any coordinate flows to a writer. The LIVE list against a real kubelet (and the

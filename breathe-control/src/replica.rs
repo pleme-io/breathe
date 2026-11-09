@@ -212,7 +212,7 @@ impl OddQuorum {
 }
 
 /// The workload TOPOLOGY — a **first-class axis** of the horizontal band
-/// (theory/BREATHABILITY.md §II.5). It selects BOTH the scaling algorithm and the
+/// It selects BOTH the scaling algorithm and the
 /// hard invariant the band may never violate. One `ReplicaBand`, a topology tag,
 /// four algorithms — so the horizontal dimension is correct across every layer
 /// (persistent, non-persistent, master/slave, fully distributed), not just the

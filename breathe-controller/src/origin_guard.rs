@@ -5,7 +5,7 @@
 //! `origin_guard` is the CLOSING half: it PROTECTS a named node — the private estate's
 //! origin/control-plane node is the first, driving use — by keeping it
 //! tainted against every workload except an explicit allowlist.
-//! theory/CORRENTEZA.md §4/§11.3 already names this shape as a degenerate
+//! This shape is a degenerate
 //! N=1 instance of the not-yet-built generic `IsolationBand`; this module is
 //! exactly that CR's reconciler.
 //!

@@ -26,7 +26,7 @@ use breathe_provider::Forma;
 /// 80/20 band) — it adds no new safety surface.
 pub mod quinhao;
 
-/// The **breathable autonomous zone** (theory/BREATHABILITY.md §II.6.8) — the
+/// The **breathable autonomous zone** — the
 /// per-tick shigoto `Dag` that resolves `breathe-catalog`'s already-shipped
 /// `DimensionSpec.depends_on` edges (never previously consumed for tick-time
 /// ordering) plus a zone's own cross-catalog `Forma`→`DimensionId` gates, the
@@ -353,7 +353,7 @@ pub trait LatencyOracle: Send + Sync {
 
 /// How [`ParetoOtimizador`] resolves a single winner from the Pareto frontier.
 /// This is where the `CostFloor`/`TimeFloor` duality
-/// (`theory/BREATHABILITY.md`'s auction-objective section) becomes an actual
+/// of the auction objective becomes an actual
 /// decision instead of a static enum: `MinCost` auctions hard on price;
 /// `MinCostUnderDeadline` auctions hard on price *subject to* a latency floor
 /// — the mechanism "choose performance when latency is the binding constraint"
@@ -405,7 +405,7 @@ pub enum PickPolicy {
     /// today's collapsed-frontier behavior is unchanged (a pure widening).
     MinCostRiskAdjusted { risk_weight: f64 },
     /// **The lexicographic performance-then-cost maxim, as a typed mechanism**
-    /// (theory/BREATHABILITY.md §II.6.8 — "never sacrifice performance;
+    /// ("never sacrifice performance;
     /// minimize cost only among allocations that hold it; that is the default
     /// state"). A TWO-STAGE ARGMIN over the frontier, not a weighted sum and
     /// not a satisficing filter: stage 1 finds the frontier's own minimum
@@ -438,7 +438,7 @@ pub enum PickPolicy {
 /// `relief_latency_secs`) — dominance filtering stays 2-axis. The doc's own
 /// three-axis frontier (`cost, -latency, buffer`) and a real Markowitz-style
 /// mean-variance risk adjustment under the auction's `$/mo` cost-variance
-/// budget (`theory/BREATHABILITY.md` §100% spot reliability) are NOT what
+/// budget (100% spot reliability) are NOT what
 /// [`PickPolicy::MinCostRiskAdjusted`] is — see that variant's own doc
 /// comment for why a full covariance-aware portfolio is out of scope here
 /// (it exists, sealed and tested, one layer up in `pleme-io/leilao`'s

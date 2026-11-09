@@ -68,7 +68,7 @@
   :depends-on  ()
   :mirrors     "k8s Deployment/StatefulSet spec.replicas (HPA/KEDA peer)"
   :law         "HPA ratio ceil(current×metric/target) + asymmetric anti-flap + HA floor(2) + spot scale-OUT (retirada)"
-  ;; The TOPOLOGY sub-axis (theory/BREATHABILITY.md §II.5): a first-class field of
+  ;; The TOPOLOGY sub-axis: a first-class field of
   ;; the ReplicaBand that selects BOTH the scaling ALGORITHM and the hard INVARIANT
   ;; the band may never violate. The typed mirror is breathe-control's `Topology`
   ;; (the Rust border), the CRD's `TopologyKind` (the wire class), and

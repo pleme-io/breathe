@@ -1,7 +1,7 @@
 # breathe-spread — the arch × auction × spot configuration spread as a first-class configurable dimension
 
 > **Renamed from `breathe-auction`** (2026-07-11, executing
-> `theory/CORRENTEZA.md` §1.2's named follow-up,
+> correnteza's named follow-up,
 > `pending-correnteza: rename-breathe-auction-spread-lock`). Two crates shared
 > the literal package name `breathe-auction`: this one (the config-spread
 > lock) and `breathe/breathe-auction` (the node-count/forma elasticity engine
@@ -77,8 +77,7 @@ arm loses) — the operator's "be vocal where arm is not winning" as a CI gate.
 
 ## Reference note (for the contextualizify surfaces)
 
-The BREATHABILITY doctrine's 100 %-spot / flex-window section
-(`theory/BREATHABILITY.md` §II.6) and the `/autorevivy` + `/the private estate` skills
+The BREATHABILITY doctrine's 100 %-spot / flex-window section and the `/autorevivy` + `/the private estate` skills
 should point at **`pleme-io/breathe/crates/breathe-spread`** as the CANONICAL LOCK
 of the arch × auction × spot spread — the compute peer of the `breathe-invariant`
 dimension lock. The doctrine PROSE is the model; this crate is the typed contract

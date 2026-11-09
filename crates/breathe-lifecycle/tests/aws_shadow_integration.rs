@@ -4,7 +4,7 @@
 //!
 //! # Why an integration test, not a live in-cluster controller
 //!
-//! `theory/CORRENTEZA.md` §10's phased path (M1) names the destination —
+//! correnteza's phased path (M1) names the destination —
 //! an `IsolationBand`-shaped CRD reconciled by pangea-operator — but two
 //! independent, verified-live blockers make a real in-cluster deployment
 //! of this specific piece premature today, not merely inconvenient:
@@ -124,8 +124,8 @@ impl DriftEnvironment for ShadowOnlyAwsEnvironment {
 
     /// The honest real answer, not a stub chosen to force an outcome: no
     /// `breathe-lifecycle::fsm::Node<P>` record store has ever been deployed
-    /// for the private estate (`theory/CORRENTEZA.md` §10.2 names this FSM↔claim wiring
-    /// as a named, unbuilt future integration point). There is no declared-
+    /// for the private estate (this FSM↔claim wiring is a named, unbuilt
+    /// future integration point). There is no declared-
     /// live registry anywhere in the fleet today, so the true state — right
     /// now, for real — is the empty set.
     async fn declared_live_node_ids(&self) -> Result<BTreeSet<NodeId>, DriftError> {

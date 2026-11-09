@@ -6,7 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
-description = "The composed reconcile loop for breathe — binds the proven band law to a provider's atomic I/O (observe → plan → assign). breathe-core owns the loop; it is not inherited (theory/BREATHE.md §2.3)."
+description = "The composed reconcile loop for breathe — binds the proven band law to a provider's atomic I/O (observe → plan → assign). breathe-core owns the loop; it is not inherited."
 
 [dependencies]
 breathe-control = { path = "../breathe-control", version = "0.1.58" }

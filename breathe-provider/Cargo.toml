@@ -6,7 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
-description = "The ResourceProvider + Cluster traits — the non-overloadable, category-atomic I/O boundary every breathe dimension implements (theory/BREATHE.md §3). No controller dependency."
+description = "The ResourceProvider + Cluster traits — the non-overloadable, category-atomic I/O boundary every breathe dimension implements. No controller dependency."
 
 [dependencies]
 breathe-control = { path = "../breathe-control", version = "0.1.58" }

@@ -1,7 +1,6 @@
 //! `breathe-control` — the dimension-agnostic resource-balancing core.
 //!
-//! The proven heart of the `breathe` homeostasis substrate
-//! ([`theory/BREATHE.md`](https://github.com/pleme-io/theory/blob/main/BREATHE.md) §2):
+//! The proven heart of the `breathe` homeostasis substrate:
 //! every "resident problem category" (memory, storage, cpu, …) projects into the
 //! two scalars `(used, capacity)`, and the *same* band law holds it inside a
 //! typed utilization band (default 80% used / 20% headroom) by gentle, bounded
@@ -35,7 +34,7 @@ pub mod replica;
 
 /// `lifecycle` — the LIFECYCLE BREATH: a workload breathes through a five-phase
 /// lifecycle (Zero → Wake+expansion → Settle+shadow-tighten → Steady → Idle→Zero),
-/// not just a held setpoint (theory/BREATHABILITY.md §II.5 default #6). The
+/// not just a held setpoint. The
 /// ORCHESTRATOR that composes [`decide`]/[`safe_min`]/[`soft_min`]/[`lapidar`] into
 /// the lifecycle, with the never-stuck invariant encoded in the type system where it
 /// can be (a phantom-typestate FSM + a parse-don't-validate `Confirmed` witness) and
@@ -1191,7 +1190,7 @@ pub trait ControlLaw {
 ///   guarantee; the limit can never drop under the guaranteed working set.
 /// - **`floor_bytes`** — the band's hard configured floor.
 ///
-/// # Honest tier (per `theory/UNREPRESENTABILITY.md`)
+/// # Honest tier
 ///
 /// This is the **C2 "external-world observation" ceiling**: a FUTURE working set
 /// is not knowable at compile time, so the strongest HONEST guarantee is
@@ -4851,7 +4850,7 @@ mod tests {
 
     // ── THE NEVER-OOM-FROM-CARVE INVARIANT (the authentik-Celery fix) ──────────
     //
-    // Honest tier (theory/UNREPRESENTABILITY.md): this is the C2 "external-world
+    // Honest tier: this is the C2 "external-world
     // observation" ceiling — a FUTURE working set is unknowable at compile time, so
     // the strongest HONEST guarantee is "a carve never drops the limit below the
     // DEMONSTRATED peak (max RSS over the trailing window) + the declared request

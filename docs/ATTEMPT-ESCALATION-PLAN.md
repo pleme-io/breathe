@@ -1,7 +1,7 @@
 # Attempt escalation — implementation plan
 
-The build plan for [`theory/BREATHABILITY-NODE.md` §2.5](../../theory/BREATHABILITY-NODE.md)
-(attempt-scoped escalation), with the private estate CI as the first instance. Companion to
+The build plan for attempt-scoped escalation, with the private estate CI as
+the first instance. Companion to
 [`REALLOCATION.md`](REALLOCATION.md) §3, which is where the cost case lives.
 
 **Goal.** An attempt starts on the cheapest capacity its tolerance permits.

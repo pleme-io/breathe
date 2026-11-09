@@ -1,8 +1,8 @@
 //! `breathe-lifecycle` — the "no straggler nodes, ever" typescape for
-//! the private estate node provisioning. Node-lifecycle addendum to
-//! `theory/CORRENTEZA.md` (which owns tick-by-tick WORKLOAD placement onto
+//! the private estate node provisioning. It complements correnteza
+//! (which owns tick-by-tick WORKLOAD placement onto
 //! EXISTING nodes via taints/tolerations); this crate owns the orthogonal
-//! concern CORRENTEZA §5 deliberately declines: the cloud NODE's own
+//! concern correnteza deliberately declines: the cloud NODE's own
 //! birth-to-death lifecycle and the guarantee that no cloud instance this
 //! controller ever created outlives its typed record.
 //!
@@ -29,9 +29,8 @@
 //!
 //! None of the three duplicates `breathe-admission::Recurso<P>` (the fleet's
 //! other phantom-typestate resource FSM) — see [`fsm`]'s module doc for the
-//! explicit near-miss-but-not-a-fold accounting, and
-//! `theory/CORRENTEZA.md`'s node-lifecycle addendum for how this composes
-//! with correnteza's workload-placement scope (disjoint: this crate never
+//! explicit near-miss-but-not-a-fold accounting. This composes with
+//! correnteza's workload-placement scope (disjoint: this crate never
 //! decides WHICH workload runs where, only whether a given cloud NODE record
 //! is alive, joining, draining, or gone).
 

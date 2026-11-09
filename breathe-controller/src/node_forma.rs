@@ -17,8 +17,8 @@ use breathe_admission::{Allocatable, CapacidadeProof, Portao, Viveiro};
 use breathe_auction::{BandLeiloeiro, LinearTrendPrevisor, Previsao, Previsor, ReactivePrevisor};
 // correnteza M0 — the compute/auction permutation-space lock (`Lane` etc,
 // used below via fully-qualified `breathe_spread::Lane` paths). Lives in the
-// sibling `breathe-spread` crate (renamed from `crates/breathe-auction`,
-// theory/CORRENTEZA.md §1.2 — it originally shared the literal package name
+// sibling `breathe-spread` crate (renamed from `crates/breathe-auction`:
+// it originally shared the literal package name
 // `breathe-auction` with the elasticity engine imported above; the rename
 // resolved the collision, no import-time aliasing needed anymore).
 use breathe_crd::{BreatheCloudPool, CloudPoolStatus};
@@ -633,7 +633,7 @@ impl Provedor for PoolProvedor {
 }
 
 // ============================================================================
-// Node claiming — correnteza M0 (theory/CORRENTEZA.md): on a
+// Node claiming — correnteza M0: on a
 // `Lane::StandaloneEc2Instance` pool's `Grew` tick, claim ONE Ready, unclaimed,
 // non-kwok-fake node into the pool by tainting + labelling it. This is "a
 // workload cannot be scheduled due to resource pressure" (the SAME `Grew`

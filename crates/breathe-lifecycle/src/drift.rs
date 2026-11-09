@@ -12,8 +12,7 @@
 //!
 //! # Tier: only-mitigated — a composite of C1 + C2 + C5, named honestly
 //!
-//! Per `theory/UNREPRESENTABILITY.md` §II and `theory/ECLUSA.md` §XVIII(b),
-//! this module can never exceed `only-mitigated`, on three independent axes:
+//! This module can never exceed `only-mitigated`, on three independent axes:
 //!
 //! - **C1** — "no orphan ever" is a forever-quantifier over infinite
 //!   executions. It is discharged only by a continuously-ticking reconciler
@@ -116,8 +115,7 @@ struct Mark {
 
 /// One tick's outcome — every vector sorted (by `InstanceId`/`NodeId`'s
 /// `Ord`) so a caller gets a deterministic, diffable, attestable report
-/// (never trust a tick's effect blind — `theory/CORRENTEZA.md` §9's own
-/// named principle, applied here).
+/// (never trust a tick's effect blind).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TickReport {
     /// Instances newly identified as orphaned THIS tick (mark count now 1).
@@ -140,7 +138,7 @@ pub struct TickReport {
 
 /// The lease-expiry-bounded mark-and-sweep GC. One instance per reconcile
 /// loop; call [`OrphanTracker::tick`] on a cadence (a Viggy `(defpromessa)`
-/// tick, in the destination — see `theory/CORRENTEZA.md`).
+/// tick, in the destination).
 #[derive(Debug)]
 pub struct OrphanTracker {
     grace_ticks: u32,

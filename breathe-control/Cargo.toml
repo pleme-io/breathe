@@ -6,7 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
-description = "The proven, dimension-agnostic band law + field-granular single-writer guard for the breathe homeostasis substrate (theory/BREATHE.md §2)."
+description = "The proven, dimension-agnostic band law + field-granular single-writer guard for the breathe homeostasis substrate."
 
 [dependencies]
 # Intentionally dependency-free. The whole thesis: the balancing algebra is

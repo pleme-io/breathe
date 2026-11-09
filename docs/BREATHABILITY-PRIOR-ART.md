@@ -48,7 +48,7 @@ commodity actuation primitive** — not any single mechanism:
 
 ## Tier-honesty — the cooperative guard is *mitigation*, not *unrepresentable*
 
-Per the org's [`UNREPRESENTABILITY`](https://github.com/pleme-io/theory/blob/main/UNREPRESENTABILITY.md)
+Per the org's unrepresentability
 bright line (a `Result::Err`/runtime-yield is *mitigation*; a compile error /
 absent path is *unrepresentability* — never round up):
 

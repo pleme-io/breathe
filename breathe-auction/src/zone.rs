@@ -1,4 +1,4 @@
-//! `zone` — the breathable autonomous zone (theory/BREATHABILITY.md §II.6.8).
+//! `zone` — the breathable autonomous zone.
 //!
 //! **The correction that shaped this module (stated so the history isn't
 //! lost).** The theory doc's first draft proposed a brand-new "O6" invariant
@@ -84,8 +84,8 @@ pub fn dimension_tick_dag(scope: &JobScope, dims: &[DimensionId]) -> Dag {
     d
 }
 
-/// A breathable autonomous zone — the typed scope theory/BREATHABILITY.md
-/// §II.6.8 names: the set of `Forma`s and `DimensionId`s that should
+/// A breathable autonomous zone — the typed scope: the set of `Forma`s
+/// and `DimensionId`s that should
 /// converge TOGETHER, tick by tick, rather than as independent surfaces
 /// blind to each other's decisions.
 #[derive(Debug, Clone)]
@@ -104,7 +104,7 @@ pub struct BreatheZone {
     /// pod-density assumption CPU/Memory bands make.
     pub gated_dims: &'static [DimensionId],
     /// WHICH `quinhao` kernel this zone's claimants are divided by — the
-    /// zone-level knob theory/BREATHABILITY.md §II.6.8 names: independent
+    /// zone-level knob: independent
     /// surfaces stay `PerAxisIndependent` (today's default everywhere);
     /// surfaces that jointly contend the SAME claimants (the auction case)
     /// select `DominantResourceFairness`. See [`allocate_for_zone`].
@@ -207,7 +207,7 @@ impl BreatheZone {
 /// Build the FULL per-tick `Dag` for a zone: [`dimension_tick_dag`]'s
 /// within-catalog `depends_on` edges, UNIONED with the zone's own
 /// cross-catalog `Forma → gated_dims` edges. One Dag, two edge sources,
-/// composed — the mechanism theory/BREATHABILITY.md §II.6.8 names.
+/// composed — the breathable-autonomous-zone mechanism.
 ///
 /// # Errors
 /// Propagates [`BreatheZone::validate`]'s typed refusal — never builds a
@@ -240,7 +240,7 @@ pub fn dimensions_with_structural_dependencies() -> HashMap<DimensionId, &'stati
 
 /// **Divide a zone's claimant forest by its OWN declared [`AllocationPolicy`]**
 /// — the dispatcher that ties [`BreatheZone`] to `quinhao`'s two fabric
-/// kernels, completing the concept theory/BREATHABILITY.md §II.6.8 names:
+/// kernels, completing the zone concept:
 /// the zone boundary decides not just WHICH surfaces tick together (via
 /// [`zone_tick_dag`]) but HOW their shared pool is divided once they do.
 ///

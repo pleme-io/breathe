@@ -171,8 +171,8 @@ struct Ctx {
     /// pair, `main.rs:63-70`), matching the codebase's own established idiom
     /// for a cluster-scoped reference CRD rather than a per-tick `Api::get()`.
     /// Every reconcile resolves a band's `postureRef` against the store's
-    /// CURRENT state — never a value cached/baked once at admission time
-    /// (`theory/INVARIANT-BY-CONSISTENCY-AND-CONTROLLER.md`). `Store::get` is
+    /// CURRENT state — never a value cached/baked once at admission time.
+    /// `Store::get` is
     /// itself a cache read (may lag the apiserver by up to a watch
     /// round-trip, typically sub-second) — the honest middle ground between
     /// "always exactly current" and "baked in once and never revisited"; see

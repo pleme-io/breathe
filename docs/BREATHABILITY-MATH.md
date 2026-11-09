@@ -731,8 +731,7 @@ section that forces it.
 
 *Companion: [`BREATHABILITY-THESIS.md`](./BREATHABILITY-THESIS.md) (what the
 thesis is/is not) · [`BREATHE.md`](./BREATHE.md) (mechanism) ·
-[`BREATHABLE-SUBSTRATE.md`](./BREATHABLE-SUBSTRATE.md) (catalog + tiers). Bright
-line: `theory/UNREPRESENTABILITY.md §II`. Code anchors: `breathe-control/src/lib.rs`
+[`BREATHABLE-SUBSTRATE.md`](./BREATHABLE-SUBSTRATE.md) (catalog + tiers). Code anchors: `breathe-control/src/lib.rs`
 (`decide` :289, `safety_clamp` :183, `BandLaw::propose` :269, `PredictiveGrow`
 :371, `competing_field_manager` :434, `plan_tick` :533, `validate` :98) ·
 `breathe-core/src/lib.rs` (`reconcile_one`).*

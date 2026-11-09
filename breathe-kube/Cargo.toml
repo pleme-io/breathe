@@ -6,7 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
-description = "The Kubernetes Cluster impl for breathe — true-SSA apply, Prometheus metric reads, and the pure metadata.managedFields → FieldOwner ownership parser that feeds the field-granular single-writer guard (theory/BREATHE.md §3.1, §15.3)."
+description = "The Kubernetes Cluster impl for breathe — true-SSA apply, Prometheus metric reads, and the pure metadata.managedFields → FieldOwner ownership parser that feeds the field-granular single-writer guard."
 
 [dependencies]
 breathe-control = { path = "../breathe-control", version = "0.1.58" }

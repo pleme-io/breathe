@@ -16,7 +16,7 @@
 //! real code (not `#[cfg(test)]`), so integration tests, examples, and a future
 //! `KwokProvedor` (kwok-backed test cluster) share exactly one lifecycle model.
 //!
-//! The lifecycle mirrors `theory/BREATHABILITY-NODE-LIFECYCLE.md`:
+//! The lifecycle:
 //!
 //! ```text
 //!   provision(n) ─► Provisioning(boot) ──advance×boot──► Ready ──(counts as capacity)

@@ -1,7 +1,7 @@
 //! `breathe-retirada-ci` — retirada's spot-reclaim signal, applied to
 //! job-shaped (CI) workloads.
 //!
-//! `theory/BREATHABILITY.md`'s `retirada` names the drain-ahead signal
+//! `retirada` names the drain-ahead signal
 //! for REPLICA-shaped workloads: `breathe-control::replica` scales a
 //! replica set OUT ahead of a pending spot reclaim, covering the
 //! doomed replicas before they're lost (§ `spot_reclaim_pending` in
@@ -141,7 +141,7 @@ pub enum NoActionReason {
     RunnerAlreadyAssigned,
     /// The job hasn't been queued long enough yet to call it
     /// starvation rather than a normal cold-start Wake — never fire
-    /// early; `theory/BREATHABILITY.md`'s lifecycle-breath names
+    /// early; the lifecycle breath treats
     /// cold-start latency as expected, not an anomaly.
     StillWithinNormalWake,
 }

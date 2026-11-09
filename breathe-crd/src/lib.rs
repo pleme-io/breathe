@@ -504,8 +504,7 @@ pub trait Band:
     // (setpoint/growAbove/growFactor/shrinkBelow/shrinkFactor/cooldownSeconds/
     // maxStalenessSeconds/disruptionPolicy) so N bands can share one tuple by
     // reference instead of copy-pasting it. The fold is always THREE tiers,
-    // resolved fresh on every call (never cached/baked once — see
-    // `theory/INVARIANT-BY-CONSISTENCY-AND-CONTROLLER.md`): an EXPLICIT value
+    // resolved fresh on every call (never cached/baked once): an EXPLICIT value
     // on this band's own spec always wins; else the referenced posture's
     // value; else the crate's existing compiled default. `floor`/`ceiling`/
     // `requestFloor`/`targetRef`/`dryRun`/`mode` are NEVER posture-derived —
@@ -2255,7 +2254,7 @@ pub enum TopologyKind {
 
 /// The workload TOPOLOGY of a [`ReplicaBand`] (serde mirror of
 /// `breathe_control::replica::Topology`). It picks BOTH the scaling algorithm and the
-/// hard invariant the band may never violate (theory/BREATHABILITY.md §II.5). Default
+/// hard invariant the band may never violate. Default
 /// `nonPersistent` (stateless) — an omitted `topology` leaves an existing band's
 /// behaviour byte-unchanged.
 ///
@@ -3778,8 +3777,7 @@ pub struct CloudPoolStatus {
 // `Grew` tick claims one Ready node INTO a pool. `IsolationBand` is the
 // membership-CLOSING peer: it PROTECTS a named node (its first use: the
 // the private estate origin/control-plane node) by keeping it tainted against every
-// workload except an explicit allowlist. theory/CORRENTEZA.md §4/§11.3 names
-// this shape as a degenerate N=1 instance of the not-yet-built generic
+// workload except an explicit allowlist. This shape is a degenerate N=1 instance of the not-yet-built generic
 // `IsolationBand` — this type is exactly that, scoped to what origin-guard
 // needs today (`targetNodes` carrying one hostname).
 //

@@ -46,7 +46,7 @@ impl UseCase {
 /// ([`StrategyWiring`]) — the typed answer to "discover whether we're on an ASG,
 /// an EKS managed node group, or a lone self-managed instance, and load the
 /// matching config matrix" (the progressive-platform-discovery axis correnteza's
-/// M0 extends; see `theory/CORRENTEZA.md`).
+/// M0 extends).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Lane {
     /// A standalone mixed-instances ASG / EC2 Fleet (`Spot::MixedInstancesAsg`) —

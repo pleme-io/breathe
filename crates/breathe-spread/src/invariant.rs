@@ -121,7 +121,7 @@ impl AuctionClause {
     }
 }
 
-/// The tier ladder from `theory/UNREPRESENTABILITY.md` §II + the two honest
+/// The unrepresentability tier ladder + the two honest
 /// ceilings (same shape as `breathe-invariant::UnrepTier`, re-declared so the crate
 /// stays standalone).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]

@@ -6,7 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
-description = "The MemoryBand CRD (breathe.pleme.io/v1) — the typed per-target enrollment contract; the controller reconciles only declared bands (theory/BREATHE.md §4)."
+description = "The MemoryBand CRD (breathe.pleme.io/v1) — the typed per-target enrollment contract; the controller reconciles only declared bands."
 
 [dependencies]
 breathe-control = { path = "../breathe-control", version = "0.1.58" }

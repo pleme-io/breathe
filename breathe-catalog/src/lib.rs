@@ -355,7 +355,7 @@ pub fn lookup(id: DimensionId) -> Option<&'static DimensionSpec> {
     CATALOG.iter().find(|d| d.id == id)
 }
 
-// ── The REPLICA dimension's TOPOLOGY sub-axis (theory/BREATHABILITY.md §II.5) ──
+// ── The REPLICA dimension's TOPOLOGY sub-axis ──
 //    The replica dimension is the only one with an internal sub-axis: the workload
 //    TOPOLOGY, which selects BOTH the scaling algorithm and the hard invariant the
 //    band may never violate. This is the catalog mirror of the `Topology` Rust

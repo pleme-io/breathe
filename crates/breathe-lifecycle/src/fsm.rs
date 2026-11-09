@@ -14,8 +14,6 @@
 //! feeding the drift reconciler in [`crate::drift`]) — a different shape
 //! (7 live phases + `Aborted`, not 9 + 2) and a different terminal contract
 //! (`Reaped` erases its tracking fields structurally; `Aposentado` does not).
-//! See `theory/CORRENTEZA.md`'s node-lifecycle addendum for the full
-//! near-miss-but-not-a-fold accounting.
 //!
 //! # Tier: truly-unrepresentable (the library path)
 //!
@@ -138,7 +136,7 @@ pub enum FaseNode {
     /// Joined and scheduling workloads.
     Active,
     /// Cordoned; draining existing work before termination (`AnnouncedMove`'s
-    /// node-lifecycle sibling — see `theory/CORRENTEZA.md` §4).
+    /// node-lifecycle sibling).
     Draining,
     /// A `TerminateInstances` call has been issued; awaiting confirmation.
     TerminationIssued,

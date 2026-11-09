@@ -1,5 +1,5 @@
 # Job-shaped retirada — the automatic queue-starvation watcher
-# (breathe-retirada-ci, theory/BREATHABILITY.md "Retirada's job-shaped
+# (breathe-retirada-ci, "Retirada's job-shaped
 # sibling"). Confirmed 2026-07-23 against two real incidents
 # (this repo's own run 29930406877, hardened-images' 30007679929) that
 # the actual failure mode on one cluster-builder-pleme is a job sitting

@@ -678,7 +678,7 @@ fn allocate_subtree(
 // allocate_drf — the second single-level kernel (Dominant Resource Fairness).
 // ============================================================================
 //
-// theory/BREATHABILITY.md §II.6.8 names this: a "breathable autonomous zone"
+// The need: a "breathable autonomous zone"
 // that jointly allocates CPU + Memory + Storage + Network-IP across enrolled
 // surfaces needs a policy that couples the axes (equalizes each claimant's
 // *dominant* share across ALL resources at once) — the opposite design choice

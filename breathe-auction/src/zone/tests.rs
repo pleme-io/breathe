@@ -107,7 +107,7 @@ const ISOLATED_DIMS: &[DimensionId] = &[DimensionId::Cpu, DimensionId::Memory];
 
 #[test]
 fn zone_tick_dag_resolves_the_isolated_incident() {
-    // The exact worked incident theory/BREATHABILITY.md §II.6.8 names: a
+    // The worked incident the zone exists for: a
     // node-pool shape decision (Forma::NodeSpot) must resolve before the
     // Cpu/Memory bands that assume a pod-density ceiling it implies.
     let zone = BreatheZone {

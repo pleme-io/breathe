@@ -1,4 +1,4 @@
-# breathe — the resource-homeostasis substrate (theory/BREATHE.md).
+# breathe — the resource-homeostasis substrate.
 # One running controller, one proven dimension-agnostic band law, a catalog of
 # pluggable resident-problem-category providers. Each member crate publishes to
 # crates.io via AUTO-RELEASE; the controller image ships to ghcr.
@@ -32,7 +32,7 @@ members = [
   "breathe-facade",    # the typed CRD facade (BreatheStore) — shared by every API surface
   "breathe-mcp",       # the MCP surface — a model drives breathe (bands/nodepools over kube-rs)
   "breathe-api-server", # the REST surface (axum) over the same facade
-  # correnteza M0 (theory/CORRENTEZA.md) — folded in from its own standalone
+  # correnteza M0 — folded in from its own standalone
   # workspace root so `breathe-controller` can depend on it: Cargo refuses a
   # path dependency onto a NESTED directory that also declares its own
   # `[workspace]` ("multiple workspace roots found in the same workspace"),

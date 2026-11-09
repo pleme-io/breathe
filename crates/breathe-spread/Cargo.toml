@@ -1,6 +1,6 @@
 # breathe-spread — the ARCH × AUCTION × SPOT configuration-spread LOCK.
 #
-# RENAMED from `breathe-auction` (2026-07-11, theory/CORRENTEZA.md §1.2's named
+# RENAMED from `breathe-auction` (2026-07-11, correnteza's named
 # follow-up, `pending-correnteza: rename-breathe-auction-spread-lock`, executed
 # here): `breathe/breathe-auction` (the node-count/forma elasticity auction —
 # `Leiloeiro`/`Previsor`, wired live into `breathe-provision::reconcile_forma`
@@ -32,7 +32,7 @@
 # workspace roots found in the same workspace"). This crate's own doc had
 # already named exactly this move as its follow-up ("fold into the breathe
 # workspace members ... once the concurrent band-crate work lands") — this IS
-# that band-crate work (theory/CORRENTEZA.md M0). The concrete realizers this
+# that band-crate work (correnteza M0). The concrete realizers this
 # crate composes BY REFERENCE are unaffected — `breathe-catalog::builder` (the
 # DegradeTier ladders), `pangea-architectures` (the private estate{,Builder}NodeGroup +
 # AzTopology), `pangea-spot` (Allocation + Catalog) — none of them are actual
@@ -46,7 +46,7 @@ rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
-description = "The ARCH × AUCTION × SPOT configuration-spread lock — the compute/auction companion to breathe-invariant. A typed configurable-permutation space (arch × spot-strategy × auction-ladder × perf-class × placement × interruption) with a molding default per use-case (SaaS-steady/build-burst/eyes), under the never-on-demand hard law + breathability dual-purpose. Arch is a COST-OPTIMIZED axis (multi-arch AUTOBUMP images make arch selection free; the auction lands on the cheapest-deepest arch, self-adjusting). The verification MATRIX makes an on-demand permutation, an unexpressible arch, a single-effect molding, and an un-justified counter-intuitive cost choice CI-caught. Renamed from `breathe-auction` (theory/CORRENTEZA.md §1.2) to resolve a package-name collision with the node-count elasticity crate of the same original name."
+description = "The ARCH × AUCTION × SPOT configuration-spread lock — the compute/auction companion to breathe-invariant. A typed configurable-permutation space (arch × spot-strategy × auction-ladder × perf-class × placement × interruption) with a molding default per use-case (SaaS-steady/build-burst/eyes), under the never-on-demand hard law + breathability dual-purpose. Arch is a COST-OPTIMIZED axis (multi-arch AUTOBUMP images make arch selection free; the auction lands on the cheapest-deepest arch, self-adjusting). The verification MATRIX makes an on-demand permutation, an unexpressible arch, a single-effect molding, and an un-justified counter-intuitive cost choice CI-caught. Renamed from `breathe-auction` to resolve a package-name collision with the node-count elasticity crate of the same original name."
 
 [lib]
 name = "breathe_spread"

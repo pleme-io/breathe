@@ -21,13 +21,11 @@
 //! IMPOSSIBLE — not merely disciplined — for a posture edit to widen N
 //! workloads' ceilings or flip N workloads from shadow to live in one patch
 //! (the ★ Core rule in `BREATHABILITY.md`; the org's own `maxRunners`
-//! 3×-stale incident, named in
-//! `theory/INVARIANT-BY-CONSISTENCY-AND-CONTROLLER.md`, is exactly the
+//! 3×-stale incident is exactly the
 //! failure class this schema split forecloses).
 //!
 //! **Naming note:** `BreathePosture` is proposed, not yet `/naming`-skill
-//! ratified (per the `theory/VIVEIRO.md` precedent for an unratified working
-//! name). "Posture" reuses established vocabulary already load-bearing in
+//! ratified; it is an unratified working name. "Posture" reuses established vocabulary already load-bearing in
 //! this exact doctrine (`IsolationPosture::for_class` in
 //! `breathe-invariant/src/isolation.rs`; `BREATHABILITY.md` §II.7.4's own
 //! phrase "the BEST DEFAULT POSTURE per class+context") rather than adding a

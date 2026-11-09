@@ -6,7 +6,6 @@ held — per category — inside a typed utilization band (default **80% used /
 20% headroom**) by gentle, bounded, convergent steps, and every step is a
 signed entry in a verifiable attestation chain.
 
-> Architecture of record: [`theory/BREATHE.md`](https://github.com/pleme-io/theory/blob/main/BREATHE.md).
 > `breathe` is **public**. Private deployments drive it through their own
 > configuration layers, and nothing here carries a deployment's identifiers
 > or credentials.
@@ -37,7 +36,7 @@ signed entry in a verifiable attestation chain.
 | `breathe-capacity` | a **pure, grow-only capacity-raise planner** with a CLI (`nix run .#breathe-capacity -- plan|next`). From a request, a Helm values file and `kubectl get nodes/pods -o json`, it emits ordered steps of at most 2x each, bin-packs the rollout surge onto real free room, predicts the HPA replica shift and autoscaler node adds, and refuses a single-replica restart, a pod larger than any node, a pool ceiling fixed in the module, or a peak over the DB connection budget. `next` applies one step to the values file in place, keeping comments and quoting. It never writes to a cluster. The chart layout (values root, key names, defaults) and workload names come in as data, so no deployment's facts live here. |
 | `breathe-facade` | the one typed `BreatheStore` seam every operator surface drives — MCP, REST, GraphQL and gRPC all dispatch on `breathe_provider::DimensionId`, so all **ten** band kinds are reachable from all four. |
 
-## Invariants (do not regress — see `theory/BREATHE.md` §15)
+## Invariants (do not regress)
 
 - **SSA-Apply only** — every mutation is `Patch::Apply` with a per-dimension field
   manager, never `Merge`. Only real `managedFields` ownership backs the

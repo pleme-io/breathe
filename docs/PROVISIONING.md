@@ -48,8 +48,7 @@
 > **predict → optimize → auction** engine; below it, the cluster is mutated only
 > via GitOps-native typed actions, every tick attested into an OutcomeChain.
 
-The bright line from [`UNREPRESENTABILITY.md`](https://github.com/pleme-io/theory)
-§II is carried throughout: **a `Result::Err` is mitigation; a missing method or a
+The unrepresentability bright line is carried throughout: **a `Result::Err` is mitigation; a missing method or a
 sealed constructor is unrepresentability.** Never rounded up.
 
 ---

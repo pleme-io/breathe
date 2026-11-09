@@ -9,8 +9,6 @@
 //! typed peer of `gen-pdc` (per-dependency caching) and `gen-secattest`
 //! (security attestation): build / security / breathability are three
 //! instances of the same variant/invariant discipline.
-//!
-//! Canonical doctrine: `theory/BREATHABILITY.md` (+ `-CARVING`, `-SCALING`).
 
 use serde::{Deserialize, Serialize};
 
@@ -120,7 +118,7 @@ impl BreatheClause {
     }
 }
 
-/// The tier ladder from `theory/UNREPRESENTABILITY.md` §II, plus the two
+/// The unrepresentability tier ladder, plus the two
 /// honest ceilings. Never round up: a `Result::Err` is mitigation, a compile
 /// error / absent path is unrepresentability; a ceiling is the correct
 /// terminal for a property Rust's type system provably cannot prove.

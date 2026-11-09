@@ -9,7 +9,7 @@
 //! half: resolve the live pods' cgroup coordinates + emit one `PodMemoryHigh`
 //! dispatch CR per pod carrying the soft target, which the host-agent reconciles.
 //!
-//! `tier-honest` (`theory/UNREPRESENTABILITY.md` §II): the dispatch-BUILDER
+//! `tier-honest`: the dispatch-BUILDER
 //! ([`build_pod_memory_high_dispatch`]) is PURE + library-tested — it can never
 //! emit a HARD value (it carries only the SOFT `desiredBytes`, the typed
 //! `K8sMemoryCarve.soft_target`), so a dispatch is OOM-impossible by construction.

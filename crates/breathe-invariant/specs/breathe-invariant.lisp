@@ -16,7 +16,6 @@
      utilization setpoint, by DEFAULT, fleet-wide — and the same carve is
      simultaneously a cost control AND an availability/resiliency maximizer,
      tuned continuously over time"
-  :doctrine "theory/BREATHABILITY.md"
   :clauses
     ((:rule breathe-carved-by-a-band       :tier ceiling-c1        :of "every consumed dimension is carved by a typed *Band")
      (:rule breathe-carve-to-setpoint      :tier parse-time-rejected :of "carving drives utilization to a sealed setpoint")

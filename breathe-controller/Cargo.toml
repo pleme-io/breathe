@@ -6,7 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
-description = "The breathe controller binary — watches MemoryBand CRs and runs the composed reconcile loop (observe → plan → assign) per target via the real KubeCluster (theory/BREATHE.md M1)."
+description = "The breathe controller binary — watches MemoryBand CRs and runs the composed reconcile loop (observe → plan → assign) per target via the real KubeCluster."
 
 [[bin]]
 name = "breathe-controller"
@@ -31,7 +31,7 @@ breathe-admission = { path = "../breathe-admission", version = "0.1.58" }
 # correnteza M0 — the compute/auction permutation-space lock (Lane/AuctionSpread).
 # Was package-named `breathe-auction` too (a real collision with the elasticity
 # engine above, since Cargo refuses two same-named local packages in one
-# resolve graph) — renamed to `breathe-spread` (theory/CORRENTEZA.md §1.2) so
+# resolve graph) — renamed to `breathe-spread` so
 # both coexist here with no alias needed.
 breathe-spread = { path = "../crates/breathe-spread", version = "0.1.58" }
 async-trait = "0.1"

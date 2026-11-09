@@ -251,8 +251,7 @@ Ordered by blast radius, smallest first. Each is independently revertible:
 
    **Routing short work to spot is only half the change, and shipping the half
    alone is a defect.** The other half is
-   [`BREATHABILITY-NODE.md` §2.5](../../theory/BREATHABILITY-NODE.md) — attempt-scoped
-   escalation. A reclaimed CI job fails, GitHub retries it, and the retry re-enters
+   attempt-scoped escalation ([`ATTEMPT-ESCALATION-PLAN.md`](ATTEMPT-ESCALATION-PLAN.md)). A reclaimed CI job fails, GitHub retries it, and the retry re-enters
    the same spot-preferring routing; nothing bounds that loop, and the node tier
    reports healthy throughout because §2.4 restored capacity every time. So the
    short scale set ships with: the attempt identified, its death **attributed to a

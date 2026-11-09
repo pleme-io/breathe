@@ -1,13 +1,12 @@
 # breathe-lifecycle — the "no straggler nodes, ever" typescape for the private estate node
-# provisioning (theory/CORRENTEZA.md, node-lifecycle addendum).
+# provisioning.
 #
 # A standalone crate (its own [workspace] root) so it composes the breathe
 # substrate by REFERENCE without being coupled to the parent breathe
 # workspace's build or its in-flight band-crate churn — the exact isolation
 # discipline `breathe-invariant` uses. (`crates/breathe-auction` used to be a
 # second example of this pattern, but it was renamed to `crates/breathe-spread`
-# AND folded into the parent workspace in the same commit, theory/CORRENTEZA.md
-# §1.2/§10 — it's a normal workspace member now, no longer isolated this way.)
+# AND folded into the parent workspace in the same commit — it's a normal workspace member now, no longer isolated this way.)
 [package]
 name = "breathe-lifecycle"
 version = "0.1.0"
@@ -64,6 +63,5 @@ strip = true
 # members are an explicit list under the repo root, not crates/*). Declaring
 # [workspace] here makes cargo treat this crate as its own root, so building it
 # never touches the parent's in-flight band crates (or the sibling
-# breathe-crd/node_forma.rs work in flight this same session — see the ledger
-# entry in theory/CORRENTEZA.md for the collision-avoidance rationale).
+# breathe-crd/node_forma.rs work in flight this same session).
 [workspace]

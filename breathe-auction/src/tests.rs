@@ -490,7 +490,7 @@ fn risk_adjusted_never_panics_and_always_returns_a_single_winner_over_many_weigh
 
 // ============================================================================
 // PickPolicy::TopPerformanceThenMinCost — the lexicographic performance-then-
-// cost maxim (theory/BREATHABILITY.md §II.6.8), as a typed mechanism.
+// cost maxim, as a typed mechanism.
 // ============================================================================
 //
 // Found by an /algorithmic-prowess-seal adversarial verify pass (2026-07-17):

@@ -1,7 +1,5 @@
 //! `breathe-control::lifecycle` — the LIFECYCLE BREATH: a workload breathes
-//! through a *lifecycle*, not just a held setpoint
-//! ([`theory/BREATHABILITY.md`](https://github.com/pleme-io/theory/blob/main/BREATHABILITY.md)
-//! §II.5 default #6 + "The lifecycle breath").
+//! through a *lifecycle*, not just a held setpoint.
 //!
 //! Right-sizing toward a setpoint (the vertical [`crate::decide`] law) is only the
 //! STEADY slice of breathing. A workload needs MORE at startup than at steady-state

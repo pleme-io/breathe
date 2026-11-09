@@ -1,6 +1,6 @@
 # OOM-from-carve — tier-honest verification
 
-> **The bright line** (per `theory/UNREPRESENTABILITY.md` §II): a `Result::Err` /
+> **The bright line**: a `Result::Err` /
 > runtime clamp / "held" decision is **mitigation**; a compile error / absent code
 > path / reclaim-instead-of-kill is **unrepresentability**. This doc grades each part
 > of the "make carve-induced OOM impossible by construction" work against that line

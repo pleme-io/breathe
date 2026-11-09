@@ -43,7 +43,7 @@ config-selected elasticity spectrum. Everything else is preserved.
 
 ## 1. Source-of-truth law (the central tension — resolved in code, not prose)
 
-Per the magma-operator precedent (`theory/MAGMA-OPERATOR-BACKEND.md`):
+Per the magma-operator precedent:
 
 | State | Authority | Role |
 |---|---|---|

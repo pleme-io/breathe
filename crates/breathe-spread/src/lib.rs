@@ -1,6 +1,6 @@
 //! `breathe-spread` — the **ARCH × AUCTION × SPOT configuration-spread lock**.
 //!
-//! Renamed from `breathe-auction` (theory/CORRENTEZA.md §1.2) to resolve a
+//! Renamed from `breathe-auction` to resolve a
 //! package-name collision with `breathe/breathe-auction` — the DIFFERENT,
 //! live-wired node-count/forma elasticity crate (`Leiloeiro`/`Previsor`) that
 //! kept the original name.
