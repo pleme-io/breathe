@@ -21,7 +21,7 @@ pub mod forma;
 pub mod cost;
 
 /// The per-engine DATABASE breathe matrix — MySQL/Neo4j knobs declared as typed
-/// `AppParam` instances (BREATHABILITY §II.5). See [`db_matrix`].
+/// `AppParam` instances. See [`db_matrix`].
 pub mod db_matrix;
 
 /// The breathe-posture PRESET (`BreatheDefaults`) — a named bundle that

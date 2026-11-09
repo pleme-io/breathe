@@ -226,7 +226,7 @@ sin. Each is an explicit milestone, not a footnote.
 
 ## §6. Unrepresentability ledger (tier-honest)
 
-Per `UNREPRESENTABILITY.md` §II — *a `Result::Err` is mitigation, a missing method
+The rule: *a `Result::Err` is mitigation, a missing method
 is unrepresentability.* Graded against **shipped** Rust; where the code is unwritten,
 the row says `designed / as-shipped: does-not-exist-yet` (the eclusa M1/M4 precedent).
 

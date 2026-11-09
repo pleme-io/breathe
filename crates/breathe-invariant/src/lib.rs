@@ -51,7 +51,7 @@
 //!
 //! Composes GEN-TYPED-SPEC-CONTRACT, CATALOG REFLECTION, CLOSED-LOOP
 //! MASS-SYNTHESIS (rule 1), UNREPRESENTABILITY, and the breathe substrate
-//! (BREATHABILITY.md + -CARVING + -SCALING).
+//! (breathability, carving and scaling).
 
 #![allow(clippy::module_name_repetitions)]
 

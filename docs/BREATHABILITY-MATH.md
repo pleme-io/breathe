@@ -51,7 +51,7 @@ is nothing to model.*
 into three terms (§1) acting on three timescales; the controller (§3) owns the
 *mean* over an averaging window; the envelope (§4–§5) absorbs the *variance*
 pointwise from a peak; the ladder (§6) routes the *anomaly* the first two
-cannot. The bright line — restated from `UNREPRESENTABILITY.md §II` and never
+cannot. The bright line — never
 rounded up in this doc — is: **a `Result::Err` is mitigation; a compile error
 or an absent code path is unrepresentability.** The never-OOM guarantee is a
 *pointwise clamp* (§2), not an absence; it is graded `only-mitigated` for
@@ -722,7 +722,7 @@ section that forces it.
 > `unguarded` / `conjecture` is a remediation-queue item whose destination is a
 > **typed absence** (P4 → parse-time gain rejection; P2 → innovation gate;
 > C-DECOMP → lattice meet). The model demands an *absence* where today there is a
-> *mitigation*; per `UNREPRESENTABILITY.md §II` and the Prime Directive, time
+> *mitigation*; per the Prime Directive, time
 > pressure is not an acceptable reason to ship the mitigation where the math
 > calls for the absence. This document is the falsifiable contract that makes
 > each such gap visible, graded, and owed.

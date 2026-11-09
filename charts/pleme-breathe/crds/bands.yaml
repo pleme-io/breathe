@@ -54,7 +54,7 @@ spec:
                 description: |-
                   **May breathe create a bound this target's author never declared?** Default `forbidden`.
 
-                  Right-sizing an existing limit and newly capping a workload that was deliberately left uncapped look identical to a controller reading `limit == 0` — and breathe was doing the second while believing it did the first. On isolated-eks it introduced a cpu limit onto `coredns` and `ebs-csi-controller`, neither of which declares one.
+                  Right-sizing an existing limit and newly capping a workload that was deliberately left uncapped look identical to a controller reading `limit == 0` — and breathe was doing the second while believing it did the first. On private-estate-eks it introduced a cpu limit onto `coredns` and `ebs-csi-controller`, neither of which declares one.
 
                   * `forbidden` (default) — a target with no declared bound reports phase `NoLimit` and is left alone. * `allowed` — breathe may seed a bound. This is the CEDED-FIELD case (a CNPG/Flux manager relinquishing `limits.memory` for breathe to take over) and the deliberate "cap this noisy neighbour" case. It has to be said out loud now, rather than inferred from a zero.
 
@@ -387,9 +387,9 @@ spec:
 
                   (a) empty because the workload is resting  -> genuinely converged (b) empty because the selector matches nothing that exists, or ever will — a typo'd label, a renamed workload, a deleted Deployment -> the band governs NOTHING, silently, forever
 
-                  Both report `Dormant`, both count as converged, so a fleet where a third of the bands have stale selectors still reports 100% converged. That is the vacuous-guard class (`UNREPRESENTABILITY.md` §II.3): a mechanism reporting success having evaluated zero subjects.
+                  Both report `Dormant`, both count as converged, so a fleet where a third of the bands have stale selectors still reports 100% converged. That is the vacuous-guard class: a mechanism reporting success having evaluated zero subjects.
 
-                  THIS FIELD IS THE THRESHOLD-FREE DISCRIMINATOR. Deliberately not a grace window or an idle timeout — inventing a "suspicious after N seconds" constant would be exactly the re-frozen static value `BREATHABILITY.md` §II forbids, and it would need re-tuning every time a workload's cadence changed. `None` is a crisp, tuning-free predicate: a band that has NEVER, not once, seen a pod is unproven. The instant it sees one, it is proven for the rest of its life and every later empty tick is legitimately at rest.
+                  THIS FIELD IS THE THRESHOLD-FREE DISCRIMINATOR. Deliberately not a grace window or an idle timeout — inventing a "suspicious after N seconds" constant would be exactly the re-frozen static value breathability forbids, and it would need re-tuning every time a workload's cadence changed. `None` is a crisp, tuning-free predicate: a band that has NEVER, not once, seen a pod is unproven. The instant it sees one, it is proven for the rest of its life and every later empty tick is legitimately at rest.
 
                   DISTINCT FROM the `TargetFound` condition, which asks whether the *targetRef object* resolves. A Deployment scaled to zero resolves fine, and a raw label selector has no targetRef to resolve at all — so `TargetFound` is vacuously true in exactly case (b). This asks the different question: has this band ever actually governed anything.
                 format: int64
@@ -570,7 +570,7 @@ spec:
                 description: |-
                   **May breathe create a bound this target's author never declared?** Default `forbidden`.
 
-                  Right-sizing an existing limit and newly capping a workload that was deliberately left uncapped look identical to a controller reading `limit == 0` — and breathe was doing the second while believing it did the first. On isolated-eks it introduced a cpu limit onto `coredns` and `ebs-csi-controller`, neither of which declares one.
+                  Right-sizing an existing limit and newly capping a workload that was deliberately left uncapped look identical to a controller reading `limit == 0` — and breathe was doing the second while believing it did the first. On private-estate-eks it introduced a cpu limit onto `coredns` and `ebs-csi-controller`, neither of which declares one.
 
                   * `forbidden` (default) — a target with no declared bound reports phase `NoLimit` and is left alone. * `allowed` — breathe may seed a bound. This is the CEDED-FIELD case (a CNPG/Flux manager relinquishing `limits.memory` for breathe to take over) and the deliberate "cap this noisy neighbour" case. It has to be said out loud now, rather than inferred from a zero.
 
@@ -903,9 +903,9 @@ spec:
 
                   (a) empty because the workload is resting  -> genuinely converged (b) empty because the selector matches nothing that exists, or ever will — a typo'd label, a renamed workload, a deleted Deployment -> the band governs NOTHING, silently, forever
 
-                  Both report `Dormant`, both count as converged, so a fleet where a third of the bands have stale selectors still reports 100% converged. That is the vacuous-guard class (`UNREPRESENTABILITY.md` §II.3): a mechanism reporting success having evaluated zero subjects.
+                  Both report `Dormant`, both count as converged, so a fleet where a third of the bands have stale selectors still reports 100% converged. That is the vacuous-guard class: a mechanism reporting success having evaluated zero subjects.
 
-                  THIS FIELD IS THE THRESHOLD-FREE DISCRIMINATOR. Deliberately not a grace window or an idle timeout — inventing a "suspicious after N seconds" constant would be exactly the re-frozen static value `BREATHABILITY.md` §II forbids, and it would need re-tuning every time a workload's cadence changed. `None` is a crisp, tuning-free predicate: a band that has NEVER, not once, seen a pod is unproven. The instant it sees one, it is proven for the rest of its life and every later empty tick is legitimately at rest.
+                  THIS FIELD IS THE THRESHOLD-FREE DISCRIMINATOR. Deliberately not a grace window or an idle timeout — inventing a "suspicious after N seconds" constant would be exactly the re-frozen static value breathability forbids, and it would need re-tuning every time a workload's cadence changed. `None` is a crisp, tuning-free predicate: a band that has NEVER, not once, seen a pod is unproven. The instant it sees one, it is proven for the rest of its life and every later empty tick is legitimately at rest.
 
                   DISTINCT FROM the `TargetFound` condition, which asks whether the *targetRef object* resolves. A Deployment scaled to zero resolves fine, and a raw label selector has no targetRef to resolve at all — so `TargetFound` is vacuously true in exactly case (b). This asks the different question: has this band ever actually governed anything.
                 format: int64
@@ -1086,7 +1086,7 @@ spec:
                 description: |-
                   **May breathe create a bound this target's author never declared?** Default `forbidden`.
 
-                  Right-sizing an existing limit and newly capping a workload that was deliberately left uncapped look identical to a controller reading `limit == 0` — and breathe was doing the second while believing it did the first. On isolated-eks it introduced a cpu limit onto `coredns` and `ebs-csi-controller`, neither of which declares one.
+                  Right-sizing an existing limit and newly capping a workload that was deliberately left uncapped look identical to a controller reading `limit == 0` — and breathe was doing the second while believing it did the first. On private-estate-eks it introduced a cpu limit onto `coredns` and `ebs-csi-controller`, neither of which declares one.
 
                   * `forbidden` (default) — a target with no declared bound reports phase `NoLimit` and is left alone. * `allowed` — breathe may seed a bound. This is the CEDED-FIELD case (a CNPG/Flux manager relinquishing `limits.memory` for breathe to take over) and the deliberate "cap this noisy neighbour" case. It has to be said out loud now, rather than inferred from a zero.
 
@@ -1419,9 +1419,9 @@ spec:
 
                   (a) empty because the workload is resting  -> genuinely converged (b) empty because the selector matches nothing that exists, or ever will — a typo'd label, a renamed workload, a deleted Deployment -> the band governs NOTHING, silently, forever
 
-                  Both report `Dormant`, both count as converged, so a fleet where a third of the bands have stale selectors still reports 100% converged. That is the vacuous-guard class (`UNREPRESENTABILITY.md` §II.3): a mechanism reporting success having evaluated zero subjects.
+                  Both report `Dormant`, both count as converged, so a fleet where a third of the bands have stale selectors still reports 100% converged. That is the vacuous-guard class: a mechanism reporting success having evaluated zero subjects.
 
-                  THIS FIELD IS THE THRESHOLD-FREE DISCRIMINATOR. Deliberately not a grace window or an idle timeout — inventing a "suspicious after N seconds" constant would be exactly the re-frozen static value `BREATHABILITY.md` §II forbids, and it would need re-tuning every time a workload's cadence changed. `None` is a crisp, tuning-free predicate: a band that has NEVER, not once, seen a pod is unproven. The instant it sees one, it is proven for the rest of its life and every later empty tick is legitimately at rest.
+                  THIS FIELD IS THE THRESHOLD-FREE DISCRIMINATOR. Deliberately not a grace window or an idle timeout — inventing a "suspicious after N seconds" constant would be exactly the re-frozen static value breathability forbids, and it would need re-tuning every time a workload's cadence changed. `None` is a crisp, tuning-free predicate: a band that has NEVER, not once, seen a pod is unproven. The instant it sees one, it is proven for the rest of its life and every later empty tick is legitimately at rest.
 
                   DISTINCT FROM the `TargetFound` condition, which asks whether the *targetRef object* resolves. A Deployment scaled to zero resolves fine, and a raw label selector has no targetRef to resolve at all — so `TargetFound` is vacuously true in exactly case (b). This asks the different question: has this band ever actually governed anything.
                 format: int64
@@ -1945,9 +1945,9 @@ spec:
 
                   (a) empty because the workload is resting  -> genuinely converged (b) empty because the selector matches nothing that exists, or ever will — a typo'd label, a renamed workload, a deleted Deployment -> the band governs NOTHING, silently, forever
 
-                  Both report `Dormant`, both count as converged, so a fleet where a third of the bands have stale selectors still reports 100% converged. That is the vacuous-guard class (`UNREPRESENTABILITY.md` §II.3): a mechanism reporting success having evaluated zero subjects.
+                  Both report `Dormant`, both count as converged, so a fleet where a third of the bands have stale selectors still reports 100% converged. That is the vacuous-guard class: a mechanism reporting success having evaluated zero subjects.
 
-                  THIS FIELD IS THE THRESHOLD-FREE DISCRIMINATOR. Deliberately not a grace window or an idle timeout — inventing a "suspicious after N seconds" constant would be exactly the re-frozen static value `BREATHABILITY.md` §II forbids, and it would need re-tuning every time a workload's cadence changed. `None` is a crisp, tuning-free predicate: a band that has NEVER, not once, seen a pod is unproven. The instant it sees one, it is proven for the rest of its life and every later empty tick is legitimately at rest.
+                  THIS FIELD IS THE THRESHOLD-FREE DISCRIMINATOR. Deliberately not a grace window or an idle timeout — inventing a "suspicious after N seconds" constant would be exactly the re-frozen static value breathability forbids, and it would need re-tuning every time a workload's cadence changed. `None` is a crisp, tuning-free predicate: a band that has NEVER, not once, seen a pod is unproven. The instant it sees one, it is proven for the rest of its life and every later empty tick is legitimately at rest.
 
                   DISTINCT FROM the `TargetFound` condition, which asks whether the *targetRef object* resolves. A Deployment scaled to zero resolves fine, and a raw label selector has no targetRef to resolve at all — so `TargetFound` is vacuously true in exactly case (b). This asks the different question: has this band ever actually governed anything.
                 format: int64
@@ -2128,7 +2128,7 @@ spec:
                 description: |-
                   **May breathe create a bound this target's author never declared?** Default `forbidden`.
 
-                  Right-sizing an existing limit and newly capping a workload that was deliberately left uncapped look identical to a controller reading `limit == 0` — and breathe was doing the second while believing it did the first. On isolated-eks it introduced a cpu limit onto `coredns` and `ebs-csi-controller`, neither of which declares one.
+                  Right-sizing an existing limit and newly capping a workload that was deliberately left uncapped look identical to a controller reading `limit == 0` — and breathe was doing the second while believing it did the first. On private-estate-eks it introduced a cpu limit onto `coredns` and `ebs-csi-controller`, neither of which declares one.
 
                   * `forbidden` (default) — a target with no declared bound reports phase `NoLimit` and is left alone. * `allowed` — breathe may seed a bound. This is the CEDED-FIELD case (a CNPG/Flux manager relinquishing `limits.memory` for breathe to take over) and the deliberate "cap this noisy neighbour" case. It has to be said out loud now, rather than inferred from a zero.
 
@@ -2461,9 +2461,9 @@ spec:
 
                   (a) empty because the workload is resting  -> genuinely converged (b) empty because the selector matches nothing that exists, or ever will — a typo'd label, a renamed workload, a deleted Deployment -> the band governs NOTHING, silently, forever
 
-                  Both report `Dormant`, both count as converged, so a fleet where a third of the bands have stale selectors still reports 100% converged. That is the vacuous-guard class (`UNREPRESENTABILITY.md` §II.3): a mechanism reporting success having evaluated zero subjects.
+                  Both report `Dormant`, both count as converged, so a fleet where a third of the bands have stale selectors still reports 100% converged. That is the vacuous-guard class: a mechanism reporting success having evaluated zero subjects.
 
-                  THIS FIELD IS THE THRESHOLD-FREE DISCRIMINATOR. Deliberately not a grace window or an idle timeout — inventing a "suspicious after N seconds" constant would be exactly the re-frozen static value `BREATHABILITY.md` §II forbids, and it would need re-tuning every time a workload's cadence changed. `None` is a crisp, tuning-free predicate: a band that has NEVER, not once, seen a pod is unproven. The instant it sees one, it is proven for the rest of its life and every later empty tick is legitimately at rest.
+                  THIS FIELD IS THE THRESHOLD-FREE DISCRIMINATOR. Deliberately not a grace window or an idle timeout — inventing a "suspicious after N seconds" constant would be exactly the re-frozen static value breathability forbids, and it would need re-tuning every time a workload's cadence changed. `None` is a crisp, tuning-free predicate: a band that has NEVER, not once, seen a pod is unproven. The instant it sees one, it is proven for the rest of its life and every later empty tick is legitimately at rest.
 
                   DISTINCT FROM the `TargetFound` condition, which asks whether the *targetRef object* resolves. A Deployment scaled to zero resolves fine, and a raw label selector has no targetRef to resolve at all — so `TargetFound` is vacuously true in exactly case (b). This asks the different question: has this band ever actually governed anything.
                 format: int64
@@ -2644,7 +2644,7 @@ spec:
                 description: |-
                   **May breathe create a bound this target's author never declared?** Default `forbidden`.
 
-                  Right-sizing an existing limit and newly capping a workload that was deliberately left uncapped look identical to a controller reading `limit == 0` — and breathe was doing the second while believing it did the first. On isolated-eks it introduced a cpu limit onto `coredns` and `ebs-csi-controller`, neither of which declares one.
+                  Right-sizing an existing limit and newly capping a workload that was deliberately left uncapped look identical to a controller reading `limit == 0` — and breathe was doing the second while believing it did the first. On private-estate-eks it introduced a cpu limit onto `coredns` and `ebs-csi-controller`, neither of which declares one.
 
                   * `forbidden` (default) — a target with no declared bound reports phase `NoLimit` and is left alone. * `allowed` — breathe may seed a bound. This is the CEDED-FIELD case (a CNPG/Flux manager relinquishing `limits.memory` for breathe to take over) and the deliberate "cap this noisy neighbour" case. It has to be said out loud now, rather than inferred from a zero.
 
@@ -2977,9 +2977,9 @@ spec:
 
                   (a) empty because the workload is resting  -> genuinely converged (b) empty because the selector matches nothing that exists, or ever will — a typo'd label, a renamed workload, a deleted Deployment -> the band governs NOTHING, silently, forever
 
-                  Both report `Dormant`, both count as converged, so a fleet where a third of the bands have stale selectors still reports 100% converged. That is the vacuous-guard class (`UNREPRESENTABILITY.md` §II.3): a mechanism reporting success having evaluated zero subjects.
+                  Both report `Dormant`, both count as converged, so a fleet where a third of the bands have stale selectors still reports 100% converged. That is the vacuous-guard class: a mechanism reporting success having evaluated zero subjects.
 
-                  THIS FIELD IS THE THRESHOLD-FREE DISCRIMINATOR. Deliberately not a grace window or an idle timeout — inventing a "suspicious after N seconds" constant would be exactly the re-frozen static value `BREATHABILITY.md` §II forbids, and it would need re-tuning every time a workload's cadence changed. `None` is a crisp, tuning-free predicate: a band that has NEVER, not once, seen a pod is unproven. The instant it sees one, it is proven for the rest of its life and every later empty tick is legitimately at rest.
+                  THIS FIELD IS THE THRESHOLD-FREE DISCRIMINATOR. Deliberately not a grace window or an idle timeout — inventing a "suspicious after N seconds" constant would be exactly the re-frozen static value breathability forbids, and it would need re-tuning every time a workload's cadence changed. `None` is a crisp, tuning-free predicate: a band that has NEVER, not once, seen a pod is unproven. The instant it sees one, it is proven for the rest of its life and every later empty tick is legitimately at rest.
 
                   DISTINCT FROM the `TargetFound` condition, which asks whether the *targetRef object* resolves. A Deployment scaled to zero resolves fine, and a raw label selector has no targetRef to resolve at all — so `TargetFound` is vacuously true in exactly case (b). This asks the different question: has this band ever actually governed anything.
                 format: int64
@@ -3160,7 +3160,7 @@ spec:
                 description: |-
                   **May breathe create a bound this target's author never declared?** Default `forbidden`.
 
-                  Right-sizing an existing limit and newly capping a workload that was deliberately left uncapped look identical to a controller reading `limit == 0` — and breathe was doing the second while believing it did the first. On isolated-eks it introduced a cpu limit onto `coredns` and `ebs-csi-controller`, neither of which declares one.
+                  Right-sizing an existing limit and newly capping a workload that was deliberately left uncapped look identical to a controller reading `limit == 0` — and breathe was doing the second while believing it did the first. On private-estate-eks it introduced a cpu limit onto `coredns` and `ebs-csi-controller`, neither of which declares one.
 
                   * `forbidden` (default) — a target with no declared bound reports phase `NoLimit` and is left alone. * `allowed` — breathe may seed a bound. This is the CEDED-FIELD case (a CNPG/Flux manager relinquishing `limits.memory` for breathe to take over) and the deliberate "cap this noisy neighbour" case. It has to be said out loud now, rather than inferred from a zero.
 
@@ -3493,9 +3493,9 @@ spec:
 
                   (a) empty because the workload is resting  -> genuinely converged (b) empty because the selector matches nothing that exists, or ever will — a typo'd label, a renamed workload, a deleted Deployment -> the band governs NOTHING, silently, forever
 
-                  Both report `Dormant`, both count as converged, so a fleet where a third of the bands have stale selectors still reports 100% converged. That is the vacuous-guard class (`UNREPRESENTABILITY.md` §II.3): a mechanism reporting success having evaluated zero subjects.
+                  Both report `Dormant`, both count as converged, so a fleet where a third of the bands have stale selectors still reports 100% converged. That is the vacuous-guard class: a mechanism reporting success having evaluated zero subjects.
 
-                  THIS FIELD IS THE THRESHOLD-FREE DISCRIMINATOR. Deliberately not a grace window or an idle timeout — inventing a "suspicious after N seconds" constant would be exactly the re-frozen static value `BREATHABILITY.md` §II forbids, and it would need re-tuning every time a workload's cadence changed. `None` is a crisp, tuning-free predicate: a band that has NEVER, not once, seen a pod is unproven. The instant it sees one, it is proven for the rest of its life and every later empty tick is legitimately at rest.
+                  THIS FIELD IS THE THRESHOLD-FREE DISCRIMINATOR. Deliberately not a grace window or an idle timeout — inventing a "suspicious after N seconds" constant would be exactly the re-frozen static value breathability forbids, and it would need re-tuning every time a workload's cadence changed. `None` is a crisp, tuning-free predicate: a band that has NEVER, not once, seen a pod is unproven. The instant it sees one, it is proven for the rest of its life and every later empty tick is legitimately at rest.
 
                   DISTINCT FROM the `TargetFound` condition, which asks whether the *targetRef object* resolves. A Deployment scaled to zero resolves fine, and a raw label selector has no targetRef to resolve at all — so `TargetFound` is vacuously true in exactly case (b). This asks the different question: has this band ever actually governed anything.
                 format: int64
@@ -4051,9 +4051,9 @@ spec:
 
                   (a) empty because the workload is resting  -> genuinely converged (b) empty because the selector matches nothing that exists, or ever will — a typo'd label, a renamed workload, a deleted Deployment -> the band governs NOTHING, silently, forever
 
-                  Both report `Dormant`, both count as converged, so a fleet where a third of the bands have stale selectors still reports 100% converged. That is the vacuous-guard class (`UNREPRESENTABILITY.md` §II.3): a mechanism reporting success having evaluated zero subjects.
+                  Both report `Dormant`, both count as converged, so a fleet where a third of the bands have stale selectors still reports 100% converged. That is the vacuous-guard class: a mechanism reporting success having evaluated zero subjects.
 
-                  THIS FIELD IS THE THRESHOLD-FREE DISCRIMINATOR. Deliberately not a grace window or an idle timeout — inventing a "suspicious after N seconds" constant would be exactly the re-frozen static value `BREATHABILITY.md` §II forbids, and it would need re-tuning every time a workload's cadence changed. `None` is a crisp, tuning-free predicate: a band that has NEVER, not once, seen a pod is unproven. The instant it sees one, it is proven for the rest of its life and every later empty tick is legitimately at rest.
+                  THIS FIELD IS THE THRESHOLD-FREE DISCRIMINATOR. Deliberately not a grace window or an idle timeout — inventing a "suspicious after N seconds" constant would be exactly the re-frozen static value breathability forbids, and it would need re-tuning every time a workload's cadence changed. `None` is a crisp, tuning-free predicate: a band that has NEVER, not once, seen a pod is unproven. The instant it sees one, it is proven for the rest of its life and every later empty tick is legitimately at rest.
 
                   DISTINCT FROM the `TargetFound` condition, which asks whether the *targetRef object* resolves. A Deployment scaled to zero resolves fine, and a raw label selector has no targetRef to resolve at all — so `TargetFound` is vacuously true in exactly case (b). This asks the different question: has this band ever actually governed anything.
                 format: int64
@@ -4580,9 +4580,9 @@ spec:
 
                   (a) empty because the workload is resting  -> genuinely converged (b) empty because the selector matches nothing that exists, or ever will — a typo'd label, a renamed workload, a deleted Deployment -> the band governs NOTHING, silently, forever
 
-                  Both report `Dormant`, both count as converged, so a fleet where a third of the bands have stale selectors still reports 100% converged. That is the vacuous-guard class (`UNREPRESENTABILITY.md` §II.3): a mechanism reporting success having evaluated zero subjects.
+                  Both report `Dormant`, both count as converged, so a fleet where a third of the bands have stale selectors still reports 100% converged. That is the vacuous-guard class: a mechanism reporting success having evaluated zero subjects.
 
-                  THIS FIELD IS THE THRESHOLD-FREE DISCRIMINATOR. Deliberately not a grace window or an idle timeout — inventing a "suspicious after N seconds" constant would be exactly the re-frozen static value `BREATHABILITY.md` §II forbids, and it would need re-tuning every time a workload's cadence changed. `None` is a crisp, tuning-free predicate: a band that has NEVER, not once, seen a pod is unproven. The instant it sees one, it is proven for the rest of its life and every later empty tick is legitimately at rest.
+                  THIS FIELD IS THE THRESHOLD-FREE DISCRIMINATOR. Deliberately not a grace window or an idle timeout — inventing a "suspicious after N seconds" constant would be exactly the re-frozen static value breathability forbids, and it would need re-tuning every time a workload's cadence changed. `None` is a crisp, tuning-free predicate: a band that has NEVER, not once, seen a pod is unproven. The instant it sees one, it is proven for the rest of its life and every later empty tick is legitimately at rest.
 
                   DISTINCT FROM the `TargetFound` condition, which asks whether the *targetRef object* resolves. A Deployment scaled to zero resolves fine, and a raw label selector has no targetRef to resolve at all — so `TargetFound` is vacuously true in exactly case (b). This asks the different question: has this band ever actually governed anything.
                 format: int64
@@ -5098,9 +5098,9 @@ spec:
 
                   (a) empty because the workload is resting  -> genuinely converged (b) empty because the selector matches nothing that exists, or ever will — a typo'd label, a renamed workload, a deleted Deployment -> the band governs NOTHING, silently, forever
 
-                  Both report `Dormant`, both count as converged, so a fleet where a third of the bands have stale selectors still reports 100% converged. That is the vacuous-guard class (`UNREPRESENTABILITY.md` §II.3): a mechanism reporting success having evaluated zero subjects.
+                  Both report `Dormant`, both count as converged, so a fleet where a third of the bands have stale selectors still reports 100% converged. That is the vacuous-guard class: a mechanism reporting success having evaluated zero subjects.
 
-                  THIS FIELD IS THE THRESHOLD-FREE DISCRIMINATOR. Deliberately not a grace window or an idle timeout — inventing a "suspicious after N seconds" constant would be exactly the re-frozen static value `BREATHABILITY.md` §II forbids, and it would need re-tuning every time a workload's cadence changed. `None` is a crisp, tuning-free predicate: a band that has NEVER, not once, seen a pod is unproven. The instant it sees one, it is proven for the rest of its life and every later empty tick is legitimately at rest.
+                  THIS FIELD IS THE THRESHOLD-FREE DISCRIMINATOR. Deliberately not a grace window or an idle timeout — inventing a "suspicious after N seconds" constant would be exactly the re-frozen static value breathability forbids, and it would need re-tuning every time a workload's cadence changed. `None` is a crisp, tuning-free predicate: a band that has NEVER, not once, seen a pod is unproven. The instant it sees one, it is proven for the rest of its life and every later empty tick is legitimately at rest.
 
                   DISTINCT FROM the `TargetFound` condition, which asks whether the *targetRef object* resolves. A Deployment scaled to zero resolves fine, and a raw label selector has no targetRef to resolve at all — so `TargetFound` is vacuously true in exactly case (b). This asks the different question: has this band ever actually governed anything.
                 format: int64
@@ -5390,10 +5390,10 @@ spec:
                 nullable: true
                 properties:
                   marker:
-                    description: The marker id anchoring the exact scalar, e.g. `isolated-build/sui-request`.
+                    description: The marker id anchoring the exact scalar, e.g. `private-estate-build/sui-request`.
                     type: string
                   path:
-                    description: Repo-relative path to the manifest, e.g. `clusters/isolated/apps/sui/release.yaml`.
+                    description: Repo-relative path to the manifest, e.g. `clusters/the private estate/apps/sui/release.yaml`.
                     type: string
                 required:
                 - marker
@@ -5678,9 +5678,9 @@ spec:
 
                   (a) empty because the workload is resting  -> genuinely converged (b) empty because the selector matches nothing that exists, or ever will — a typo'd label, a renamed workload, a deleted Deployment -> the band governs NOTHING, silently, forever
 
-                  Both report `Dormant`, both count as converged, so a fleet where a third of the bands have stale selectors still reports 100% converged. That is the vacuous-guard class (`UNREPRESENTABILITY.md` §II.3): a mechanism reporting success having evaluated zero subjects.
+                  Both report `Dormant`, both count as converged, so a fleet where a third of the bands have stale selectors still reports 100% converged. That is the vacuous-guard class: a mechanism reporting success having evaluated zero subjects.
 
-                  THIS FIELD IS THE THRESHOLD-FREE DISCRIMINATOR. Deliberately not a grace window or an idle timeout — inventing a "suspicious after N seconds" constant would be exactly the re-frozen static value `BREATHABILITY.md` §II forbids, and it would need re-tuning every time a workload's cadence changed. `None` is a crisp, tuning-free predicate: a band that has NEVER, not once, seen a pod is unproven. The instant it sees one, it is proven for the rest of its life and every later empty tick is legitimately at rest.
+                  THIS FIELD IS THE THRESHOLD-FREE DISCRIMINATOR. Deliberately not a grace window or an idle timeout — inventing a "suspicious after N seconds" constant would be exactly the re-frozen static value breathability forbids, and it would need re-tuning every time a workload's cadence changed. `None` is a crisp, tuning-free predicate: a band that has NEVER, not once, seen a pod is unproven. The instant it sees one, it is proven for the rest of its life and every later empty tick is legitimately at rest.
 
                   DISTINCT FROM the `TargetFound` condition, which asks whether the *targetRef object* resolves. A Deployment scaled to zero resolves fine, and a raw label selector has no targetRef to resolve at all — so `TargetFound` is vacuously true in exactly case (b). This asks the different question: has this band ever actually governed anything.
                 format: int64
@@ -6099,7 +6099,7 @@ spec:
                     description: |-
                       The `writeIntent` stamped on newly materialized bands.
 
-                      Defaults to `calibrateThenWrite`, NOT `observe`, and the difference is the entire point. Observe never promotes itself: isolated ran 115 bands at `mode: shadow` with `writeIntent: None` indefinitely, deciding correctly every tick and applying none of it, while the cluster sat at 30% requested and 13% used. Safety comes from the calibration gate — a band still refuses to write until its own observation window is clean — not from never arming at all.
+                      Defaults to `calibrateThenWrite`, NOT `observe`, and the difference is the entire point. Observe never promotes itself: the private estate ran 115 bands at `mode: shadow` with `writeIntent: None` indefinitely, deciding correctly every tick and applying none of it, while the cluster sat at 30% requested and 13% used. Safety comes from the calibration gate — a band still refuses to write until its own observation window is clean — not from never arming at all.
                     type: string
                   neverArm:
                     description: |-
@@ -6845,9 +6845,9 @@ spec:
                 description: |-
                   The node(s) this band protects, BY LABEL — resolved fresh every tick. The pool-scoped peer of `targetNodes`, and the field that lets ONE band express "this whole pool is reserved for X" on infrastructure whose node identities churn.
 
-                  WHY THIS EXISTS (a real, measured gap — 2026-07-27): the placement pathology "workload W is running on pool P, which is not for W" had NO detector at the scope the pathology lives at. `IsolationBand` shipped and was registered, but its only node-naming surface was a static hostname list, so on isolated's Karpenter-managed builder pools there was no way to *say* "this pool". The pathology was therefore only ever found by a human reading a cost report — the exact audit-detected-instead-of-self-detected shape the taxonomy exists to eliminate. One selector field converts this CRD from a pet-protector into the pool-scoped tenancy detector the taxonomy already assumed.
+                  WHY THIS EXISTS (a real, measured gap — 2026-07-27): the placement pathology "workload W is running on pool P, which is not for W" had NO detector at the scope the pathology lives at. `IsolationBand` shipped and was registered, but its only node-naming surface was a static hostname list, so on the private estate's Karpenter-managed builder pools there was no way to *say* "this pool". The pathology was therefore only ever found by a human reading a cost report — the exact audit-detected-instead-of-self-detected shape the taxonomy exists to eliminate. One selector field converts this CRD from a pet-protector into the pool-scoped tenancy detector the taxonomy already assumed.
 
-                  Semantics: an equality-based label selector (the `nodeSelector` convention — ALL pairs must match), e.g. `{"karpenter.sh/nodepool": "isolated-builder-amd64"}`. Resolved against live Nodes each reconcile and UNIONed with `targetNodes` (see `origin_guard::merge_target_nodes`), so a band may use either surface or both.
+                  Semantics: an equality-based label selector (the `nodeSelector` convention — ALL pairs must match), e.g. `{"karpenter.sh/nodepool": "private-estate-builder-amd64"}`. Resolved against live Nodes each reconcile and UNIONed with `targetNodes` (see `origin_guard::merge_target_nodes`), so a band may use either surface or both.
 
                   TIER-HONEST: this is still OBSERVATION + a taint, never admission enforcement — same C2 ceiling `unauthorizedPods` already names for itself. A pod carrying a wildcard toleration still lands on a selector-matched node exactly as it does on a hostname-matched one; this field widens WHAT CAN BE WATCHED, it does not change what a taint can enforce.
                 nullable: true

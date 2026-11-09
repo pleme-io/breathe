@@ -2,7 +2,7 @@
 //! rule 1, applied to the DatabaseBand's 5-engine surface.
 //!
 //! ONE matrix with ONE row per engine, exercising each against the four coupled
-//! DatabaseBand properties (BREATHABILITY.md §II.5):
+//! DatabaseBand properties:
 //!   1. architecture-aware — the engine breathes under its correct topology class;
 //!   2. discovery-molded    — a topology is discoverable through the seam;
 //!   3. failover-safe spot  — the engine's default permutation is legal (a

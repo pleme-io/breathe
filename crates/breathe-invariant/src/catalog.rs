@@ -58,7 +58,7 @@ const SP80: UtilizationSetpoint = UtilizationSetpoint::from_bps(8_000);
 /// BandLaw + safety_clamp (never-CARVE-INTO-OOM proven — a bound on breathe's
 /// own writes, NOT OOM-immunity: whether the kernel picks this pod under node
 /// pressure runs off the REQUEST, which no limit carve touches. See
-/// [`DimensionId::Request`] / BREATHABILITY.md §II.8.1). The vertical
+/// [`DimensionId::Request`]). The vertical
 /// pod-memory band.
 const MEMORY: BreatheDimension = BreatheDimension {
     id: DimensionId::Memory,
@@ -71,7 +71,7 @@ const MEMORY: BreatheDimension = BreatheDimension {
     claimed_by_doctrine: true,
     cost_effect: "right-size the pod memory limit DOWN to the working set — no over-provisioned RAM billed",
     resiliency_effect: "hold ≥1/setpoint headroom before the OOM cliff — the setpoint absorbs a burst before saturation (availability)",
-    doctrine_ref: "BREATHABILITY.md §II.5 (vertical band) + BREATHABILITY-CARVING §2 (memory law)",
+    doctrine_ref: "vertical band + memory carve law",
     pending: None,
     clauses: &[
         cs(CarvedByABand, CeilingC1),
@@ -97,7 +97,7 @@ const CPU: BreatheDimension = BreatheDimension {
     claimed_by_doctrine: true,
     cost_effect: "right-size the cpu limit DOWN to the working set — no over-provisioned cores billed",
     resiliency_effect: "keep setpoint headroom before CFS throttle — latency stays low under a burst (availability)",
-    doctrine_ref: "BREATHABILITY.md §II.5 (vertical band) + BREATHABILITY-CARVING §2 (cpu throttle-aware law)",
+    doctrine_ref: "vertical band + cpu throttle-aware carve law",
     pending: None,
     clauses: &[
         cs(CarvedByABand, CeilingC1),
@@ -126,7 +126,7 @@ const STORAGE: BreatheDimension = BreatheDimension {
     claimed_by_doctrine: true,
     cost_effect: "provision-MINIMAL — no over-provisioned PVC (the 155GB-provisioned / 5GB-used waste is carved away)",
     resiliency_effect: "grow-on-demand BEFORE it fills (predictive, forecast-sized) — a disk-full outage is pre-empted (availability)",
-    doctrine_ref: "BREATHABILITY.md §V (storage elasticity at 80%) + BREATHABILITY-CARVING §2 (grow-only storage law)",
+    doctrine_ref: "storage elasticity at 80% + grow-only storage carve law",
     pending: None,
     clauses: &[
         // CRD kind ships; elastic grow-on-demand carve is landing → partial.
@@ -154,7 +154,7 @@ const REPLICA: BreatheDimension = BreatheDimension {
     claimed_by_doctrine: true,
     cost_effect: "scale-down-when-idle to the floor — no idle replicas billed (scale-to-zero for stateless)",
     resiliency_effect: "floor-2 HA + topology-correct scale (odd-quorum / read-replica / ordinal-rebalance) — survive a node loss (resiliency)",
-    doctrine_ref: "BREATHABILITY.md §II.6 (replica band + topology sub-axis)",
+    doctrine_ref: "replica band + topology sub-axis",
     pending: None,
     clauses: &[
         cs(CarvedByABand, CeilingC1),
@@ -191,7 +191,7 @@ const DATABASE: BreatheDimension = BreatheDimension {
     claimed_by_doctrine: true,
     cost_effect: "right-size the per-engine caches + connection headroom (buffer pool / page cache) + run the tier 100% spot (even the primary, safely) — no over-sized on-demand DB nodes billed",
     resiliency_effect: "discover the live topology + hold failover-safe replicas (never scale the primary, promote-before-reclaim on a primary's spot loss, never cross a quorum majority) + never-starve the buffer pool (resiliency)",
-    doctrine_ref: "BREATHABILITY.md §II.5 (database-architecture awareness — discover/mold/failover-safe-spot)",
+    doctrine_ref: "database-architecture awareness — discover/mold/failover-safe-spot",
     pending: None,
     clauses: &[
         // Typed DatabaseBand contract ships (discovery seam + FSM + matrix +
@@ -230,7 +230,7 @@ const ISOLATION: BreatheDimension = BreatheDimension {
     claimed_by_doctrine: true,
     cost_effect: "right-size requests/limits toward the working set WITHOUT over-reserving isolation — Batch bin-packs BestEffort, Standard runs Burstable; no capacity wasted sealing a workload that needs no seal",
     resiliency_effect: "SEAL a critical / interference-sensitive workload — guaranteed requests-floor + Guaranteed QoS + anti-affinity so a noisy neighbor can never throttle or evict it (the victoria-logs-422 class is unrepresentable), and the floor BOUNDS the carve so cost never strips the seal",
-    doctrine_ref: "BREATHABILITY.md §II.7 (isolation/interference — the seal dimension)",
+    doctrine_ref: "isolation/interference — the seal dimension",
     pending: None,
     clauses: &[
         // Typed posture surface ships; the live in-cluster IsolationBand carve is landing → partial.
@@ -269,7 +269,7 @@ const RESERVATION: BreatheDimension = BreatheDimension {
     claimed_by_doctrine: true,
     cost_effect: "reserve what the workload actually needs resident, not its peak — an over-sized request withholds node allocatable linearly in replica count, so right-sizing the RESERVATION is capacity handed back to the scheduler rather than billed idle",
     resiliency_effect: "set the field that decides who the kernel kills — a reservation at the demonstrated demand lowers oom_score_adj and lifts the QoS class, which is the ONLY lever that saves a workload whose limit is never binding (the sui-cache-pg 34-OOMKill receipt: 202.8Mi peak under a 1Gi limit, cgroup failcnt=0)",
-    doctrine_ref: "BREATHABILITY.md §II.8 (the RESERVATION dimension) + §II.7.1 (the requests-floor lever it actuates)",
+    doctrine_ref: "the RESERVATION dimension + the requests-floor lever it actuates",
     pending: None,
     clauses: &[
         // CRD kind + law + actuator algebra ship; no watcher runs → partial.
@@ -393,7 +393,7 @@ mod tests {
         // (the architecture-aware discovery + failover FSM + 5-engine matrix +
         // lattice). RequestBand entered the catalog AT Landing 2026-07-26 — CRD kind
         // + carve law + actuator algebra ship and are CI-tested, no controller
-        // watches the kind, nothing commits (BREATHABILITY.md §II.8.5).
+        // watches the kind, nothing commits.
         // Update deliberately when a dimension advances — this line IS the ledger.
         assert_eq!(
             (g, l, s),

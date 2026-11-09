@@ -1,4 +1,4 @@
-//! `db_matrix` — the per-engine DATABASE breathe matrix (BREATHABILITY §II.5).
+//! `db_matrix` — the per-engine DATABASE breathe matrix.
 //!
 //! The generic [`DimensionId::AppParam`](breathe_provider::DimensionId::AppParam)
 //! catalog row is a FAMILY: "any application-actuator knob, layout + actuator

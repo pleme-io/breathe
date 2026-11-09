@@ -20,15 +20,15 @@
 //! field to carry a capacity bound or a promotion-lifecycle flag, so it is
 //! IMPOSSIBLE — not merely disciplined — for a posture edit to widen N
 //! workloads' ceilings or flip N workloads from shadow to live in one patch
-//! (the ★ Core rule in `BREATHABILITY.md`; the org's own `maxRunners`
+//! (the ★ Core rule of breathability; the org's own `maxRunners`
 //! 3×-stale incident is exactly the
 //! failure class this schema split forecloses).
 //!
 //! **Naming note:** `BreathePosture` is proposed, not yet `/naming`-skill
 //! ratified; it is an unratified working name. "Posture" reuses established vocabulary already load-bearing in
 //! this exact doctrine (`IsolationPosture::for_class` in
-//! `breathe-invariant/src/isolation.rs`; `BREATHABILITY.md` §II.7.4's own
-//! phrase "the BEST DEFAULT POSTURE per class+context") rather than adding a
+//! `breathe-invariant/src/isolation.rs`; the doctrine's own phrase "the BEST
+//! DEFAULT POSTURE per class+context") rather than adding a
 //! fourth name for a concept two names already own — "Class" was rejected
 //! because `WorkloadClass` already names two unrelated, colliding concepts in
 //! this exact workspace (`breathe-catalog::preset::WorkloadClass` — the

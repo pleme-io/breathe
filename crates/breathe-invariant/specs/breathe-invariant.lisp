@@ -65,7 +65,7 @@
 ;; test include_str!'s this file and asserts every engine, class kind, failover
 ;; state, and permutation axis appears — so the Rust border and the lisp cannot drift.
 
-;; The four coupled properties (BREATHABILITY.md §II.5):
+;; The four coupled properties:
 ;;   1. architecture-aware  — which pod is primary / reader / voter
 ;;   2. discovery-molded    — read the live engine topology, mold the carve
 ;;   3. failover-safe spot  — promote-before-reclaim even the primary
@@ -121,7 +121,7 @@
 ;; isolation band above has always DECLARED and nothing carved (the receipt:
 ;; sui-cache-pg, 34 OOMKills at a 202.8Mi high-water under a 1Gi limit with
 ;; cgroup failcnt=0 — a limit never once binding, so no memory band at any
-;; setting could have saved it). BREATHABILITY.md §II.8.
+;; setting could have saved it).
 ;;
 ;; TWO doors, because k8s says so: a QoS-class change through the pods/resize
 ;; subresource is refused unconditionally (release-1.33 validation.go:5665), so

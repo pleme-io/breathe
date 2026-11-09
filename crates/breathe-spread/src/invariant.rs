@@ -9,7 +9,7 @@
 //! models-stay-current. A spread is a legal point on the auction lattice iff it
 //! discharges every clause.
 //!
-//! Tier honesty is non-negotiable (UNREPRESENTABILITY §II): a `Result::Err` is
+//! Tier honesty is non-negotiable: a `Result::Err` is
 //! MITIGATION, a compile error / absent arm is UNREPRESENTABILITY; a ceiling is
 //! the correct terminal for a property Rust cannot prove (C1 = no dependent-type
 //! coverage proof → CI forcing-function; C2 = external-world observation → runtime

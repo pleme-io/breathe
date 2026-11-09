@@ -63,7 +63,7 @@
     (:class "quorum-store"        :topology "fullyDistributed" :replica-floor 3 :storage t
       :note "distributed object/metadata store — odd quorum ≥ 3, majority-safe steps")))
 
-;;; ── The per-engine DATABASE matrix (BREATHABILITY §II.5) ─────────────────────
+;;; ── The per-engine DATABASE matrix ───────────────────────────────────────────
 ;;; A DB is not held by a generic pod band — it breathes on its OWN engine knobs
 ;;; under the correct replica topology. Each row is a DimensionId::AppParam
 ;;; INSTANCE (an application-actuator lever). Mirror of breathe-catalog::db_matrix.

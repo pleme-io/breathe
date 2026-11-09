@@ -44,7 +44,7 @@ pub enum DimensionId {
     /// ([`crate::isolation`]) that nothing actuated: the `sui-cache-pg` receipt
     /// is 34 OOM kills at a 202.8Mi high-water under a 1Gi limit with cgroup
     /// `failcnt = 0` — a limit that was never binding, so no `MemoryBand`
-    /// setting at any value could have saved it (BREATHABILITY.md §II.8).
+    /// setting at any value could have saved it.
     ///
     /// ONE name fleet-wide: this is the same dimension as
     /// `breathe_provider::DimensionId::Request` and the `RequestBand` CRD kind.
@@ -80,8 +80,7 @@ impl DimensionId {
 }
 
 /// The carve algorithm a dimension uses — the control law that turns
-/// observed utilization into a target. Selects the per-resource-optimal law
-/// (BREATHABILITY-CARVING §2).
+/// observed utilization into a target. Selects the per-resource-optimal law.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum CarveAlgorithm {
     /// `target = ⌈used / setpoint⌉` — the multiplicative BandLaw
@@ -204,7 +203,7 @@ pub struct BreatheDimension {
     /// The default utilization SETPOINT the carve holds (clause 2). Sealed —
     /// an out-of-range value here is a const-eval compile error.
     pub setpoint: UtilizationSetpoint,
-    /// The carve algorithm (BREATHABILITY-CARVING §2).
+    /// The carve algorithm.
     pub carve_algorithm: CarveAlgorithm,
     /// How the carve config is discovered (clause 5).
     pub discovery: DiscoveryStrategy,
@@ -221,7 +220,7 @@ pub struct BreatheDimension {
     /// maximizes.** Nonempty for every dimension. Cost and resiliency are
     /// achieved TOGETHER by the one carve, not traded.
     pub resiliency_effect: &'static str,
-    /// The BREATHABILITY doctrine section this dimension is anchored in.
+    /// The breathability doctrine this dimension is anchored in, in plain words.
     pub doctrine_ref: &'static str,
     /// A `pending-breathe:` note REQUIRED when a claimed dimension is a `Gap`
     /// — the explicit, tracked acknowledgement that the model names a

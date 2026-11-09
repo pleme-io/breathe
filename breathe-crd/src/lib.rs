@@ -166,13 +166,13 @@ pub struct BandStatus {
     ///
     /// Both report `Dormant`, both count as converged, so a fleet where a third
     /// of the bands have stale selectors still reports 100% converged. That is
-    /// the vacuous-guard class (`UNREPRESENTABILITY.md` §II.3): a mechanism
+    /// the vacuous-guard class: a mechanism
     /// reporting success having evaluated zero subjects.
     ///
     /// THIS FIELD IS THE THRESHOLD-FREE DISCRIMINATOR. Deliberately not a
     /// grace window or an idle timeout — inventing a "suspicious after N
     /// seconds" constant would be exactly the re-frozen static value
-    /// `BREATHABILITY.md` §II forbids, and it would need re-tuning every time a
+    /// breathability forbids, and it would need re-tuning every time a
     /// workload's cadence changed. `None` is a crisp, tuning-free predicate:
     /// a band that has NEVER, not once, seen a pod is unproven. The instant it
     /// sees one, it is proven for the rest of its life and every later empty
@@ -4338,8 +4338,7 @@ impl DensaSpec {
 
 // ─────────────────── QuinhaoPool — the hierarchical-vector fair-share allocator ──
 //
-// The k8s wire border for `breathe_auction::quinhao` (BREATHABILITY-FABRIC §III.0
-// — "every part held at the same 80/20 band by the same law, so they all shift
+// The k8s wire border for `breathe_auction::quinhao` ("every part held at the same 80/20 band by the same law, so they all shift
 // together"). Where a `StorageBand` holds the POOL at its 80% band, a
 // `QuinhaoPool` DIVIDES that band among a forest of weighted claimants (groups →
 // users) per dimension, and publishes the computed per-claimant grants in its

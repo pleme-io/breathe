@@ -5,12 +5,10 @@
 > tight resource-utilization band, across *many* resident problem
 > categories (memory, storage, CPU, …), with *one* running architecture
 > and *one* proven balancing law. It is the homeostatic realization of
-> [Pillar 11 (JIT Infrastructure)](THEORY.md#vii3-jit-infrastructure-pillar-11)
-> and the per-compute-unit half of [`BREATHABILITY.md`](BREATHABILITY.md):
-> `BREATHABILITY.md` covers *scale-to-zero between workloads*; `breathe`
-> covers *right-sizing within a live workload*. It operates under
-> [Constructive Substrate Engineering](CONSTRUCTIVE-SUBSTRATE-ENGINEERING.md)
-> and is a [Viggy](CONTINUOUS-SOLUTION-MACHINE.md) controller: every limit
+> Pillar 11 (JIT Infrastructure) and the per-compute-unit half of
+> breathability: breathability covers *scale-to-zero between workloads*;
+> `breathe` covers *right-sizing within a live workload*. It operates under
+> Constructive Substrate Engineering and is a Viggy controller: every limit
 > change is a continuously-attested theorem, not an assertion.
 
 > **Naming.** `breathe` is the verb the system performs — a workload
@@ -716,8 +714,7 @@ and closes one of the CONFIGURATION-MANAGEMENT trio gaps.
 | **long-lived Deployment** (`replicas: 1` + leader election, generation-filtered watch + requeue floor) | memory, cpu | `deployment.yaml` | bidirectional homeostasis needs continuous cooldown state + fast convergence + live status receipts |
 | **single-shot CronJob** (`concurrencyPolicy: Forbid`, `*/1 * * * *`) | storage | `cronjob.yaml` (verbatim from `pleme-storage-elastic`) | grow-only, no shrink-flap risk, cheap to rescan, idempotent |
 
-One chart family selects the template off the dimension's directionality
-(BREATHABILITY §VII invariants 1 + 3).
+One chart family selects the template off the dimension's directionality.
 
 ### 7.2 The chart — `helmworks/charts/pleme-breathe`
 
@@ -980,13 +977,6 @@ which is the live OOM-auto-heal need — task #22/#24.)*
 
 ## 14. See also
 
-- [`BREATHABILITY.md`](BREATHABILITY.md) — scale-to-zero between workloads
-  (the sibling half; §VII renderer invariants extended here).
-- [`CONTINUOUS-SOLUTION-MACHINE.md`](CONTINUOUS-SOLUTION-MACHINE.md) — the
-  Viggy Method; `breathe` is a convergence controller + PROVABLE OUTCOMES
-  consumer.
-- [`GALHO.md`](GALHO.md) §III — the `IaCSystem`/`ApplySemantics`
-  non-overloadable-algebra pattern the provider trait mirrors.
 - `sui/sui-spec/src/catalog.rs` + `specs/catalog.lisp` — the CATALOG
   REFLECTION template reused verbatim.
 - `helmworks/charts/pleme-memory-elastic/image/src/{control,crd}.rs` — the

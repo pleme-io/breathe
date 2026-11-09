@@ -1,4 +1,4 @@
-//! `cost` — the OFFLINE half of the 100%-spot flex-window (BREATHABILITY §II.6).
+//! `cost` — the OFFLINE half of the 100%-spot flex-window.
 //!
 //! The aggressive-spot posture ("100% spot, even the databases") auctions every
 //! node from the interruptible pool and **widens the instance-family set on

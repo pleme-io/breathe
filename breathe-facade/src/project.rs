@@ -171,7 +171,7 @@ pub struct ConditionView {
 /// Emitted only when something was actually dropped, so a projection that lost
 /// nothing costs nothing to say so. Without this an agent cannot tell "this band
 /// has no history" from "this view hid the history" — which is the vacuous-guard
-/// failure mode (`UNREPRESENTABILITY.md` §II.3) applied to a response.
+/// failure mode applied to a response.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct TruncationView {

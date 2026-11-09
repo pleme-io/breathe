@@ -1,5 +1,5 @@
 //! `quinhão` — the hierarchical, vector-valued, dynamically-rebalancing
-//! even-fair-share allocator (BREATHABILITY-FABRIC §III.0 — "every part held at
+//! even-fair-share allocator ("every part held at
 //! the *same* 80/20 band by the *same* law, so they all shift together").
 //!
 //! **What this is, and what it is NOT.** This is the SOLVED, provable fair-share

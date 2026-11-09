@@ -5,7 +5,7 @@
 //!
 //! A database does not breathe like a stateless pod. Its breath is its
 //! *replication architecture*, and carving it wrong loses data. This is the
-//! deepest breathe dimension (BREATHABILITY.md §II.5): breathe must be
+//! deepest breathe dimension: breathe must be
 //! **TOTALLY aware of every database architecture it touches, discover it
 //! dynamically, and auction it at 100% spot safely — even the primary.**
 //!
